@@ -244,6 +244,37 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 		cancelScan()
 	}
 
+	// The session must be established here, on the long-lived context, and
+	// not left to the caller's first action.
+	//
+	// chromedp creates the target's session on the first Run against a
+	// context and ties the session's message loop to the context it was given.
+	// A caller that ran its first action under a short per-step deadline
+	// would therefore lose the whole session when that deadline was
+	// cancelled, and every later step would time out with nothing captured.
+	// Returning a context whose session is already live makes that mistake
+	// impossible to repeat.
+	initCtx, cancelInit := context.WithTimeout(ctx, b.opts.launchTimeout())
+	defer cancelInit()
+
+	done := make(chan error, 1)
+
+	go func() { done <- chromedp.Run(linked) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			cancel()
+
+			return nil, nil, fmt.Errorf("opening a scan session: %w", err)
+		}
+
+	case <-initCtx.Done():
+		cancel()
+
+		return nil, nil, fmt.Errorf("opening a scan session: %w", initCtx.Err())
+	}
+
 	b.scans.Add(1)
 
 	return linked, cancel, nil
