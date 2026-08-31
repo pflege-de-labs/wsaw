@@ -134,6 +134,11 @@ type Browser struct {
 	NoSandbox bool     `yaml:"noSandbox,omitempty"`
 	ExtraArgs []string `yaml:"extraArgs,omitempty"`
 
+	// ProfileDir is the parent directory for per-browser Chrome profiles.
+	// Empty means the system temporary directory. Useful when /tmp is small
+	// or mounted noexec.
+	ProfileDir string `yaml:"profileDir,omitempty"`
+
 	PoolSize           int      `yaml:"poolSize,omitempty"`
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`

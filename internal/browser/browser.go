@@ -36,6 +36,14 @@ type Options struct {
 	// ExtraArgs are additional Chrome flags for unusual environments.
 	ExtraArgs []string
 
+	// ProfileDir is the parent directory for per-browser profiles. Empty
+	// means the system temporary directory.
+	//
+	// Operators need this when /tmp is small, mounted noexec, or shared;
+	// tests need it so that inspecting for leaked profiles does not depend on
+	// what else happens to be running on the machine.
+	ProfileDir string
+
 	// LaunchTimeout bounds browser startup.
 	LaunchTimeout time.Duration
 
@@ -95,7 +103,7 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	if opts.RemoteURL != "" {
 		b.allocCtx, b.allocCancel = chromedp.NewRemoteAllocator(context.Background(), opts.RemoteURL)
 	} else {
-		dir, err := os.MkdirTemp("", "wsaw-profile-")
+		dir, err := os.MkdirTemp(opts.ProfileDir, "wsaw-profile-")
 		if err != nil {
 			return nil, fmt.Errorf("creating browser profile directory: %w", err)
 		}

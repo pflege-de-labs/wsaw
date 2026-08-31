@@ -556,11 +556,16 @@ func TestNoProcessLeak(t *testing.T) {
 
 	site := newFixtureSite(t, false)
 
+	// A private profile parent: asserting on the shared system temp directory
+	// would make this test depend on whatever else is running on the machine.
+	profileDir := t.TempDir()
+
 	pool := browser.NewPool(browser.PoolOptions{
 		Size: 2,
 		Launch: browser.Options{
 			Info:          info,
 			LaunchTimeout: 40 * time.Second,
+			ProfileDir:    profileDir,
 			ExtraArgs:     []string{"host-resolver-rules=" + site.resolverRules()},
 		},
 	})
@@ -593,9 +598,9 @@ func TestNoProcessLeak(t *testing.T) {
 	}
 
 	// Profile directories must be gone too.
-	entries, err := os.ReadDir(os.TempDir())
+	entries, err := os.ReadDir(profileDir)
 	if err != nil {
-		t.Skip("cannot inspect the temp directory")
+		t.Fatalf("reading the profile directory: %v", err)
 	}
 
 	for _, e := range entries {

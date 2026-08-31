@@ -199,6 +199,7 @@ func (a *App) startBrowser(ctx context.Context) error {
 			Info:          info,
 			RemoteURL:     a.Config.Browser.RemoteURL,
 			NoSandbox:     a.Config.Browser.NoSandbox,
+			ProfileDir:    a.Config.Browser.ProfileDir,
 			ExtraArgs:     a.Config.Browser.ExtraArgs,
 			LaunchTimeout: a.Config.Browser.LaunchTimeout.Or(30 * time.Second),
 			Logger:        a.Logger,

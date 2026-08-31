@@ -64,6 +64,10 @@ func TestSoak(t *testing.T) {
 
 	defer func() { _ = st.Close() }()
 
+	// A private profile parent, so leftover-profile accounting is about this
+	// pool rather than about whatever else the machine is running.
+	profileDir := t.TempDir()
+
 	pool := browser.NewPool(browser.PoolOptions{
 		Size: 2,
 		// Deliberately low, so recycling is exercised many times over.
@@ -71,6 +75,7 @@ func TestSoak(t *testing.T) {
 		Launch: browser.Options{
 			Info:          info,
 			LaunchTimeout: 60 * time.Second,
+			ProfileDir:    profileDir,
 			ExtraArgs:     []string{"host-resolver-rules=" + site.resolverRules()},
 		},
 	})
@@ -103,7 +108,7 @@ func TestSoak(t *testing.T) {
 		}
 	}
 
-	baseline := measure(t)
+	baseline := measure(t, profileDir)
 
 	t.Logf("baseline: %s", baseline)
 
@@ -128,7 +133,7 @@ func TestSoak(t *testing.T) {
 		scans++
 
 		if scans%10 == 0 {
-			t.Logf("after %d scans: %s", scans, measure(t))
+			t.Logf("after %d scans: %s", scans, measure(t, profileDir))
 		}
 	}
 
@@ -140,7 +145,7 @@ func TestSoak(t *testing.T) {
 		t.Errorf("closing pool: %v", err)
 	}
 
-	final := measure(t)
+	final := measure(t, profileDir)
 
 	t.Logf("after %d scans: %s", scans, final)
 
@@ -176,7 +181,7 @@ func (s snapshot) String() string {
 	return fmt.Sprintf("goroutines=%d heap=%dMiB profile_dirs=%d", s.goroutines, s.heapMB, s.profileDirs)
 }
 
-func measure(t *testing.T) snapshot {
+func measure(t *testing.T, profileDir string) snapshot {
 	t.Helper()
 
 	runtime.GC()
@@ -188,14 +193,14 @@ func measure(t *testing.T) snapshot {
 	return snapshot{
 		goroutines:  runtime.NumGoroutine(),
 		heapMB:      m.HeapAlloc / (1 << 20),
-		profileDirs: countProfileDirs(),
+		profileDirs: countProfileDirs(profileDir),
 	}
 }
 
 // countProfileDirs counts leftover browser profiles, which is how a leaked
 // temp directory shows up.
-func countProfileDirs() int {
-	entries, err := os.ReadDir(os.TempDir())
+func countProfileDirs(dir string) int {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0
 	}
