@@ -73,8 +73,8 @@
 
 ## 9. License & Compliance
 
-- Source code under a permissive open-source license (MIT/Apache-2.0) — final decision pending.
-- All dependencies license-compatible; automated license checking in CI.
+- Source code under the MIT license (see `LICENSE`).
+- All dependencies license-compatible with MIT; automated license checking in CI.
 - Chrome/Chromium redistribution terms respected in the container image; Chromium is preferred over Chrome where redistribution matters.
 - A SBOM is generated in CI
 
