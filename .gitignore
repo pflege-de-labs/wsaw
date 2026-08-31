@@ -1,0 +1,22 @@
+# Build output
+/wsaw
+/dist/
+/bin/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Local agent/editor state
+.claude/settings.local.json
+.DS_Store
+
+# Local config and captured scan output — never commit real target lists or results
+/wsaw.yaml
+/config.local.*
+/out/
+/results/
+*.har
+.env
