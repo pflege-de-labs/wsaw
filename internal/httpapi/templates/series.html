@@ -1,0 +1,67 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+
+<h1>{{.Target}} <span class="mode">{{.Mode}}</span></h1>
+
+{{if .Baseline}}
+<div class="panel">
+  <strong>Approved baseline:</strong> scan <code>{{.Baseline.ScanID}}</code>,
+  approved {{time .Baseline.ApprovedAt}}{{if .Baseline.ApprovedBy}} by {{.Baseline.ApprovedBy}}{{end}}.
+  {{if .Baseline.Note}}<p class="note">{{.Baseline.Note}}</p>{{end}}
+</div>
+{{else}}
+<div class="panel panel-muted">
+  No approved baseline. Scans are compared against the previous scan.
+</div>
+{{end}}
+
+<h2>History</h2>
+
+{{if not .Results}}
+  <p class="empty">No scans recorded for this target and consent mode.</p>
+{{end}}
+
+<table>
+  <thead>
+    <tr>
+      <th>Scan</th>
+      <th>Started</th>
+      <th>Duration</th>
+      <th>Outcome</th>
+      <th>Consent</th>
+      <th class="num">Requests</th>
+      <th class="num">3rd-party</th>
+      <th class="num">Pre-consent</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Results}}
+    <tr>
+      <td><a href="/results/{{.Target}}/{{.ConsentMode}}/{{.ScanID}}"><code>{{.ScanID}}</code></a></td>
+      <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
+      <td>{{dur .Duration}}</td>
+      <td><span class="term term-{{.Termination}}">{{.Termination}}</span>
+        {{if .Error}}<span class="error-detail">{{.Error}}</span>{{end}}</td>
+      <td><span class="outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span></td>
+      <td class="num">{{.Requests}}</td>
+      <td class="num">{{.ThirdPartyDomains}}</td>
+      <td class="num {{if .PreConsentDomains}}warn{{end}}">{{.PreConsentDomains}}</td>
+      <td>
+        {{if not $page.ReadOnly}}
+        <form method="post" action="/approve/{{.Target}}/{{.ConsentMode}}" class="inline">
+          <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+          <input type="hidden" name="scanId" value="{{.ScanID}}">
+          <input type="text" name="actor" placeholder="your name" size="10">
+          <button type="submit">Approve as baseline</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{end}}
+{{template "foot" $page}}

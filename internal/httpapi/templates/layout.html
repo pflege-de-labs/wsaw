@@ -1,0 +1,35 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/wsaw.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">wsaw</a>
+  <nav>
+    <a href="/">Targets</a>
+    <a href="/audit">Audit log</a>
+  </nav>
+  <span class="spacer"></span>
+  {{if .ReadOnly}}<span class="badge badge-readonly">read-only</span>{{end}}
+  <span class="version">{{.Version}}</span>
+</header>
+
+{{if .Flash}}<div class="flash flash-ok">{{.Flash}}</div>{{end}}
+{{if .FlashError}}<div class="flash flash-error">{{.FlashError}}</div>{{end}}
+
+<main>
+{{end}}
+
+{{define "foot"}}
+</main>
+<footer>
+  <p>Every value on this page was recorded from a scanned website and is displayed as text, never as markup.</p>
+  {{if .ConfigPath}}<p>Configuration: <code>{{.ConfigPath}}</code></p>{{end}}
+</footer>
+</body>
+</html>
+{{end}}

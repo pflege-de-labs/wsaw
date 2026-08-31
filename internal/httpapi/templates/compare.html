@@ -1,0 +1,46 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+
+<h1>{{.Target}} — consent modes side by side</h1>
+
+<p class="lead">
+  Each row is a third-party registrable domain. <strong>pre</strong> means it was contacted
+  before any consent interaction; <strong>post</strong> means afterwards. A domain marked in the
+  reject column is contacted despite consent being refused.
+</p>
+
+<table class="compare">
+  <thead>
+    <tr>
+      <th>Third-party domain</th>
+      {{range .Modes}}
+        <th>
+          {{.Mode}}
+          {{if .Missing}}<span class="muted">(never scanned)</span>
+          {{else}}<span class="muted">{{ago .Result.StartedAt}}</span>
+            {{if not .Result.OK}}<span class="badge badge-warn">scan failed</span>{{end}}
+          {{end}}
+        </th>
+      {{end}}
+    </tr>
+  </thead>
+  <tbody>
+  {{if not .Domains}}
+    <tr><td colspan="4" class="empty">No third-party domains were recorded in any consent mode.</td></tr>
+  {{end}}
+  {{range .Domains}}
+    <tr>
+      <td class="wrap"><code>{{.Domain}}</code></td>
+      {{range .Present}}
+        <td class="cell-{{if .}}{{.}}{{else}}absent{{end}}">
+          {{if eq . "pre"}}pre-consent{{else if eq . "post"}}post{{else}}<span class="muted">—</span>{{end}}
+        </td>
+      {{end}}
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{end}}
+{{template "foot" $page}}

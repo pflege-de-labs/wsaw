@@ -1,0 +1,543 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/martint17r/wsaw/internal/diff"
+	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/report"
+	"github.com/martint17r/wsaw/internal/store"
+)
+
+func (s *Server) routes() {
+	// API. Read paths first; write paths are gated by writeAllowed.
+	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/v1/ready", s.handleReady)
+	s.mux.HandleFunc("GET /api/v1/targets", s.handleTargets)
+	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}", s.handleResults)
+	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}", s.handleResult)
+	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/har", s.handleResultHAR)
+	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/csv", s.handleResultCSV)
+	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/report", s.handleResultMarkdown)
+	s.mux.HandleFunc("GET /api/v1/diff/{target}/{mode}/{scan}", s.handleDiff)
+	s.mux.HandleFunc("GET /api/v1/baseline/{target}/{mode}", s.handleGetBaseline)
+	s.mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
+	s.mux.HandleFunc("GET /api/v1/schedule", s.handleSchedule)
+
+	s.mux.HandleFunc("POST /api/v1/baseline/{target}/{mode}", s.handleSetBaseline)
+	s.mux.HandleFunc("DELETE /api/v1/baseline/{target}/{mode}", s.handleDeleteBaseline)
+	s.mux.HandleFunc("POST /api/v1/scan/{target}/{mode}", s.handleTriggerScan)
+
+	if s.opts.MetricsEnabled && s.deps.Metrics != nil {
+		s.mux.HandleFunc("GET "+s.opts.MetricsPath, s.handleMetrics)
+	}
+
+	if s.opts.WebUI {
+		s.uiRoutes()
+	}
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "alive",
+		"version": s.opts.Version,
+	})
+}
+
+// handleReady distinguishes "the process is alive" from "wsaw can actually
+// scan", which are very different things to an operator (Story 6.5).
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Metrics == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ready": true, "reason": "readiness is not tracked"})
+
+		return
+	}
+
+	ready, reason := s.deps.Metrics.Ready()
+
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+
+	stale := s.deps.Metrics.Stale(time.Now(), s.opts.StaleAfter)
+
+	writeJSON(w, status, map[string]any{
+		"ready":        ready,
+		"reason":       reason,
+		"staleTargets": stale,
+	})
+}
+
+// TargetView is a target plus its current state, which is what the dashboard
+// and any external monitor both need.
+type TargetView struct {
+	Name         string              `json:"name"`
+	URL          string              `json:"url"`
+	Labels       map[string]string   `json:"labels,omitempty"`
+	ConsentModes []model.ConsentMode `json:"consentModes"`
+	Series       []SeriesView        `json:"series"`
+}
+
+// SeriesView is the latest state of one target-and-mode stream.
+type SeriesView struct {
+	Mode model.ConsentMode `json:"consentMode"`
+
+	LastScan    *store.Summary `json:"lastScan,omitempty"`
+	HasBaseline bool           `json:"hasBaseline"`
+
+	// Stale marks a series whose last successful scan is older than the
+	// configured threshold, or which has never succeeded.
+	Stale bool `json:"stale"`
+	// StaleReason explains it in operator-readable terms.
+	StaleReason string `json:"staleReason,omitempty"`
+}
+
+func (s *Server) targetViews() []TargetView {
+	var out []TargetView
+
+	if s.deps.Targets == nil {
+		return out
+	}
+
+	now := time.Now()
+
+	for _, t := range s.deps.Targets() {
+		view := TargetView{
+			Name:         t.Name,
+			URL:          t.URL,
+			Labels:       t.Labels,
+			ConsentModes: t.ConsentModes,
+		}
+
+		for _, mode := range t.ConsentModes {
+			sv := SeriesView{Mode: mode}
+
+			if summaries, err := s.deps.Store.ListResults(t.Name, mode, 1); err == nil && len(summaries) > 0 {
+				sv.LastScan = &summaries[0]
+			}
+
+			if _, err := s.deps.Store.GetBaseline(t.Name, mode); err == nil {
+				sv.HasBaseline = true
+			}
+
+			sv.Stale, sv.StaleReason = staleness(sv.LastScan, now, s.opts.StaleAfter)
+
+			view.Series = append(view.Series, sv)
+		}
+
+		out = append(out, view)
+	}
+
+	return out
+}
+
+// staleness decides whether a series should be flagged. Never-scanned and
+// last-scan-failed both count: an empty result set must never read as a clean
+// site (Tenet 5).
+func staleness(last *store.Summary, now time.Time, maxAge time.Duration) (bool, string) {
+	switch {
+	case last == nil:
+		return true, "never scanned"
+
+	case last.Termination == model.TermError:
+		return true, "last scan failed: " + last.Error
+
+	case last.Termination == model.TermSkipped:
+		return true, "last scan was skipped: " + last.Error
+
+	case maxAge > 0 && now.Sub(last.StartedAt) > maxAge:
+		return true, "last scan is older than " + maxAge.String()
+
+	default:
+		return false, ""
+	}
+}
+
+func (s *Server) handleTargets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews()})
+}
+
+func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+
+	summaries, err := s.deps.Store.ListResults(target, mode, limit)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"results": summaries})
+}
+
+func (s *Server) loadResult(w http.ResponseWriter, r *http.Request) (*model.Result, bool) {
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return nil, false
+	}
+
+	scan := r.PathValue("scan")
+
+	var (
+		res *model.Result
+		err error
+	)
+
+	if scan == "latest" {
+		res, err = s.deps.Store.LatestResult(target, mode)
+	} else {
+		res, err = s.deps.Store.GetResult(target, mode, scan)
+	}
+
+	if err != nil {
+		writeStoreError(w, err)
+
+		return nil, false
+	}
+
+	return res, true
+}
+
+func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResult(w, r)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResult(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(res, "har")+`"`)
+
+	if err := report.WriteHAR(w, res); err != nil {
+		s.deps.Logger.Error("writing HAR", "error", err)
+	}
+}
+
+func (s *Server) handleResultCSV(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResult(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(res, "csv")+`"`)
+
+	if err := report.WriteCSV(w, res); err != nil {
+		s.deps.Logger.Error("writing CSV", "error", err)
+	}
+}
+
+func (s *Server) handleResultMarkdown(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResult(w, r)
+	if !ok {
+		return
+	}
+
+	rep := s.diffFor(res)
+
+	// text/plain, not text/markdown: the content embeds page-controlled text,
+	// and nosniff plus a non-renderable type keeps a browser from doing
+	// anything with it.
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	if err := report.WriteMarkdown(w, res, rep); err != nil {
+		s.deps.Logger.Error("writing Markdown report", "error", err)
+	}
+}
+
+// diffFor compares a result against its baseline, falling back to the
+// previous scan.
+func (s *Server) diffFor(res *model.Result) *diff.Report {
+	var baseline *model.Result
+
+	if b, err := s.deps.Store.GetBaseline(res.Target, res.ConsentMode); err == nil {
+		baseline = b.Result
+	} else if prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID); err == nil {
+		baseline = prev
+	}
+
+	return diff.Compare(baseline, res, diff.Options{})
+}
+
+func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResult(w, r)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.diffFor(res))
+}
+
+func (s *Server) handleGetBaseline(w http.ResponseWriter, r *http.Request) {
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	b, err := s.deps.Store.GetBaseline(target, mode)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) handleSetBaseline(w http.ResponseWriter, r *http.Request) {
+	if allowed, reason := s.writeAllowed(); !allowed {
+		writeJSONError(w, http.StatusForbidden, reason)
+
+		return
+	}
+
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		ScanID string `json:"scanId"`
+		Actor  string `json:"actor"`
+		Note   string `json:"note"`
+	}
+
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+
+		return
+	}
+
+	if body.ScanID == "" {
+		writeJSONError(w, http.StatusBadRequest, "scanId is required")
+
+		return
+	}
+
+	b, err := s.deps.Store.SetBaseline(target, mode, body.ScanID, body.Actor, body.Note)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSONError(w, http.StatusNotFound, err.Error())
+
+			return
+		}
+
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+
+		return
+	}
+
+	s.deps.Logger.Info("baseline approved",
+		"target", target, "consent_mode", string(mode), "scan_id", body.ScanID, "actor", body.Actor)
+
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) handleDeleteBaseline(w http.ResponseWriter, r *http.Request) {
+	if allowed, reason := s.writeAllowed(); !allowed {
+		writeJSONError(w, http.StatusForbidden, reason)
+
+		return
+	}
+
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	if err := s.deps.Store.DeleteBaseline(target, mode, r.URL.Query().Get("actor")); err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
+	if allowed, reason := s.writeAllowed(); !allowed {
+		writeJSONError(w, http.StatusForbidden, reason)
+
+		return
+	}
+
+	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
+		writeJSONError(w, http.StatusForbidden, "ad-hoc scanning is disabled")
+
+		return
+	}
+
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	// Only configured targets may be scanned. Accepting an arbitrary URL here
+	// would turn the API into a request-forgery primitive.
+	if !s.isConfiguredTarget(target, mode) {
+		writeJSONError(w, http.StatusNotFound, "no such target and consent mode is configured")
+
+		return
+	}
+
+	out, err := s.deps.Trigger.Trigger(r.Context(), target, mode)
+	if err != nil {
+		// A scan that failed still produced a result, which is the useful
+		// thing to return.
+		s.deps.Logger.Warn("ad-hoc scan reported an error", "target", target, "error", err)
+	}
+
+	if out.Result == nil {
+		writeJSONError(w, http.StatusInternalServerError, "the scan produced no result")
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"result": out.Result, "diff": out.Diff})
+}
+
+func (s *Server) isConfiguredTarget(name string, mode model.ConsentMode) bool {
+	if s.deps.Targets == nil {
+		return false
+	}
+
+	for _, t := range s.deps.Targets() {
+		if t.Name != name {
+			continue
+		}
+
+		for _, m := range t.ConsentModes {
+			if m == mode {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+
+	entries, err := s.deps.Store.Audit(limit)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+}
+
+func (s *Server) handleSchedule(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Daemon == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": []any{}})
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.deps.Daemon.Jobs()})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	if err := s.deps.Metrics.WritePrometheus(w); err != nil {
+		s.deps.Logger.Error("writing metrics", "error", err)
+	}
+}
+
+// pathTargetMode extracts and validates the target and consent mode.
+func pathTargetMode(w http.ResponseWriter, r *http.Request) (string, model.ConsentMode, bool) {
+	target := r.PathValue("target")
+	mode := model.ConsentMode(r.PathValue("mode"))
+
+	if target == "" {
+		writeJSONError(w, http.StatusBadRequest, "target is required")
+
+		return "", "", false
+	}
+
+	if !mode.Valid() {
+		writeJSONError(w, http.StatusBadRequest,
+			"consent mode must be one of none, reject, accept")
+
+		return "", "", false
+	}
+
+	return target, mode, true
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+
+	_ = enc.Encode(v)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": msg})
+}
+
+func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+
+		return
+	}
+
+	writeJSONError(w, http.StatusInternalServerError, err.Error())
+}
+
+// safeFilename builds a download filename from data that ultimately comes
+// from configuration, keeping it to characters that cannot break the
+// Content-Disposition header.
+func safeFilename(res *model.Result, ext string) string {
+	clean := func(s string) string {
+		out := make([]rune, 0, len(s))
+
+		for _, r := range s {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+				out = append(out, r)
+			default:
+				out = append(out, '-')
+			}
+		}
+
+		return string(out)
+	}
+
+	return clean(res.Target) + "-" + clean(string(res.ConsentMode)) + "-" + clean(res.ScanID) + "." + ext
+}

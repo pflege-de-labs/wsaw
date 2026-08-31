@@ -1,0 +1,183 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+{{$res := .Result}}
+
+<h1>{{$res.Target}} <span class="mode">{{$res.ConsentMode}}</span></h1>
+<p class="url">{{$res.URL}}{{if and $res.FinalURL (ne $res.FinalURL $res.URL)}} → {{$res.FinalURL}}{{end}}</p>
+
+{{/* Trustworthiness first: a reader must not absorb the numbers before
+     learning whether they can be believed. */}}
+{{if not $res.OK}}
+<div class="banner banner-bad">
+  <strong>This scan did not complete.</strong> Termination: <code>{{$res.Termination}}</code>.
+  {{if $res.Error}}<p>{{$res.Error}}</p>{{end}}
+  <p>The asset list below is incomplete and must not be read as “nothing was loaded”.</p>
+</div>
+{{else if $res.Truncated}}
+<div class="banner banner-warn">
+  <strong>This scan stopped early</strong> (<code>{{$res.Termination}}</code>).
+  The asset list may be incomplete, and any reduction against the baseline may be an artefact.
+</div>
+{{end}}
+
+{{if $res.Warnings}}
+<div class="banner banner-warn">
+  <strong>Warnings</strong>
+  <ul>{{range $res.Warnings}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+<section class="meta">
+  <dl>
+    <dt>Scan</dt><dd><code>{{$res.ScanID}}</code></dd>
+    <dt>Started</dt><dd>{{time $res.StartedAt}}</dd>
+    <dt>Duration</dt><dd>{{dur $res.Duration}}</dd>
+    <dt>Termination</dt><dd><span class="term term-{{$res.Termination}}">{{$res.Termination}}</span></dd>
+    <dt>Chrome</dt><dd>{{$res.Environment.ChromeVersion}}</dd>
+    <dt>Viewport</dt><dd>{{$res.Environment.ViewportWidth}}×{{$res.Environment.ViewportHeight}}{{if $res.Environment.Mobile}} mobile{{end}}</dd>
+    <dt>User agent</dt><dd>{{if $res.Environment.UserAgent}}{{$res.Environment.UserAgent}}{{else}}<span class="muted">browser default</span>{{end}}</dd>
+    {{if $res.Environment.WarmCache}}<dt>Cache</dt><dd class="warn">warm — not comparable with cold-cache scans</dd>{{end}}
+  </dl>
+
+  <p class="downloads">
+    Download:
+    <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}">JSON</a>
+    <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/har">HAR</a>
+    <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/csv">CSV</a>
+    <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/report">report</a>
+  </p>
+</section>
+
+<section>
+  <h2>Consent</h2>
+  <dl>
+    <dt>Outcome</dt><dd><span class="outcome outcome-{{$res.Consent.Outcome}}">{{$res.Consent.Outcome}}</span>
+      {{if $res.Consent.Reason}}<span class="reason">{{$res.Consent.Reason}}</span>{{end}}</dd>
+    <dt>CMP</dt><dd>{{if $res.Consent.CMP}}{{$res.Consent.CMP}}{{if $res.Consent.CMPVersion}} ({{$res.Consent.CMPVersion}}){{end}}{{else}}<span class="muted">none detected</span>{{end}}</dd>
+    {{if $res.Consent.Mechanism}}
+    <dt>Mechanism</dt>
+    <dd><code>{{$res.Consent.Mechanism}}</code>
+      {{if $res.Consent.Heuristic}}<span class="badge badge-warn">heuristic label matching — treat with caution</span>{{end}}</dd>
+    {{end}}
+    {{if $res.Consent.TCString}}<dt>TC string</dt><dd><code class="wrap">{{$res.Consent.TCString}}</code></dd>{{end}}
+    {{if $res.Consent.GPPString}}<dt>GPP string</dt><dd><code class="wrap">{{$res.Consent.GPPString}}</code></dd>{{end}}
+  </dl>
+</section>
+
+{{if .Diff}}
+<section>
+  <h2>Changes</h2>
+  {{if not .Diff.Comparable}}
+    <p class="empty">No comparison was possible: {{.Diff.Reason}}</p>
+  {{else if not .Diff.Changes}}
+    <p class="empty">No changes against the baseline.
+      {{if .Diff.Suppressed}}{{.Diff.Suppressed}} change(s) were suppressed by the allow list.{{end}}</p>
+  {{else}}
+    <table>
+      <thead><tr><th>Severity</th><th>Change</th><th>Subject</th><th>Detail</th></tr></thead>
+      <tbody>
+      {{range .Diff.Changes}}
+        <tr>
+          <td><span class="sev {{sevclass .Severity}}">{{.Severity}}</span></td>
+          <td>{{.Type}}</td>
+          <td class="wrap"><code>{{.Subject}}</code></td>
+          <td>{{.Detail}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{if .Diff.Suppressed}}<p class="muted">{{.Diff.Suppressed}} further change(s) suppressed by the allow list.</p>{{end}}
+  {{end}}
+</section>
+{{end}}
+
+<section>
+  <h2>Hosts</h2>
+  <table>
+    <thead><tr><th>Domain</th><th>Party</th><th class="num">Requests</th><th class="num">Pre-consent</th><th class="num">Bytes</th><th class="num">Failed</th><th>Types</th></tr></thead>
+    <tbody>
+    {{range .Hosts}}
+      <tr>
+        <td class="wrap"><code>{{.Domain}}</code></td>
+        <td><span class="party party-{{.Party}}">{{.Party}}</span></td>
+        <td class="num">{{.Requests}}</td>
+        <td class="num {{if .PreConsent}}warn{{end}}">{{.PreConsent}}</td>
+        <td class="num">{{bytes .Bytes}}</td>
+        <td class="num">{{.Failed}}</td>
+        <td class="types">{{range .ResourceTypes}}<span class="type">{{.}}</span>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Requests</h2>
+
+  <form method="get" class="filters">
+    <input type="text" name="host" value="{{.FilterHost}}" placeholder="host contains">
+    <input type="text" name="type" value="{{.FilterType}}" placeholder="resource type">
+    <select name="party">
+      <option value="">any party</option>
+      <option value="first" {{if eq .FilterParty "first"}}selected{{end}}>first</option>
+      <option value="third" {{if eq .FilterParty "third"}}selected{{end}}>third</option>
+    </select>
+    <select name="phase">
+      <option value="">any phase</option>
+      <option value="pre-interaction" {{if eq .FilterPhase "pre-interaction"}}selected{{end}}>pre-consent</option>
+      <option value="post-interaction" {{if eq .FilterPhase "post-interaction"}}selected{{end}}>post-consent</option>
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+
+  <p class="muted">{{.Total}} matching request(s).
+    {{if .Truncated}}Showing the first {{len .Requests}}; download the JSON for the full list.{{end}}</p>
+
+  <table class="requests">
+    <thead><tr><th>Phase</th><th>Party</th><th>Type</th><th>Status</th><th>URL</th><th class="num">Size</th><th>Initiator</th></tr></thead>
+    <tbody>
+    {{range .Requests}}
+      <tr>
+        <td><span class="phase phase-{{.Phase}}">{{if eq .Phase "pre-interaction"}}pre{{else}}post{{end}}</span></td>
+        <td><span class="party party-{{.Party}}">{{.Party}}</span></td>
+        <td>{{.ResourceType}}</td>
+        <td>{{if .Failed}}<span class="failed" title="{{.FailureReason}}">failed</span>{{else}}{{.Status}}{{end}}</td>
+        <td class="wrap"><code>{{.URL}}</code>
+          {{if .BodySHA256}}<span class="digest" title="response body sha256">{{.BodySHA256}}</span>{{end}}
+          {{if .BodyUnavailable}}<span class="muted" title="{{.BodyUnavailable}}">no digest</span>{{end}}
+          {{if .RedirectTo}}<span class="redirect">→ {{.RedirectTo}}</span>{{end}}
+        </td>
+        <td class="num">{{bytes .TransferSize}}</td>
+        <td class="wrap initiator">{{.Initiator.Type}}{{if .Initiator.URL}} <code>{{.Initiator.URL}}</code>{{if .Initiator.LineNumber}}:{{.Initiator.LineNumber}}{{end}}{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+{{if $res.Cookies}}
+<section>
+  <h2>Cookies</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Domain</th><th>Party</th><th>Session</th><th>Secure</th><th>HttpOnly</th><th>SameSite</th></tr></thead>
+    <tbody>
+    {{range $res.Cookies}}
+      <tr>
+        <td><code>{{.Name}}</code></td>
+        <td class="wrap"><code>{{.Domain}}</code></td>
+        <td><span class="party party-{{.Party}}">{{.Party}}</span></td>
+        <td>{{.Session}}</td>
+        <td>{{.Secure}}</td>
+        <td>{{.HTTPOnly}}</td>
+        <td>{{.SameSite}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted">Cookie values are not stored; only a digest and length are kept.</p>
+</section>
+{{end}}
+
+{{end}}
+{{template "foot" $page}}

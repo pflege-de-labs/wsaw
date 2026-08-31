@@ -1,0 +1,31 @@
+{{template "head" .}}
+{{$page := .}}
+
+<h1>Audit log</h1>
+
+<p class="lead">
+  Approvals are recorded because an approval is what silences future findings.
+</p>
+
+{{if not .Data}}
+  <p class="empty">No approvals or deletions have been recorded.</p>
+{{end}}
+
+<table>
+  <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Mode</th><th>Subject</th><th>Note</th></tr></thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td>{{time .At}}</td>
+      <td>{{if .Actor}}{{.Actor}}{{else}}<span class="muted">unattributed</span>{{end}}</td>
+      <td><code>{{.Action}}</code></td>
+      <td>{{.Target}}</td>
+      <td>{{.Mode}}</td>
+      <td class="wrap"><code>{{.Subject}}</code></td>
+      <td>{{.Note}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{template "foot" $page}}

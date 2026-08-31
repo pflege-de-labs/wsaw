@@ -1,0 +1,93 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+
+<h1>Targets</h1>
+
+<div class="status-row">
+  <div class="status {{if .Ready}}status-ok{{else}}status-bad{{end}}">
+    <strong>{{if .Ready}}Ready{{else}}Not ready{{end}}</strong>
+    <span>{{.Reason}}</span>
+  </div>
+  <div class="status {{if .Stale}}status-bad{{else}}status-ok{{end}}">
+    <strong>{{.Stale}} stale</strong>
+    <span>series without a recent successful scan</span>
+  </div>
+</div>
+
+{{if not .Targets}}
+  <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
+{{end}}
+
+{{range .Targets}}
+  {{$target := .}}
+  <section class="target">
+    <h2>{{.Name}} <a class="compare-link" href="/compare/{{.Name}}">compare consent modes</a></h2>
+    <p class="url">{{.URL}}</p>
+    {{if .Labels}}<p class="labels">{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span>{{end}}</p>{{end}}
+
+    <table>
+      <thead>
+        <tr>
+          <th>Consent mode</th>
+          <th>Last scan</th>
+          <th>Outcome</th>
+          <th>Consent</th>
+          <th class="num">Requests</th>
+          <th class="num">3rd-party</th>
+          <th class="num">Pre-consent</th>
+          <th>Baseline</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Series}}
+        <tr {{if .Stale}}class="row-stale"{{end}}>
+          <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a></td>
+          {{if .LastScan}}
+            <td title="{{time .LastScan.StartedAt}}">{{ago .LastScan.StartedAt}}</td>
+            <td><span class="term term-{{.LastScan.Termination}}">{{.LastScan.Termination}}</span></td>
+            <td><span class="outcome outcome-{{.LastScan.ConsentOutcome}}">{{.LastScan.ConsentOutcome}}</span>
+              {{if .LastScan.ConsentCMP}}<span class="cmp">{{.LastScan.ConsentCMP}}</span>{{end}}</td>
+            <td class="num">{{.LastScan.Requests}}</td>
+            <td class="num">{{.LastScan.ThirdPartyDomains}}</td>
+            <td class="num {{if .LastScan.PreConsentDomains}}warn{{end}}">{{.LastScan.PreConsentDomains}}</td>
+          {{else}}
+            <td colspan="6" class="empty">never scanned</td>
+          {{end}}
+          <td>{{if .HasBaseline}}approved{{else}}<span class="muted">none</span>{{end}}</td>
+          <td>
+            {{if .Stale}}<span class="badge badge-stale" title="{{.StaleReason}}">stale</span>{{end}}
+            {{if $page.AllowScan}}
+            <form method="post" action="/rescan/{{$target.Name}}/{{.Mode}}" class="inline">
+              <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+              <button type="submit">Scan now</button>
+            </form>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </section>
+{{end}}
+
+{{if .Jobs}}
+<h2>Schedule</h2>
+<table>
+  <thead><tr><th>Target</th><th>Mode</th><th>Next run</th><th>Last run</th></tr></thead>
+  <tbody>
+  {{range .Jobs}}
+    <tr>
+      <td>{{.Target}}</td>
+      <td>{{.Mode}}</td>
+      <td>{{time .NextRun}}</td>
+      <td>{{if .LastRun.IsZero}}<span class="muted">never</span>{{else}}{{ago .LastRun}}{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{end}}
+{{template "foot" $page}}

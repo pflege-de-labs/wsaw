@@ -1,0 +1,562 @@
+package httpapi
+
+import (
+	"embed"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/martint17r/wsaw/internal/diff"
+	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/store"
+)
+
+//go:embed templates/*.html static/*
+var uiFiles embed.FS
+
+// uiRenderer holds the parsed templates. They are embedded and parsed at
+// startup, so the binary needs no asset directory at runtime and a broken
+// template fails immediately rather than on the first page view (Story 5.7).
+type uiRenderer struct {
+	tmpl *template.Template
+}
+
+func newUIRenderer() (*uiRenderer, error) {
+	tmpl, err := template.New("").Funcs(uiFuncs()).ParseFS(uiFiles, "templates/*.html")
+	if err != nil {
+		return nil, fmt.Errorf("parsing web interface templates: %w", err)
+	}
+
+	return &uiRenderer{tmpl: tmpl}, nil
+}
+
+// uiFuncs are display helpers only. None of them produce raw HTML: every
+// value rendered originates from a scanned page, so html/template's
+// contextual escaping must stay in force (Story 5.11).
+func uiFuncs() template.FuncMap {
+	return template.FuncMap{
+		"time": func(t time.Time) string {
+			if t.IsZero() {
+				return "never"
+			}
+
+			return t.UTC().Format("2006-01-02 15:04:05 UTC")
+		},
+		"ago": func(t time.Time) string {
+			if t.IsZero() {
+				return "never"
+			}
+
+			d := time.Since(t)
+
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%dm ago", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("%dh ago", int(d.Hours()))
+			default:
+				return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+			}
+		},
+		"dur": func(d time.Duration) string {
+			return d.Round(time.Millisecond).String()
+		},
+		"bytes": func(n int64) string {
+			const unit = 1024
+
+			if n < unit {
+				return fmt.Sprintf("%d B", n)
+			}
+
+			div, exp := int64(unit), 0
+
+			for m := n / unit; m >= unit; m /= unit {
+				div *= unit
+				exp++
+			}
+
+			return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+		},
+		"sevclass": func(s diff.Severity) string {
+			return "sev-" + string(s)
+		},
+		"add": func(a, b int) int { return a + b },
+	}
+}
+
+func (s *Server) uiRoutes() {
+	s.mux.Handle("GET /static/", http.FileServerFS(uiFiles))
+
+	s.mux.HandleFunc("GET /", s.handleUIDashboard)
+	s.mux.HandleFunc("GET /login", s.handleUILogin)
+	s.mux.HandleFunc("POST /login", s.handleUILoginSubmit)
+	s.mux.HandleFunc("GET /targets/{target}/{mode}", s.handleUISeries)
+	s.mux.HandleFunc("GET /results/{target}/{mode}/{scan}", s.handleUIResult)
+	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
+	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
+
+	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
+	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
+}
+
+// page is the data every template receives.
+type page struct {
+	Title      string
+	Version    string
+	ReadOnly   bool
+	AllowScan  bool
+	ConfigPath string
+	CSRF       string
+	Flash      string
+	FlashError string
+	Data       any
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title string, data any) {
+	p := page{
+		Title:      title,
+		Version:    s.opts.Version,
+		ReadOnly:   s.opts.ReadOnly,
+		AllowScan:  s.opts.AllowAdHocScan && !s.opts.ReadOnly,
+		ConfigPath: s.deps.ConfigPath,
+		CSRF:       s.csrfToken(),
+		Flash:      r.URL.Query().Get("ok"),
+		FlashError: r.URL.Query().Get("err"),
+		Data:       data,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if err := s.ui.tmpl.ExecuteTemplate(w, name, p); err != nil {
+		s.deps.Logger.Error("rendering page", "template", name, "error", err)
+	}
+}
+
+// dashboardData is the target overview.
+type dashboardData struct {
+	Targets []TargetView
+	Stale   int
+	Ready   bool
+	Reason  string
+	Jobs    []scheduleRow
+}
+
+type scheduleRow struct {
+	Target  string
+	Mode    model.ConsentMode
+	NextRun time.Time
+	LastRun time.Time
+}
+
+func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+
+		return
+	}
+
+	data := dashboardData{Targets: s.targetViews(), Ready: true, Reason: "readiness is not tracked"}
+
+	for _, t := range data.Targets {
+		for _, series := range t.Series {
+			if series.Stale {
+				data.Stale++
+			}
+		}
+	}
+
+	if s.deps.Metrics != nil {
+		data.Ready, data.Reason = s.deps.Metrics.Ready()
+	}
+
+	if s.deps.Daemon != nil {
+		for _, j := range s.deps.Daemon.Jobs() {
+			data.Jobs = append(data.Jobs, scheduleRow{
+				Target: j.Target, Mode: j.Mode, NextRun: j.NextRun, LastRun: j.LastRun,
+			})
+		}
+	}
+
+	s.render(w, r, "dashboard.html", "wsaw", data)
+}
+
+type seriesData struct {
+	Target   string
+	Mode     model.ConsentMode
+	Results  []store.Summary
+	Baseline *store.Baseline
+}
+
+func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
+	target, mode, ok := uiTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	results, err := s.deps.Store.ListResults(target, mode, 100)
+	if err != nil {
+		s.uiError(w, r, http.StatusInternalServerError, err.Error())
+
+		return
+	}
+
+	data := seriesData{Target: target, Mode: mode, Results: results}
+
+	if b, err := s.deps.Store.GetBaseline(target, mode); err == nil {
+		data.Baseline = b
+	}
+
+	s.render(w, r, "series.html", target+" — "+string(mode), data)
+}
+
+type resultData struct {
+	Result *model.Result
+	Diff   *diff.Report
+	Hosts  []model.HostSummary
+	Counts map[string]int
+
+	// Filter values are echoed back so the form keeps its state.
+	FilterHost  string
+	FilterType  string
+	FilterParty string
+	FilterPhase string
+
+	Requests []model.Request
+	// Truncated reports that the request table was cut short for rendering,
+	// which must be visible rather than silent.
+	Truncated bool
+	Total     int
+}
+
+// maxRenderedRequests bounds the request table. A page with tens of thousands
+// of requests would otherwise produce an unusable HTML document; the cap is
+// disclosed and the full data stays available as JSON.
+const maxRenderedRequests = 2000
+
+func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
+	res, ok := s.loadResultUI(w, r)
+	if !ok {
+		return
+	}
+
+	data := resultData{
+		Result:      res,
+		Diff:        s.diffFor(res),
+		Hosts:       res.HostSummaries(),
+		Counts:      res.CountsByResourceType(),
+		FilterHost:  r.URL.Query().Get("host"),
+		FilterType:  r.URL.Query().Get("type"),
+		FilterParty: r.URL.Query().Get("party"),
+		FilterPhase: r.URL.Query().Get("phase"),
+	}
+
+	for i := range res.Requests {
+		req := &res.Requests[i]
+		if !matchesFilter(req, data) {
+			continue
+		}
+
+		data.Total++
+
+		if len(data.Requests) < maxRenderedRequests {
+			data.Requests = append(data.Requests, *req)
+		} else {
+			data.Truncated = true
+		}
+	}
+
+	s.render(w, r, "result.html", res.Target+" — "+res.ScanID, data)
+}
+
+func matchesFilter(req *model.Request, d resultData) bool {
+	if d.FilterHost != "" && !strings.Contains(req.Host, d.FilterHost) && !strings.Contains(req.Domain, d.FilterHost) {
+		return false
+	}
+
+	if d.FilterType != "" && req.ResourceType != d.FilterType {
+		return false
+	}
+
+	if d.FilterParty != "" && string(req.Party) != d.FilterParty {
+		return false
+	}
+
+	if d.FilterPhase != "" && string(req.Phase) != d.FilterPhase {
+		return false
+	}
+
+	return true
+}
+
+// compareData puts the consent modes side by side, which is what makes
+// "fired despite reject" visually obvious (Story 5.9).
+type compareData struct {
+	Target string
+	Modes  []compareColumn
+	// Domains is the union of third-party domains across modes, sorted.
+	Domains []compareRow
+}
+
+type compareColumn struct {
+	Mode    model.ConsentMode
+	Result  *model.Result
+	Missing bool
+}
+
+type compareRow struct {
+	Domain string
+	// Present has one entry per column: "" absent, "pre" or "post".
+	Present []string
+}
+
+func (s *Server) handleUICompare(w http.ResponseWriter, r *http.Request) {
+	target := r.PathValue("target")
+
+	data := compareData{Target: target}
+
+	seen := make(map[string][]string)
+	modes := []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
+
+	for i, mode := range modes {
+		col := compareColumn{Mode: mode}
+
+		res, err := s.deps.Store.LatestResult(target, mode)
+		if err != nil {
+			col.Missing = true
+			data.Modes = append(data.Modes, col)
+
+			continue
+		}
+
+		col.Result = res
+		data.Modes = append(data.Modes, col)
+
+		for j := range res.Requests {
+			req := &res.Requests[j]
+			if req.Party != model.ThirdParty || req.NonNetwork || req.Domain == "" {
+				continue
+			}
+
+			row, ok := seen[req.Domain]
+			if !ok {
+				row = make([]string, len(modes))
+				seen[req.Domain] = row
+			}
+
+			// Pre-consent wins over post: it is the stronger finding.
+			if row[i] != "pre" {
+				if req.Phase == model.PhasePre {
+					row[i] = "pre"
+				} else {
+					row[i] = "post"
+				}
+			}
+		}
+	}
+
+	for _, domain := range sortedDomains(seen) {
+		data.Domains = append(data.Domains, compareRow{Domain: domain, Present: seen[domain]})
+	}
+
+	s.render(w, r, "compare.html", target+" — consent modes", data)
+}
+
+func sortedDomains(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+
+	return out
+}
+
+func (s *Server) handleUIAudit(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.deps.Store.Audit(200)
+	if err != nil {
+		s.uiError(w, r, http.StatusInternalServerError, err.Error())
+
+		return
+	}
+
+	s.render(w, r, "audit.html", "Audit log", entries)
+}
+
+func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
+	if !s.checkCSRF(w, r) {
+		return
+	}
+
+	if allowed, reason := s.writeAllowed(); !allowed {
+		s.uiRedirectError(w, r, "/", reason)
+
+		return
+	}
+
+	target, mode, ok := uiTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	scanID := r.FormValue("scanId")
+	actor := r.FormValue("actor")
+
+	if _, err := s.deps.Store.SetBaseline(target, mode, scanID, actor, r.FormValue("note")); err != nil {
+		s.uiRedirectError(w, r, "/targets/"+target+"/"+string(mode), err.Error())
+
+		return
+	}
+
+	s.deps.Logger.Info("baseline approved via web interface",
+		"target", target, "consent_mode", string(mode), "scan_id", scanID, "actor", actor)
+
+	s.uiRedirectOK(w, r, "/targets/"+target+"/"+string(mode),
+		"Baseline approved. It is stored in wsaw's database and recorded in the audit log.")
+}
+
+func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
+	if !s.checkCSRF(w, r) {
+		return
+	}
+
+	if allowed, reason := s.writeAllowed(); !allowed {
+		s.uiRedirectError(w, r, "/", reason)
+
+		return
+	}
+
+	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
+		s.uiRedirectError(w, r, "/", "ad-hoc scanning is disabled")
+
+		return
+	}
+
+	target, mode, ok := uiTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	if !s.isConfiguredTarget(target, mode) {
+		s.uiRedirectError(w, r, "/", "no such target and consent mode is configured")
+
+		return
+	}
+
+	out, err := s.deps.Trigger.Trigger(r.Context(), target, mode)
+	if err != nil {
+		s.deps.Logger.Warn("ad-hoc scan reported an error", "target", target, "error", err)
+	}
+
+	dest := "/targets/" + target + "/" + string(mode)
+	if out.Result != nil {
+		dest = "/results/" + target + "/" + string(mode) + "/" + out.Result.ScanID
+	}
+
+	s.uiRedirectOK(w, r, dest, "Scan finished.")
+}
+
+func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
+	if !s.opts.Token.IsSet() {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+
+		return
+	}
+
+	s.render(w, r, "login.html", "Sign in", nil)
+}
+
+func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.opts.Token.IsSet() {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		s.uiRedirectError(w, r, "/login", "invalid form submission")
+
+		return
+	}
+
+	if r.FormValue("token") != s.opts.Token.Reveal() {
+		// No detail about why: a login form should not help enumerate.
+		s.uiRedirectError(w, r, "/login", "invalid token")
+
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    s.opts.Token.Reveal(),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.opts.TLSCert != "",
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int((12 * time.Hour).Seconds()),
+	})
+
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Result, bool) {
+	target, mode, ok := uiTargetMode(w, r)
+	if !ok {
+		return nil, false
+	}
+
+	scan := r.PathValue("scan")
+
+	var (
+		res *model.Result
+		err error
+	)
+
+	if scan == "latest" {
+		res, err = s.deps.Store.LatestResult(target, mode)
+	} else {
+		res, err = s.deps.Store.GetResult(target, mode, scan)
+	}
+
+	if err != nil {
+		s.uiError(w, r, http.StatusNotFound, err.Error())
+
+		return nil, false
+	}
+
+	return res, true
+}
+
+func uiTargetMode(w http.ResponseWriter, r *http.Request) (string, model.ConsentMode, bool) {
+	target := r.PathValue("target")
+	mode := model.ConsentMode(r.PathValue("mode"))
+
+	if target == "" || !mode.Valid() {
+		http.Error(w, "unknown target or consent mode", http.StatusBadRequest)
+
+		return "", "", false
+	}
+
+	return target, mode, true
+}
+
+func (s *Server) uiError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	w.WriteHeader(status)
+	s.render(w, r, "error.html", "Error", msg)
+}
+
+func (s *Server) uiRedirectOK(w http.ResponseWriter, r *http.Request, dest, msg string) {
+	http.Redirect(w, r, dest+"?ok="+urlQueryEscape(msg), http.StatusSeeOther)
+}
+
+func (s *Server) uiRedirectError(w http.ResponseWriter, r *http.Request, dest, msg string) {
+	http.Redirect(w, r, dest+"?err="+urlQueryEscape(msg), http.StatusSeeOther)
+}
