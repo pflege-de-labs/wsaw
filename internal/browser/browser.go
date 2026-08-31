@@ -360,15 +360,82 @@ func (b *Browser) shutdown() error {
 	b.forceClose()
 
 	// The profile directory is removed on every path, including panic and
-	// cancellation, because a leaked directory per scan fills the disk of a
+	// cancellation, because a leaked directory per browser fills the disk of a
 	// long-running daemon (Tenet 1, NFR §2).
+	//
+	// chromedp only removes a profile directory it created itself, and wsaw
+	// supplies its own, so removal is wsaw's responsibility. It has to happen
+	// after Chrome has actually exited: cancelling the allocator context only
+	// starts the teardown, and a browser still shutting down rewrites its
+	// profile, which recreated the directory moments after it was removed.
 	if b.userDataDir != "" {
-		if err := os.RemoveAll(b.userDataDir); err != nil {
+		b.waitForExit()
+
+		if err := removeWithRetry(b.userDataDir); err != nil {
 			return fmt.Errorf("removing browser profile directory %s: %w", b.userDataDir, err)
 		}
 	}
 
 	return nil
+}
+
+// waitForExit blocks until the allocator has released the browser process, or
+// until a bounded grace period passes. It is bounded because a browser that
+// refuses to die must not stop the daemon from shutting down.
+func (b *Browser) waitForExit() {
+	c := chromedp.FromContext(b.allocCtx)
+	if c == nil || c.Allocator == nil {
+		return
+	}
+
+	const exitGrace = 10 * time.Second
+
+	done := make(chan struct{})
+
+	go func() {
+		c.Allocator.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(exitGrace)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+	case <-timer.C:
+		b.opts.logger().Warn("browser process did not exit within the grace period",
+			"profile_dir", b.userDataDir)
+	}
+}
+
+// removeWithRetry deletes a directory, retrying briefly. A browser that is
+// still flushing state can recreate files between the walk and the unlink,
+// which surfaces as a spurious "directory not empty".
+func removeWithRetry(dir string) error {
+	const (
+		attempts = 5
+		delay    = 200 * time.Millisecond
+	)
+
+	var err error
+
+	for i := range attempts {
+		if err = os.RemoveAll(dir); err == nil {
+			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+				return nil
+			}
+		}
+
+		if i < attempts-1 {
+			time.Sleep(delay)
+		}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("directory still present after %d attempts", attempts)
 }
 
 func (b *Browser) forceClose() {
