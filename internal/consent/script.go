@@ -66,6 +66,45 @@ const helperScript = `
     return { clicked: true, visible: true };
   };
 
+  // Consent-container detection for the heuristic fallback.
+  //
+  // Visibility is decided from computed style and geometry, never from
+  // offsetParent: that property is null for position:fixed elements, which is
+  // exactly how most cookie banners are positioned. Using it would have made
+  // the fallback blind to the common case.
+  window.__wsawConsentContainer = () => {
+    const words = /(cookie|consent|datenschutz|privacy|einwilligung|zustimmung|tracking)/i;
+
+    for (const root of roots()) {
+      let nodes;
+      try {
+        nodes = root.querySelectorAll('div,section,aside,dialog,form,footer');
+      } catch (e) { continue; }
+
+      for (const n of nodes) {
+        if (!visible(n)) continue;
+
+        const r = n.getBoundingClientRect();
+        if (r.height < 30 || r.width < 150) continue;
+
+        const text = n.textContent || '';
+        // A whole-page wrapper matches the words too, so require the element
+        // to be banner-shaped rather than the entire document.
+        if (text.length > 3000) continue;
+        if (!words.test(text)) continue;
+
+        // It must actually offer a choice, otherwise a privacy-policy
+        // paragraph would count as a banner.
+        const buttons = n.querySelectorAll('button,a[href],[role="button"],input[type="button"],input[type="submit"]');
+        if (buttons.length === 0) continue;
+
+        return n;
+      }
+    }
+
+    return null;
+  };
+
   // Label matching for the heuristic fallback. Deliberately conservative:
   // only clickable elements, only short labels, longest match first so that
   // "reject all" is preferred over a stray "all".

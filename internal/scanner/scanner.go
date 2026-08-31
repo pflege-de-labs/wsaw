@@ -274,6 +274,7 @@ func (s *Scanner) consentHook(target config.Resolved, mode model.ConsentMode, lo
 			AllowHeuristic: s.opts.AllowHeuristicConsent,
 			OnFailure:      s.opts.ConsentOnFailure,
 			Screenshot:     cctx.Screenshot,
+			OnInteract:     cctx.MarkInteracted,
 			Logger:         log,
 		})
 		if err != nil {

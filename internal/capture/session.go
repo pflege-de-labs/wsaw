@@ -29,6 +29,16 @@ type Context struct {
 	// Screenshot captures evidence under the given kind, if screenshots are
 	// enabled. It is a no-op otherwise, so hooks need no conditionals.
 	Screenshot func(kind string) error
+
+	// MarkInteracted must be called at the moment the consent action is
+	// performed — the click, or the API call — and not after the hook has
+	// finished verifying it.
+	//
+	// Verification can take seconds, and the requests the action triggers
+	// arrive during that window. Flipping the phase only at the end would
+	// label them pre-consent, which overstates pre-consent tracking: the one
+	// number this product must not exaggerate.
+	MarkInteracted func()
 }
 
 // Run performs one capture. scanCtx must be an isolated chromedp context, as
@@ -109,6 +119,27 @@ type session struct {
 
 	mu          sync.Mutex
 	screenshots []model.Artifact
+
+	interactedMu   sync.Mutex
+	interactedOnce bool
+	interactedAt   time.Time
+}
+
+// markInteracted ends the pre-consent phase. It is idempotent, so the consent
+// handler can call it as soon as it acts and capture can call it again as a
+// backstop when the hook returns.
+func (s *session) markInteracted() {
+	s.interactedMu.Lock()
+	defer s.interactedMu.Unlock()
+
+	if s.interactedOnce {
+		return
+	}
+
+	s.interactedOnce = true
+	s.interactedAt = time.Now()
+
+	s.rec.setPhase(model.PhasePost)
 }
 
 // listen registers the CDP event handlers. Handlers must not block: they hand
@@ -175,7 +206,11 @@ func (s *session) execute(hooks Hooks) error {
 	}
 
 	if hooks.AfterLoad != nil {
-		hookCtx := Context{Context: s.runCtx, Screenshot: s.screenshot}
+		hookCtx := Context{
+			Context:        s.runCtx,
+			Screenshot:     s.screenshot,
+			MarkInteracted: s.markInteracted,
+		}
 
 		consent, err := hooks.AfterLoad(hookCtx)
 
@@ -183,15 +218,19 @@ func (s *session) execute(hooks Hooks) error {
 		// interaction is a finding, not a lost scan.
 		s.res.Consent = consent
 
-		// Everything from here on is post-interaction, including when the
-		// interaction failed: the phase describes the timeline, not success.
-		if consent.InteractedAt == nil {
-			now := time.Now()
-			consent.InteractedAt = &now
-			s.res.Consent.InteractedAt = &now
-		}
+		// A hook that never reported an interaction still ends the pre-consent
+		// phase here: the phase describes the timeline, not success.
+		s.markInteracted()
 
-		s.rec.setPhase(model.PhasePost)
+		if s.res.Consent.InteractedAt == nil {
+			s.interactedMu.Lock()
+			at := s.interactedAt
+			s.interactedMu.Unlock()
+
+			if !at.IsZero() {
+				s.res.Consent.InteractedAt = &at
+			}
+		}
 
 		if err != nil {
 			// A consent failure does not abort the scan: the traffic observed

@@ -68,6 +68,12 @@ type Options struct {
 	// Screenshot captures evidence, if enabled by the caller.
 	Screenshot func(kind string) error
 
+	// OnInteract is called the moment the consent action has been performed,
+	// before verification. Verification can take seconds, and the requests
+	// the action triggers arrive during that window; reporting the boundary
+	// late would attribute them to the pre-consent phase.
+	OnInteract func()
+
 	Logger *slog.Logger
 }
 
@@ -230,6 +236,11 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 
 	script := fmt.Sprintf(tcfApplyScript, grant)
 
+	// Marked before the call, for the same reason as the rule path: the CMP
+	// may fire requests the moment consent is recorded, well before the API
+	// reports useractioncomplete.
+	h.interacted()
+
 	if err := chromedp.Run(stepCtx, chromedp.Evaluate(script, &out, awaitPromise)); err != nil {
 		return model.Consent{
 			Outcome:   model.OutcomeFailed,
@@ -373,6 +384,13 @@ func (h *handler) detect(ctx context.Context, rule Rule) (bool, error) {
 	return matched, nil
 }
 
+// interacted reports that the consent action has been performed.
+func (h *handler) interacted() {
+	if h.opts.OnInteract != nil {
+		h.opts.OnInteract()
+	}
+}
+
 func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.Consent {
 	consent := model.Consent{
 		CMP:       ruleCMPName(rule),
@@ -380,6 +398,19 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 		Mechanism: mechanismFor(rule, steps),
 		Heuristic: rule.Heuristic,
 	}
+
+	// The phase boundary is marked before the action, not after it.
+	//
+	// A click and the requests it triggers are both asynchronous: by the time
+	// the click step returns, the injected tracker request has often already
+	// been recorded. Marking afterwards therefore labels
+	// interaction-triggered traffic as pre-consent, which is the one number
+	// this product must not exaggerate.
+	//
+	// Marking beforehand is safe because capture has already waited for
+	// network idle: nothing is in flight at this instant, so no genuinely
+	// pre-consent request can be swept into the post-consent phase.
+	h.interacted()
 
 	for i, step := range steps {
 		if err := h.runStep(ctx, step); err != nil {

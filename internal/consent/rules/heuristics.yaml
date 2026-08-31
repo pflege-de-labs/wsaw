@@ -5,6 +5,11 @@
 # such — a reviewer must be able to tell a documented CMP API from a guess
 # (Tenet 11).
 #
+# Detection and verification both go through window.__wsawConsentContainer,
+# which decides visibility from computed style and geometry. An earlier
+# version tested offsetParent, which is null for position:fixed elements and
+# therefore blind to the way most cookie banners are positioned.
+#
 # German and English are covered because those are wsaw's first audiences.
 # Additional languages belong here, not in Go code.
 #
@@ -17,17 +22,7 @@ rules:
     priority: 1
     heuristic: true
     detect: |
-      (() => {
-        const words = /(cookie|consent|datenschutz|privacy|einwilligung|zustimmung)/i;
-        const nodes = document.querySelectorAll('div,section,aside,dialog,form');
-        for (const n of nodes) {
-          if (!n.offsetParent && n.tagName !== 'DIALOG') continue;
-          const r = n.getBoundingClientRect();
-          if (r.height < 40 || r.width < 200) continue;
-          if (words.test(n.textContent || '')) return true;
-        }
-        return false;
-      })()
+      !!window.__wsawConsentContainer()
     accept:
       - eval: |
           window.__wsawClickLabel([
@@ -35,7 +30,7 @@ rules:
             'einverstanden', 'alle cookies zulassen', 'zustimmen und weiter',
             'accept all', 'accept all cookies', 'allow all', 'i accept',
             'accept', 'agree', 'got it', 'ok'
-          ])
+          ]).clicked
     reject:
       - eval: |
           window.__wsawClickLabel([
@@ -45,16 +40,6 @@ rules:
             'reject all', 'decline all', 'reject', 'decline',
             'only necessary', 'necessary only', 'essential only',
             'continue without accepting', 'refuse all'
-          ])
+          ]).clicked
     verify: |
-      (() => {
-        const words = /(cookie|consent|datenschutz|einwilligung)/i;
-        const nodes = document.querySelectorAll('div,section,aside,dialog,form');
-        for (const n of nodes) {
-          if (!n.offsetParent && n.tagName !== 'DIALOG') continue;
-          const r = n.getBoundingClientRect();
-          if (r.height < 40 || r.width < 200) continue;
-          if (words.test(n.textContent || '')) return false;
-        }
-        return true;
-      })()
+      !window.__wsawConsentContainer()
