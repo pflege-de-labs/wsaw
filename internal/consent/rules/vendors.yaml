@@ -1,0 +1,207 @@
+# Vendor consent rules shipped with wsaw.
+#
+# These are data, not code: a CMP that changes its markup is fixed by editing
+# this file or by supplying an override pack, never by releasing a new binary.
+#
+# Conventions
+#   detect  must evaluate truthy for the rule to be tried
+#   verify  must evaluate truthy afterwards, otherwise the outcome is
+#           recorded as "unverified" rather than "applied"
+#   eval    is reserved for a vendor's own documented API, which is more
+#           robust than clicking a button whose label may be translated
+#
+# Higher priority is tried first. Vendor rules sit above the heuristic
+# fallback in heuristics.yaml.
+
+version: 1
+
+rules:
+  - name: usercentrics-v2
+    vendor: Usercentrics
+    priority: 100
+    detect: |
+      !!(window.UC_UI || document.querySelector('#usercentrics-root, #usercentrics-cmp-ui'))
+    accept:
+      - waitFor: "#usercentrics-root, #usercentrics-cmp-ui"
+        optional: true
+      - eval: |
+          (async () => {
+            if (window.UC_UI && window.UC_UI.acceptAllConsents) {
+              await window.UC_UI.acceptAllConsents();
+              if (window.UC_UI.closeCMP) await window.UC_UI.closeCMP();
+              return true;
+            }
+            return false;
+          })()
+    reject:
+      - waitFor: "#usercentrics-root, #usercentrics-cmp-ui"
+        optional: true
+      - eval: |
+          (async () => {
+            if (window.UC_UI && window.UC_UI.denyAllConsents) {
+              await window.UC_UI.denyAllConsents();
+              if (window.UC_UI.closeCMP) await window.UC_UI.closeCMP();
+              return true;
+            }
+            return false;
+          })()
+    verify: |
+      !!(window.UC_UI && window.UC_UI.isInitialized && window.UC_UI.isInitialized())
+
+  - name: onetrust
+    vendor: OneTrust
+    priority: 100
+    detect: |
+      !!(window.OneTrust || window.Optanon || document.getElementById('onetrust-banner-sdk'))
+    accept:
+      - eval: |
+          (() => {
+            if (window.OneTrust && window.OneTrust.AllowAll) { window.OneTrust.AllowAll(); return true; }
+            return false;
+          })()
+      - click: "#onetrust-accept-btn-handler"
+        optional: true
+    reject:
+      - eval: |
+          (() => {
+            if (window.OneTrust && window.OneTrust.RejectAll) { window.OneTrust.RejectAll(); return true; }
+            return false;
+          })()
+      - click: "#onetrust-reject-all-handler"
+        optional: true
+      # Some deployments hide "reject all" behind the preference centre.
+      - click: "#onetrust-pc-btn-handler"
+        optional: true
+      - click: ".ot-pc-refuse-all-handler, .save-preference-btn-handler"
+        optional: true
+    verify: |
+      !document.getElementById('onetrust-banner-sdk') ||
+      getComputedStyle(document.getElementById('onetrust-banner-sdk')).display === 'none'
+
+  - name: cookiebot
+    vendor: Cookiebot
+    priority: 100
+    detect: |
+      !!(window.Cookiebot || window.CookieConsent || document.getElementById('CybotCookiebotDialog'))
+    accept:
+      - eval: |
+          (() => {
+            if (window.Cookiebot && window.Cookiebot.submitCustomConsent) {
+              window.Cookiebot.submitCustomConsent(true, true, true);
+              return true;
+            }
+            if (window.CookieConsent && window.CookieConsent.setConsent) { return false; }
+            return false;
+          })()
+      - click: "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept"
+        optional: true
+    reject:
+      - eval: |
+          (() => {
+            if (window.Cookiebot && window.Cookiebot.submitCustomConsent) {
+              window.Cookiebot.submitCustomConsent(false, false, false);
+              return true;
+            }
+            return false;
+          })()
+      - click: "#CybotCookiebotDialogBodyButtonDecline, #CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll"
+        optional: true
+    verify: |
+      !!(window.Cookiebot && window.Cookiebot.hasResponse)
+
+  - name: didomi
+    vendor: Didomi
+    priority: 100
+    detect: |
+      !!(window.Didomi || document.getElementById('didomi-host'))
+    accept:
+      - eval: |
+          (() => {
+            if (window.Didomi && window.Didomi.setUserAgreeToAll) { window.Didomi.setUserAgreeToAll(); return true; }
+            return false;
+          })()
+    reject:
+      - eval: |
+          (() => {
+            if (window.Didomi && window.Didomi.setUserDisagreeToAll) { window.Didomi.setUserDisagreeToAll(); return true; }
+            return false;
+          })()
+    verify: |
+      !!(window.Didomi && window.Didomi.getUserConsentStatusForAll)
+
+  - name: sourcepoint
+    vendor: Sourcepoint
+    priority: 90
+    detect: |
+      !!(window._sp_ || document.querySelector('iframe[id^="sp_message_iframe"]'))
+    accept:
+      - waitFor: 'iframe[id^="sp_message_iframe"]'
+        optional: true
+      - click: "button[title='Accept all'], button[title='Accept All'], .sp_choice_type_11"
+    reject:
+      - waitFor: 'iframe[id^="sp_message_iframe"]'
+        optional: true
+      - click: "button[title='Reject all'], button[title='Reject All'], .sp_choice_type_13"
+    verify: |
+      !document.querySelector('iframe[id^="sp_message_iframe"]')
+
+  - name: consentmanager
+    vendor: Consentmanager
+    priority: 90
+    detect: |
+      !!(window.__cmp || document.getElementById('cmpbox'))
+    accept:
+      - click: "#cmpwelcomebtnyes, .cmpboxbtnyes"
+    reject:
+      - click: "#cmpwelcomebtnno, .cmpboxbtnno"
+    verify: |
+      !document.getElementById('cmpbox') ||
+      getComputedStyle(document.getElementById('cmpbox')).display === 'none'
+
+  - name: complianz
+    vendor: Complianz
+    priority: 80
+    detect: |
+      !!document.querySelector('#cmplz-cookiebanner-container, .cmplz-cookiebanner')
+    accept:
+      - click: ".cmplz-accept"
+    reject:
+      - click: ".cmplz-deny"
+    verify: |
+      !document.querySelector('.cmplz-cookiebanner.cmplz-show')
+
+  - name: borlabs
+    vendor: Borlabs Cookie
+    priority: 80
+    detect: |
+      !!(window.BorlabsCookie || document.getElementById('BorlabsCookieBox'))
+    accept:
+      - click: "#BorlabsCookieBox a._brlbs-btn-accept-all, #BorlabsCookieBox a._brlbs-btn-accept-all-cookies"
+    reject:
+      - click: "#BorlabsCookieBox a._brlbs-btn-refuse-all, #BorlabsCookieBox a._brlbs-refuse-cookie"
+    verify: |
+      !!(window.BorlabsCookie && window.BorlabsCookie.Cookie)
+
+  - name: klaro
+    vendor: Klaro
+    priority: 70
+    detect: |
+      !!(window.klaro || document.getElementById('klaro'))
+    accept:
+      - click: ".cm-btn-success, .cn-buttons .cm-btn-accept-all"
+    reject:
+      - click: ".cm-btn-decline, .cn-decline"
+    verify: |
+      !document.querySelector('#klaro .cookie-notice')
+
+  - name: osano
+    vendor: Osano
+    priority: 70
+    detect: |
+      !!(window.Osano || document.querySelector('.osano-cm-dialog'))
+    accept:
+      - click: ".osano-cm-accept-all"
+    reject:
+      - click: ".osano-cm-denyAll, .osano-cm-deny"
+    verify: |
+      !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
