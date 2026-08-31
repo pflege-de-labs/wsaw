@@ -1,0 +1,411 @@
+openapi: 3.1.0
+
+info:
+  title: wsaw API
+  version: "1.0"
+  description: |
+    wsaw's HTTP interface. The bundled web interface is a client of exactly
+    these endpoints: it has no privileged path into the store.
+
+    Authentication is a shared bearer token, required whenever the listener is
+    not loopback — configuration validation refuses to start otherwise, since
+    scan results can contain personal data.
+
+    Write endpoints are refused in read-only mode, and ad-hoc scanning is
+    restricted to already-configured targets: accepting an arbitrary URL would
+    turn this API into a request-forgery primitive.
+  license:
+    name: MIT
+
+servers:
+  - url: http://127.0.0.1:8712
+    description: Default loopback listener
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: health
+  - name: results
+  - name: baselines
+  - name: operations
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Liveness
+      description: Reports that the process is running. This is not the same as being able to scan; use /ready for that.
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: alive}
+                  version: {type: string}
+
+  /api/v1/ready:
+    get:
+      tags: [health]
+      summary: Readiness
+      description: Reports whether Chrome is usable and configuration is loaded, plus any targets whose last successful scan is stale.
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
+        "503":
+          description: Not ready; the reason says why.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
+
+  /api/v1/targets:
+    get:
+      tags: [results]
+      summary: List targets and their current state
+      responses:
+        "200":
+          description: Targets, each with one entry per consent mode.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  targets:
+                    type: array
+                    items: {$ref: "#/components/schemas/TargetView"}
+
+  /api/v1/results/{target}/{mode}:
+    get:
+      tags: [results]
+      summary: List result summaries, newest first
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 50}
+      responses:
+        "200":
+          description: Summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: {$ref: "#/components/schemas/Summary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+
+  /api/v1/results/{target}/{mode}/{scan}:
+    get:
+      tags: [results]
+      summary: Fetch one full result
+      description: Use "latest" as the scan identifier for the most recent result.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+      responses:
+        "200":
+          description: The result, conforming to docs/result.schema.json.
+          content:
+            application/json:
+              schema:
+                $ref: "./result.schema.json"
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/results/{target}/{mode}/{scan}/har:
+    get:
+      tags: [results]
+      summary: Export as HAR 1.2
+      description: Request and response headers are absent, because wsaw does not retain them; the HAR's comment field says so.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+      responses:
+        "200":
+          description: HAR document.
+          content:
+            application/json: {}
+
+  /api/v1/results/{target}/{mode}/{scan}/csv:
+    get:
+      tags: [results]
+      summary: Export the host table as CSV
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+      responses:
+        "200":
+          description: CSV.
+          content:
+            text/csv: {}
+
+  /api/v1/results/{target}/{mode}/{scan}/report:
+    get:
+      tags: [results]
+      summary: Human-readable report
+      description: Served as text/plain, since it embeds page-controlled text.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+      responses:
+        "200":
+          description: Markdown report.
+          content:
+            text/plain: {}
+
+  /api/v1/diff/{target}/{mode}/{scan}:
+    get:
+      tags: [results]
+      summary: Compare a result against its baseline
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+      responses:
+        "200":
+          description: Diff report. When comparable is false, reason explains why.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DiffReport"}
+
+  /api/v1/baseline/{target}/{mode}:
+    get:
+      tags: [baselines]
+      summary: Fetch the approved baseline
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+      responses:
+        "200":
+          description: The baseline, including a copy of the approved result.
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [baselines]
+      summary: Approve a scan as the baseline
+      description: A scan that did not produce a trustworthy asset list cannot be approved; approving one would pin a broken observation as the definition of correct.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scanId]
+              properties:
+                scanId: {type: string}
+                actor: {type: string, description: Recorded in the audit log.}
+                note: {type: string}
+      responses:
+        "200": {description: Approved.}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/ReadOnly"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [baselines]
+      summary: Remove an approval
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - name: actor
+          in: query
+          schema: {type: string}
+      responses:
+        "200": {description: Deleted.}
+        "403": {$ref: "#/components/responses/ReadOnly"}
+
+  /api/v1/scan/{target}/{mode}:
+    post:
+      tags: [operations]
+      summary: Trigger an ad-hoc scan
+      description: Disabled unless explicitly enabled, and restricted to configured targets.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+      responses:
+        "200":
+          description: The scan finished. A failed scan still returns its result, since that is the useful output.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: {$ref: "./result.schema.json"}
+                  diff: {$ref: "#/components/schemas/DiffReport"}
+        "403": {$ref: "#/components/responses/ReadOnly"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/audit:
+    get:
+      tags: [operations]
+      summary: Read the approval audit log
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 100}
+      responses:
+        "200":
+          description: Entries, newest first.
+
+  /api/v1/schedule:
+    get:
+      tags: [operations]
+      summary: Current schedule
+      responses:
+        "200":
+          description: One entry per target and consent mode.
+
+  /metrics:
+    get:
+      tags: [operations]
+      summary: Prometheus metrics
+      description: |
+        Served only when metrics are enabled. The metric that matters most is
+        wsaw_last_successful_scan_timestamp_seconds: it is only refreshed by a
+        scan that produced a trustworthy result, which is what makes a
+        silently stalled watcher alertable.
+      security: []
+      responses:
+        "200":
+          description: Metrics in the Prometheus text format.
+          content:
+            text/plain: {}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    target:
+      name: target
+      in: path
+      required: true
+      schema: {type: string}
+    mode:
+      name: mode
+      in: path
+      required: true
+      schema: {enum: [none, reject, accept]}
+      description: Results are never comparable across consent modes.
+    scan:
+      name: scan
+      in: path
+      required: true
+      schema: {type: string}
+      description: A scan identifier, or "latest".
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: No such record.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    ReadOnly:
+      description: Refused; wsaw is read-only or the action is disabled.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+
+    Readiness:
+      type: object
+      properties:
+        ready: {type: boolean}
+        reason: {type: string}
+        staleTargets:
+          type: array
+          items:
+            type: object
+            properties:
+              target: {type: string}
+              consentMode: {type: string}
+              lastSuccess: {type: string, format: date-time}
+              neverSucceeded: {type: boolean}
+
+    TargetView:
+      type: object
+      properties:
+        name: {type: string}
+        url: {type: string}
+        labels: {type: object, additionalProperties: {type: string}}
+        consentModes: {type: array, items: {type: string}}
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              consentMode: {type: string}
+              lastScan: {$ref: "#/components/schemas/Summary"}
+              hasBaseline: {type: boolean}
+              stale:
+                type: boolean
+                description: True when the series has never been scanned, its last scan failed, or its last scan is older than the configured threshold.
+              staleReason: {type: string}
+
+    Summary:
+      type: object
+      properties:
+        scanId: {type: string}
+        target: {type: string}
+        consentMode: {type: string}
+        startedAt: {type: string, format: date-time}
+        durationNs: {type: integer}
+        termination: {type: string}
+        error: {type: string}
+        consentOutcome: {type: string}
+        consentCmp: {type: string}
+        requests: {type: integer}
+        thirdPartyDomains: {type: integer}
+        preConsentDomains: {type: integer}
+
+    DiffReport:
+      type: object
+      properties:
+        target: {type: string}
+        consentMode: {type: string}
+        baselineScanId: {type: string}
+        currentScanId: {type: string}
+        comparable: {type: boolean}
+        reason: {type: string}
+        suppressed: {type: integer, description: Changes hidden by the allow list, so a quiet report is distinguishable from an over-configured one.}
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              type: {type: string}
+              severity: {enum: [info, low, medium, high, critical]}
+              subject: {type: string}
+              domain: {type: string}
+              party: {type: string}
+              phase: {type: string}
+              before: {type: string}
+              after: {type: string}
+              detail: {type: string}
