@@ -1,0 +1,159 @@
+# wsaw configuration, annotated.
+#
+# Everything here can also be set with flags or environment variables, so a
+# container or systemd deployment needs no file at all for a one-shot run.
+# A target list, though, is inherently file-shaped — keep this in version
+# control (Tenet 15).
+#
+# Validate a change before deploying it:
+#   wsaw config --config wsaw.yaml --check
+
+# Defaults apply to every target unless the target overrides them.
+defaults:
+  # Each mode produces its own independent result, and results are never
+  # compared across modes: the difference between them *is* the finding.
+  #
+  #   none    load the page, touch nothing — shows what fires with no decision
+  #   reject  refuse consent — anything third-party after this is the headline
+  #   accept  grant consent — the upper bound of what the site loads
+  consentModes: [none, reject]
+
+  interval: 24h
+
+  # Politeness. wsaw must not be indistinguishable from an attack (NFR §8).
+  minInterval: 1h
+  jitter: 10m
+
+  # robots.txt: "ignore" for your own properties, "respect" for someone
+  # else's. There is no safe universal default, so the choice is explicit.
+  robots: ignore
+
+  # Capture budget. Exceeding any of these ends the scan with a recorded
+  # reason rather than hanging.
+  idleQuiet: 2s
+  hardTimeout: 45s
+  maxRequests: 3000
+
+  # Evidence is off by default: screenshots and bodies are large, and bodies
+  # can contain personal data (Tenet 19).
+  screenshots: false
+  storeBodies: false
+
+targets:
+  - name: marketing-site
+    url: https://www.example.com/
+    labels:
+      team: marketing
+      env: prod
+    # CDNs you control are first-party for attribution purposes.
+    firstPartyDomains:
+      - examplecdn.net
+    # Third parties you have already reviewed and accepted.
+    allowHosts:
+      - fonts.gstatic.com
+    # Hosts that are a finding whenever they appear at all, new or not.
+    denyHosts:
+      - doubleclick.net
+
+  - name: checkout
+    url: https://shop.example.com/checkout
+    consentModes: [reject]
+    # A checkout page is worth watching more closely than a landing page.
+    interval: 6h
+    scrollToBottom: true
+    # Credentials never belong in the file; these are indirect references.
+    basicAuthUser: "${env:CHECKOUT_USER}"
+    basicAuthPassword: "${file:/run/secrets/checkout-password}"
+
+  - name: legacy-microsite
+    url: https://legacy.example.org/
+    # Kept for its history and baseline rather than deleted.
+    disabled: true
+
+browser:
+  # Leave empty to auto-discover Chrome or Chromium.
+  path: ""
+  poolSize: 2
+  maxScansPerBrowser: 50
+  # The sandbox is the boundary between a hostile page and this host. Only set
+  # this where the runtime forbids user namespaces, and expect a warning.
+  noSandbox: false
+
+store:
+  # Defaults to the platform state directory when empty.
+  path: ""
+  maxAge: 2160h  # 90 days; Go duration units, so hours
+  maxPerSeries: 200
+  writeReport: false
+  writeHar: false
+
+scheduler:
+  # Defaults to a fraction of NumCPU; Chrome is memory-hungry.
+  concurrency: 0
+  # Separate from concurrency, so a list full of one site's URLs cannot hit
+  # that site with the whole worker pool.
+  perOriginConcurrency: 1
+  shutdownGrace: 30s
+  # A restart should not be a scan storm.
+  catchUp: false
+
+normalize:
+  # The shipped noise list is included unless this is set to false; without
+  # it, the first scan of a real site is a wall of cache-buster churn.
+  useDefaultDropParams: true
+  dropQueryParams:
+    - session_id
+  dropTrailingSlash: true
+  # Collapse build hashes, so a deploy is not reported as a new asset.
+  pathReplacements:
+    - pattern: '\.[0-9a-f]{8,}\.(js|css)$'
+      with: '.{hash}.$1'
+
+detection:
+  # "previous" compares each scan with the one before it; "approved" compares
+  # against a baseline someone signed off on.
+  baseline: previous
+  # Collapse a change and its reverse inside this window, so a rotating CDN
+  # host does not alert every scan.
+  flapWindow: 6h
+  # Severities only need listing where you disagree with the defaults.
+  severity:
+    firstPartyAssetAdded: info
+
+consent:
+  # Extra rule packs, applied after the shipped ones. A higher priority in
+  # your pack overrides a shipped rule without waiting for a release.
+  ruleFiles: []
+  # Label guessing as a last resort. Results reached this way are flagged.
+  allowHeuristic: true
+  # "flag" keeps the result and records the failure; "fail" makes a failed
+  # banner interaction a scan error.
+  onFailure: flag
+
+api:
+  enabled: true
+  # Loopback by default. A non-loopback address requires a token, and
+  # validation refuses to start without one.
+  listen: 127.0.0.1:8712
+  token: "${env:WSAW_API_TOKEN}"
+  webui: true
+  # Read-only suits a deployment shared with reviewers.
+  readOnly: false
+  allowAdHocScan: true
+
+metrics:
+  enabled: true
+  path: /metrics
+
+notify:
+  - name: slack
+    url: "${env:WSAW_SLACK_WEBHOOK}"
+    minSeverity: high
+    # The json function is what keeps a crafted URL in a page from breaking
+    # out of the payload.
+    template: |
+      {"text": {{ printf "%s on %s (%s): %s" .Change.Severity .Target .ConsentMode .Change.Detail | json }}}
+
+logging:
+  level: info
+  format: json

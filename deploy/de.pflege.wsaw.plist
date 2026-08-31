@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent for wsaw on macOS (Story 6.2).
+
+     Install to ~/Library/LaunchAgents/de.pflege.wsaw.plist and load with:
+       launchctl load -w ~/Library/LaunchAgents/de.pflege.wsaw.plist
+
+     A LaunchAgent rather than a LaunchDaemon: wsaw needs no root, and running
+     it as the logged-in user keeps Chrome's own state where macOS expects it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>de.pflege.wsaw</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/wsaw</string>
+    <string>run</string>
+    <string>--config</string>
+    <string>/usr/local/etc/wsaw/wsaw.yaml</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Give in-flight scans time to finish before launchd escalates to SIGKILL. -->
+  <key>ExitTimeOut</key>
+  <integer>90</integer>
+
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/wsaw.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/wsaw.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/lib/wsaw</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

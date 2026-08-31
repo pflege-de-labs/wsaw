@@ -1,0 +1,68 @@
+# systemd unit for wsaw (Story 6.2).
+#
+# Hardened on the assumption that wsaw renders hostile web pages: it needs the
+# network and its own state directory, and nothing else.
+#
+#   useradd --system --home /var/lib/wsaw --shell /usr/sbin/nologin wsaw
+#   install -o wsaw -g wsaw -d /var/lib/wsaw
+#   install -m 0640 -o root -g wsaw wsaw.yaml /etc/wsaw/wsaw.yaml
+
+[Unit]
+Description=wsaw — website asset watcher
+Documentation=https://github.com/martint17r/wsaw
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wsaw
+Group=wsaw
+
+ExecStart=/usr/local/bin/wsaw run --config /etc/wsaw/wsaw.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# wsaw finishes in-flight scans before exiting; give it room to do so rather
+# than killing browsers mid-scan.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+Restart=on-failure
+RestartSec=10s
+
+StateDirectory=wsaw
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/wsaw
+
+# Hardening. Chromium needs a writable /tmp and its own namespaces, which is
+# why PrivateTmp is on but PrivateUsers is not: the browser sandbox relies on
+# unprivileged user namespaces.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=no
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Bound the damage a runaway page can do to the host.
+LimitNOFILE=8192
+MemoryMax=4G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
