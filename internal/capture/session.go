@@ -1,0 +1,692 @@
+package capture
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/storage"
+	"github.com/chromedp/chromedp"
+
+	"github.com/martint17r/wsaw/internal/classify"
+	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/secret"
+)
+
+// Context is handed to a hook so it can drive the page. It embeds the
+// chromedp scan context, so chromedp actions work directly, and carries the
+// few capture services a hook legitimately needs.
+type Context struct {
+	context.Context
+
+	// Screenshot captures evidence under the given kind, if screenshots are
+	// enabled. It is a no-op otherwise, so hooks need no conditionals.
+	Screenshot func(kind string) error
+}
+
+// Run performs one capture. scanCtx must be an isolated chromedp context, as
+// produced by browser.Browser.NewScanContext.
+//
+// Run always returns a Result, even on failure: a scan that broke is a
+// recorded outcome, not an absence of data (Tenet 5). The error is returned
+// alongside for logging, and is also recorded in the Result.
+func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Hooks) (*model.Result, error) {
+	opts := rawOpts.withDefaults()
+
+	if opts.Normalizer == nil {
+		return nil, errors.New("capture: Normalizer is required")
+	}
+
+	cl, err := classify.New(opts.URL, opts.FirstPartyDomains)
+	if err != nil {
+		return nil, fmt.Errorf("capture: %w", err)
+	}
+
+	start := time.Now()
+
+	res := &model.Result{
+		SchemaVersion: model.SchemaVersion,
+		Target:        opts.Target,
+		URL:           opts.URL,
+		Labels:        opts.Labels,
+		ConsentMode:   opts.ConsentMode,
+		StartedAt:     start,
+		Environment:   opts.environment(),
+		Consent:       model.Consent{Outcome: model.OutcomeNotNeeded},
+		Requests:      []model.Request{},
+	}
+
+	// The whole capture is bounded. Exceeding the budget is a recorded
+	// termination, not a hang.
+	runCtx, cancelRun := context.WithTimeout(scanCtx, opts.HardTimeout)
+	defer cancelRun()
+
+	// The caller's cancellation must also stop capture.
+	stopParent := context.AfterFunc(ctx, cancelRun)
+	defer stopParent()
+
+	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes, opts.MaxRequests, opts.MaxBytes)
+
+	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun}
+
+	s.listen()
+
+	bodyDone := s.startBodyWorker()
+
+	err = s.execute(hooks)
+
+	// The body worker is stopped before the result is assembled so that every
+	// digest it produced is included.
+	s.stopBodyWorker()
+	<-bodyDone
+
+	s.finish(err)
+
+	if err != nil {
+		return res, err
+	}
+
+	return res, nil
+}
+
+type session struct {
+	opts Options
+	rec  *recorder
+	res  *model.Result
+
+	runCtx    context.Context
+	cancelRun context.CancelFunc
+
+	bodyStop     chan struct{}
+	bodyStopOnce sync.Once
+
+	mu          sync.Mutex
+	screenshots []model.Artifact
+}
+
+// listen registers the CDP event handlers. Handlers must not block: they hand
+// work to the recorder and return immediately.
+func (s *session) listen() {
+	chromedp.ListenTarget(s.runCtx, func(ev any) {
+		switch e := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			s.rec.requestWillBeSent(e)
+		case *network.EventResponseReceived:
+			s.rec.responseReceived(e)
+		case *network.EventLoadingFinished:
+			s.rec.loadingFinished(e)
+		case *network.EventLoadingFailed:
+			s.rec.loadingFailed(e)
+		case *network.EventRequestServedFromCache:
+			s.rec.servedFromCache(e)
+		case *network.EventWebSocketCreated:
+			s.rec.webSocketCreated(e)
+
+		case *page.EventJavascriptDialogOpening:
+			// Dialog spam would otherwise block the page forever (Story 6.6).
+			// Dismissing runs in its own goroutine because a CDP call from
+			// inside a listener would deadlock.
+			go s.dismissDialog(e)
+
+		case *browser.EventDownloadWillBegin:
+			s.rec.addWarning("page attempted a download; downloads are suppressed")
+		}
+	})
+}
+
+func (s *session) dismissDialog(ev *page.EventJavascriptDialogOpening) {
+	const dialogTimeout = 5 * time.Second
+
+	ctx, cancel := context.WithTimeout(s.runCtx, dialogTimeout)
+	defer cancel()
+
+	// beforeunload must be accepted or the page will not navigate away;
+	// everything else is dismissed so the page cannot extract a decision.
+	accept := ev.Type == page.DialogTypeBeforeunload
+
+	if err := chromedp.Run(ctx, page.HandleJavaScriptDialog(accept)); err != nil {
+		s.rec.addWarning("could not dismiss a JavaScript dialog: " + s.scrub(err.Error()))
+	}
+}
+
+// execute prepares the page, navigates, settles, runs the consent hook, and
+// settles again.
+func (s *session) execute(hooks Hooks) error {
+	if err := s.prepare(); err != nil {
+		return err
+	}
+
+	if err := s.navigate(); err != nil {
+		return err
+	}
+
+	// Settle before interacting, so the pre-consent request set is complete.
+	s.settle()
+
+	if err := s.screenshot("before-consent"); err != nil {
+		s.rec.addWarning("screenshot before consent failed: " + s.scrub(err.Error()))
+	}
+
+	if hooks.AfterLoad != nil {
+		hookCtx := Context{Context: s.runCtx, Screenshot: s.screenshot}
+
+		consent, err := hooks.AfterLoad(hookCtx)
+
+		// The consent outcome is recorded whatever happened; a failed
+		// interaction is a finding, not a lost scan.
+		s.res.Consent = consent
+
+		// Everything from here on is post-interaction, including when the
+		// interaction failed: the phase describes the timeline, not success.
+		if consent.InteractedAt == nil {
+			now := time.Now()
+			consent.InteractedAt = &now
+			s.res.Consent.InteractedAt = &now
+		}
+
+		s.rec.setPhase(model.PhasePost)
+
+		if err != nil {
+			// A consent failure does not abort the scan: the traffic observed
+			// under a failed interaction is exactly what a reviewer needs.
+			s.rec.addWarning("consent interaction: " + s.scrub(err.Error()))
+		}
+
+		if err := s.screenshot("after-consent"); err != nil {
+			s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
+		}
+
+		s.settle()
+	}
+
+	if s.opts.ScrollToBottom {
+		s.scroll()
+		s.settle()
+	}
+
+	if s.opts.DwellAfterLoad > 0 {
+		s.dwell()
+		s.settle()
+	}
+
+	return s.runCtx.Err()
+}
+
+// prepare configures the browser context before navigation: emulation,
+// headers, and the network domain.
+func (s *session) prepare() error {
+	actions := []chromedp.Action{
+		network.Enable(),
+		page.Enable(),
+		runtime.Enable(),
+
+		// A scanned page must never be able to write a file to disk.
+		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny),
+
+		emulation.SetDeviceMetricsOverride(
+			int64(s.opts.ViewportWidth), int64(s.opts.ViewportHeight),
+			s.opts.DeviceScale, s.opts.Mobile,
+		),
+	}
+
+	if !s.opts.WarmCache {
+		// Cold cache is the default: it is what makes two scans comparable
+		// and what an unprimed visitor actually experiences.
+		actions = append(actions, network.SetCacheDisabled(true), network.ClearBrowserCache())
+	}
+
+	if s.opts.UserAgent != "" || s.opts.AcceptLanguage != "" {
+		ua := emulation.SetUserAgentOverride(s.opts.UserAgent)
+		if s.opts.AcceptLanguage != "" {
+			ua = ua.WithAcceptLanguage(s.opts.AcceptLanguage)
+		}
+
+		actions = append(actions, ua)
+	}
+
+	if s.opts.Timezone != "" {
+		actions = append(actions, emulation.SetTimezoneOverride(s.opts.Timezone))
+	}
+
+	if s.opts.Latitude != nil && s.opts.Longitude != nil {
+		actions = append(actions, emulation.SetGeolocationOverride().
+			WithLatitude(*s.opts.Latitude).
+			WithLongitude(*s.opts.Longitude).
+			WithAccuracy(1))
+	}
+
+	if headers := s.headers(); len(headers) > 0 {
+		actions = append(actions, network.SetExtraHTTPHeaders(headers))
+	}
+
+	ctx, cancel := context.WithTimeout(s.runCtx, s.opts.NavTimeout)
+	defer cancel()
+
+	if err := chromedp.Run(ctx, actions...); err != nil {
+		return fmt.Errorf("preparing page: %w", err)
+	}
+
+	return nil
+}
+
+// headers builds the extra header map, revealing secrets only here and never
+// storing them.
+func (s *session) headers() network.Headers {
+	headers := network.Headers{}
+
+	for name, value := range s.opts.ExtraHeaders {
+		headers[name] = value.Reveal()
+	}
+
+	if s.opts.BasicAuthUser.IsSet() {
+		headers["Authorization"] = "Basic " + basicAuth(
+			s.opts.BasicAuthUser.Reveal(),
+			s.opts.BasicAuthPassword.Reveal(),
+		)
+	}
+
+	if len(headers) == 0 {
+		return nil
+	}
+
+	return headers
+}
+
+func (s *session) navigate() error {
+	ctx, cancel := context.WithTimeout(s.runCtx, s.opts.NavTimeout)
+	defer cancel()
+
+	if err := chromedp.Run(ctx, chromedp.Navigate(s.opts.URL)); err != nil {
+		return fmt.Errorf("navigating to %s: %w", s.opts.URL, err)
+	}
+
+	return nil
+}
+
+// settle waits until the network is quiet, the budget is exhausted, or the
+// capture context ends. It never waits longer than the remaining budget.
+func (s *session) settle() {
+	quiet := time.NewTimer(s.opts.IdleQuiet)
+	defer quiet.Stop()
+
+	// A short poll covers the case where inflight was already zero before the
+	// waiter started, and bounds the effect of a missed signal.
+	const poll = 250 * time.Millisecond
+
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+
+	for {
+		if inflight, exceeded := s.rec.snapshot(); exceeded != capNone {
+			return
+		} else if inflight == 0 {
+			select {
+			case <-quiet.C:
+				return
+			default:
+			}
+		}
+
+		select {
+		case <-s.runCtx.Done():
+			return
+
+		case <-s.rec.idleSignal:
+			// Network just went quiet; restart the quiet window.
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+
+			quiet.Reset(s.opts.IdleQuiet)
+
+		case <-ticker.C:
+			if inflight, _ := s.rec.snapshot(); inflight > 0 {
+				// Still busy: the quiet window has not started.
+				if !quiet.Stop() {
+					select {
+					case <-quiet.C:
+					default:
+					}
+				}
+
+				quiet.Reset(s.opts.IdleQuiet)
+			}
+
+		case <-quiet.C:
+			if inflight, _ := s.rec.snapshot(); inflight == 0 {
+				return
+			}
+
+			quiet.Reset(s.opts.IdleQuiet)
+		}
+	}
+}
+
+func (s *session) scroll() {
+	const scrollTimeout = 15 * time.Second
+
+	ctx, cancel := context.WithTimeout(s.runCtx, scrollTimeout)
+	defer cancel()
+
+	// Stepped scrolling rather than a single jump, because lazy-load
+	// observers only fire for viewports they actually pass through.
+	const script = `(async () => {
+		const step = Math.max(200, window.innerHeight * 0.8);
+		let y = 0;
+		for (let i = 0; i < 40; i++) {
+			window.scrollTo(0, y);
+			y += step;
+			if (y > document.body.scrollHeight) break;
+			await new Promise(r => setTimeout(r, 100));
+		}
+		window.scrollTo(0, 0);
+	})()`
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(script, nil, awaitPromise)); err != nil {
+		s.rec.addWarning("scrolling to bottom failed: " + s.scrub(err.Error()))
+	}
+}
+
+func (s *session) dwell() {
+	timer := time.NewTimer(s.opts.DwellAfterLoad)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-s.runCtx.Done():
+	}
+}
+
+// startBodyWorker fingerprints response bodies while Chrome still holds them.
+func (s *session) startBodyWorker() <-chan struct{} {
+	s.bodyStop = make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for {
+			select {
+			case <-s.bodyStop:
+				return
+
+			case <-s.runCtx.Done():
+				return
+
+			case id := <-s.rec.bodyWanted:
+				s.fingerprintBody(id)
+			}
+		}
+	}()
+
+	return done
+}
+
+func (s *session) stopBodyWorker() {
+	s.bodyStopOnce.Do(func() {
+		// Drain what is already queued before stopping, so digests are not
+		// lost just because the page finished quickly.
+		for {
+			select {
+			case id := <-s.rec.bodyWanted:
+				s.fingerprintBody(id)
+			default:
+				close(s.bodyStop)
+
+				return
+			}
+		}
+	})
+}
+
+func (s *session) fingerprintBody(id network.RequestID) {
+	ctx, cancel := context.WithTimeout(s.runCtx, DefaultBodyTimeout)
+	defer cancel()
+
+	var body []byte
+
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		b, err := network.GetResponseBody(id).Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		body = b
+
+		return nil
+	}))
+	if err != nil {
+		// Chrome evicts bodies from its cache aggressively. That is a fact
+		// about the observation, so it is recorded rather than ignored.
+		s.rec.setBodyDigest(id, "", 0, "", "body not retrievable: "+s.scrub(err.Error()))
+
+		return
+	}
+
+	if int64(len(body)) > s.opts.MaxBodyBytes {
+		s.rec.setBodyDigest(id, "", 0, "",
+			fmt.Sprintf("body larger than the %d byte cap", s.opts.MaxBodyBytes))
+
+		return
+	}
+
+	digest := sha256Hex(body)
+
+	var ref string
+
+	if s.opts.StoreBodies && s.opts.BodySink != nil {
+		r, err := s.opts.BodySink("body", body)
+		if err != nil {
+			s.rec.addWarning("storing a response body failed: " + s.scrub(err.Error()))
+		} else {
+			ref = r
+		}
+	}
+
+	s.rec.setBodyDigest(id, digest, len(body), ref, "")
+}
+
+func (s *session) screenshot(kind string) error {
+	if !s.opts.Screenshots || s.opts.ScreenshotSink == nil {
+		return nil
+	}
+
+	const screenshotTimeout = 15 * time.Second
+
+	ctx, cancel := context.WithTimeout(s.runCtx, screenshotTimeout)
+	defer cancel()
+
+	var buf []byte
+
+	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+		return fmt.Errorf("capturing screenshot: %w", err)
+	}
+
+	ref, err := s.opts.ScreenshotSink("screenshot-"+kind, buf)
+	if err != nil {
+		return fmt.Errorf("storing screenshot: %w", err)
+	}
+
+	s.mu.Lock()
+	s.screenshots = append(s.screenshots, model.Artifact{
+		Kind:   "screenshot-" + kind,
+		Ref:    ref,
+		SHA256: sha256Hex(buf),
+		Bytes:  int64(len(buf)),
+	})
+	s.mu.Unlock()
+
+	return nil
+}
+
+// finish assembles the result, including the termination reason, which must
+// always explain why capture stopped.
+func (s *session) finish(runErr error) {
+	s.res.Requests = s.rec.requests()
+	s.res.Warnings = append(s.res.Warnings, s.rec.capturedWarnings()...)
+
+	s.mu.Lock()
+	s.res.Screenshots = s.screenshots
+	s.mu.Unlock()
+
+	s.collectCookies()
+	s.collectFinalURL()
+
+	s.res.FinishedAt = time.Now()
+	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)
+
+	_, exceeded := s.rec.snapshot()
+
+	switch {
+	case runErr != nil && !errors.Is(runErr, context.DeadlineExceeded):
+		s.res.Termination = model.TermError
+		s.res.Error = s.scrub(runErr.Error())
+
+	case exceeded == capRequests:
+		s.res.Termination = model.TermRequestCap
+
+	case exceeded == capBytes:
+		s.res.Termination = model.TermByteCap
+
+	case errors.Is(s.runCtx.Err(), context.DeadlineExceeded) || errors.Is(runErr, context.DeadlineExceeded):
+		s.res.Termination = model.TermTimeout
+
+	case s.runCtx.Err() != nil:
+		// Cancelled by the caller: the result is partial and must say so.
+		s.res.Termination = model.TermError
+		s.res.Error = "scan cancelled: " + s.runCtx.Err().Error()
+
+	default:
+		s.res.Termination = model.TermIdle
+	}
+}
+
+// collectCookies reads the cookie jar after the scan. Values are fingerprinted
+// rather than stored, since they routinely contain identifiers.
+func (s *session) collectCookies() {
+	const cookieTimeout = 10 * time.Second
+
+	// A fresh context: the run context may already be done, and the cookies
+	// are still worth collecting.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.runCtx), cookieTimeout)
+	defer cancel()
+
+	cl, err := classify.New(s.opts.URL, s.opts.FirstPartyDomains)
+	if err != nil {
+		return
+	}
+
+	var cookies []*network.Cookie
+
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		c, err := storage.GetCookies().Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		cookies = c
+
+		return nil
+	}))
+	if err != nil {
+		s.res.Warnings = append(s.res.Warnings, "cookies could not be read: "+s.scrub(err.Error()))
+
+		return
+	}
+
+	out := make([]model.Cookie, 0, len(cookies))
+
+	for _, c := range cookies {
+		mc := model.Cookie{
+			Name:        c.Name,
+			Domain:      c.Domain,
+			Path:        c.Path,
+			SameSite:    string(c.SameSite),
+			Secure:      c.Secure,
+			HTTPOnly:    c.HTTPOnly,
+			Party:       cl.ClassifyCookieDomain(c.Domain),
+			ValueSHA256: sha256Hex([]byte(c.Value)),
+			ValueLength: len(c.Value),
+		}
+
+		if c.Session || c.Expires <= 0 {
+			mc.Session = true
+		} else {
+			mc.Expires = time.Unix(int64(c.Expires), 0).UTC()
+		}
+
+		out = append(out, mc)
+	}
+
+	sortCookies(out)
+	s.res.Cookies = out
+}
+
+func (s *session) collectFinalURL() {
+	const urlTimeout = 5 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.runCtx), urlTimeout)
+	defer cancel()
+
+	var final string
+
+	if err := chromedp.Run(ctx, chromedp.Location(&final)); err == nil {
+		s.res.FinalURL = final
+	}
+}
+
+// scrub removes any registered secret from text before it is stored or logged.
+func (s *session) scrub(text string) string {
+	if s.opts.Secrets == nil {
+		return text
+	}
+
+	return s.opts.Secrets.Scrub(text)
+}
+
+func (o *Options) environment() model.Environment {
+	env := model.Environment{
+		WsawVersion:    o.WsawVersion,
+		ChromeVersion:  o.ChromeVersion,
+		UserAgent:      o.UserAgent,
+		ViewportWidth:  o.ViewportWidth,
+		ViewportHeight: o.ViewportHeight,
+		DeviceScale:    o.DeviceScale,
+		Mobile:         o.Mobile,
+		AcceptLanguage: o.AcceptLanguage,
+		Timezone:       o.Timezone,
+		Latitude:       o.Latitude,
+		Longitude:      o.Longitude,
+		BasicAuth:      o.BasicAuthUser.IsSet(),
+		Proxy:          secret.RedactURL(o.Proxy),
+		WarmCache:      o.WarmCache,
+	}
+
+	// Header names are echoed for reproducibility; values never are.
+	for name := range o.ExtraHeaders {
+		env.ExtraHeaders = append(env.ExtraHeaders, name)
+	}
+
+	sortStrings(env.ExtraHeaders)
+
+	return env
+}
+
+func basicAuth(user, password string) string {
+	return base64Encode(user + ":" + password)
+}
+
+// awaitPromise makes chromedp await the evaluated promise.
+func awaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	return p.WithAwaitPromise(true)
+}
