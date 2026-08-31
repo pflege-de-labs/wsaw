@@ -168,6 +168,7 @@ The JSON result schema is the product's real interface (Tenet 16).
 - If a story's acceptance criteria are ambiguous, ask before guessing — but only about the ambiguous part. Do everything unambiguous first.
 - Match the surrounding code's style, naming, and comment density. Do not import idioms from other ecosystems.
 - Comment *why*, not *what*. Deleted code goes away; it does not get commented out.
+- Commit each story and change separately.
 
 ---
 
