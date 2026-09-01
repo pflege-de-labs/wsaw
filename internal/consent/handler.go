@@ -19,7 +19,11 @@ import (
 // result so a reviewer can weigh the evidence: a TCF API call is strong, a
 // label guess is weak.
 const (
-	MechanismTCF       = "tcf-api"
+	MechanismTCF = "tcf-api"
+	// DetectionTCF and CMPTCF name a CMP found through the TCF API, where
+	// wsaw knows the interface but not the vendor.
+	DetectionTCF       = "tcf-api"
+	CMPTCF             = "TCF v2.2 CMP"
 	MechanismVendorAPI = "vendor-api"
 	MechanismSelector  = "selector"
 	MechanismHeuristic = "heuristic"
@@ -245,14 +249,14 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 		return model.Consent{
 			Outcome:   model.OutcomeFailed,
 			Reason:    "TCF API call failed: " + err.Error(),
-			CMP:       "TCF v2.2 CMP",
-			Detection: "tcf-api",
+			CMP:       CMPTCF,
+			Detection: DetectionTCF,
 		}, false
 	}
 
 	consent := model.Consent{
-		CMP:       "TCF v2.2 CMP",
-		Detection: "tcf-api",
+		CMP:       CMPTCF,
+		Detection: DetectionTCF,
 		Mechanism: MechanismTCF,
 		TCString:  out.TCString,
 	}
@@ -345,8 +349,8 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		return model.Consent{
 			Outcome:   model.OutcomeFailed,
 			Reason:    "a TCF CMP is present but could not be driven, and no rule matched",
-			CMP:       "TCF v2.2 CMP",
-			Detection: "tcf-api",
+			CMP:       CMPTCF,
+			Detection: DetectionTCF,
 		}
 	}
 

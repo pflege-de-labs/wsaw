@@ -90,7 +90,8 @@ func (j *job) startupDelay() time.Duration {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(j.key()))
 
-	return time.Duration(uint64(h.Sum32()) % uint64(window))
+	// Sum32 is 32 bits and window is positive, so this cannot overflow.
+	return time.Duration(int64(h.Sum32()) % int64(window))
 }
 
 // advance computes the next run time after a completed scan.
@@ -110,8 +111,8 @@ func (j *job) advance(now time.Time) {
 
 	// The minimum interval is a floor regardless of the configured schedule,
 	// so a misconfigured cron cannot hammer one origin.
-	if min := j.target.MinInterval; min > 0 && j.next.Sub(now) < min {
-		j.next = now.Add(min)
+	if floor := j.target.MinInterval; floor > 0 && j.next.Sub(now) < floor {
+		j.next = now.Add(floor)
 	}
 }
 
@@ -127,7 +128,7 @@ func (j *job) jitter(now time.Time) time.Duration {
 	_, _ = h.Write([]byte(j.key()))
 	_, _ = fmt.Fprintf(h, "%d", now.Unix()/60)
 
-	return time.Duration(uint64(h.Sum32()) % uint64(j.target.Jitter))
+	return time.Duration(int64(h.Sum32()) % int64(j.target.Jitter))
 }
 
 // dueAt reports whether the job should run, and enforces the minimum interval
@@ -137,7 +138,7 @@ func (j *job) dueAt(now time.Time) bool {
 		return false
 	}
 
-	if min := j.target.MinInterval; min > 0 && !j.lastRun.IsZero() && now.Sub(j.lastRun) < min {
+	if floor := j.target.MinInterval; floor > 0 && !j.lastRun.IsZero() && now.Sub(j.lastRun) < floor {
 		return false
 	}
 

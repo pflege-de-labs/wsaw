@@ -24,7 +24,7 @@ Each target is scanned once per configured consent mode. A scan in `reject` mode
 
 ## Requirements
 
-- Go 1.24+ to build.
+- Go 1.26+ to build (the CDP library sets that floor).
 - A browser. wsaw prefers to run it in a container (see below); failing that, Chrome or Chromium on the host, whose version it checks at startup.
 - Linux or macOS, amd64 or arm64. No Windows.
 

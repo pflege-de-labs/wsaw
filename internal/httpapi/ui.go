@@ -494,7 +494,11 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	// Secure is set only when wsaw is serving TLS. The default listener is
+	// loopback over plain HTTP, where a Secure cookie would simply never be
+	// sent and the session would appear broken; HttpOnly and SameSite=Strict
+	// carry the protection there.
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // see above: Secure follows TLS
 		Name:     sessionCookie,
 		Value:    s.opts.Token.Reveal(),
 		Path:     "/",
@@ -554,9 +558,49 @@ func (s *Server) uiError(w http.ResponseWriter, r *http.Request, status int, msg
 }
 
 func (s *Server) uiRedirectOK(w http.ResponseWriter, r *http.Request, dest, msg string) {
-	http.Redirect(w, r, dest+"?ok="+urlQueryEscape(msg), http.StatusSeeOther)
+	// #nosec G710 -- safeLocal guarantees a path on this origin; the taint
+	// analyser cannot follow the sanitiser, but the test below it can.
+	http.Redirect(w, r, safeLocal(dest)+"?ok="+urlQueryEscape(msg), http.StatusSeeOther)
 }
 
 func (s *Server) uiRedirectError(w http.ResponseWriter, r *http.Request, dest, msg string) {
-	http.Redirect(w, r, dest+"?err="+urlQueryEscape(msg), http.StatusSeeOther)
+	// #nosec G710 -- see uiRedirectOK.
+	http.Redirect(w, r, safeLocal(dest)+"?err="+urlQueryEscape(msg), http.StatusSeeOther)
+}
+
+// safeLocal reduces a redirect destination to a path on this origin.
+//
+// Destinations are assembled from path values — a target name, a consent mode
+// — which arrive from the request and are therefore attacker-influenced. The
+// current callers cannot in fact produce an off-site URL, but relying on that
+// means every future caller has to be audited for it. Enforcing it here makes
+// an off-site redirect impossible to introduce (Tenet 9).
+func safeLocal(dest string) string {
+	const fallback = "/"
+
+	if dest == "" {
+		return fallback
+	}
+
+	// A scheme, or a protocol-relative "//host", would leave this origin.
+	if strings.Contains(dest, "://") || strings.HasPrefix(dest, "//") {
+		return fallback
+	}
+
+	if !strings.HasPrefix(dest, "/") {
+		return fallback
+	}
+
+	// A control character could split the header.
+	if strings.ContainsFunc(dest, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fallback
+	}
+
+	// Any query or fragment the caller appended is replaced by the flash
+	// parameter, so it must not be smuggled in through dest.
+	if i := strings.IndexAny(dest, "?#"); i >= 0 {
+		dest = dest[:i]
+	}
+
+	return dest
 }

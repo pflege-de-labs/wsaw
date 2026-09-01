@@ -429,14 +429,14 @@ func (s *session) settle(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
-		if inflight, exceeded := s.rec.snapshot(); exceeded != capNone {
+		inflight, exceeded := s.rec.snapshot()
+
+		if exceeded != capNone {
 			return
-		} else if inflight == 0 {
-			select {
-			case <-quiet.C:
-				return
-			default:
-			}
+		}
+
+		if inflight == 0 && drained(quiet) {
+			return
 		}
 
 		select {
@@ -444,37 +444,47 @@ func (s *session) settle(ctx context.Context) {
 			return
 
 		case <-s.rec.idleSignal:
-			// Network just went quiet; restart the quiet window.
-			if !quiet.Stop() {
-				select {
-				case <-quiet.C:
-				default:
-				}
-			}
-
-			quiet.Reset(s.opts.IdleQuiet)
+			// The network just went quiet; start the quiet window again.
+			s.restartQuiet(quiet)
 
 		case <-ticker.C:
-			if inflight, _ := s.rec.snapshot(); inflight > 0 {
-				// Still busy: the quiet window has not started.
-				if !quiet.Stop() {
-					select {
-					case <-quiet.C:
-					default:
-					}
-				}
-
-				quiet.Reset(s.opts.IdleQuiet)
+			if busy, _ := s.rec.snapshot(); busy > 0 {
+				// Still loading, so the quiet window has not begun.
+				s.restartQuiet(quiet)
 			}
 
 		case <-quiet.C:
-			if inflight, _ := s.rec.snapshot(); inflight == 0 {
+			if idle, _ := s.rec.snapshot(); idle == 0 {
 				return
 			}
 
 			quiet.Reset(s.opts.IdleQuiet)
 		}
 	}
+}
+
+// drained reports whether the quiet window has already elapsed, without
+// blocking on it.
+func drained(quiet *time.Timer) bool {
+	select {
+	case <-quiet.C:
+		return true
+	default:
+		return false
+	}
+}
+
+// restartQuiet begins the quiet window again, draining the timer first so a
+// pending tick cannot end the wait early.
+func (s *session) restartQuiet(quiet *time.Timer) {
+	if !quiet.Stop() {
+		select {
+		case <-quiet.C:
+		default:
+		}
+	}
+
+	quiet.Reset(s.opts.IdleQuiet)
 }
 
 func (s *session) scroll() {

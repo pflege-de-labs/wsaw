@@ -110,14 +110,14 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 	a.Targets = targets
 
 	if err := a.openStore(); err != nil {
-		a.Close()
+		a.closeAfterFailedStart()
 
 		return nil, err
 	}
 
 	rules, err := a.loadRules()
 	if err != nil {
-		a.Close()
+		a.closeAfterFailedStart()
 
 		return nil, err
 	}
@@ -126,14 +126,14 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 
 	if opts.RequireBrowser {
 		if err := a.startBrowser(ctx); err != nil {
-			a.Close()
+			a.closeAfterFailedStart()
 
 			return nil, err
 		}
 	}
 
 	if err := a.buildScanner(); err != nil {
-		a.Close()
+		a.closeAfterFailedStart()
 
 		return nil, err
 	}
@@ -471,6 +471,16 @@ func (a *App) Retention() store.Retention {
 	}
 }
 
+// closeAfterFailedStart unwinds a partial startup. The original error is what
+// the caller needs, so a cleanup failure is logged rather than returned — but
+// it is not discarded, because a resource that would not close is worth
+// knowing about.
+func (a *App) closeAfterFailedStart() {
+	if err := a.Close(); err != nil {
+		a.Logger.Warn("cleaning up after a failed start", "error", err)
+	}
+}
+
 // Close releases every resource, in reverse order of acquisition.
 func (a *App) Close() error {
 	var errs []error
@@ -529,6 +539,8 @@ func defaultStateDir() (string, error) {
 		}
 	}
 
+	// #nosec G703 -- base is assembled from the process's own environment and
+	// home directory, never from a scanned page or an API request.
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", fmt.Errorf("creating state directory %s: %w", base, err)
 	}

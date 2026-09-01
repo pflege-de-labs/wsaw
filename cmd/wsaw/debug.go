@@ -15,11 +15,14 @@ import (
 	"github.com/martint17r/wsaw/internal/report"
 )
 
+// logLevelDebug is the verbose log level the diagnostic commands select.
+const logLevelDebug = "debug"
+
 // cmdDebug scans one URL with verbose output. It exists because authoring a
 // consent rule is impractical without a fast way to see what the page does
 // and whether the rule fired (Story 6.7).
 func cmdDebug(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("debug", flag.ContinueOnError)
+	fs := flag.NewFlagSet(cmdNameDebug, flag.ContinueOnError)
 
 	var cf configFlags
 
@@ -52,7 +55,7 @@ func cmdDebug(ctx context.Context, args []string) error {
 
 	// Debug always runs verbose, since that is the entire point of it.
 	cfg := config.New()
-	cfg.Logging.Level = "debug"
+	cfg.Logging.Level = logLevelDebug
 	// auto, so debugging by hand is readable but piping it into a file still
 	// yields something a machine can read.
 	cfg.Logging.Format = "auto"
@@ -194,7 +197,7 @@ func cmdRulesTest(ctx context.Context, args []string) error {
 	}
 
 	cfg := config.New()
-	cfg.Logging.Level = "debug"
+	cfg.Logging.Level = logLevelDebug
 	cfg.Logging.Format = "auto"
 	cfg.Browser.Path = *chromePath
 	cfg.Targets = []config.Target{{

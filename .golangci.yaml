@@ -1,4 +1,5 @@
 version: "2"
+
 linters:
   default: standard
   enable:
@@ -18,3 +19,29 @@ linters:
     - nlreturn
     - goconst
     - gocognit
+
+  settings:
+    goconst:
+      # A literal repeated twice is usually clearer left where it is.
+      min-occurrences: 3
+
+  # Exclusions carry their reason. This file is a merge blocker, so anything
+  # switched off here is a deliberate judgement, not a way around fixing code.
+  exclusions:
+    rules:
+      # Test files repeat literals on purpose: a fixture URL or a consent mode
+      # written out at each use site reads better than a constant the reader
+      # has to go and look up. Extracting them would make the tests harder to
+      # review, which is the opposite of what this linter is for.
+      - path: _test\.go
+        linters:
+          - goconst
+
+      # Test fixtures deliberately construct awkward input — a pseudo-terminal
+      # through unsafe calls, a URL carrying a password, a subprocess built
+      # from a discovered runtime path — because that is precisely what they
+      # exist to exercise. A security finding there is about the fixture, not
+      # about the product.
+      - path: _test\.go
+        linters:
+          - gosec

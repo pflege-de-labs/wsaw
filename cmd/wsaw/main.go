@@ -21,6 +21,10 @@ var (
 	date    = "unknown"
 )
 
+// cmdNameDebug is the one-scan diagnostic command. Named because the same
+// word is also a log level, and the two must not be confused.
+const cmdNameDebug = "debug"
+
 // Exit codes are a documented interface, so they are named rather than
 // scattered as literals.
 const (
@@ -59,7 +63,7 @@ func run(ctx context.Context, args []string) int {
 	case "scan":
 		return cmdScan(ctx, rest)
 
-	case "debug":
+	case cmdNameDebug:
 		err = cmdDebug(ctx, rest)
 
 	case "rules":
@@ -100,7 +104,9 @@ func run(ctx context.Context, args []string) int {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `wsaw — website asset watcher
+	// Writing usage is best effort: there is nothing useful to do if the
+	// terminal has gone away.
+	_, _ = fmt.Fprint(w, `wsaw — website asset watcher
 
 Records every network fetch a page performs, with configurable cookie-banner
 handling, and reports what changed.

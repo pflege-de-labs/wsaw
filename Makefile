@@ -55,10 +55,15 @@ fmt:
 vet:
 	go vet ./...
 
+# Pinned, and built with this project's Go. golangci-lint refuses to analyse a
+# module whose go directive is newer than the Go it was built with, and this
+# module's floor comes from chromedp, which tracks Go closely — so a prebuilt
+# binary drifts out of range. Building it here keeps local and CI identical.
+GOLANGCI_LINT_VERSION ?= v2.13.2
+
 .PHONY: lint
 lint:
-	@command -v golangci-lint >/dev/null || (echo "golangci-lint is not installed: https://golangci-lint.run/welcome/install/" && exit 1)
-	golangci-lint run
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout 5m
 
 # test runs the fast suite. Browser-dependent tests skip themselves when no
 # usable Chrome is present, so this works on a machine without one.

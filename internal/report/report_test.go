@@ -387,7 +387,12 @@ func TestReportsAreDeterministic(t *testing.T) {
 		return b.String()
 	}
 
-	if render() != render() {
+	// Two separate renderings of identical input, compared: staticcheck reads
+	// render() != render() as a mistake, and naming them says it is not.
+	first := render()
+	second := render()
+
+	if first != second {
 		t.Error("Markdown rendering is not deterministic")
 	}
 }

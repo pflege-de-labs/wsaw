@@ -122,15 +122,15 @@ type Report struct {
 // MaxSeverity returns the highest severity present, or info when there are no
 // changes.
 func (r *Report) MaxSeverity() Severity {
-	max := SeverityInfo
+	highest := SeverityInfo
 
 	for _, c := range r.Changes {
-		if c.Severity.Rank() > max.Rank() {
-			max = c.Severity
+		if c.Severity.Rank() > highest.Rank() {
+			highest = c.Severity
 		}
 	}
 
-	return max
+	return highest
 }
 
 // HasFindingsAtLeast reports whether any change meets a threshold, which is

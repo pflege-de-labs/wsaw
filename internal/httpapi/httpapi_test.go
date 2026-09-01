@@ -132,7 +132,7 @@ func (f *fixture) seed(scanID string, mode model.ConsentMode, at time.Time, muta
 func (f *fixture) get(path string, headers ...string) *http.Response {
 	f.t.Helper()
 
-	req, err := http.NewRequest(http.MethodGet, f.server.URL+path, nil)
+	req, err := http.NewRequestWithContext(f.t.Context(), http.MethodGet, f.server.URL+path, nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func (f *fixture) get(path string, headers ...string) *http.Response {
 func (f *fixture) postForm(path string, form url.Values, headers ...string) *http.Response {
 	f.t.Helper()
 
-	req, err := http.NewRequest(http.MethodPost, f.server.URL+path, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(f.t.Context(), http.MethodPost, f.server.URL+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -169,6 +169,24 @@ func (f *fixture) postForm(path string, form url.Values, headers ...string) *htt
 	}
 
 	return resp
+}
+
+// mustRequest builds a request bound to the test's context, so a hung call
+// cannot outlive the test.
+func mustRequest(t *testing.T, f *fixture, method, path, body string) *http.Request {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), method, f.server.URL+path, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return req
 }
 
 func body(t *testing.T, resp *http.Response) string {
@@ -395,8 +413,7 @@ func TestReadOnlyBlocksWrites(t *testing.T) {
 	f := newFixture(t, httpapi.Options{ReadOnly: true, WebUI: true, AllowAdHocScan: true}, &fakeTrigger{})
 	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/baseline/site/reject",
-		strings.NewReader(`{"scanId":"scan-1"}`))
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/baseline/site/reject", `{"scanId":"scan-1"}`)
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -418,7 +435,7 @@ func TestAdHocScanDisabledByDefault(t *testing.T) {
 	trigger := &fakeTrigger{}
 	f := newFixture(t, httpapi.Options{}, trigger)
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/scan/site/reject", nil)
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/scan/site/reject", "")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -442,7 +459,7 @@ func TestAdHocScanOnlyForConfiguredTargets(t *testing.T) {
 	trigger := &fakeTrigger{}
 	f := newFixture(t, httpapi.Options{AllowAdHocScan: true}, trigger)
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/scan/unknown-target/reject", nil)
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/scan/unknown-target/reject", "")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -464,7 +481,7 @@ func TestAdHocScanForConfiguredTarget(t *testing.T) {
 	trigger := &fakeTrigger{}
 	f := newFixture(t, httpapi.Options{AllowAdHocScan: true}, trigger)
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/scan/site/reject", nil)
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/scan/site/reject", "")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -486,8 +503,7 @@ func TestBaselineApprovalAndAudit(t *testing.T) {
 	f := newFixture(t, httpapi.Options{}, nil)
 	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/baseline/site/reject",
-		strings.NewReader(`{"scanId":"scan-1","actor":"martin","note":"reviewed"}`))
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/baseline/site/reject", `{"scanId":"scan-1","actor":"martin","note":"reviewed"}`)
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -514,8 +530,7 @@ func TestApprovingAFailedScanIsRejected(t *testing.T) {
 		r.Error = "boom"
 	})
 
-	req, _ := http.NewRequest(http.MethodPost, f.server.URL+"/api/v1/baseline/site/reject",
-		strings.NewReader(`{"scanId":"scan-bad"}`))
+	req := mustRequest(t, f, http.MethodPost, "/api/v1/baseline/site/reject", `{"scanId":"scan-bad"}`)
 
 	resp, err := f.client.Do(req)
 	if err != nil {

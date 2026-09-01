@@ -2,9 +2,11 @@ package store
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -159,7 +161,7 @@ func (s *Store) appendAudit(e AuditEntry) error {
 		}
 
 		key := make([]byte, 8)
-		putUint64(key, id)
+		binary.BigEndian.PutUint64(key, id)
 
 		return b.Put(key, payload)
 	})
@@ -259,7 +261,7 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 				key := make([]byte, len(k))
 				copy(key, k)
 
-				entries = append(entries, entry{key: key, at: time.Unix(0, int64(getUint64(k[:8])))})
+				entries = append(entries, entry{key: key, at: keyTime(k)})
 
 				return nil
 			}); err != nil {
@@ -380,18 +382,20 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 	return data, nil
 }
 
-func putUint64(b []byte, v uint64) {
-	b[0] = byte(v >> 56)
-	b[1] = byte(v >> 48)
-	b[2] = byte(v >> 40)
-	b[3] = byte(v >> 32)
-	b[4] = byte(v >> 24)
-	b[5] = byte(v >> 16)
-	b[6] = byte(v >> 8)
-	b[7] = byte(v)
-}
+// keyTime reads the timestamp a result key begins with.
+//
+// A key that does not decode to a sensible time is treated as the zero time
+// rather than as a wildly future or negative one, so a corrupt record sorts
+// to the front and is pruned instead of pinning the series open for ever.
+func keyTime(k []byte) time.Time {
+	if len(k) < 8 {
+		return time.Time{}
+	}
 
-func getUint64(b []byte) uint64 {
-	return uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
-		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
+	nanos := binary.BigEndian.Uint64(k[:8])
+	if nanos > math.MaxInt64 {
+		return time.Time{}
+	}
+
+	return time.Unix(0, int64(nanos))
 }

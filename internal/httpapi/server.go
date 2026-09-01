@@ -163,7 +163,11 @@ func (s *Server) Addr() string { return s.http.Addr }
 
 // Serve runs the server until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.opts.Listen)
+	// A ListenConfig so that binding respects cancellation, like every other
+	// blocking operation in wsaw.
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "tcp", s.opts.Listen)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.opts.Listen, err)
 	}

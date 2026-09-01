@@ -29,7 +29,7 @@ var ErrChromeNotFound = errors.New("no Chrome or Chromium binary found")
 
 // ErrChromeTooOld is returned when the discovered browser predates
 // MinChromeMajor.
-var ErrChromeTooOld = errors.New("Chrome version is too old")
+var ErrChromeTooOld = errors.New("the browser version is too old")
 
 // Info describes a discovered browser binary.
 type Info struct {

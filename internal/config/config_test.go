@@ -21,6 +21,8 @@ func parse(t *testing.T, body string) *config.Config {
 	return cfg
 }
 
+// parseErr asserts that a configuration is rejected and returns the error, so
+// a caller can also check what it says.
 func parseErr(t *testing.T, body string) error {
 	t.Helper()
 
@@ -30,6 +32,14 @@ func parseErr(t *testing.T, body string) error {
 	}
 
 	return err
+}
+
+// mustReject asserts only that a configuration is rejected, for the cases
+// where the message is not what is under test.
+func mustReject(t *testing.T, body string) {
+	t.Helper()
+
+	_ = parseErr(t, body)
 }
 
 func TestMinimalConfig(t *testing.T) {
@@ -180,7 +190,7 @@ targets:
 func TestInvalidCronIsRejected(t *testing.T) {
 	t.Parallel()
 
-	parseErr(t, `
+	mustReject(t, `
 targets:
   - name: t
     url: https://example.com/
@@ -468,7 +478,7 @@ normalize:
 func TestInvalidRegexpInNormalizeIsRejected(t *testing.T) {
 	t.Parallel()
 
-	parseErr(t, `
+	mustReject(t, `
 normalize:
   pathReplacements:
     - pattern: "([unclosed"
@@ -493,13 +503,13 @@ detection:
 func TestNotifierValidation(t *testing.T) {
 	t.Parallel()
 
-	parseErr(t, `
+	mustReject(t, `
 notify:
   - name: hook
     url: "not-a-url"
 `)
 
-	parseErr(t, `
+	mustReject(t, `
 notify:
   - name: hook
     url: https://example.com/hook
@@ -553,7 +563,7 @@ targets:
     robots: respect
 `)
 
-	parseErr(t, `
+	mustReject(t, `
 targets:
   - name: t
     url: https://example.com/

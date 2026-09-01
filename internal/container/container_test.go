@@ -290,7 +290,7 @@ func TestReapLeavesLiveContainersAlone(t *testing.T) {
 func managedContainers(t *testing.T, rt *container.Runtime) int {
 	t.Helper()
 
-	out, err := exec.Command(rt.Path, "ps", "--all", "--quiet",
+	out, err := exec.CommandContext(t.Context(), rt.Path, "ps", "--all", "--quiet",
 		"--filter", "label=io.wsaw.managed=true").Output()
 	if err != nil {
 		t.Fatalf("listing containers: %v", err)
@@ -302,7 +302,7 @@ func managedContainers(t *testing.T, rt *container.Runtime) int {
 func containerExists(t *testing.T, rt *container.Runtime, id string) bool {
 	t.Helper()
 
-	out, err := exec.Command(rt.Path, "ps", "--all", "--quiet", "--filter", "id="+id).Output()
+	out, err := exec.CommandContext(t.Context(), rt.Path, "ps", "--all", "--quiet", "--filter", "id="+id).Output()
 	if err != nil {
 		return false
 	}
