@@ -3,6 +3,10 @@
 // Every scan-scoped line carries the scan ID, target, and consent mode, so
 // lines from concurrent scans can be separated in an aggregator (Story 6.4).
 // Secrets are removed centrally rather than at each call site.
+//
+// The output format follows where the output is going rather than a flag an
+// operator has to remember: readable on a terminal, JSON everywhere else
+// (Story 6.9).
 package logging
 
 import (
@@ -10,53 +14,159 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/martint17r/wsaw/internal/secret"
 )
 
+// Format selects how records are rendered.
+type Format string
+
+// Formats.
+const (
+	// FormatAuto picks pretty on an interactive terminal and json otherwise.
+	// It is the default, and it is a named value rather than hidden
+	// behaviour so an operator can see it in the configuration.
+	FormatAuto Format = "auto"
+	// FormatJSON is the machine-readable format aggregators expect.
+	FormatJSON Format = "json"
+	// FormatText is slog's key=value text handler.
+	FormatText Format = "text"
+	// FormatPretty is the aligned, coloured format for a person watching.
+	FormatPretty Format = "pretty"
+)
+
+// Valid reports whether f is a format wsaw understands.
+func (f Format) Valid() bool {
+	switch f {
+	case "", FormatAuto, FormatJSON, FormatText, FormatPretty:
+		return true
+	default:
+		return false
+	}
+}
+
 // Options configures the logger.
 type Options struct {
 	// Level is debug, info, warn or error.
 	Level string
-	// Format is json or text. JSON is the default because these logs are
-	// meant for aggregators, not for reading in a terminal.
+	// Format is auto, pretty, json or text. Empty means auto.
 	Format string
 	// Output receives the log lines.
 	Output io.Writer
 	// Secrets, when set, scrubs registered plaintexts from every attribute.
 	Secrets *secret.Registry
+
+	// Color forces colour on or off. Nil detects it, which is what almost
+	// every caller wants.
+	Color *bool
 }
 
-// New builds a logger.
-func New(opts Options) (*slog.Logger, error) {
+// New builds a logger and reports the format it resolved to, so a caller can
+// state it in a startup line rather than leaving an operator to guess
+// (Story 6.9, AC8).
+func New(opts Options) (*slog.Logger, Format, error) {
 	level, err := parseLevel(opts.Level)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	handlerOpts := &slog.HandlerOptions{Level: level}
+	requested := Format(strings.ToLower(strings.TrimSpace(opts.Format)))
+	if !requested.Valid() {
+		return nil, "", fmt.Errorf("unknown log format %q, use auto, pretty, json or text", opts.Format)
+	}
+
+	if opts.Output == nil {
+		opts.Output = os.Stderr
+	}
+
+	resolved := resolveFormat(requested, opts.Output)
 
 	var handler slog.Handler
 
-	switch strings.ToLower(opts.Format) {
-	case "", "json":
-		handler = slog.NewJSONHandler(opts.Output, handlerOpts)
-	case "text":
-		handler = slog.NewTextHandler(opts.Output, handlerOpts)
+	switch resolved {
+	case FormatPretty:
+		handler = newPrettyHandler(opts.Output, level, useColor(opts, resolved))
+
+	case FormatText:
+		handler = slog.NewTextHandler(opts.Output, &slog.HandlerOptions{Level: level})
+
 	default:
-		return nil, fmt.Errorf("unknown log format %q, use json or text", opts.Format)
+		handler = slog.NewJSONHandler(opts.Output, &slog.HandlerOptions{Level: level})
 	}
 
 	if opts.Secrets != nil {
+		// Wraps whichever handler was chosen: redaction must not depend on
+		// the format (AC6).
 		handler = &scrubbingHandler{inner: handler, secrets: opts.Secrets}
 	}
 
-	return slog.New(handler), nil
+	return slog.New(handler), resolved, nil
+}
+
+// resolveFormat turns auto into a concrete choice.
+//
+// A piped, redirected, containerised or service-managed run is not a
+// terminal, so it keeps machine-readable output with no configuration. That
+// is the case where getting it wrong is expensive: an aggregator silently
+// ingesting decorated text is much worse than a person seeing JSON.
+func resolveFormat(requested Format, w io.Writer) Format {
+	if requested != "" && requested != FormatAuto {
+		return requested
+	}
+
+	if isTerminal(w) {
+		return FormatPretty
+	}
+
+	return FormatJSON
+}
+
+// isTerminal reports whether w is an interactive terminal.
+//
+// Detected through the character-device bit rather than with a dependency:
+// wsaw targets Linux and macOS, where that is exactly what distinguishes a
+// tty from a pipe or a file (Tenet 18, standard library first).
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(interface{ Stat() (os.FileInfo, error) })
+	if !ok {
+		return false
+	}
+
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// useColor decides whether to emit ANSI codes.
+func useColor(opts Options, resolved Format) bool {
+	if resolved != FormatPretty {
+		return false
+	}
+
+	if opts.Color != nil {
+		return *opts.Color
+	}
+
+	// The widely honoured opt-out, and the terminal that cannot render it.
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
+		return false
+	}
+
+	switch os.Getenv("TERM") {
+	case "", "dumb":
+		return false
+	}
+
+	return isTerminal(opts.Output)
 }
 
 func parseLevel(s string) (slog.Level, error) {
-	switch strings.ToLower(s) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "info":
 		return slog.LevelInfo, nil
 	case "debug":
@@ -74,7 +184,8 @@ func parseLevel(s string) (slog.Level, error) {
 //
 // slog.LogValuer already protects a secret.Value that is logged directly, but
 // a secret can also reach a log inside an error string from a third-party
-// library, which no type can guard. This is the backstop for that.
+// library, which no type can guard. This is the backstop for that, and it
+// wraps every format equally.
 type scrubbingHandler struct {
 	inner   slog.Handler
 	secrets *secret.Registry
@@ -101,6 +212,10 @@ func (h *scrubbingHandler) Handle(ctx context.Context, rec slog.Record) error {
 }
 
 func (h *scrubbingHandler) scrubAttr(a slog.Attr) slog.Attr {
+	// Resolved first, so a LogValuer's output is scrubbed too rather than
+	// slipping past as an opaque value.
+	a.Value = a.Value.Resolve()
+
 	switch a.Value.Kind() {
 	case slog.KindString:
 		return slog.String(a.Key, h.secrets.Scrub(a.Value.String()))

@@ -72,7 +72,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 
 	a := &App{Config: cfg, Version: opts.Version, Secrets: &secret.Registry{}}
 
-	logger, err := logging.New(logging.Options{
+	logger, logFormat, err := logging.New(logging.Options{
 		Level:   cfg.Logging.Level,
 		Format:  cfg.Logging.Format,
 		Output:  opts.LogOutput,
@@ -83,6 +83,15 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 	}
 
 	a.Logger = logger
+
+	// Which format was chosen is stated rather than left to be inferred: with
+	// auto-detection an operator otherwise has to guess why output looks the
+	// way it does (Story 6.9, AC8).
+	logger.Info("logging configured",
+		"format", string(logFormat),
+		"requested", orAuto(cfg.Logging.Format),
+		"level", orInfo(cfg.Logging.Level),
+	)
 	a.Metrics = metrics.New(opts.Version)
 
 	targets, err := cfg.ResolveTargets(a.Secrets)
@@ -333,6 +342,22 @@ func (a *App) Close() error {
 	a.closers = nil
 
 	return errors.Join(errs...)
+}
+
+func orAuto(s string) string {
+	if s == "" {
+		return "auto"
+	}
+
+	return s
+}
+
+func orInfo(s string) string {
+	if s == "" {
+		return "info"
+	}
+
+	return s
 }
 
 // defaultStateDir returns the platform-appropriate state directory: XDG on

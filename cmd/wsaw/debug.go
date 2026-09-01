@@ -53,7 +53,9 @@ func cmdDebug(ctx context.Context, args []string) error {
 	// Debug always runs verbose, since that is the entire point of it.
 	cfg := config.New()
 	cfg.Logging.Level = "debug"
-	cfg.Logging.Format = "text"
+	// auto, so debugging by hand is readable but piping it into a file still
+	// yields something a machine can read.
+	cfg.Logging.Format = "auto"
 	cfg.Targets = []config.Target{{
 		Name:         adHocName(url, 0),
 		URL:          url,
@@ -193,7 +195,7 @@ func cmdRulesTest(ctx context.Context, args []string) error {
 
 	cfg := config.New()
 	cfg.Logging.Level = "debug"
-	cfg.Logging.Format = "text"
+	cfg.Logging.Format = "auto"
 	cfg.Browser.Path = *chromePath
 	cfg.Targets = []config.Target{{
 		Name:         adHocName(url, 0),

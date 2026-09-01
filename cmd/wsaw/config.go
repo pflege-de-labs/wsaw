@@ -40,7 +40,7 @@ func (c *configFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.modes, "consent-modes", "", "comma-separated consent modes to scan (none, reject, accept)")
 	fs.IntVar(&c.concurrency, "concurrency", 0, "parallel scans (default: derived from the machine)")
 	fs.StringVar(&c.logLevel, "log-level", "", "debug, info, warn or error")
-	fs.StringVar(&c.logFormat, "log-format", "", "json or text")
+	fs.StringVar(&c.logFormat, "log-format", "", "auto, pretty, json or text (auto: pretty on a terminal, json when piped)")
 	fs.StringVar(&c.chromePath, "chrome-path", "", "path to the Chrome or Chromium binary")
 	fs.BoolVar(&c.noSandbox, "no-sandbox", false, "disable the Chrome sandbox (weakens isolation; only for constrained containers)")
 	fs.StringVar(&c.storePath, "store", "", "path to the result database")

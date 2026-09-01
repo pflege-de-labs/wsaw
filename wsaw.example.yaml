@@ -156,4 +156,8 @@ notify:
 
 logging:
   level: info
-  format: json
+  # auto renders readable, coloured lines when wsaw is attached to a terminal
+  # and JSON when its output is piped, redirected, or collected by a service
+  # manager — so a hand-run scan is legible without an aggregator ever
+  # receiving decorated text. Force it with pretty, json or text.
+  format: auto

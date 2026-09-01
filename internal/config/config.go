@@ -283,7 +283,9 @@ type Notifier struct {
 
 // Logging configures slog.
 type Logging struct {
-	Level  string `yaml:"level,omitempty"`
+	Level string `yaml:"level,omitempty"`
+	// Format is auto, pretty, json or text. auto resolves to pretty on an
+	// interactive terminal and json otherwise.
 	Format string `yaml:"format,omitempty"`
 }
 
@@ -450,7 +452,9 @@ func New() *Config {
 		API: API{
 			Listen: "127.0.0.1:8712",
 		},
-		Logging: Logging{Level: "info", Format: "json"},
+		// auto keeps machine-readable output wherever something is collecting
+		// it, and readable output when a person is watching (Story 6.9).
+		Logging: Logging{Level: "info", Format: "auto"},
 		Metrics: Metrics{Path: "/metrics"},
 	}
 }

@@ -8,6 +8,7 @@ package secret
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -104,8 +105,11 @@ func (v Value) String() string {
 // GoString implements fmt.GoStringer so %#v is also safe.
 func (v Value) GoString() string { return v.String() }
 
-// LogValue implements slog.LogValuer so structured logging is safe by default.
-func (v Value) LogValue() any { return v.String() }
+// LogValue implements slog.LogValuer so structured logging is safe by
+// default, in every handler. Returning a slog.Value rather than any means
+// slog resolves it as a LogValuer instead of falling back to whichever
+// stringer a given handler happens to try.
+func (v Value) LogValue() slog.Value { return slog.StringValue(v.String()) }
 
 // MarshalJSON emits the redacted form, so a Value embedded in an API response
 // or a stored result cannot leak.

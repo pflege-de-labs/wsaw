@@ -11,6 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/martint17r/wsaw/internal/diff"
+	"github.com/martint17r/wsaw/internal/logging"
 	"github.com/martint17r/wsaw/internal/model"
 )
 
@@ -434,10 +435,8 @@ func (c *Config) validateLogging(add addFunc) {
 		add(0, "logging.level", "%q is not valid; use debug, info, warn or error", c.Logging.Level)
 	}
 
-	switch strings.ToLower(c.Logging.Format) {
-	case "", "json", "text":
-	default:
-		add(0, "logging.format", "%q is not valid; use json or text", c.Logging.Format)
+	if !logging.Format(strings.ToLower(c.Logging.Format)).Valid() {
+		add(0, "logging.format", "%q is not valid; use auto, pretty, json or text", c.Logging.Format)
 	}
 }
 

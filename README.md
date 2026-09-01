@@ -136,6 +136,23 @@ Both are served by the same process and the same port; the web interface is a cl
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
 
+## Logs
+
+Log format follows where the output is going: readable and coloured on a
+terminal, JSON when piped, redirected, containerised, or run under a service
+manager. Nothing to configure for either case, and the resolved format is
+stated in the startup line.
+
+```
+09:45:36.039 INFO  scan started    scan_id=scan-0083985a target=demo consent_mode=reject url=https://example.com/
+09:45:38.490 INFO  scan finished   scan_id=scan-0083985a target=demo consent_mode=reject termination=idle requests=4
+```
+
+Force either with `--log-format pretty|json|text`, or `logging.format` in the
+configuration. Colour is dropped for `NO_COLOR`, `TERM=dumb`, and any
+non-terminal, and the level is always present as text so nothing depends on
+it. Redaction is identical in every format.
+
 ## Monitoring wsaw itself
 
 The metric that matters is `wsaw_last_successful_scan_timestamp_seconds`. It is only refreshed by a scan that produced a trustworthy result, so a stalled watcher is alertable:
