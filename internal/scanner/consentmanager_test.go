@@ -30,6 +30,9 @@ const cmpInitDelayMs = 400
 type cmpSite struct {
 	site  *httptest.Server
 	third *httptest.Server
+
+	// neverIdle makes the page poll forever, so the network never goes quiet.
+	neverIdle bool
 }
 
 const (
@@ -40,7 +43,16 @@ const (
 func newCMPSite(t *testing.T) *cmpSite {
 	t.Helper()
 
-	s := &cmpSite{}
+	return newCMPSiteWith(t, false)
+}
+
+// newCMPSiteWith optionally adds an endless poller, modelling the many real
+// sites — analytics heartbeats, long-polling, players — that never reach
+// network idle.
+func newCMPSiteWith(t *testing.T, neverIdle bool) *cmpSite {
+	t.Helper()
+
+	s := &cmpSite{neverIdle: neverIdle}
 
 	thirdMux := http.NewServeMux()
 	thirdMux.HandleFunc("/px.gif", func(w http.ResponseWriter, _ *http.Request) {
@@ -60,9 +72,14 @@ func newCMPSite(t *testing.T) *cmpSite {
 		w.Header().Set("Content-Type", "image/x-icon")
 		_, _ = w.Write([]byte{0, 0, 1, 0})
 	})
+	siteMux.HandleFunc("/poll", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
 	siteMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, cmpFixtureHTML)
+		_, _ = fmt.Fprint(w, cmpFixtureHTML(s.neverIdle))
 	})
 
 	s.site = httptest.NewServer(siteMux)
@@ -95,7 +112,15 @@ func (s *cmpSite) target() config.Resolved {
 // cmpFixtureHTML models the documented API surface: a stub that queues, an
 // init after a delay, setConsent(0|1), consentStatus, close, and the
 // addEventListener events wsaw's readiness check subscribes to.
-var cmpFixtureHTML = fmt.Sprintf(`<!DOCTYPE html>
+func cmpFixtureHTML(neverIdle bool) string {
+	poller := ""
+	if neverIdle {
+		// Keeps a request in flight indefinitely, so settle() can never
+		// report the network quiet.
+		poller = `<script>setInterval(function(){fetch('/poll?t=' + Date.now());}, 250);</script>`
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><title>consentmanager fixture</title></head>
 <body>
 <h1>fixture</h1>
@@ -192,7 +217,9 @@ var cmpFixtureHTML = fmt.Sprintf(`<!DOCTYPE html>
   window.__wsawTestChoice = function () { return choice; };
 })();
 </script>
-</body></html>`, cmpThirdHost, cmpThirdHost, cmpInitDelayMs)
+%s
+</body></html>`, cmpThirdHost, cmpThirdHost, cmpInitDelayMs, poller)
+}
 
 // TestConsentmanagerRejectUsesTheVendorAPI is the point of the rule: the
 // choice is expressed through the documented API and verified by reading it
@@ -391,5 +418,62 @@ func TestConsentmanagerBannerRemainsWhenApiIsUnreachable(t *testing.T) {
 
 	if out.Result.Consent.Reason == "" {
 		t.Error("no reason recorded for a non-applied outcome")
+	}
+}
+
+// TestConsentRunsOnAPageThatNeverGoesIdle is the regression test for a bug
+// found by scanning a real site.
+//
+// Capture settles before touching the banner, so the pre-consent request set
+// is complete. On a page that never reaches network idle — analytics
+// heartbeats, long-polling, video — that settle used to consume the entire
+// scan budget. The consent hook then ran against an expired context, failed
+// to inject its helpers, and the scan reported "no CMP detected" for a page
+// that plainly had one: a false negative on the product's headline finding.
+//
+// Capture now reserves budget for the interaction, so the banner is handled
+// even though the page never goes quiet.
+func TestConsentRunsOnAPageThatNeverGoesIdle(t *testing.T) {
+	info := requireChrome(t)
+
+	site := newCMPSiteWith(t, true)
+
+	s, closePool := newScannerFor(t, info, site.resolverRules())
+	defer closePool()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	target := site.target()
+	// A budget the poller would otherwise consume entirely.
+	target.HardTimeout = 30 * time.Second
+	target.IdleQuiet = 2 * time.Second
+
+	out, err := s.Scan(ctx, target, model.ConsentReject)
+
+	// Exhausting the budget is a recorded outcome, not an error to report.
+	if err != nil {
+		t.Fatalf("Scan returned an error for a page that merely never settled: %v", err)
+	}
+
+	res := out.Result
+
+	// The scan is expected to end on its budget: the page never goes quiet.
+	if res.Termination != model.TermTimeout {
+		t.Logf("termination = %q (a timeout was expected but is not required)", res.Termination)
+	}
+
+	if res.Consent.Outcome != model.OutcomeApplied {
+		t.Fatalf("outcome = %q (%s), want applied: the interaction was starved of budget",
+			res.Consent.Outcome, res.Consent.Reason)
+	}
+
+	if res.Consent.CMP != "Consentmanager" {
+		t.Errorf("CMP = %q, want Consentmanager", res.Consent.CMP)
+	}
+
+	// A truncated scan must still report honestly that it was truncated.
+	if !res.Truncated() && res.Termination == model.TermTimeout {
+		t.Error("a timed-out scan did not report itself as truncated")
 	}
 }

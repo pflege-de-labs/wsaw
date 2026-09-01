@@ -305,6 +305,7 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		NavTimeout:        target.NavTimeout,
 		MaxRequests:       target.MaxRequests,
 		MaxBytes:          target.MaxBytes,
+		ConsentBudget:     s.opts.ConsentTotalTimeout,
 		DwellAfterLoad:    target.DwellAfterLoad,
 		ScrollToBottom:    target.ScrollToBottom,
 		HashResourceTypes: s.opts.HashResourceTypes,

@@ -64,6 +64,11 @@ type Options struct {
 	MaxRequests int
 	MaxBytes    int64
 
+	// ConsentBudget is how long the consent hook may take. Capture reserves
+	// it out of HardTimeout so that a page which never reaches network idle
+	// cannot consume the whole scan before the banner is ever touched.
+	ConsentBudget time.Duration
+
 	// DwellAfterLoad keeps the page open after it settles, for sites that
 	// fire trackers on a timer.
 	DwellAfterLoad time.Duration
@@ -173,6 +178,23 @@ func (o *Options) withDefaults() Options {
 	}
 
 	return out
+}
+
+// consentReserve is the slice of the scan budget kept aside for the consent
+// interaction and the settle that follows it.
+func (o *Options) consentReserve() time.Duration {
+	budget := o.ConsentBudget
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+
+	reserve := budget + o.IdleQuiet
+
+	if half := o.HardTimeout / 2; reserve > half {
+		reserve = half
+	}
+
+	return reserve
 }
 
 // Hooks lets the caller act on the page between the initial load and the

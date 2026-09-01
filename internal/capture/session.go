@@ -84,7 +84,7 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 
 	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes, opts.MaxRequests, opts.MaxBytes)
 
-	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun}
+	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
 
 	s.listen()
 
@@ -99,6 +99,18 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 
 	s.finish(err)
 
+	// A budget that ran out is a recorded outcome, not a failure. The
+	// termination reason already carries it and the result is usable, so
+	// returning an error as well would have the daemon warn on every scan of
+	// any site that never reaches network idle — which is a great many of
+	// them. Warnings that fire constantly are warnings operators stop reading.
+	//
+	// Cancellation is different and stays an error: it means the caller gave
+	// up, and the result is genuinely partial.
+	if err != nil && errors.Is(err, context.DeadlineExceeded) && res.Truncated() {
+		err = nil
+	}
+
 	if err != nil {
 		return res, err
 	}
@@ -110,6 +122,8 @@ type session struct {
 	opts Options
 	rec  *recorder
 	res  *model.Result
+
+	start time.Time
 
 	runCtx    context.Context
 	cancelRun context.CancelFunc
@@ -198,8 +212,17 @@ func (s *session) execute(hooks Hooks) error {
 		return err
 	}
 
-	// Settle before interacting, so the pre-consent request set is complete.
-	s.settle()
+	// Settle before interacting, so the pre-consent request set is complete —
+	// but not for the whole scan budget.
+	//
+	// Plenty of real sites never reach network idle: analytics heartbeats,
+	// long-polling and video players keep requests in flight indefinitely. On
+	// those, settling without a reservation consumes the entire budget, the
+	// consent hook then runs against an expired context, and the scan reports
+	// "no CMP detected" for a page that plainly has one. That is a false
+	// negative on the product's headline finding, so the interaction gets its
+	// budget reserved up front.
+	s.settle(s.preConsentCtx(hooks))
 
 	if err := s.screenshot("before-consent"); err != nil {
 		s.rec.addWarning("screenshot before consent failed: " + s.scrub(err.Error()))
@@ -242,20 +265,53 @@ func (s *session) execute(hooks Hooks) error {
 			s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
 		}
 
-		s.settle()
+		s.settle(s.runCtx)
 	}
 
 	if s.opts.ScrollToBottom {
 		s.scroll()
-		s.settle()
+		s.settle(s.runCtx)
 	}
 
 	if s.opts.DwellAfterLoad > 0 {
 		s.dwell()
-		s.settle()
+		s.settle(s.runCtx)
 	}
 
 	return s.runCtx.Err()
+}
+
+// preConsentCtx bounds the settle that precedes the consent interaction, so a
+// page that never goes idle cannot starve it.
+//
+// The reservation is capped at half the scan budget: a site that does settle
+// normally should still get most of the budget for its initial load, and
+// reserving more would trade a real false negative for a different one.
+func (s *session) preConsentCtx(hooks Hooks) context.Context {
+	if hooks.AfterLoad == nil {
+		return s.runCtx
+	}
+
+	reserve := s.opts.consentReserve()
+	if reserve <= 0 {
+		return s.runCtx
+	}
+
+	deadline := s.start.Add(s.opts.HardTimeout - reserve)
+
+	// A budget already spent leaves nothing to bound; the interaction runs
+	// against whatever remains and reports honestly if that is nothing.
+	if !deadline.After(time.Now()) {
+		return s.runCtx
+	}
+
+	ctx, cancel := context.WithDeadline(s.runCtx, deadline)
+
+	// The context is only used for the settle that follows immediately; the
+	// cancel runs when the scan ends.
+	context.AfterFunc(s.runCtx, cancel)
+
+	return ctx
 }
 
 // prepare configures the browser context before navigation: emulation,
@@ -349,9 +405,10 @@ func (s *session) navigate() error {
 	return nil
 }
 
-// settle waits until the network is quiet, the budget is exhausted, or the
-// capture context ends. It never waits longer than the remaining budget.
-func (s *session) settle() {
+// settle waits until the network is quiet, the budget is exhausted, or ctx
+// ends. Callers pass a context narrower than the scan budget when work still
+// has to happen afterwards.
+func (s *session) settle(ctx context.Context) {
 	quiet := time.NewTimer(s.opts.IdleQuiet)
 	defer quiet.Stop()
 
@@ -374,7 +431,7 @@ func (s *session) settle() {
 		}
 
 		select {
-		case <-s.runCtx.Done():
+		case <-ctx.Done():
 			return
 
 		case <-s.rec.idleSignal:
