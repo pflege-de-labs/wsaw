@@ -1,18 +1,16 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
-	"encoding/binary"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
-
-	"go.etcd.io/bbolt"
 
 	"github.com/martint17r/wsaw/internal/model"
 )
@@ -36,10 +34,38 @@ type Baseline struct {
 }
 
 // SetBaseline approves a stored result as the baseline for its series.
+//
+// The approval and its audit entry are written in one transaction. An
+// approval is what silences future findings, so an audit log that can lose
+// one is not an audit log.
 func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*Baseline, error) {
-	res, err := s.GetResult(target, mode, scanID)
+	ctx, cancel := s.opCtx()
+	defer cancel()
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("approving baseline for %s/%s: %w", target, mode, err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	var document string
+
+	err = tx.QueryRowContext(ctx,
+		`select document from results where target = ? and consent_mode = ? and scan_id = ?`,
+		target, string(mode), scanID).Scan(&document)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("result %s for %s/%s: %w", scanID, target, mode, ErrNotFound)
+	case err != nil:
+		return nil, fmt.Errorf("reading result %s: %w", scanID, err)
+	}
+
+	var res model.Result
+
+	if err := json.Unmarshal([]byte(document), &res); err != nil {
+		return nil, fmt.Errorf("decoding result %s: %w", scanID, err)
 	}
 
 	if !res.OK() {
@@ -56,7 +82,7 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 		ApprovedAt:  time.Now().UTC(),
 		ApprovedBy:  approvedBy,
 		Note:        note,
-		Result:      res,
+		Result:      &res,
 	}
 
 	payload, err := json.Marshal(b)
@@ -64,14 +90,19 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 		return nil, fmt.Errorf("encoding baseline: %w", err)
 	}
 
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketBaselines).Put(seriesKey(target, mode), payload)
-	})
+	_, err = tx.ExecContext(ctx, `
+		insert into baselines (target, consent_mode, scan_id, approved_at, document)
+		values (?, ?, ?, ?, ?)
+		on conflict (target, consent_mode) do update set
+			scan_id     = excluded.scan_id,
+			approved_at = excluded.approved_at,
+			document    = excluded.document`,
+		target, string(mode), scanID, b.ApprovedAt.UnixNano(), string(payload))
 	if err != nil {
 		return nil, fmt.Errorf("storing baseline for %s/%s: %w", target, mode, err)
 	}
 
-	if err := s.appendAudit(AuditEntry{
+	if err := appendAuditTx(ctx, tx, AuditEntry{
 		At:      b.ApprovedAt,
 		Actor:   approvedBy,
 		Action:  "baseline-approved",
@@ -83,55 +114,73 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 		return nil, err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing baseline approval for %s/%s: %w", target, mode, err)
+	}
+
 	return b, nil
 }
 
 // GetBaseline returns the approved baseline for a series.
 func (s *Store) GetBaseline(target string, mode model.ConsentMode) (*Baseline, error) {
-	var out *Baseline
+	ctx, cancel := s.opCtx()
+	defer cancel()
 
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		v := tx.Bucket(bucketBaselines).Get(seriesKey(target, mode))
-		if v == nil {
-			return nil
-		}
+	var document string
 
-		var b Baseline
-		if err := json.Unmarshal(v, &b); err != nil {
-			return fmt.Errorf("decoding baseline: %w", err)
-		}
+	err := s.db.QueryRowContext(ctx,
+		`select document from baselines where target = ? and consent_mode = ?`,
+		target, string(mode)).Scan(&document)
 
-		out = &b
-
-		return nil
-	})
-	if err != nil {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("baseline for %s/%s: %w", target, mode, ErrNotFound)
+	case err != nil:
 		return nil, fmt.Errorf("reading baseline for %s/%s: %w", target, mode, err)
 	}
 
-	if out == nil {
-		return nil, fmt.Errorf("baseline for %s/%s: %w", target, mode, ErrNotFound)
+	var b Baseline
+
+	if err := json.Unmarshal([]byte(document), &b); err != nil {
+		return nil, fmt.Errorf("decoding baseline for %s/%s: %w", target, mode, err)
 	}
 
-	return out, nil
+	return &b, nil
 }
 
-// DeleteBaseline removes an approval.
+// DeleteBaseline removes an approval, recording that it happened.
 func (s *Store) DeleteBaseline(target string, mode model.ConsentMode, actor string) error {
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketBaselines).Delete(seriesKey(target, mode))
-	})
+	ctx, cancel := s.opCtx()
+	defer cancel()
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("deleting baseline for %s/%s: %w", target, mode, err)
 	}
 
-	return s.appendAudit(AuditEntry{
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`delete from baselines where target = ? and consent_mode = ?`,
+		target, string(mode)); err != nil {
+		return fmt.Errorf("deleting baseline for %s/%s: %w", target, mode, err)
+	}
+
+	if err := appendAuditTx(ctx, tx, AuditEntry{
 		At:     time.Now().UTC(),
 		Actor:  actor,
 		Action: "baseline-deleted",
 		Target: target,
 		Mode:   mode,
-	})
+	}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing baseline deletion for %s/%s: %w", target, mode, err)
+	}
+
+	return nil
 }
 
 // AuditEntry records an action that changed approved state. Approvals must be
@@ -146,26 +195,17 @@ type AuditEntry struct {
 	Note    string            `json:"note,omitempty"`
 }
 
-func (s *Store) appendAudit(e AuditEntry) error {
+// appendAuditTx writes an audit entry inside a caller's transaction, so an
+// action and its record commit together.
+func appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
 	payload, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding audit entry: %w", err)
 	}
 
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketAudit)
-
-		id, err := b.NextSequence()
-		if err != nil {
-			return fmt.Errorf("allocating audit sequence: %w", err)
-		}
-
-		key := make([]byte, 8)
-		binary.BigEndian.PutUint64(key, id)
-
-		return b.Put(key, payload)
-	})
-	if err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`insert into audit (at, document) values (?, ?)`,
+		e.At.UnixNano(), string(payload)); err != nil {
 		return fmt.Errorf("appending audit entry: %w", err)
 	}
 
@@ -174,27 +214,46 @@ func (s *Store) appendAudit(e AuditEntry) error {
 
 // Audit returns the most recent audit entries, newest first.
 func (s *Store) Audit(limit int) ([]AuditEntry, error) {
+	ctx, cancel := s.opCtx()
+	defer cancel()
+
+	q := `select document from audit order by id desc`
+
+	var args []any
+
+	if limit > 0 {
+		q += " limit ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading audit log: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
 	var out []AuditEntry
 
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		c := tx.Bucket(bucketAudit).Cursor()
+	for rows.Next() {
+		var document string
 
-		for k, v := c.Last(); k != nil; k, v = c.Prev() {
-			var e AuditEntry
-			if err := json.Unmarshal(v, &e); err != nil {
-				continue
-			}
-
-			out = append(out, e)
-
-			if limit > 0 && len(out) >= limit {
-				return nil
-			}
+		if err := rows.Scan(&document); err != nil {
+			return nil, fmt.Errorf("reading audit log: %w", err)
 		}
 
-		return nil
-	})
-	if err != nil {
+		var e AuditEntry
+
+		if err := json.Unmarshal([]byte(document), &e); err != nil {
+			// Skipped rather than fatal, as elsewhere: one bad row must not
+			// hide the rest of the log.
+			continue
+		}
+
+		out = append(out, e)
+	}
+
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading audit log: %w", err)
 	}
 
@@ -208,7 +267,25 @@ func (s *Store) RecordAudit(e AuditEntry) error {
 		e.At = time.Now().UTC()
 	}
 
-	return s.appendAudit(e)
+	ctx, cancel := s.opCtx()
+	defer cancel()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("recording audit entry: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if err := appendAuditTx(ctx, tx, e); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("recording audit entry: %w", err)
+	}
+
+	return nil
 }
 
 // Retention bounds how much history is kept.
@@ -228,9 +305,11 @@ type PruneStats struct {
 	BytesFreed       int64
 }
 
-// Prune enforces retention. Baselines are never pruned: they hold their own
-// copy of the approved result, so history can expire without invalidating the
-// definition of "expected".
+// Prune enforces retention.
+//
+// Baselines are never pruned: they hold their own copy of the approved
+// result, so history can expire without invalidating the definition of
+// "expected".
 func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 	var stats PruneStats
 
@@ -238,63 +317,52 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 		return stats, nil
 	}
 
-	keep := make(map[string]struct{})
+	ctx, cancel := s.opCtx()
+	defer cancel()
 
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		results := tx.Bucket(bucketResults)
-
-		return results.ForEachBucket(func(name []byte) error {
-			series := results.Bucket(name)
-
-			type entry struct {
-				key []byte
-				at  time.Time
-			}
-
-			var entries []entry
-
-			if err := series.ForEach(func(k, _ []byte) error {
-				if len(k) < 8 {
-					return nil
-				}
-
-				key := make([]byte, len(k))
-				copy(key, k)
-
-				entries = append(entries, entry{key: key, at: keyTime(k)})
-
-				return nil
-			}); err != nil {
-				return err
-			}
-
-			// Newest first, so the count limit keeps recent history.
-			sort.Slice(entries, func(i, j int) bool { return entries[i].at.After(entries[j].at) })
-
-			for i, e := range entries {
-				expiredByAge := r.MaxAge > 0 && now.Sub(e.at) > r.MaxAge
-				expiredByCount := r.MaxPerSeries > 0 && i >= r.MaxPerSeries
-
-				if !expiredByAge && !expiredByCount {
-					if len(e.key) > 8 {
-						keep[string(e.key[8:])] = struct{}{}
-					}
-
-					continue
-				}
-
-				if err := series.Delete(e.key); err != nil {
-					return fmt.Errorf("deleting expired result: %w", err)
-				}
-
-				stats.ResultsDeleted++
-			}
-
-			return nil
-		})
-	})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return stats, fmt.Errorf("pruning results: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if r.MaxAge > 0 {
+		res, err := tx.ExecContext(ctx,
+			`delete from results where started_at < ?`, now.Add(-r.MaxAge).UnixNano())
+		if err != nil {
+			return stats, fmt.Errorf("pruning results by age: %w", err)
+		}
+
+		if n, err := res.RowsAffected(); err == nil {
+			stats.ResultsDeleted += int(n)
+		}
+	}
+
+	if r.MaxPerSeries > 0 {
+		// Ranked within each series by the same ordering every listing uses,
+		// so "the newest N" means the same thing here as it does there.
+		res, err := tx.ExecContext(ctx, `
+			delete from results where rowid in (
+				select rowid from (
+					select rowid, row_number() over (
+						partition by target, consent_mode
+						order by started_at desc, scan_id desc
+					) as rank
+					from results
+				) where rank > ?
+			)`, r.MaxPerSeries)
+		if err != nil {
+			return stats, fmt.Errorf("pruning results by count: %w", err)
+		}
+
+		if n, err := res.RowsAffected(); err == nil {
+			stats.ResultsDeleted += int(n)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return stats, fmt.Errorf("committing prune: %w", err)
 	}
 
 	return stats, nil
@@ -304,7 +372,7 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 // are content-addressed, so storing the same screenshot twice costs one copy.
 func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 	if s.artifactDir == "" {
-		return "", fmt.Errorf("artifact storage is not configured")
+		return "", errors.New("artifact storage is not configured")
 	}
 
 	sum := sha256.Sum256(data)
@@ -357,7 +425,7 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 // crafted path cannot escape the artifact directory.
 func (s *Store) GetArtifact(ref string) ([]byte, error) {
 	if s.artifactDir == "" {
-		return nil, fmt.Errorf("artifact storage is not configured")
+		return nil, errors.New("artifact storage is not configured")
 	}
 
 	clean := filepath.Clean(filepath.FromSlash(ref))
@@ -380,22 +448,4 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-// keyTime reads the timestamp a result key begins with.
-//
-// A key that does not decode to a sensible time is treated as the zero time
-// rather than as a wildly future or negative one, so a corrupt record sorts
-// to the front and is pruned instead of pinning the series open for ever.
-func keyTime(k []byte) time.Time {
-	if len(k) < 8 {
-		return time.Time{}
-	}
-
-	nanos := binary.BigEndian.Uint64(k[:8])
-	if nanos > math.MaxInt64 {
-		return time.Time{}
-	}
-
-	return time.Unix(0, int64(nanos))
 }

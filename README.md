@@ -188,6 +188,8 @@ time() - max by (target, consent_mode) (wsaw_last_successful_scan_timestamp_seco
 - **launchd**: [`deploy/de.pflege.wsaw.plist`](deploy/de.pflege.wsaw.plist).
 - **Container**: multi-arch, Chromium bundled and pinned, runs as a non-root user, sandbox enabled.
 
+Results live in a SQLite database reached through `database/sql`, so moving to a server database later is a change of driver rather than a rewrite. Each result is stored as its JSON document plus the columns needed to index it, which keeps the published schema the single source of truth and makes the store queryable with ordinary SQL.
+
 State lives in the platform's directory by default (`$XDG_STATE_HOME/wsaw` on Linux, `~/Library/Application Support/wsaw` on macOS) and is created `0700`.
 
 ## Being a good citizen

@@ -1,12 +1,16 @@
 package store_test
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/martint17r/wsaw/internal/model"
 	"github.com/martint17r/wsaw/internal/store"
@@ -515,5 +519,317 @@ func TestPutResultRejectsIncompleteRecords(t *testing.T) {
 
 	if err := s.PutResult(&model.Result{Target: "site"}); err == nil {
 		t.Error("stored a result with no scan ID")
+	}
+}
+
+// --- Story 4.6: database/sql on SQLite ------------------------------------
+
+// sqlDB opens the store's own file directly, for assertions about the schema
+// and about rows the store's API deliberately will not produce.
+func sqlDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = db.Close() })
+
+	return db
+}
+
+// TestPragmasAreApplied is AC6: SQLite has to be told to behave well for a
+// long-running process, and the settings are easy to lose in a DSN.
+func TestPragmasAreApplied(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	db := sqlDB(t, path)
+
+	var journal string
+	if err := db.QueryRowContext(t.Context(), "pragma journal_mode").Scan(&journal); err != nil {
+		t.Fatal(err)
+	}
+
+	// WAL is what lets the web interface read while the daemon writes.
+	if strings.ToLower(journal) != "wal" {
+		t.Errorf("journal_mode = %q, want wal", journal)
+	}
+}
+
+// TestSchemaVersionIsRecorded is the first half of AC5.
+func TestSchemaVersionIsRecorded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db := sqlDB(t, path)
+
+	var version int
+	if err := db.QueryRowContext(t.Context(), "pragma user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+
+	if version < 1 {
+		t.Errorf("user_version = %d, want at least 1: a store with no version cannot be migrated safely", version)
+	}
+}
+
+// TestMigrationIsIdempotent: opening an existing store must not try to apply
+// what is already there.
+func TestMigrationIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	for i := range 3 {
+		s, err := store.Open(store.Options{Path: path})
+		if err != nil {
+			t.Fatalf("open %d: %v", i+1, err)
+		}
+
+		if err := s.PutResult(result(fmt.Sprintf("scan-%d", i), time.Now(), model.ConsentReject)); err != nil {
+			t.Fatalf("put %d: %v", i+1, err)
+		}
+
+		if err := s.Close(); err != nil {
+			t.Fatalf("close %d: %v", i+1, err)
+		}
+	}
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 3 {
+		t.Errorf("got %d results across three opens, want 3", len(got))
+	}
+}
+
+// TestNewerSchemaIsRefused is the half of AC5 that protects data: a binary
+// that does not understand the schema must not write to it.
+func TestNewerSchemaIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pretend a much newer wsaw has been here.
+	db := sqlDB(t, path)
+	if _, err := db.ExecContext(t.Context(), "pragma user_version = 9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Open(store.Options{Path: path}); err == nil {
+		t.Fatal("a store written by a newer schema was opened anyway")
+	} else if !strings.Contains(err.Error(), "newer") {
+		t.Errorf("error does not explain the problem: %v", err)
+	}
+}
+
+// TestBaselineApprovalAndAuditAreAtomic is AC7. An approval is what silences
+// future findings, so an audit log that can lose one is not an audit log.
+func TestBaselineApprovalAndAuditAreAtomic(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	// A scan that cannot be approved, so the approval fails part-way.
+	bad := result("bad-1", time.Now(), model.ConsentReject)
+	bad.Termination = model.TermError
+	bad.Error = "navigate failed"
+
+	if err := s.PutResult(bad); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SetBaseline("site", model.ConsentReject, "bad-1", "martin", ""); err == nil {
+		t.Fatal("SetBaseline accepted a failed scan")
+	}
+
+	// Neither half may have landed.
+	if _, err := s.GetBaseline("site", model.ConsentReject); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a baseline was stored despite the approval failing: %v", err)
+	}
+
+	entries, err := s.Audit(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(entries) != 0 {
+		t.Errorf("an audit entry was written for an approval that did not happen: %+v", entries)
+	}
+}
+
+// TestCorruptRowIsReportedNotFatal is AC8, and Tenet 5: one unreadable record
+// must neither hide the rest of the history nor vanish silently.
+func TestCorruptRowIsReportedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Add(-time.Hour)
+
+	for i := range 3 {
+		if err := s.PutResult(result(fmt.Sprintf("scan-%d", i), base.Add(time.Duration(i)*time.Minute), model.ConsentReject)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the middle one behind the store's back.
+	db := sqlDB(t, path)
+	if _, err := db.ExecContext(t.Context(), `update results set document = '{not json' where scan_id = 'scan-1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = reopened.Close() }()
+
+	got, err := reopened.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatalf("one corrupt row made the whole history unreadable: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("got %d summaries, want 3: the corrupt row must still be listed", len(got))
+	}
+
+	var reported bool
+
+	for _, sm := range got {
+		if sm.ScanID != "scan-1" {
+			continue
+		}
+
+		reported = true
+
+		if sm.Termination != model.TermError || sm.Error == "" {
+			t.Errorf("the corrupt row is not reported as a failure: %+v", sm)
+		}
+	}
+
+	if !reported {
+		t.Error("the corrupt row vanished from the listing instead of being reported")
+	}
+
+	// The readable ones are still readable.
+	if _, err := reopened.GetResult("site", model.ConsentReject, "scan-2"); err != nil {
+		t.Errorf("a healthy result became unreadable: %v", err)
+	}
+}
+
+// TestResultIsStoredAsItsDocument is AC3: the JSON schema is the interface, so
+// the stored document must be the result itself, not a reassembly of columns.
+func TestResultIsStoredAsItsDocument(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	s, err := store.Open(store.Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := result("scan-1", time.Now(), model.ConsentReject)
+	if err := s.PutResult(res); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db := sqlDB(t, path)
+
+	// Read through SQLite's own JSON functions, which only works if the
+	// column really holds the result document.
+	var schemaVersion, termination string
+
+	err = db.QueryRowContext(t.Context(), `
+		select json_extract(document, '$.schemaVersion'), termination
+		from results where scan_id = 'scan-1'`).Scan(&schemaVersion, &termination)
+	if err != nil {
+		t.Fatalf("the stored row is not the result document: %v", err)
+	}
+
+	if schemaVersion != model.SchemaVersion {
+		t.Errorf("schemaVersion in the document = %q, want %q", schemaVersion, model.SchemaVersion)
+	}
+
+	// And the indexed column agrees with the document it was extracted from.
+	if termination != string(res.Termination) {
+		t.Errorf("termination column = %q, document says %q", termination, res.Termination)
+	}
+}
+
+// TestOpenFailsActionablyOnAnUnusablePath is AC11.
+func TestOpenFailsActionablyOnAnUnusablePath(t *testing.T) {
+	t.Parallel()
+
+	// A path whose parent is a file, so the directory cannot be created.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.Open(store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
+	if err == nil {
+		t.Fatal("Open succeeded against an unusable path")
 	}
 }

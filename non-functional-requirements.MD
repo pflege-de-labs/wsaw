@@ -58,7 +58,7 @@
 
 ## 7. Installability & Operability
 
-- Single static Go binary per platform, plus the documented Chrome dependency. No runtime downloads, no Node.js, no CGo requirement.
+- Single static Go binary per platform, plus the documented Chrome dependency. No runtime downloads, no Node.js, no CGo requirement — which is why the SQLite driver must be a CGo-free one.
 - Multi-arch container image with Chrome bundled and pinned.
 - Ships a systemd unit and a launchd plist; documented XDG-compliant paths on Linux and `~/Library/Application Support` on macOS.
 - Configurable via a YAML config file, with flags and environment variables overriding it. One-shot CLI mode works with no config file at all.

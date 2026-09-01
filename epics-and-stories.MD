@@ -615,7 +615,7 @@ Kubernetes also removes the mechanism Story 1.8 relies on. There is no container
 
 1. **CDP library:** drive Chrome via `chromedp`/`cdproto` rather than WebDriver — network-domain fidelity and initiator chains are the core product, and WebDriver does not expose them well. Playwright-Go is rejected as it requires a Node-based driver process.
 2. **Chrome is an external runtime dependency** on bare-metal installs, and bundled in the container image. wsaw does not download browsers at runtime.
-3. **Storage:** an embedded, pure-Go store (e.g. `bbolt` or SQLite via a CGo-free driver) to keep the single-binary and cross-compilation promise. No external DB in v1.
+3. **Storage:** SQLite through `database/sql`, with a CGo-free driver, so the single-binary and cross-compilation promise holds while the driver stays the seam for a server database later (Story 4.6). No external DB is required in v1.
 4. **Config:** YAML file plus flags/env overrides. A target list is inherently file-shaped, so config-file-less operation is supported only for one-shot CLI runs.
 5. **Consent rules ship as data, not code** (embedded YAML rule pack), so rules can be updated by users and by releases without recompilation.
 6. **v1 is single-node.** Distributed scheduling, sharding, and a web UI are explicitly deferred.

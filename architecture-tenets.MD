@@ -68,7 +68,7 @@ Where a CMP exposes a programmatic surface (TCF `__tcfapi`, `__gpp`, vendor SDKs
 
 ## 12. Interfaces at the seams, concrete types within
 
-Capture engine, consent handler, target source, result store, differ, exporter, and notifier are interfaces — because each has a plausible second implementation (remote CDP, SQLite vs. bbolt, S3 export, a second notifier). Everything else is a plain struct. We do not introduce an interface for a single implementation on the theory that someone might want another one.
+Capture engine, consent handler, target source, result store, differ, exporter, and notifier are interfaces — because each has a plausible second implementation (remote CDP, SQLite vs. a server database, S3 export, a second notifier). Everything else is a plain struct. We do not introduce an interface for a single implementation on the theory that someone might want another one.
 
 ## 13. The browser must be mockable
 
@@ -96,7 +96,7 @@ Per-origin rate limits, scheduling jitter, bounded concurrency, and an identifia
 
 ## 18. Standard library first
 
-`log/slog` for logging, `net/http` for the API, `context` for cancellation, `errors` wrapping for error chains. Dependencies are added when they solve a hard problem (CDP, public suffix list, YAML, embedded store), not for ergonomics. Every dependency is a supply-chain liability in a tool whose selling point is detecting supply-chain changes.
+`log/slog` for logging, `net/http` for the API, `database/sql` for persistence, `context` for cancellation, `errors` wrapping for error chains. Dependencies are added when they solve a hard problem (CDP, public suffix list, YAML, a CGo-free SQLite driver), not for ergonomics. Every dependency is a supply-chain liability in a tool whose selling point is detecting supply-chain changes.
 
 ## 19. Data minimization by default
 
