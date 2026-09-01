@@ -796,6 +796,9 @@ func (o *Options) environment() model.Environment {
 		Proxy:          secret.RedactURL(o.Proxy),
 		WarmCache:      o.WarmCache,
 		BrowserReused:  o.BrowserReused,
+		BrowserRuntime: o.BrowserRuntime,
+		BrowserImage:   o.BrowserImage,
+		BrowserSandbox: o.BrowserSandbox,
 	}
 
 	// Header names are echoed for reproducibility; values never are.

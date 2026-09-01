@@ -171,6 +171,18 @@ type Environment struct {
 
 	WarmCache bool `json:"warmCache"`
 
+	// BrowserRuntime is "local" when the browser ran as a host process, or
+	// the container runtime that ran it. A result is only comparable with
+	// another if a reader can see which rendered it.
+	BrowserRuntime string `json:"browserRuntime,omitempty"`
+	// BrowserImage is the container image, when containerised.
+	BrowserImage string `json:"browserImage,omitempty"`
+	// BrowserSandbox reports whether Chrome's own sandbox was active. In a
+	// container the container is the boundary and the inner sandbox is
+	// usually off, which is a material fact about the scan rather than an
+	// implementation detail.
+	BrowserSandbox bool `json:"browserSandbox"`
+
 	// BrowserReused is true when this scan ran on a browser process that had
 	// already served another scan. Isolation then rests on wsaw clearing
 	// state rather than on the process boundary, which is weaker, so it is

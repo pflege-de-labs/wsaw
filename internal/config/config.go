@@ -134,6 +134,17 @@ type Browser struct {
 	NoSandbox bool     `yaml:"noSandbox,omitempty"`
 	ExtraArgs []string `yaml:"extraArgs,omitempty"`
 
+	// Runtime selects where the browser runs: auto, podman, docker or local.
+	//
+	// auto prefers podman, falls back to docker, and uses a local browser
+	// when neither is usable. Running in a container puts a boundary the
+	// operating system enforces between a hostile page and this host
+	// (Story 1.8).
+	Runtime string `yaml:"runtime,omitempty"`
+
+	// Container configures the containerised browser.
+	Container ContainerBrowser `yaml:"container,omitempty"`
+
 	// ProfileDir is the parent directory for per-browser Chrome profiles.
 	// Empty means the system temporary directory. Useful when /tmp is small
 	// or mounted noexec.
@@ -153,6 +164,24 @@ type Browser struct {
 	// more than the consent comparison.
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`
+}
+
+// ContainerBrowser configures the containerised browser.
+type ContainerBrowser struct {
+	// Image is pinned by digest by default. A floating tag would change
+	// capture behaviour between scans and a diff would report the change as
+	// the site's.
+	Image string `yaml:"image,omitempty"`
+
+	Memory    string `yaml:"memory,omitempty"`
+	PidsLimit int    `yaml:"pidsLimit,omitempty"`
+
+	StartupTimeout Duration `yaml:"startupTimeout,omitempty"`
+
+	// ExtraArgs are runtime arguments; BrowserArgs are appended to the
+	// browser's own command line.
+	ExtraArgs   []string `yaml:"extraArgs,omitempty"`
+	BrowserArgs []string `yaml:"browserArgs,omitempty"`
 }
 
 // Store configures persistence.

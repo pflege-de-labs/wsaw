@@ -36,6 +36,15 @@ type Options struct {
 	// ExtraArgs are additional Chrome flags for unusual environments.
 	ExtraArgs []string
 
+	// Container, when set, runs the browser inside a container instead of as
+	// a host process, and wsaw attaches to it over CDP.
+	//
+	// An interface rather than a concrete type: this is a seam with a
+	// plausible second implementation — a remote browser farm, a different
+	// runtime — and it keeps this package free of any container dependency
+	// (Tenet 12).
+	Container ContainerLauncher
+
 	// ProfileDir is the parent directory for per-browser profiles. Empty
 	// means the system temporary directory.
 	//
@@ -67,6 +76,24 @@ func (o *Options) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// ContainerLauncher starts a browser somewhere other than this host and says
+// where to reach it.
+type ContainerLauncher interface {
+	// Start launches a browser and returns a handle to it. The caller owns
+	// the handle and must remove it.
+	Start(ctx context.Context) (ContainerInstance, error)
+}
+
+// ContainerInstance is a running containerised browser.
+type ContainerInstance interface {
+	// Endpoint is the CDP endpoint to attach to.
+	Endpoint() string
+	// ID identifies the container, for logs.
+	ID() string
+	// Remove stops and deletes it. It must be safe to call more than once.
+	Remove(ctx context.Context) error
+}
+
 // Browser is one running Chrome process, or one attachment to a remote CDP
 // endpoint. It is safe for concurrent use only in the sense that Contexts may
 // be created from it; each scan gets its own isolated context.
@@ -85,6 +112,10 @@ type Browser struct {
 	// wsaw does not own that browser's profile.
 	userDataDir string
 
+	// instance is the container this browser runs in, when containerised.
+	// wsaw started it, so wsaw removes it.
+	instance ContainerInstance
+
 	scans atomic.Int64
 
 	closeOnce sync.Once
@@ -100,8 +131,22 @@ type Browser struct {
 func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	b := &Browser{opts: opts}
 
-	if opts.RemoteURL != "" {
-		b.allocCtx, b.allocCancel = chromedp.NewRemoteAllocator(context.Background(), opts.RemoteURL)
+	remoteURL := opts.RemoteURL
+
+	if opts.Container != nil {
+		// The container is started before the allocator, so a failure here
+		// never leaves a half-built browser holding a pool slot.
+		inst, err := opts.Container.Start(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		b.instance = inst
+		remoteURL = inst.Endpoint()
+	}
+
+	if remoteURL != "" {
+		b.allocCtx, b.allocCancel = chromedp.NewRemoteAllocator(context.Background(), remoteURL)
 	} else {
 		dir, err := os.MkdirTemp(opts.ProfileDir, "wsaw-profile-")
 		if err != nil {
@@ -357,7 +402,7 @@ func (b *Browser) Close() error {
 func (b *Browser) shutdown() error {
 	// Ask Chrome to exit, but never wait on it indefinitely: an unresponsive
 	// browser is killed by cancelling its allocator.
-	if b.opts.RemoteURL == "" {
+	if b.opts.RemoteURL == "" && b.instance == nil {
 		const graceful = 5 * time.Second
 
 		ctx, cancel := context.WithTimeout(b.browserCtx, graceful)
@@ -380,6 +425,24 @@ func (b *Browser) shutdown() error {
 	}
 
 	b.forceClose()
+
+	// The container is removed on every exit path, including a failed launch
+	// and a panic. A leaked container is worse than a leaked process: it
+	// survives the restart that would have cleaned the process up
+	// (Story 1.8, AC4).
+	if b.instance != nil {
+		const removeTimeout = 30 * time.Second
+
+		ctx, cancel := context.WithTimeout(context.Background(), removeTimeout)
+
+		err := b.instance.Remove(ctx)
+
+		cancel()
+
+		if err != nil {
+			return err
+		}
+	}
 
 	// The profile directory is removed on every path, including panic and
 	// cancellation, because a leaked directory per browser fills the disk of a

@@ -4,159 +4,457 @@
   "title": "wsaw scan result",
   "description": "One scan of one target in one consent mode. This schema is wsaw's primary interface: reports, the web interface and CSV exports are all derived views over it. Changes are additive by default; removing or repurposing a field is a breaking change.",
   "type": "object",
-  "required": ["schemaVersion", "scanId", "target", "url", "consentMode", "consent", "startedAt", "finishedAt", "termination", "environment", "requests"],
+  "required": [
+    "schemaVersion",
+    "scanId",
+    "target",
+    "url",
+    "consentMode",
+    "consent",
+    "startedAt",
+    "finishedAt",
+    "termination",
+    "environment",
+    "requests"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": {"type": "string", "description": "Schema version, currently 1.0."},
-    "scanId": {"type": "string"},
-    "target": {"type": "string", "description": "Configured target name; stable across scans, which is what ties history together."},
-    "url": {"type": "string", "format": "uri"},
-    "finalUrl": {"type": "string", "description": "Document URL after redirects."},
-    "labels": {"type": "object", "additionalProperties": {"type": "string"}},
-    "consentMode": {"enum": ["none", "reject", "accept"], "description": "Part of a result's identity. Results are never compared across modes."},
-    "consent": {"$ref": "#/$defs/consent"},
-    "startedAt": {"type": "string", "format": "date-time"},
-    "finishedAt": {"type": "string", "format": "date-time"},
-    "durationNs": {"type": "integer"},
+    "schemaVersion": {
+      "type": "string",
+      "description": "Schema version, currently 1.0."
+    },
+    "scanId": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string",
+      "description": "Configured target name; stable across scans, which is what ties history together."
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "finalUrl": {
+      "type": "string",
+      "description": "Document URL after redirects."
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "consentMode": {
+      "enum": [
+        "none",
+        "reject",
+        "accept"
+      ],
+      "description": "Part of a result's identity. Results are never compared across modes."
+    },
+    "consent": {
+      "$ref": "#/$defs/consent"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "durationNs": {
+      "type": "integer"
+    },
     "termination": {
-      "enum": ["idle", "timeout", "request-cap", "byte-cap", "error", "skipped"],
+      "enum": [
+        "idle",
+        "timeout",
+        "request-cap",
+        "byte-cap",
+        "error",
+        "skipped"
+      ],
       "description": "Why capture stopped. Anything other than idle means the asset list may be incomplete and must not be read as 'nothing was loaded'."
     },
-    "error": {"type": "string", "description": "Set when the scan failed. Its presence invalidates the asset list."},
-    "environment": {"$ref": "#/$defs/environment"},
-    "requests": {"type": "array", "items": {"$ref": "#/$defs/request"}},
-    "cookies": {"type": "array", "items": {"$ref": "#/$defs/cookie"}},
-    "screenshots": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
-    "warnings": {"type": "array", "items": {"type": "string"}, "description": "Non-fatal problems a reader must see, such as a body that could not be fingerprinted."}
+    "error": {
+      "type": "string",
+      "description": "Set when the scan failed. Its presence invalidates the asset list."
+    },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/request"
+      }
+    },
+    "cookies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cookie"
+      }
+    },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Non-fatal problems a reader must see, such as a body that could not be fingerprinted."
+    }
   },
   "$defs": {
     "consent": {
       "type": "object",
-      "required": ["outcome"],
+      "required": [
+        "outcome"
+      ],
       "additionalProperties": false,
       "properties": {
         "outcome": {
-          "enum": ["applied", "not-needed", "failed", "unverified"],
+          "enum": [
+            "applied",
+            "not-needed",
+            "failed",
+            "unverified"
+          ],
           "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed."
         },
-        "reason": {"type": "string"},
-        "cmp": {"type": "string"},
-        "cmpVersion": {"type": "string"},
-        "detection": {"type": "string"},
+        "reason": {
+          "type": "string"
+        },
+        "cmp": {
+          "type": "string"
+        },
+        "cmpVersion": {
+          "type": "string"
+        },
+        "detection": {
+          "type": "string"
+        },
         "mechanism": {
-          "enum": ["tcf-api", "gpp", "vendor-api", "selector", "heuristic"],
+          "enum": [
+            "tcf-api",
+            "gpp",
+            "vendor-api",
+            "selector",
+            "heuristic"
+          ],
           "description": "How the state was reached. A TCF API call is strong evidence; a heuristic label match is weak."
         },
-        "heuristic": {"type": "boolean", "description": "True when the banner was found by guessing at button labels. Such results should be treated with caution."},
-        "tcString": {"type": "string"},
-        "gppString": {"type": "string"},
-        "interactedAt": {"type": "string", "format": "date-time"}
+        "heuristic": {
+          "type": "boolean",
+          "description": "True when the banner was found by guessing at button labels. Such results should be treated with caution."
+        },
+        "tcString": {
+          "type": "string"
+        },
+        "gppString": {
+          "type": "string"
+        },
+        "interactedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "environment": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "wsawVersion": {"type": "string"},
-        "chromeVersion": {"type": "string"},
-        "userAgent": {"type": "string", "description": "Empty means the browser's own user agent was used."},
-        "viewportWidth": {"type": "integer"},
-        "viewportHeight": {"type": "integer"},
-        "deviceScaleFactor": {"type": "number"},
-        "mobile": {"type": "boolean"},
-        "acceptLanguage": {"type": "string"},
-        "timezone": {"type": "string"},
-        "latitude": {"type": "number"},
-        "longitude": {"type": "number"},
-        "extraHeaderNames": {"type": "array", "items": {"type": "string"}, "description": "Header names only. Values may be credentials and are never serialized."},
-        "basicAuth": {"type": "boolean"},
-        "proxy": {"type": "string", "description": "Proxy host with credentials stripped."},
-        "warmCache": {"type": "boolean", "description": "True means counts are not comparable with cold-cache scans."}
+        "wsawVersion": {
+          "type": "string"
+        },
+        "chromeVersion": {
+          "type": "string"
+        },
+        "userAgent": {
+          "type": "string",
+          "description": "Empty means the browser's own user agent was used."
+        },
+        "viewportWidth": {
+          "type": "integer"
+        },
+        "viewportHeight": {
+          "type": "integer"
+        },
+        "deviceScaleFactor": {
+          "type": "number"
+        },
+        "mobile": {
+          "type": "boolean"
+        },
+        "acceptLanguage": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "extraHeaderNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Header names only. Values may be credentials and are never serialized."
+        },
+        "basicAuth": {
+          "type": "boolean"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy host with credentials stripped."
+        },
+        "warmCache": {
+          "type": "boolean",
+          "description": "True means counts are not comparable with cold-cache scans."
+        },
+        "browserRuntime": {
+          "type": "string",
+          "description": "\"local\" when the browser ran as a host process, or the container runtime that ran it. A result is comparable with another only if a reader can see which rendered it."
+        },
+        "browserImage": {
+          "type": "string",
+          "description": "Container image, pinned by digest, when the browser ran in a container."
+        },
+        "browserSandbox": {
+          "type": "boolean",
+          "description": "Whether Chrome's own sandbox was active. In a container the container is the boundary and the inner sandbox is normally off, which is a material fact about the scan."
+        },
+        "browserReused": {
+          "type": "boolean",
+          "description": "True when the browser process had already served another scan, so isolation rested on clearing state rather than on the process boundary."
+        }
       }
     },
     "request": {
       "type": "object",
-      "required": ["requestId", "url", "normalizedUrl", "method", "resourceType", "party", "phase", "initiator", "timing"],
+      "required": [
+        "requestId",
+        "url",
+        "normalizedUrl",
+        "method",
+        "resourceType",
+        "party",
+        "phase",
+        "initiator",
+        "timing"
+      ],
       "additionalProperties": false,
       "properties": {
-        "requestId": {"type": "string"},
-        "url": {"type": "string"},
-        "normalizedUrl": {"type": "string", "description": "The diffing key. Stored so a reader can see exactly what was compared."},
-        "method": {"type": "string"},
-        "resourceType": {"type": "string"},
-        "host": {"type": "string"},
-        "domain": {"type": "string", "description": "Registrable domain (eTLD+1)."},
-        "party": {"enum": ["first", "third"]},
+        "requestId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "normalizedUrl": {
+          "type": "string",
+          "description": "The diffing key. Stored so a reader can see exactly what was compared."
+        },
+        "method": {
+          "type": "string"
+        },
+        "resourceType": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string",
+          "description": "Registrable domain (eTLD+1)."
+        },
+        "party": {
+          "enum": [
+            "first",
+            "third"
+          ]
+        },
         "phase": {
-          "enum": ["pre-interaction", "post-interaction"],
+          "enum": [
+            "pre-interaction",
+            "post-interaction"
+          ],
           "description": "Whether the request was observed before or after the consent action. A request already in flight keeps the phase it started in."
         },
-        "status": {"type": "integer"},
-        "statusText": {"type": "string"},
-        "mimeType": {"type": "string"},
-        "protocol": {"type": "string"},
-        "remoteIp": {"type": "string"},
-        "transferSize": {"type": "integer"},
-        "decodedSize": {"type": "integer"},
-        "fromCache": {"type": "boolean"},
-        "nonNetwork": {"type": "boolean", "description": "data:, blob: and similar. Recorded, but nothing left the browser."},
-        "redirectFrom": {"type": "string"},
-        "redirectTo": {"type": "string"},
+        "status": {
+          "type": "integer"
+        },
+        "statusText": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "remoteIp": {
+          "type": "string"
+        },
+        "transferSize": {
+          "type": "integer"
+        },
+        "decodedSize": {
+          "type": "integer"
+        },
+        "fromCache": {
+          "type": "boolean"
+        },
+        "nonNetwork": {
+          "type": "boolean",
+          "description": "data:, blob: and similar. Recorded, but nothing left the browser."
+        },
+        "redirectFrom": {
+          "type": "string"
+        },
+        "redirectTo": {
+          "type": "string"
+        },
         "initiator": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "type": {"type": "string"},
-            "url": {"type": "string"},
-            "lineNumber": {"type": "integer", "description": "1-based, as an editor shows it."},
-            "stack": {"type": "array", "items": {"type": "string"}}
+            "type": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "lineNumber": {
+              "type": "integer",
+              "description": "1-based, as an editor shows it."
+            },
+            "stack": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
-        "failed": {"type": "boolean"},
-        "failureReason": {"type": "string"},
-        "blocked": {"type": "boolean"},
-        "blockedReason": {"type": "string"},
-        "bodySha256": {"type": "string"},
-        "bodyUnavailable": {"type": "string", "description": "Why no digest was taken. A missing digest is always explained rather than silently absent."},
-        "bodyRef": {"type": "string"},
+        "failed": {
+          "type": "boolean"
+        },
+        "failureReason": {
+          "type": "string"
+        },
+        "blocked": {
+          "type": "boolean"
+        },
+        "blockedReason": {
+          "type": "string"
+        },
+        "bodySha256": {
+          "type": "string"
+        },
+        "bodyUnavailable": {
+          "type": "string",
+          "description": "Why no digest was taken. A missing digest is always explained rather than silently absent."
+        },
+        "bodyRef": {
+          "type": "string"
+        },
         "timing": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "startOffsetNs": {"type": "integer"},
-            "ttfbNs": {"type": "integer"},
-            "endOffsetNs": {"type": "integer"}
+            "startOffsetNs": {
+              "type": "integer"
+            },
+            "ttfbNs": {
+              "type": "integer"
+            },
+            "endOffsetNs": {
+              "type": "integer"
+            }
           }
         }
       }
     },
     "cookie": {
       "type": "object",
-      "required": ["name", "domain", "path", "party"],
+      "required": [
+        "name",
+        "domain",
+        "path",
+        "party"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": {"type": "string"},
-        "domain": {"type": "string"},
-        "path": {"type": "string"},
-        "expires": {"type": "string", "format": "date-time"},
-        "session": {"type": "boolean"},
-        "sameSite": {"type": "string"},
-        "secure": {"type": "boolean"},
-        "httpOnly": {"type": "boolean"},
-        "party": {"enum": ["first", "third"]},
-        "valueSha256": {"type": "string", "description": "Cookie values are fingerprinted, never stored: they routinely contain identifiers."},
-        "valueLength": {"type": "integer"}
+        "name": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "expires": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "session": {
+          "type": "boolean"
+        },
+        "sameSite": {
+          "type": "string"
+        },
+        "secure": {
+          "type": "boolean"
+        },
+        "httpOnly": {
+          "type": "boolean"
+        },
+        "party": {
+          "enum": [
+            "first",
+            "third"
+          ]
+        },
+        "valueSha256": {
+          "type": "string",
+          "description": "Cookie values are fingerprinted, never stored: they routinely contain identifiers."
+        },
+        "valueLength": {
+          "type": "integer"
+        }
       }
     },
     "artifact": {
       "type": "object",
-      "required": ["kind", "ref"],
+      "required": [
+        "kind",
+        "ref"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": {"type": "string"},
-        "ref": {"type": "string"},
-        "sha256": {"type": "string"},
-        "bytes": {"type": "integer"}
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer"
+        }
       }
     }
   }

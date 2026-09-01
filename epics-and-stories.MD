@@ -110,8 +110,6 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 
 *As an Operator, I want wsaw to run headless Chrome inside a container when a container runtime is available, so that hostile pages are rendered behind a boundary the operating system enforces rather than one the browser enforces on itself.*
 
-wsaw renders pages it does not control and treats every one as hostile (Tenet 9). Today the only thing between a compromised renderer and the host is the Chrome sandbox. A container adds a second boundary that does not depend on the browser being correct, and it gets the browser and its version out of the host's hands, which also makes a scan more reproducible across machines.
-
 Podman is preferred over Docker because it is daemonless and rootless by default, so wsaw needs no privileged socket and a container escape lands as an unprivileged user rather than as root.
 
 This is distinct from Story 6.3, which packages *wsaw itself* with Chromium bundled. Here wsaw runs on the host and the browser runs in a container.

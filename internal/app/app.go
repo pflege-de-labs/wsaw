@@ -14,11 +14,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/martint17r/wsaw/internal/browser"
 	"github.com/martint17r/wsaw/internal/config"
 	"github.com/martint17r/wsaw/internal/consent"
+	"github.com/martint17r/wsaw/internal/container"
 	"github.com/martint17r/wsaw/internal/logging"
 	"github.com/martint17r/wsaw/internal/metrics"
 	"github.com/martint17r/wsaw/internal/model"
@@ -44,6 +46,12 @@ type App struct {
 	Rules   *consent.RuleSet
 
 	Chrome browser.Info
+
+	// Runtime is the container runtime the browser runs in, nil when it runs
+	// as a host process.
+	Runtime *container.Runtime
+	// BrowserImage is the container image in use, empty when local.
+	BrowserImage string
 
 	Version string
 
@@ -185,39 +193,170 @@ func (a *App) loadRules() (*consent.RuleSet, error) {
 }
 
 func (a *App) startBrowser(ctx context.Context) error {
+	launch := browser.Options{
+		RemoteURL:     a.Config.Browser.RemoteURL,
+		NoSandbox:     a.Config.Browser.NoSandbox,
+		ProfileDir:    a.Config.Browser.ProfileDir,
+		ExtraArgs:     a.Config.Browser.ExtraArgs,
+		LaunchTimeout: a.Config.Browser.LaunchTimeout.Or(30 * time.Second),
+		Logger:        a.Logger,
+	}
+
+	if err := a.resolveBrowser(ctx, &launch); err != nil {
+		return err
+	}
+
+	a.Pool = browser.NewPool(browser.PoolOptions{
+		Size:               a.Config.PoolSize(),
+		MaxScansPerBrowser: a.Config.Browser.MaxScansPerBrowser,
+		OnRestart:          func(reason string) { a.Metrics.BrowserRestarted("", reason) },
+		Launch:             launch,
+	})
+
+	a.closers = append(a.closers, a.Pool.Close)
+
+	return nil
+}
+
+// resolveBrowser decides where the browser runs and fills in the launch
+// options accordingly.
+//
+// A container is preferred where a runtime is available, because it puts a
+// boundary the operating system enforces between a hostile page and this
+// host. Where none is, the local browser is used exactly as before — an
+// absent runtime is not a reason to refuse to work (Story 1.8, AC1).
+func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error {
+	// An explicitly configured remote endpoint wins: the operator has already
+	// said where the browser is.
+	if a.Config.Browser.RemoteURL != "" {
+		a.Logger.Info("using a remote browser", "url", a.Config.Browser.RemoteURL)
+
+		return nil
+	}
+
+	kind := container.Kind(strings.ToLower(strings.TrimSpace(a.Config.Browser.Runtime)))
+
+	runtime, err := container.Detect(ctx, kind)
+	if err != nil {
+		return err
+	}
+
+	if runtime == nil {
+		return a.resolveLocalBrowser(ctx, launch, kind)
+	}
+
+	image := a.Config.Browser.Container.Image
+	if image == "" {
+		image = container.DefaultImage
+	}
+
+	// Doubles as the check that the image is present, so a missing image
+	// fails at startup with the command to fetch it rather than on the first
+	// scan (AC6).
+	version, err := runtime.BrowserVersion(ctx, image)
+	if err != nil {
+		return err
+	}
+
+	// Orphans from an earlier run that did not shut down cleanly. Only
+	// containers whose owning process is gone are touched (AC4).
+	if removed, err := runtime.Reap(ctx, a.Logger); err != nil {
+		a.Logger.Warn("could not check for orphaned browser containers", "error", err)
+	} else if removed > 0 {
+		a.Logger.Info("cleaned up orphaned browser containers", "removed", removed)
+	}
+
+	a.Runtime = runtime
+	a.BrowserImage = image
+	a.Chrome = browser.Info{Version: version, Path: image}
+
+	launch.Container = &containerLauncher{
+		runtime: runtime,
+		spec: container.Spec{
+			Image:          image,
+			Memory:         a.Config.Browser.Container.Memory,
+			PidsLimit:      a.Config.Browser.Container.PidsLimit,
+			ExtraArgs:      a.Config.Browser.Container.ExtraArgs,
+			BrowserArgs:    a.Config.Browser.Container.BrowserArgs,
+			StartupTimeout: a.Config.Browser.Container.StartupTimeout.Or(90 * time.Second),
+			Logger:         a.Logger,
+		},
+	}
+
+	a.Logger.Info("browser runs in a container",
+		"runtime", string(runtime.Kind),
+		"runtime_version", runtime.Version,
+		"image", image,
+		"browser", version,
+	)
+
+	// Stated rather than left implicit: the shipped image disables Chrome's
+	// own sandbox, because nesting it inside a container needs privileges
+	// that would weaken the container boundary itself. The container is the
+	// boundary here, and a reader of the result can see which it was.
+	a.Logger.Info("the container is the isolation boundary; Chrome's in-container sandbox is disabled by the image")
+
+	return nil
+}
+
+func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, kind container.Kind) error {
 	info, err := browser.Discover(ctx, a.Config.Browser.Path)
 	if err != nil {
 		return err
 	}
 
 	a.Chrome = info
+	launch.Info = info
 
 	if a.Config.Browser.NoSandbox {
-		// Opt-in only, and loud about it: the sandbox is the boundary between
-		// a hostile page and the host.
+		// Opt-in only, and loud about it: with no container around it, the
+		// sandbox is the only boundary between a hostile page and the host.
 		a.Logger.Warn("the Chrome sandbox is disabled; this weakens isolation between scanned pages and this host")
 	}
 
-	a.Logger.Info("browser discovered", "path", info.Path, "version", info.Version)
-
-	a.Pool = browser.NewPool(browser.PoolOptions{
-		Size:               a.Config.PoolSize(),
-		MaxScansPerBrowser: a.Config.Browser.MaxScansPerBrowser,
-		OnRestart:          func(reason string) { a.Metrics.BrowserRestarted("", reason) },
-		Launch: browser.Options{
-			Info:          info,
-			RemoteURL:     a.Config.Browser.RemoteURL,
-			NoSandbox:     a.Config.Browser.NoSandbox,
-			ProfileDir:    a.Config.Browser.ProfileDir,
-			ExtraArgs:     a.Config.Browser.ExtraArgs,
-			LaunchTimeout: a.Config.Browser.LaunchTimeout.Or(30 * time.Second),
-			Logger:        a.Logger,
-		},
-	})
-
-	a.closers = append(a.closers, a.Pool.Close)
+	switch kind {
+	case container.KindLocal:
+		a.Logger.Info("browser runs on this host", "path", info.Path, "version", info.Version)
+	default:
+		a.Logger.Info("browser runs on this host; no container runtime was found",
+			"path", info.Path, "version", info.Version,
+			"hint", "install podman or docker to render pages behind an operating-system boundary")
+	}
 
 	return nil
+}
+
+// containerLauncher adapts a container runtime to the browser package's seam,
+// which keeps that package free of any container dependency.
+type containerLauncher struct {
+	runtime *container.Runtime
+	spec    container.Spec
+}
+
+func (l *containerLauncher) Start(ctx context.Context) (browser.ContainerInstance, error) {
+	return l.runtime.Start(ctx, l.spec)
+}
+
+// BrowserRuntimeName reports what renders pages, for recording in results.
+func (a *App) BrowserRuntimeName() string {
+	if a.Runtime == nil {
+		return string(container.KindLocal)
+	}
+
+	return string(a.Runtime.Kind)
+}
+
+// BrowserSandboxed reports whether Chrome's own sandbox is active.
+//
+// In a container it is not: the shipped image disables it, because nesting a
+// namespace sandbox needs privileges that would weaken the container boundary
+// that replaced it.
+func (a *App) BrowserSandboxed() bool {
+	if a.Runtime != nil {
+		return false
+	}
+
+	return !a.Config.Browser.NoSandbox
 }
 
 func (a *App) buildScanner() error {
@@ -274,6 +413,9 @@ func (a *App) buildScanner() error {
 		ConsentOnFailure:      failurePolicy,
 		WsawVersion:           a.Version,
 		ChromeVersion:         a.Chrome.Version,
+		BrowserRuntime:        a.BrowserRuntimeName(),
+		BrowserImage:          a.BrowserImage,
+		BrowserSandbox:        a.BrowserSandboxed(),
 	})
 	if err != nil {
 		return err

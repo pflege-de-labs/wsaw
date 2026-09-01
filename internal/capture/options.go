@@ -136,6 +136,12 @@ type Options struct {
 	// BrowserReused records that this scan is not the first on its browser.
 	BrowserReused bool
 
+	// BrowserRuntime, BrowserImage and BrowserSandbox describe what rendered
+	// the page, and are recorded in the result.
+	BrowserRuntime string
+	BrowserImage   string
+	BrowserSandbox bool
+
 	// WsawVersion and ChromeVersion are recorded for reproducibility.
 	WsawVersion   string
 	ChromeVersion string

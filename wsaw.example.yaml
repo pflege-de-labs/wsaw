@@ -71,7 +71,30 @@ targets:
     disabled: true
 
 browser:
-  # Leave empty to auto-discover Chrome or Chromium.
+  # Where the browser runs.
+  #
+  #   auto    a container when podman or docker is usable, otherwise local
+  #   podman  require podman (preferred: daemonless and rootless)
+  #   docker  require docker
+  #   local   a browser on this host
+  #
+  # A container puts a boundary the operating system enforces between a
+  # hostile page and this host, and fixes the browser build so results are
+  # comparable across machines. Note that a containerised browser has its own
+  # network namespace and cannot reach this machine's localhost.
+  runtime: auto
+
+  container:
+    # Pinned by digest on purpose: a moving tag would change capture
+    # behaviour between scans and a diff would report it as the site's change.
+    # wsaw never pulls during a scan — fetch it once with:
+    #   podman pull docker.io/chromedp/headless-shell@sha256:...
+    image: ""
+    memory: 1g
+    pidsLimit: 512
+    startupTimeout: 90s
+
+  # Leave empty to auto-discover Chrome or Chromium for the local runtime.
   path: ""
   poolSize: 2
   maxScansPerBrowser: 50

@@ -10,6 +10,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/martint17r/wsaw/internal/container"
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/logging"
 	"github.com/martint17r/wsaw/internal/model"
@@ -267,6 +268,14 @@ func (c *Config) validateScheduler(add addFunc) {
 
 	if c.Browser.PoolSize < 0 {
 		add(0, "browser.poolSize", "must not be negative")
+	}
+
+	if !container.Kind(strings.ToLower(c.Browser.Runtime)).Valid() {
+		add(0, "browser.runtime", "%q is not valid; use auto, podman, docker or local", c.Browser.Runtime)
+	}
+
+	if c.Browser.Container.PidsLimit < 0 {
+		add(0, "browser.container.pidsLimit", "must not be negative")
 	}
 
 	if c.Browser.RemoteURL != "" {

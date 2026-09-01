@@ -25,8 +25,26 @@ Each target is scanned once per configured consent mode. A scan in `reject` mode
 ## Requirements
 
 - Go 1.24+ to build.
-- Chrome or Chromium on the host (or use the container image, which bundles Chromium). wsaw checks the version at startup and refuses to run against a browser too old to mean what the schema says.
+- A browser. wsaw prefers to run it in a container (see below); failing that, Chrome or Chromium on the host, whose version it checks at startup.
 - Linux or macOS, amd64 or arm64. No Windows.
+
+## Where the browser runs
+
+wsaw renders pages it does not control. Left on the host, the only thing between a compromised renderer and your machine is the Chrome sandbox — a boundary the browser enforces on itself. So when a container runtime is available, wsaw runs the browser in a container by default, adding a boundary the operating system enforces.
+
+**Podman is preferred over Docker**: daemonless and rootless by default, so wsaw needs no privileged socket and an escape lands as an unprivileged user.
+
+```sh
+podman pull docker.io/chromedp/headless-shell@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04
+wsaw scan --url https://example.com/          # uses the container automatically
+wsaw scan --url https://example.com/ --browser-runtime local
+```
+
+- The image is **pinned by digest** and never pulled during a scan. A moving tag would change capture behaviour between scans, and the diff would report it as the site's change.
+- Every result records `browserRuntime`, `browserImage` and `browserSandbox`, because a result is only comparable with another if you can see what rendered it.
+- One container per scan, removed on every exit path, and orphans from an unclean shutdown are reaped at startup.
+- **A containerised browser cannot reach this machine's `localhost`** — it has its own network namespace. Scanning a local service fails with that explanation; use `--browser-runtime local` for it.
+- Inside the container, Chrome's own sandbox is off. Nesting it would require privileges that weaken the container boundary that replaced it, so the container is the boundary and the result says so.
 
 ## Install
 

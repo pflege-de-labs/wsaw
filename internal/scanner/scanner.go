@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/martint17r/wsaw/internal/browser"
@@ -70,6 +72,13 @@ type Options struct {
 	// WsawVersion and ChromeVersion are recorded in every result.
 	WsawVersion   string
 	ChromeVersion string
+
+	// BrowserRuntime is "local", or the container runtime rendering pages.
+	BrowserRuntime string
+	// BrowserImage is the container image, empty when local.
+	BrowserImage string
+	// BrowserSandbox reports whether Chrome's own sandbox is active.
+	BrowserSandbox bool
 
 	// RobotsFallbackAllow is used when robots.txt cannot be fetched.
 	RobotsFallbackAllow bool
@@ -142,6 +151,21 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 			s.recordFailure(target.Name, mode, "panic")
 		}
 	}()
+
+	// A containerised browser has its own network namespace, so the host's
+	// loopback is not the target's loopback. Refusing with an explanation is
+	// the only honest option: silently scanning the container's own localhost
+	// would produce a result about nothing, and rewriting the URL would make
+	// the result describe an address the operator did not ask for
+	// (Story 1.8, AC10).
+	if reason, ok := s.unreachableFromContainer(target); !ok {
+		log.Warn("scan skipped: target is not reachable from a containerised browser", "reason", reason)
+
+		out.Result = s.failedResult(scanID, target, mode, reason)
+		s.persist(ctx, log, out.Result)
+
+		return out, nil
+	}
 
 	if decision := s.checkRobots(ctx, target); !decision.Allowed {
 		log.Info("scan skipped by robots policy", "reason", decision.Reason)
@@ -228,6 +252,9 @@ func (s *Scanner) capture(
 	opts.BrowserReused = reused
 	opts.WsawVersion = s.opts.WsawVersion
 	opts.ChromeVersion = s.opts.ChromeVersion
+	opts.BrowserRuntime = s.opts.BrowserRuntime
+	opts.BrowserImage = s.opts.BrowserImage
+	opts.BrowserSandbox = s.opts.BrowserSandbox
 	opts.Secrets = s.deps.Secrets
 
 	if target.Screenshots || target.StoreBodies {
@@ -465,6 +492,43 @@ func (s *Scanner) scrub(text string) string {
 	}
 
 	return s.deps.Secrets.Scrub(text)
+}
+
+// unreachableFromContainer reports whether a target can be reached from a
+// containerised browser, and why not.
+func (s *Scanner) unreachableFromContainer(target config.Resolved) (string, bool) {
+	if s.opts.BrowserRuntime == "" || s.opts.BrowserRuntime == "local" {
+		return "", true
+	}
+
+	host, _ := hostAndDomain(target.URL)
+	if !isLoopbackHost(host) {
+		return "", true
+	}
+
+	return fmt.Sprintf(
+		"%s resolves to this machine's loopback address, which a browser running in a %s container cannot reach: "+
+			"the container has its own network namespace. Scan it by its routable address, "+
+			"or set browser.runtime to \"local\" for this deployment",
+		host, s.opts.BrowserRuntime), false
+}
+
+// isLoopbackHost reports whether a host names the local machine.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+
+	switch host {
+	case "localhost", "::1", "0.0.0.0":
+		return true
+	}
+
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+
+	return strings.HasSuffix(host, ".localhost")
 }
 
 // isBrowserFailure distinguishes a page that misbehaved, which is a normal

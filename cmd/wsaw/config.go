@@ -25,6 +25,7 @@ type configFlags struct {
 	logFormat   string
 	chromePath  string
 	noSandbox   bool
+	runtime     string
 	storePath   string
 	outputDir   string
 }
@@ -43,6 +44,7 @@ func (c *configFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.logFormat, "log-format", "", "auto, pretty, json or text (auto: pretty on a terminal, json when piped)")
 	fs.StringVar(&c.chromePath, "chrome-path", "", "path to the Chrome or Chromium binary")
 	fs.BoolVar(&c.noSandbox, "no-sandbox", false, "disable the Chrome sandbox (weakens isolation; only for constrained containers)")
+	fs.StringVar(&c.runtime, "browser-runtime", "", "where the browser runs: auto, podman, docker or local (auto: a container when a runtime is available)")
 	fs.StringVar(&c.storePath, "store", "", "path to the result database")
 	fs.StringVar(&c.outputDir, "output-dir", "", "write results and reports into this directory")
 }
@@ -199,6 +201,10 @@ func (c *configFlags) applyOverrides(cfg *config.Config) {
 
 	if c.noSandbox {
 		cfg.Browser.NoSandbox = true
+	}
+
+	if c.runtime != "" {
+		cfg.Browser.Runtime = c.runtime
 	}
 
 	if c.storePath != "" {
