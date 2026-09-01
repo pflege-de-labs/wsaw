@@ -563,6 +563,30 @@ Structured JSON (Story 6.4) is right for an aggregator and hostile to a person r
 - AC7: Multi-line values, such as an error containing a newline, are rendered so that one record stays visually one record and cannot be mistaken for several.
 - AC8: The chosen format is decided once at startup and recorded in the daemon's own startup line, so an operator can see which mode is active.
 
+### Story 6.10 — Run wsaw in Kubernetes
+
+*As an Operator, I want to run wsaw on the cluster my other services already run on, without discovering its single-node assumptions the hard way.*
+
+wsaw is deliberately single-node (Tenet 18): its store is one embedded file holding an exclusive lock, and a baseline is only meaningful against one history. Kubernetes invites the opposite — replicas, rolling updates, rescheduling — so the manifests have to make the constraint explicit rather than let a cluster discover it by corrupting a store or deadlocking on a lock.
+
+Kubernetes also removes the mechanism Story 1.8 relies on. There is no container runtime socket to launch a sibling browser through, and mounting one would hand a pod that renders hostile pages the ability to start privileged containers. In-cluster the browser therefore runs inside the pod, and the pod is the boundary.
+
+- AC1: A worked example is shipped and documented: namespace, ConfigMap, Secret, PersistentVolumeClaim, Deployment, Service, and the RBAC needed (which is none — wsaw does not talk to the API server, and the manifests must not grant it a token it has no use for).
+- AC2: **Exactly one replica, enforced rather than advised.** The Deployment sets `replicas: 1` and `strategy: Recreate`, because the default rolling update would briefly run two pods and the second would fail on the store's file lock. The documentation states plainly that scaling out is not supported and why.
+- AC3: The store lives on a `ReadWriteOnce` PersistentVolumeClaim, with guidance on sizing it from the retention settings, since a volume that fills is a watcher that stops watching.
+- AC4: The browser runs in the pod. Runtime detection resolves to `local` in-cluster because no container runtime is present, and that is documented as the intended outcome rather than left as an accident of `PATH`. Chrome's own sandbox is off, the pod is the boundary, and the result records it exactly as the containerised path does.
+- AC5: `/dev/shm` is sized for the browser. A container's default 64 MiB makes Chrome crash on real pages, so the pod mounts a memory-backed volume, or the browser is told not to use shared memory — and the manifest says which and why.
+- AC6: Concurrency and pool size are derived from the container's own CPU and memory limits, not from the node's. `runtime.NumCPU` reports the host's processors, so an unconfigured pod with a one-core limit on a large node would size itself for the node and be throttled or killed. Where the limits cannot be read, the manifests set the values explicitly.
+- AC7: `terminationGracePeriodSeconds` exceeds wsaw's own shutdown grace with margin. Otherwise the kubelet sends SIGKILL while a scan is still finishing, which loses the result and leaks the browser it was driving.
+- AC8: Liveness uses the health endpoint and readiness uses the readiness endpoint, with thresholds that survive a long scan. A probe must never restart a pod that is merely busy, and readiness must not flap because one scan failed — the distinction between "alive" and "able to scan" already exists and the probes must use the right one for each.
+- AC9: Configuration comes from a ConfigMap and credentials from a Secret, using the `${env:…}` and `${file:…}` references wsaw already supports. The volume is mounted so that a ConfigMap update reaches the container, and the documentation says how to trigger the reload and that a `subPath` mount will not update.
+- AC10: The API is reachable through a Service, which means binding beyond loopback, which wsaw's own validation requires a token for. The manifests therefore ship a Secret-backed token by default rather than leaving an unauthenticated endpoint exposed inside the cluster.
+- AC11: **Egress is restricted, and internal addresses are refused.** A pod that fetches operator-supplied URLs is a request-forgery engine pointed at the cluster: it can reach the metadata endpoint, in-cluster services, and the node's own network. A NetworkPolicy is shipped, and the private and link-local deny list is on by default in the example configuration rather than being an option someone might not find.
+- AC12: The pod runs unprivileged: non-root, no added capabilities, a read-only root filesystem with writable volumes only where the browser needs them, and a seccomp profile. Where the browser needs something the default profile forbids, the manifest grants that specific thing and says why.
+- AC13: Metrics are exposed for scraping, and the alert that matters — a target whose last successful scan has aged out — ships as a rule rather than being left for the operator to work out.
+- AC14: A `CronJob` shape is documented for `wsaw scan --once` as a gate, with `concurrencyPolicy: Forbid`, since two jobs sharing one volume would contend for the same lock.
+- AC15: The manifests are validated in CI against a schema, so a broken example cannot ship. Applying them to a real cluster is not required to run the test suite.
+
 ---
 
 ## Technical Decisions (proposed, for review)
