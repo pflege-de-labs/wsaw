@@ -106,6 +106,28 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 - AC2: The user agent defaults to the one shipped by the launched Chrome build; overrides are explicit and recorded.
 - AC3: All applied overrides are echoed into the scan result for reproducibility.
 
+### Story 1.8 — Run Chrome in a container
+
+*As an Operator, I want wsaw to run headless Chrome inside a container when a container runtime is available, so that hostile pages are rendered behind a boundary the operating system enforces rather than one the browser enforces on itself.*
+
+wsaw renders pages it does not control and treats every one as hostile (Tenet 9). Today the only thing between a compromised renderer and the host is the Chrome sandbox. A container adds a second boundary that does not depend on the browser being correct, and it gets the browser and its version out of the host's hands, which also makes a scan more reproducible across machines.
+
+Podman is preferred over Docker because it is daemonless and rootless by default, so wsaw needs no privileged socket and a container escape lands as an unprivileged user rather than as root.
+
+This is distinct from Story 6.3, which packages *wsaw itself* with Chromium bundled. Here wsaw runs on the host and the browser runs in a container.
+
+- AC1: A container runtime is auto-detected at startup, preferring `podman` and falling back to `docker`. When one is found, running Chrome in a container is the **default**; when neither is, wsaw uses a local Chrome binary exactly as it does today, saying which it chose and why.
+- AC2: The choice is overridable in both directions and by name (`--browser-runtime auto|podman|docker|local`), so an operator can pin a runtime or opt out entirely. `auto` is the documented default rather than hidden behaviour.
+- AC3: **Isolation is not weakened.** Each browser still serves one scan by default, so a container is per browser and disposed with it. A scan must never inherit another scan's cookie jar, which is the failure this project has already been bitten by.
+- AC4: No container outlives the process that started it. Containers are labelled as wsaw's, removed on normal exit, on cancellation, and on panic, and any orphan left by an earlier crash is reaped at startup. A leaked container is worse than a leaked process: it survives the restart that would have cleaned up after wsaw.
+- AC5: The Chrome sandbox stays enabled inside the container. Where the runtime needs a seccomp profile or specific capabilities for that, the profile is shipped and documented; `--no-sandbox` is not the way the container is made to work.
+- AC6: The image is pinned by digest, configurable, and never pulled implicitly during a scan. A missing image fails at startup with the command to fetch it, so a scan never blocks on a network fetch of a browser (Tenet 14).
+- AC7: The runtime, image reference and resolved Chrome version are recorded in every result, so a result says what rendered it. A scan run in a container is comparable with one run outside only if the reader can see which it was.
+- AC8: Container startup is bounded and measured. A runtime that hangs fails the scan with a recorded reason rather than the daemon, and the added startup cost per scan is documented so an operator can weigh it against the isolation gained.
+- AC9: The container is given only what it needs: no host filesystem mounts beyond what a scan requires, memory and process limits, and an explicit note in the documentation of what a compromised renderer would and would not reach.
+- AC10: Reaching a host-local target still works, or fails with an explanation. A containerised browser cannot resolve the host's `localhost`, which affects local fixtures and any operator scanning a service on the machine itself.
+- AC11: The browser-driven test suite runs against both the local and the containerised path, and skips with a clear reason where no runtime is present, so the container path is covered rather than assumed.
+
 ---
 
 # Epic 2 — Consent & Cookie Banner Handling
