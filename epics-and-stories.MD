@@ -27,7 +27,7 @@ Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 - [Epic 2 — Consent & Cookie Banner Handling](#epic-2--consent--cookie-banner-handling)
 - [Epic 3 — Targets, Configuration & Daemon Operation](#epic-3--targets-configuration--daemon-operation)
 - [Epic 4 — Storage, Baselines & Change Detection](#epic-4--storage-baselines--change-detection)
-- [Epic 5 — Reporting, Export, Alerting & Web Interface](#epic-5--reporting-export-alerting--web-interface)
+- [Epic 5 — Reporting, Export & Alerting](#epic-5--reporting-export--alerting)
 - [Epic 6 — Operations, Packaging & Distribution](#epic-6--operations-packaging--distribution)
 - [Technical Decisions](#technical-decisions-proposed-for-review)
 - [Open Questions](#open-questions-for-the-product-owner)
@@ -415,6 +415,18 @@ Get results and change events out of the daemon and into humans and other system
 - AC7: Secrets (basic auth, proxy credentials, webhook tokens) are redacted in every UI view, matching the API's redaction (Story 3.6).
 - AC8: A read-only mode disables all write actions, for deployments where the UI is shared with reviewers.
 
+### Story 5.12 — Show running scans in the web ui
+
+*As an Operator, I want the web interface to show currently running scans to indiciate activity for a target and on the dashboard over all targets
+
+- AC1: A line is shown on the target detail page, when the scan is initiated, outcome is stated as "pending".
+
+### Story 5.13 — Add a log line when a scan is started
+
+*As an Operator, I want the log to contain a line every time a scan is started so acitivity is matched in the log
+
+- AC1: A log line is emitted, containing the scan id and target context.
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
@@ -502,9 +514,7 @@ Make wsaw installable, operable, and debuggable on the target platforms.
 3. **Storage:** an embedded, pure-Go store (e.g. `bbolt` or SQLite via a CGo-free driver) to keep the single-binary and cross-compilation promise. No external DB in v1.
 4. **Config:** YAML file plus flags/env overrides. A target list is inherently file-shaped, so config-file-less operation is supported only for one-shot CLI runs.
 5. **Consent rules ship as data, not code** (embedded YAML rule pack), so rules can be updated by users and by releases without recompilation.
-6. **v1 is single-node.** Distributed scheduling and sharding are explicitly deferred.
-7. **The web interface is server-rendered Go with embedded assets** (`html/template` + `go:embed`), progressively enhanced. A SPA framework would introduce a Node/npm build step and break the "build with `go build`, ship one binary" property (Tenet 14). The UI is a client of the public API, never a privileged path into the store.
-8. **The UI reads and reviews; the config file remains the source of truth.** Target definitions stay a versionable YAML artifact (Tenet 15); the UI may write baselines and allow-list entries, and must say where it wrote them.
+6. **v1 is single-node.** Distributed scheduling, sharding, and a web UI are explicitly deferred.
 
 ---
 

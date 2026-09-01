@@ -122,6 +122,13 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		s.deps.Metrics.ScanStarted(target.Name, mode)
 	}
 
+	// Emitted before anything can go wrong, so every scan has an opening line
+	// even when it is skipped, panics, or never reaches the browser. It pairs
+	// with "scan finished" through the shared scan ID, which is what lets an
+	// operator match a burst of activity — or a scan that started and never
+	// ended — in an aggregator (Story 5.13).
+	log.Info("scan started", "url", target.URL)
+
 	// A panic in one scan must not take down the daemon. It is converted into
 	// a recorded failure so the target still shows a result.
 	defer func() {
