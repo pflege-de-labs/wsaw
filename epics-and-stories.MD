@@ -316,6 +316,28 @@ Persist scan results and turn a stream of scans into meaningful change events.
 - AC2: Severity rules are configurable; sensible defaults (new third-party host in `reject` mode = high; changed script digest on a third-party script = high; new first-party image = low).
 - AC3: Flap suppression: a change reverting within a configurable window is collapsed into a single event.
 
+### Story 4.6 — Store results through `database/sql`, on SQLite
+
+*As a Developer, I want the store to speak `database/sql` with SQLite as the default, so that moving wsaw to a server database later is a change of driver rather than a rewrite.*
+
+bbolt is a key-value store, so every query wsaw needs is hand-rolled: listing newest-first works only because keys are built to sort that way, and "the scan before this one" is a cursor walk. SQL expresses those directly, and `database/sql` makes the driver the seam — which is what Tenet 12 wanted from a "swappable result store" and what a Kubernetes deployment will need when the store has to move off a volume (Story 6.10).
+
+SQLite on its own does not make a pod stateless: it is still one file. The point is that Postgres then becomes a driver and a dialect, not a second implementation of everything.
+
+There is no migration. Existing stores are discarded and the first run creates a new one.
+
+- AC1: All persistence goes through `database/sql`. No driver-specific type appears outside the store package, and nothing else in wsaw knows which database is in use.
+- AC2: SQLite is the default, through a **CGo-free** driver. The single static binary cross-compiled to four platforms is not negotiable (Tenet 14), and the dependency's size is weighed against that on the record.
+- AC3: A result is stored as its JSON document plus the few columns needed to index it — target, consent mode, scan ID, start time, termination. The document is **not** shredded into normalised tables: the JSON schema is the product's interface (Tenet 16), and a second schema would drift from it.
+- AC4: The queries wsaw actually makes are expressed as SQL and indexed: newest-first per target and mode, one result by scan ID, the result preceding a given one, baselines by target and mode, the audit log, and retention pruning by age and by count.
+- AC5: Schema versions are embedded in the binary and applied on open, forward-only. A binary refuses to run against a newer schema than it knows rather than corrupting it.
+- AC6: SQLite is opened for correct concurrent use — WAL journalling, a busy timeout, and foreign keys on — and the single-writer constraint is respected rather than discovered under load.
+- AC7: Writes stay atomic across related rows. Approving a baseline and recording its audit entry either both happen or neither does; that guarantee exists today and must not be lost in the move.
+- AC8: A corrupt or unreadable row is skipped and reported, not fatal. One bad record must not make a target's whole history unreadable — the behaviour bbolt storage already has.
+- AC9: Artifacts stay content-addressed files outside the database. Screenshots and stored bodies do not belong in a row, and keeping them out leaves the door open to object storage later.
+- AC10: The store's tests run against the default driver, and the suite is written so a second driver can be run through the same tests without rewriting them.
+- AC11: Retention and the store file's location remain configurable exactly as now, and a store that cannot be opened fails at startup with an actionable message rather than on the first scan.
+
 ---
 
 # Epic 5 — Reporting, Export, Alerting & Web Interface
