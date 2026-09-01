@@ -1,0 +1,9 @@
+version: 1
+rules:
+  - name: consentmanager.net
+    hosts: ["*.pflege.de"]
+    priority: 1000          # outranks the shipped rules
+    detect: "!!document.querySelector('#cmpboxcontent')"
+    reject: [{click: "#cmpwelcomebtnno"}]
+    accept: [{click: "#cmpwelcomebtnyes"}]
+    verify: "!document.querySelector('#my-banner')"

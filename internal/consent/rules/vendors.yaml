@@ -145,18 +145,79 @@ rules:
     verify: |
       !document.querySelector('iframe[id^="sp_message_iframe"]')
 
+  # Consentmanager, driven through its documented __cmp API.
+  #
+  #   https://www.consentmanager.net/en/help/developer-reference/javascript-api/
+  #   https://www.consentmanager.net/en/help/developer-reference/cmp-events/
+  #
+  #   __cmp('setConsent', 1)   simulate "accept all"
+  #   __cmp('setConsent', 0)   simulate "reject all"
+  #   __cmp('consentStatus')   -> {consentExists: bool, consentData: string}
+  #   __cmp('close')           close the consent layer
+  #
+  # Two things this API gives us that clicking never could: setConsent means
+  # the choice is expressed the way the CMP itself defines it, regardless of
+  # markup, language or layout; and consentStatus.consentExists is a direct
+  # read-back that the choice was actually recorded, rather than the much
+  # weaker inference that a banner disappeared.
+  #
+  # __cmp exists as a stub before the CMP initialises, and a call made against
+  # the stub is queued rather than applied. Acting too early would therefore
+  # look like success while changing nothing, so each step waits for the
+  # documented readiness signal — the "settings" event, or a consentStatus
+  # that answers — before expressing a choice. The wait is bounded; the rule
+  # reports false rather than hanging, and the engine records that.
+  #
+  # Priority matches the other API-driven vendor rules. It stays below a
+  # site-specific override, which is the whole point of user rule packs.
   - name: consentmanager
     vendor: Consentmanager
-    priority: 90
+    priority: 100
     detect: |
-      !!(window.__cmp || document.getElementById('cmpbox'))
+      !!(window.__cmp || document.getElementById('cmpbox') || document.querySelector('.cmpboxbtn'))
     accept:
-      - click: "#cmpwelcomebtnyes, .cmpboxbtnyes"
+      - eval: |
+          (async () => {
+            if (typeof window.__cmp !== 'function') return false;
+            if (!await window.__wsawCmpReady()) return false;
+            try {
+              window.__cmp('setConsent', 1);
+              window.__cmp('close');
+            } catch (e) { return false; }
+            return await window.__wsawCmpRecorded();
+          })()
+      # Some deployments render the layer without exposing the API on the top
+      # frame. Clicking is the documented button markup, and optional so that
+      # a successful API call does not fail here.
+      - click: "#cmpwelcomebtnyes, .cmpboxbtnyes, .cmpboxbtncustomchoices ~ .cmpboxbtnyes"
+        optional: true
     reject:
-      - click: "#cmpwelcomebtnno, .cmpboxbtnno"
+      - eval: |
+          (async () => {
+            if (typeof window.__cmp !== 'function') return false;
+            if (!await window.__wsawCmpReady()) return false;
+            try {
+              window.__cmp('setConsent', 0);
+              window.__cmp('close');
+            } catch (e) { return false; }
+            return await window.__wsawCmpRecorded();
+          })()
+      - click: "#cmpwelcomebtnno, .cmpboxbtnno, .cmpboxbtnnoall"
+        optional: true
+    # consentExists is the CMP's own statement that a choice is on record.
+    # The banner being gone is accepted only as a fallback, for deployments
+    # where the API is not reachable from the top frame.
     verify: |
-      !document.getElementById('cmpbox') ||
-      getComputedStyle(document.getElementById('cmpbox')).display === 'none'
+      (() => {
+        try {
+          if (typeof window.__cmp === 'function') {
+            const s = window.__cmp('consentStatus');
+            if (s && typeof s === 'object' && 'consentExists' in s) return !!s.consentExists;
+          }
+        } catch (e) { /* fall through to the markup check */ }
+        const box = document.getElementById('cmpbox');
+        return !box || getComputedStyle(box).display === 'none';
+      })()
 
   - name: complianz
     vendor: Complianz

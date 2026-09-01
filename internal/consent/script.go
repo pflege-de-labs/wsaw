@@ -66,6 +66,60 @@ const helperScript = `
     return { clicked: true, visible: true };
   };
 
+  // Readiness helpers for Consentmanager's __cmp API.
+  //
+  // __cmp is installed as a stub before the CMP initialises, and a call made
+  // against the stub is queued rather than applied. Expressing a choice too
+  // early therefore returns without error while changing nothing — the exact
+  // shape of failure wsaw must never report as success.
+  //
+  // Readiness is taken from the documented "settings" event, which fires when
+  // the CMP has finished loading its settings and consent data becomes
+  // readable. That event may already have fired before wsaw attaches, so a
+  // direct consentStatus read is polled alongside it.
+  //
+  // See https://www.consentmanager.net/en/help/developer-reference/cmp-events/
+  const cmpStatus = () => {
+    try {
+      const s = window.__cmp('consentStatus');
+      if (s && typeof s === 'object' && 'consentExists' in s) return s;
+    } catch (e) { /* the stub may throw or return nothing */ }
+    return null;
+  };
+
+  window.__wsawCmpReady = async (timeoutMs) => {
+    if (typeof window.__cmp !== 'function') return false;
+
+    const deadline = Date.now() + (timeoutMs || 8000);
+
+    let settled = cmpStatus() !== null;
+
+    try {
+      window.__cmp('addEventListener', ['settings', () => { settled = true; }, false], null);
+    } catch (e) { /* polling below is the fallback */ }
+
+    while (Date.now() < deadline) {
+      if (settled || cmpStatus() !== null) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    return false;
+  };
+
+  // __wsawCmpRecorded waits for the CMP to report that a choice is on record,
+  // which is the read-back that turns "we called setConsent" into evidence.
+  window.__wsawCmpRecorded = async (timeoutMs) => {
+    const deadline = Date.now() + (timeoutMs || 5000);
+
+    while (Date.now() < deadline) {
+      const s = cmpStatus();
+      if (s && s.consentExists) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    return false;
+  };
+
   // Consent-container detection for the heuristic fallback.
   //
   // Visibility is decided from computed style and geometry, never from
@@ -221,10 +275,19 @@ const tcfApplyScript = `
       if (window.Didomi && window.Didomi.setUserAgreeToAll) { window.Didomi.setUserAgreeToAll(); acted = true; }
       else if (window.UC_UI && window.UC_UI.acceptAllConsents) { await window.UC_UI.acceptAllConsents(); acted = true; }
       else if (window.OneTrust && window.OneTrust.AllowAll) { window.OneTrust.AllowAll(); acted = true; }
+      // Consentmanager: setConsent(1) is its documented "accept all". It is
+      // tried after the others because its __cmp global is also installed by
+      // unrelated stubs, and only reached once the CMP reports readiness.
+      else if (typeof window.__cmp === 'function' && await window.__wsawCmpReady()) {
+        window.__cmp('setConsent', 1); acted = true;
+      }
     } else {
       if (window.Didomi && window.Didomi.setUserDisagreeToAll) { window.Didomi.setUserDisagreeToAll(); acted = true; }
       else if (window.UC_UI && window.UC_UI.denyAllConsents) { await window.UC_UI.denyAllConsents(); acted = true; }
       else if (window.OneTrust && window.OneTrust.RejectAll) { window.OneTrust.RejectAll(); acted = true; }
+      else if (typeof window.__cmp === 'function' && await window.__wsawCmpReady()) {
+        window.__cmp('setConsent', 0); acted = true;
+      }
     }
   } catch (e) {
     return { ok: false, reason: 'vendor API threw: ' + String(e) };

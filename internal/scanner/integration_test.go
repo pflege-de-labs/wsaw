@@ -193,9 +193,27 @@ func (f *fixtureSite) target(t *testing.T, modes ...model.ConsentMode) config.Re
 func newScanner(t *testing.T, info browser.Info, site *fixtureSite) (*scanner.Scanner, func()) {
 	t.Helper()
 
-	launch := browser.Options{Info: info, LaunchTimeout: 40 * time.Second}
+	rules := ""
 	if site != nil {
-		launch.ExtraArgs = []string{"host-resolver-rules=" + site.resolverRules()}
+		rules = site.resolverRules()
+	}
+
+	return newScannerFor(t, info, rules)
+}
+
+// newScannerFor builds a scanner whose browser resolves the given host rules,
+// so a fixture can present itself under real first- and third-party names.
+func newScannerFor(t *testing.T, info browser.Info, resolverRules string) (*scanner.Scanner, func()) {
+	t.Helper()
+
+	launch := browser.Options{
+		Info:          info,
+		LaunchTimeout: 40 * time.Second,
+		ProfileDir:    t.TempDir(),
+	}
+
+	if resolverRules != "" {
+		launch.ExtraArgs = []string{"host-resolver-rules=" + resolverRules}
 	}
 
 	pool := browser.NewPool(browser.PoolOptions{Size: 1, Launch: launch})
