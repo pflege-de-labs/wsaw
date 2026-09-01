@@ -163,6 +163,25 @@ a second scan of a target and consent mode that is already scanning is refused
 (`409`) rather than queued, because two concurrent scans of one series would
 produce two results for the same moment and double the load on the scanned site.
 
+## Notifications
+
+A **webhook** notifier posts one JSON event per change, optionally templated, which is the right shape for something that routes or deduplicates events.
+
+A **teams** notifier posts one Adaptive Card per scan to a Power Automate Workflow webhook. It is separate code rather than a template for two reasons. A scan with forty changes would be forty chat messages and get rate-limited, so a channel wants the scan, not the change. And a malformed Adaptive Card *fails silently*: the Workflow returns success and posts nothing. An alert path that reports itself healthy while delivering silence is the failure this tool exists least to tolerate, so the card is built and size-checked in Go, not written by hand in YAML.
+
+```yaml
+notify:
+  - name: teams
+    kind: teams
+    url: "${env:WSAW_TEAMS_WORKFLOW_URL}"   # a Workflow URL is a secret: its
+    minSeverity: medium                      # authorisation is in the query
+    baseUrl: https://wsaw.example.com        # so the card can link back
+```
+
+The card leads with the target, the consent mode, the highest severity present and the consent outcome, then lists the changes; severity is stated as text as well as colour. A scan that failed, was skipped, or was cut short is reported as untrustworthy rather than as a clean scan with few findings. A clean scan with nothing to report posts nothing at all — a channel that reports every scan gets muted, and then it reports nothing.
+
+The retired `MessageCard` format is available as `format: messagecard` for a tenant still running an Office 365 connector webhook. Microsoft retired those on 30 April 2026; wsaw warns at startup when it is used.
+
 ## Logs
 
 Log format follows where the output is going: readable and coloured on a

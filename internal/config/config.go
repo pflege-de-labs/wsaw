@@ -298,9 +298,30 @@ type API struct {
 	AllowAdHocScan *bool `yaml:"allowAdHocScan,omitempty"`
 }
 
+// Notifier kinds.
+const (
+	// NotifyWebhook posts one JSON event per change, optionally templated.
+	NotifyWebhook = "webhook"
+	// NotifyTeams posts one Adaptive Card per scan to a Power Automate
+	// Workflow webhook.
+	NotifyTeams = "teams"
+)
+
+// Teams card formats.
+const (
+	// TeamsAdaptive is the current format, an Adaptive Card in a message
+	// envelope.
+	TeamsAdaptive = "adaptive"
+	// TeamsMessageCard is the retired connector format, kept for tenants that
+	// still have a working connector webhook.
+	TeamsMessageCard = "messagecard"
+)
+
 // Notifier delivers change events.
 type Notifier struct {
 	Name string `yaml:"name"`
+	// Kind selects the notifier: "webhook" (the default) or "teams".
+	Kind string `yaml:"kind,omitempty"`
 	// URL may be a secret reference, since webhook URLs carry tokens.
 	URL string `yaml:"url"`
 
@@ -312,13 +333,43 @@ type Notifier struct {
 	// ChangeTypes restricts which kinds of change are delivered.
 	ChangeTypes []string `yaml:"changeTypes,omitempty"`
 
-	// Template renders the payload. Empty sends the raw event JSON.
+	// Template renders the payload. Empty sends the raw event JSON. Webhook
+	// notifiers only: a Teams card is built in Go because a malformed one
+	// fails silently.
 	Template string            `yaml:"template,omitempty"`
 	Headers  map[string]string `yaml:"headers,omitempty"`
+
+	// Format selects the Teams card format: "adaptive" (the default) or the
+	// deprecated "messagecard".
+	Format string `yaml:"format,omitempty"`
+	// BaseURL is wsaw's externally reachable web interface, used to link a
+	// card back to the full result.
+	BaseURL string `yaml:"baseUrl,omitempty"`
+	// MaxChanges caps how many changes one card lists before it reports the
+	// rest as a count.
+	MaxChanges int `yaml:"maxChanges,omitempty"`
 
 	Timeout    Duration `yaml:"timeout,omitempty"`
 	MaxRetries int      `yaml:"maxRetries,omitempty"`
 	QueueSize  int      `yaml:"queueSize,omitempty"`
+}
+
+// NotifierKind returns the configured kind, defaulting to a plain webhook.
+func (n Notifier) NotifierKind() string {
+	if n.Kind == "" {
+		return NotifyWebhook
+	}
+
+	return n.Kind
+}
+
+// TeamsFormat returns the configured card format, defaulting to Adaptive.
+func (n Notifier) TeamsFormat() string {
+	if n.Format == "" {
+		return TeamsAdaptive
+	}
+
+	return n.Format
 }
 
 // Logging configures slog.

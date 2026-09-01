@@ -524,6 +524,78 @@ notify:
 `)
 }
 
+func TestTeamsNotifierValidation(t *testing.T) {
+	t.Parallel()
+
+	parse(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: "${env:WSAW_TEAMS_URL}"
+    minSeverity: medium
+    baseUrl: https://wsaw.example.com
+    maxChanges: 10
+`)
+
+	mustReject(t, `
+notify:
+  - name: channel
+    kind: carrier-pigeon
+    url: https://example.com/hook
+`)
+
+	// A card is built in Go precisely so that its shape is not configuration:
+	// a malformed hand-written card is accepted by Teams and posts nothing.
+	mustReject(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: https://example.com/hook
+    template: '{"text": "{{.Target}}"}'
+`)
+
+	// One card per scan cannot filter per change type; saying so beats
+	// ignoring the setting.
+	mustReject(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: https://example.com/hook
+    changeTypes: [host-added]
+`)
+
+	mustReject(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: https://example.com/hook
+    format: xml
+`)
+
+	mustReject(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: https://example.com/hook
+    baseUrl: wsaw.example.com
+`)
+
+	// Teams-only settings on a webhook notifier would silently do nothing.
+	mustReject(t, `
+notify:
+  - name: hook
+    url: https://example.com/hook
+    baseUrl: https://wsaw.example.com
+`)
+
+	mustReject(t, `
+notify:
+  - name: hook
+    url: https://example.com/hook
+    maxChanges: 5
+`)
+}
+
 func TestConcurrencyDefaultsAreBounded(t *testing.T) {
 	t.Parallel()
 

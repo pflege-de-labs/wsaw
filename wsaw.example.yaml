@@ -177,6 +177,32 @@ notify:
     template: |
       {"text": {{ printf "%s on %s (%s): %s" .Change.Severity .Target .ConsentMode .Change.Detail | json }}}
 
+  # Microsoft Teams. Unlike a webhook this posts one Adaptive Card per scan
+  # rather than one message per change, because forty changes would otherwise
+  # be forty messages and get rate-limited.
+  #
+  # The url is a Power Automate Workflow webhook. Microsoft retired the
+  # Office 365 connector webhooks on 30 April 2026; a Workflow URL carries its
+  # authorisation in the query string, which is why it belongs in a secret
+  # reference and not in this file.
+  #
+  # There is no template: the card is built by wsaw. A malformed Adaptive Card
+  # is *accepted* by the Workflow and posts nothing at all, so leaving the
+  # card's shape to configuration would mean an alert path that reports itself
+  # healthy while delivering silence.
+  - name: teams
+    kind: teams
+    url: "${env:WSAW_TEAMS_WORKFLOW_URL}"
+    minSeverity: medium
+    # Where wsaw's web interface is reachable from, so the card can link back
+    # to the full result. Without it the card says there is no link rather
+    # than inventing one.
+    baseUrl: https://wsaw.example.com
+    # How many changes one card lists before it reports the rest as a count.
+    maxChanges: 12
+    # format: messagecard  # deprecated; only for a tenant still on a
+    #                      # connector webhook
+
 logging:
   level: info
   # auto renders readable, coloured lines when wsaw is attached to a terminal

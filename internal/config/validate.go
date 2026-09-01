@@ -18,7 +18,13 @@ import (
 
 // io_EOF is aliased so Parse can recognize an empty document without
 // importing io at the call site.
-var io_EOF = io.EOF //nolint:revive,stylecheck // deliberate local alias
+var io_EOF = io.EOF //nolint:revive // deliberate local alias
+
+// The URL schemes wsaw accepts anywhere a URL is configured.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
 
 // Error is a validation failure that points at a line.
 type Error struct {
@@ -148,7 +154,7 @@ func (c *Config) validateTargetURL(t *Target, field string, add addFunc) {
 		return
 	}
 
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		// Non-HTTP schemes are refused rather than attempted: wsaw watches the
 		// web, and a file: or javascript: target would be a way to make the
 		// browser do something other than fetch a page.
@@ -420,7 +426,7 @@ func (c *Config) validateNotifiers(add addFunc) {
 			add(0, field+".url", "notifier has no url")
 		} else if !strings.HasPrefix(n.URL, "${") {
 			u, err := url.Parse(n.URL)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) {
 				add(0, field+".url", "%q is not a valid http or https URL", n.URL)
 			}
 		}
@@ -434,6 +440,63 @@ func (c *Config) validateNotifiers(add addFunc) {
 		if n.MaxRetries < 0 {
 			add(0, field+".maxRetries", "must not be negative")
 		}
+
+		validateNotifierKind(n, field, add)
+	}
+}
+
+// validateNotifierKind rejects settings that belong to the other kind of
+// notifier. Ignoring them silently would leave an operator believing a
+// template or a filter is in force when it is not.
+func validateNotifierKind(n Notifier, field string, add addFunc) {
+	switch n.NotifierKind() {
+	case NotifyWebhook:
+		if n.Format != "" {
+			add(0, field+".format", "format applies only to a teams notifier")
+		}
+
+		if n.BaseURL != "" {
+			add(0, field+".baseUrl", "baseUrl applies only to a teams notifier")
+		}
+
+		if n.MaxChanges != 0 {
+			add(0, field+".maxChanges", "maxChanges applies only to a teams notifier, which sends one card per scan")
+		}
+
+	case NotifyTeams:
+		switch n.TeamsFormat() {
+		case TeamsAdaptive, TeamsMessageCard:
+		default:
+			add(0, field+".format", "%q is not valid; use adaptive or the deprecated messagecard", n.Format)
+		}
+
+		if n.Template != "" {
+			add(0, field+".template",
+				"a teams notifier builds its card in wsaw and takes no template: "+
+					"a hand-written card that is malformed is accepted by Teams and posts nothing, "+
+					"so the format is not left to configuration")
+		}
+
+		if len(n.ChangeTypes) > 0 {
+			add(0, field+".changeTypes",
+				"a teams notifier sends one card per scan, so it cannot filter by change type; "+
+					"use minSeverity to decide which scans are worth a message")
+		}
+
+		if n.MaxChanges < 0 {
+			add(0, field+".maxChanges", "must not be negative")
+		}
+
+		if n.BaseURL != "" {
+			u, err := url.Parse(n.BaseURL)
+			if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+				add(0, field+".baseUrl",
+					"%q is not an absolute http or https URL such as \"https://wsaw.example.com\"", n.BaseURL)
+			}
+		}
+
+	default:
+		add(0, field+".kind", "%q is not valid; use webhook or teams", n.Kind)
 	}
 }
 

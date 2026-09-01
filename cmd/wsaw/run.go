@@ -235,64 +235,118 @@ func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
 
 	notifiers := make([]notify.Notifier, 0, len(a.Config.Notify))
 
+	var scanNotifiers []notify.ScanNotifier
+
 	for _, n := range a.Config.Notify {
-		url, err := secret.Resolve(n.URL)
-		if err != nil {
-			return nil, fmt.Errorf("notifier %q: url: %w", n.Name, err)
-		}
-
-		a.Secrets.Add(url)
-
-		headers := make(map[string]secret.Value, len(n.Headers))
-
-		for name, ref := range n.Headers {
-			v, err := secret.Resolve(ref)
-			if err != nil {
-				return nil, fmt.Errorf("notifier %q: header %s: %w", n.Name, name, err)
-			}
-
-			a.Secrets.Add(v)
-			headers[name] = v
-		}
-
-		var minSeverity diff.Severity
-
-		if n.MinSeverity != "" {
-			minSeverity, err = diff.ParseSeverity(n.MinSeverity)
-			if err != nil {
-				return nil, fmt.Errorf("notifier %q: %w", n.Name, err)
-			}
-		}
-
-		changeTypes := make([]diff.ChangeType, 0, len(n.ChangeTypes))
-		for _, t := range n.ChangeTypes {
-			changeTypes = append(changeTypes, diff.ChangeType(t))
-		}
-
-		wh, err := notify.NewWebhook(notify.Config{
-			Name:        n.Name,
-			URL:         url,
-			MinSeverity: minSeverity,
-			Targets:     n.Targets,
-			Labels:      n.Labels,
-			ChangeTypes: changeTypes,
-			Template:    n.Template,
-			Headers:     headers,
-			Timeout:     n.Timeout.Or(10 * time.Second),
-			MaxRetries:  n.MaxRetries,
-		}, client, a.Logger)
+		common, err := resolveNotifier(a, n)
 		if err != nil {
 			return nil, err
 		}
 
-		notifiers = append(notifiers, wh)
+		switch n.NotifierKind() {
+		case config.NotifyTeams:
+			tn, err := notify.NewTeams(notify.TeamsConfig{
+				Name:        n.Name,
+				URL:         common.url,
+				MinSeverity: common.minSeverity,
+				Targets:     n.Targets,
+				Labels:      n.Labels,
+				Legacy:      n.TeamsFormat() == config.TeamsMessageCard,
+				BaseURL:     n.BaseURL,
+				MaxChanges:  n.MaxChanges,
+				Headers:     common.headers,
+				Timeout:     n.Timeout.Or(10 * time.Second),
+				MaxRetries:  n.MaxRetries,
+			}, client, a.Logger)
+			if err != nil {
+				return nil, err
+			}
+
+			if tn.Legacy() {
+				a.Logger.Warn("notifier uses the retired Office 365 connector card format",
+					"notifier", n.Name,
+					"detail", "Microsoft retired connector webhooks on 30 April 2026; "+
+						"move this notifier to a Power Automate Workflow webhook and remove format: messagecard")
+			}
+
+			scanNotifiers = append(scanNotifiers, tn)
+
+		default:
+			changeTypes := make([]diff.ChangeType, 0, len(n.ChangeTypes))
+			for _, t := range n.ChangeTypes {
+				changeTypes = append(changeTypes, diff.ChangeType(t))
+			}
+
+			wh, err := notify.NewWebhook(notify.Config{
+				Name:        n.Name,
+				URL:         common.url,
+				MinSeverity: common.minSeverity,
+				Targets:     n.Targets,
+				Labels:      n.Labels,
+				ChangeTypes: changeTypes,
+				Template:    n.Template,
+				Headers:     common.headers,
+				Timeout:     n.Timeout.Or(10 * time.Second),
+				MaxRetries:  n.MaxRetries,
+			}, client, a.Logger)
+			if err != nil {
+				return nil, err
+			}
+
+			notifiers = append(notifiers, wh)
+		}
 	}
 
 	return notify.NewDispatcher(notifiers, notify.DispatcherOptions{
-		Logger:   a.Logger,
-		OnSent:   a.Metrics.NotifySent,
-		OnFailed: a.Metrics.NotifyFailed,
+		Logger:        a.Logger,
+		OnSent:        a.Metrics.NotifySent,
+		OnFailed:      a.Metrics.NotifyFailed,
+		ScanNotifiers: scanNotifiers,
 	}), nil
+}
+
+// resolvedNotifier holds the settings every notifier kind shares, after secret
+// resolution.
+type resolvedNotifier struct {
+	url         secret.Value
+	headers     map[string]secret.Value
+	minSeverity diff.Severity
+}
+
+func resolveNotifier(a *app.App, n config.Notifier) (resolvedNotifier, error) {
+	var out resolvedNotifier
+
+	url, err := secret.Resolve(n.URL)
+	if err != nil {
+		return out, fmt.Errorf("notifier %q: url: %w", n.Name, err)
+	}
+
+	// Registered as a secret whatever the kind: a Workflow URL carries its
+	// authorisation in the query string, so it must be redacted everywhere a
+	// webhook token would be (Story 5.14, AC2).
+	a.Secrets.Add(url)
+	out.url = url
+
+	out.headers = make(map[string]secret.Value, len(n.Headers))
+
+	for name, ref := range n.Headers {
+		v, err := secret.Resolve(ref)
+		if err != nil {
+			return out, fmt.Errorf("notifier %q: header %s: %w", n.Name, name, err)
+		}
+
+		a.Secrets.Add(v)
+		out.headers[name] = v
+	}
+
+	if n.MinSeverity != "" {
+		out.minSeverity, err = diff.ParseSeverity(n.MinSeverity)
+		if err != nil {
+			return out, fmt.Errorf("notifier %q: %w", n.Name, err)
+		}
+	}
+
+	return out, nil
 }
 
 func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved) (*httpapi.Server, error) {
