@@ -78,6 +78,11 @@ type Deps struct {
 	// reload is reflected without restarting the server.
 	Targets func() []config.Resolved
 
+	// Running returns the scans in flight. Optional: without it the interface
+	// says that activity is not tracked rather than that nothing is running,
+	// because those are different claims (Tenet 5).
+	Running func() []scanner.Running
+
 	// ConfigPath is shown in the UI so a write action can say where a
 	// file-based change belongs.
 	ConfigPath string

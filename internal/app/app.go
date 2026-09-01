@@ -460,7 +460,20 @@ func (a *App) Trigger(ctx context.Context, target string, mode model.ConsentMode
 		return scanner.Outcome{}, errors.New("scanning is not available in this mode")
 	}
 
-	return a.Scanner.Scan(ctx, t, mode)
+	// Labelled so the interface can distinguish a scan somebody asked for from
+	// one the scheduler started on its own (Story 5.12).
+	return a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceAPI), t, mode)
+}
+
+// RunningScans lists the scans in flight, for the API and the web interface.
+// It is empty rather than an error when no scanner exists, because a read-only
+// command legitimately has none.
+func (a *App) RunningScans() []scanner.Running {
+	if a.Scanner == nil {
+		return nil
+	}
+
+	return a.Scanner.Running()
 }
 
 // Retention returns the configured retention policy.

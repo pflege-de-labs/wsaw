@@ -126,6 +126,8 @@ func runOnce(ctx context.Context, a *app.App, targets []config.Resolved) ([]scan
 
 	sem := make(chan struct{}, a.Config.Concurrency())
 
+	scanCtx := scanner.WithSource(ctx, scanner.SourceCLI)
+
 	for _, j := range jobs {
 		if ctx.Err() != nil {
 			break
@@ -139,7 +141,7 @@ func runOnce(ctx context.Context, a *app.App, targets []config.Resolved) ([]scan
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			out, err := a.Scanner.Scan(ctx, j.target, j.mode)
+			out, err := a.Scanner.Scan(scanCtx, j.target, j.mode)
 
 			mu.Lock()
 			defer mu.Unlock()

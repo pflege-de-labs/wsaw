@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{/* A meta refresh, not script: the read paths work with JavaScript off. It is
+     set only while scans are running, so an idle page stays still. */}}
+{{if .Refresh}}<meta http-equiv="refresh" content="{{.Refresh}}">{{end}}
 <title>{{.Title}}</title>
 <link rel="stylesheet" href="/static/wsaw.css">
 </head>

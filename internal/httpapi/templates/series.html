@@ -18,7 +18,7 @@
 
 <h2>History</h2>
 
-{{if not .Results}}
+{{if and (not .Results) (not .Running)}}
   <p class="empty">No scans recorded for this target and consent mode.</p>
 {{end}}
 
@@ -37,6 +37,21 @@
     </tr>
   </thead>
   <tbody>
+  {{/* Running scans first: they are the newest and they exist in no other
+       view, since the store only learns of a scan when it ends. */}}
+  {{range .Running}}
+    <tr class="row-running">
+      <td><code>{{.ScanID}}</code></td>
+      <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
+      <td class="muted">running for {{since .StartedAt}}</td>
+      <td><span class="term term-pending">pending</span></td>
+      <td class="muted">not yet known</td>
+      <td class="num muted">—</td>
+      <td class="num muted">—</td>
+      <td class="num muted">—</td>
+      <td><span class="muted">started by {{.Source}}</span></td>
+    </tr>
+  {{end}}
   {{range .Results}}
     <tr>
       <td><a href="/results/{{.Target}}/{{.ConsentMode}}/{{.ScanID}}"><code>{{.ScanID}}</code></a></td>

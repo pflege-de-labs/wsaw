@@ -10,7 +10,14 @@ import (
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/model"
 	"github.com/martint17r/wsaw/internal/report"
+	"github.com/martint17r/wsaw/internal/scanner"
 	"github.com/martint17r/wsaw/internal/store"
+)
+
+// JSON field names that appear in more than one response.
+const (
+	fieldReason  = "reason"
+	fieldRunning = "running"
 )
 
 func (s *Server) routes() {
@@ -18,6 +25,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/ready", s.handleReady)
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleTargets)
+	s.mux.HandleFunc("GET /api/v1/running", s.handleRunning)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}", s.handleResults)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}", s.handleResult)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/har", s.handleResultHAR)
@@ -52,7 +60,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // scan", which are very different things to an operator (Story 6.5).
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	if s.deps.Metrics == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ready": true, "reason": "readiness is not tracked"})
+		writeJSON(w, http.StatusOK, map[string]any{"ready": true, fieldReason: "readiness is not tracked"})
 
 		return
 	}
@@ -68,7 +76,7 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 
 	writeJSON(w, status, map[string]any{
 		"ready":        ready,
-		"reason":       reason,
+		fieldReason:    reason,
 		"staleTargets": stale,
 	})
 }
@@ -90,11 +98,38 @@ type SeriesView struct {
 	LastScan    *store.Summary `json:"lastScan,omitempty"`
 	HasBaseline bool           `json:"hasBaseline"`
 
+	// Running lists the scans of this series that are in flight. A series with
+	// a running scan is active, which is a different state from stale even
+	// when its last stored scan is old (Story 5.12).
+	Running []scanner.Running `json:"running,omitempty"`
+
 	// Stale marks a series whose last successful scan is older than the
 	// configured threshold, or which has never succeeded.
 	Stale bool `json:"stale"`
 	// StaleReason explains it in operator-readable terms.
 	StaleReason string `json:"staleReason,omitempty"`
+}
+
+// running returns the in-flight scans, or nil when activity is not tracked.
+func (s *Server) running() []scanner.Running {
+	if s.deps.Running == nil {
+		return nil
+	}
+
+	return s.deps.Running()
+}
+
+// runningFor filters the in-flight scans down to one series.
+func runningFor(all []scanner.Running, target string, mode model.ConsentMode) []scanner.Running {
+	var out []scanner.Running
+
+	for _, r := range all {
+		if r.Target == target && r.ConsentMode == mode {
+			out = append(out, r)
+		}
+	}
+
+	return out
 }
 
 func (s *Server) targetViews() []TargetView {
@@ -105,6 +140,7 @@ func (s *Server) targetViews() []TargetView {
 	}
 
 	now := time.Now()
+	live := s.running()
 
 	for _, t := range s.deps.Targets() {
 		view := TargetView{
@@ -125,6 +161,7 @@ func (s *Server) targetViews() []TargetView {
 				sv.HasBaseline = true
 			}
 
+			sv.Running = runningFor(live, t.Name, mode)
 			sv.Stale, sv.StaleReason = staleness(sv.LastScan, now, s.opts.StaleAfter)
 
 			view.Series = append(view.Series, sv)
@@ -160,6 +197,33 @@ func staleness(last *store.Summary, now time.Time, maxAge time.Duration) (bool, 
 
 func (s *Server) handleTargets(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews()})
+}
+
+// handleRunning reports the scans in flight. "tracked" distinguishes a daemon
+// that has nothing running from a deployment where activity is not observable
+// at all — reporting the second as "nothing running" would be the quiet lie
+// Tenet 5 forbids.
+func (s *Server) handleRunning(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.Running == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"tracked":    false,
+			fieldReason:  "this wsaw instance does not run scans",
+			fieldRunning: []scanner.Running{},
+		})
+
+		return
+	}
+
+	live := s.deps.Running()
+	if live == nil {
+		live = []scanner.Running{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tracked":    true,
+		fieldRunning: live,
+		"count":      len(live),
+	})
 }
 
 func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +463,19 @@ func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
 	// would turn the API into a request-forgery primitive.
 	if !s.isConfiguredTarget(target, mode) {
 		writeJSONError(w, http.StatusNotFound, "no such target and consent mode is configured")
+
+		return
+	}
+
+	// Two concurrent scans of the same target and consent mode would produce
+	// two results for the same moment and double the load wsaw puts on
+	// somebody else's site (Tenet 17). Refusing is more useful than queueing,
+	// because the caller learns that the work is already under way.
+	if live := runningFor(s.running(), target, mode); len(live) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "a scan of this target and consent mode is already running",
+			fieldRunning: live,
+		})
 
 		return
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"html/template"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/scanner"
 	"github.com/martint17r/wsaw/internal/store"
 )
 
@@ -65,6 +67,12 @@ func uiFuncs() template.FuncMap {
 		"dur": func(d time.Duration) string {
 			return d.Round(time.Millisecond).String()
 		},
+		// since is for a scan that has not finished: it has no duration yet,
+		// only an elapsed time, and conflating the two would let a running
+		// scan look like a completed one.
+		"since": func(t time.Time) string {
+			return time.Since(t).Round(time.Second).String()
+		},
 		"bytes": func(n int64) string {
 			const unit = 1024
 
@@ -113,10 +121,33 @@ type page struct {
 	CSRF       string
 	Flash      string
 	FlashError string
-	Data       any
+
+	// Refresh, in seconds, makes the page reload itself while scans are
+	// running. It is a meta refresh rather than script, because the core read
+	// paths must work with JavaScript disabled (Story 5.7, AC6).
+	Refresh int
+
+	Data any
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title string, data any) {
+	s.renderPage(w, r, name, title, data, 0)
+}
+
+// refreshWhileRunning returns the reload interval for a page that is showing
+// in-flight scans, and zero when there is nothing to watch. A page that never
+// stops reloading would keep hitting the store for no reason.
+func refreshWhileRunning(running int) int {
+	const seconds = 10
+
+	if running == 0 {
+		return 0
+	}
+
+	return seconds
+}
+
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title string, data any, refresh int) {
 	p := page{
 		Title:      title,
 		Version:    s.opts.Version,
@@ -126,6 +157,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title stri
 		CSRF:       s.csrfToken(),
 		Flash:      r.URL.Query().Get("ok"),
 		FlashError: r.URL.Query().Get("err"),
+		Refresh:    refresh,
 		Data:       data,
 	}
 
@@ -143,6 +175,14 @@ type dashboardData struct {
 	Ready   bool
 	Reason  string
 	Jobs    []scheduleRow
+
+	// Running is every scan in flight, across all targets, so the dashboard
+	// answers "is wsaw doing anything right now" without drilling in
+	// (Story 5.12).
+	Running []scanner.Running
+	// Tracked is false where this instance does not run scans at all, which
+	// must read differently from "nothing is running".
+	Tracked bool
 }
 
 type scheduleRow struct {
@@ -159,7 +199,13 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := dashboardData{Targets: s.targetViews(), Ready: true, Reason: "readiness is not tracked"}
+	data := dashboardData{
+		Targets: s.targetViews(),
+		Ready:   true,
+		Reason:  "readiness is not tracked",
+		Running: s.running(),
+		Tracked: s.deps.Running != nil,
+	}
 
 	for _, t := range data.Targets {
 		for _, series := range t.Series {
@@ -181,7 +227,7 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.render(w, r, "dashboard.html", "wsaw", data)
+	s.renderPage(w, r, "dashboard.html", "wsaw", data, refreshWhileRunning(len(data.Running)))
 }
 
 type seriesData struct {
@@ -189,6 +235,11 @@ type seriesData struct {
 	Mode     model.ConsentMode
 	Results  []store.Summary
 	Baseline *store.Baseline
+
+	// Running is shown above the history as a pending row, because the scan
+	// that is happening right now is the one an operator is usually looking
+	// for and it is in no other view (Story 5.12, AC1).
+	Running []scanner.Running
 }
 
 func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
@@ -204,13 +255,19 @@ func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := seriesData{Target: target, Mode: mode, Results: results}
+	data := seriesData{
+		Target:  target,
+		Mode:    mode,
+		Results: results,
+		Running: runningFor(s.running(), target, mode),
+	}
 
 	if b, err := s.deps.Store.GetBaseline(target, mode); err == nil {
 		data.Baseline = b
 	}
 
-	s.render(w, r, "series.html", target+" — "+string(mode), data)
+	s.renderPage(w, r, "series.html", target+" — "+string(mode), data,
+		refreshWhileRunning(len(data.Running)))
 }
 
 type resultData struct {
@@ -451,18 +508,43 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := s.deps.Trigger.Trigger(r.Context(), target, mode)
-	if err != nil {
-		s.deps.Logger.Warn("ad-hoc scan reported an error", "target", target, "error", err)
-	}
-
 	dest := "/targets/" + target + "/" + string(mode)
-	if out.Result != nil {
-		dest = "/results/" + target + "/" + string(mode) + "/" + out.Result.ScanID
+
+	if len(runningFor(s.running(), target, mode)) > 0 {
+		s.uiRedirectError(w, r, dest,
+			"A scan of this target and consent mode is already running. Its progress is shown below.")
+
+		return
 	}
 
-	s.uiRedirectOK(w, r, dest, "Scan finished.")
+	// The browser is not held open for the length of a scan. A scan can take
+	// the better part of a minute, and the point of the pending row is that
+	// activity is visible while it happens rather than only once it is over
+	// (Story 5.12). The API's POST /scan stays synchronous: an automated
+	// client wants the result, a person wants the page back.
+	//
+	// Detached from the request context, which is cancelled the moment this
+	// redirect is written, and bounded so a wedged scan cannot outlive the
+	// budget any other scan gets.
+	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), adHocScanBudget)
+
+	go func() {
+		defer cancel()
+
+		if _, err := s.deps.Trigger.Trigger(scanCtx, target, mode); err != nil {
+			s.deps.Logger.Warn("ad-hoc scan reported an error",
+				"target", target, "consent_mode", string(mode), "error", err)
+		}
+	}()
+
+	s.uiRedirectOK(w, r, dest,
+		"Scan started. It appears as pending below and this page refreshes until it finishes.")
 }
+
+// adHocScanBudget bounds a scan started from the web interface. It is generous
+// because a target's own hard timeout is the real limit; this only stops a
+// detached goroutine from living forever if that limit somehow does not fire.
+const adHocScanBudget = 15 * time.Minute
 
 func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 	if !s.opts.Token.IsSet() {

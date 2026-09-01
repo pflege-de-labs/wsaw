@@ -88,6 +88,11 @@ type Options struct {
 type Scanner struct {
 	deps Deps
 	opts Options
+
+	// live is the in-flight registry. It is owned rather than injected: every
+	// scan goes through this type, so there is no second place that could
+	// know what is running (Story 5.12).
+	live *Live
 }
 
 // New creates a Scanner.
@@ -104,7 +109,7 @@ func New(deps Deps, opts Options) (*Scanner, error) {
 		deps.Logger = slog.Default()
 	}
 
-	return &Scanner{deps: deps, opts: opts}, nil
+	return &Scanner{deps: deps, opts: opts, live: NewLive()}, nil
 }
 
 // Outcome is everything one scan produced.
@@ -136,7 +141,21 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 	// with "scan finished" through the shared scan ID, which is what lets an
 	// operator match a burst of activity — or a scan that started and never
 	// ended — in an aggregator (Story 5.13).
-	log.Info("scan started", "url", target.URL)
+	log.Info("scan started", "url", target.URL, "source", sourceOf(ctx))
+
+	// Registered here, next to the opening log line and before anything can
+	// fail, so that a scan is visible as running for exactly as long as it
+	// actually is — including while it is being skipped or while it panics.
+	// The releaser is deferred first and therefore runs last, after the panic
+	// recovery below has recorded its result.
+	defer s.live.begin(Running{
+		ScanID:      scanID,
+		Target:      target.Name,
+		URL:         target.URL,
+		ConsentMode: mode,
+		StartedAt:   time.Now(),
+		Source:      sourceOf(ctx),
+	})()
 
 	// A panic in one scan must not take down the daemon. It is converted into
 	// a recorded failure so the target still shows a result.

@@ -82,6 +82,31 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/TargetView"}
 
+  /api/v1/running:
+    get:
+      tags: [operations]
+      summary: List the scans running right now
+      description: >
+        A running scan exists in no stored result: the store only learns of a
+        scan when it ends. `tracked` is false where this instance does not run
+        scans at all, which is a different claim from "nothing is running".
+      responses:
+        "200":
+          description: The scans in flight.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracked:
+                    type: boolean
+                    description: False when this instance does not run scans, so activity cannot be observed here.
+                  reason: {type: string}
+                  count: {type: integer}
+                  running:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunningScan"}
+
   /api/v1/results/{target}/{mode}:
     get:
       tags: [results]
@@ -249,6 +274,21 @@ paths:
                   diff: {$ref: "#/components/schemas/DiffReport"}
         "403": {$ref: "#/components/responses/ReadOnly"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: >
+            A scan of this target and consent mode is already running. Two
+            concurrent scans of one series would produce two results for the
+            same moment and double the load on the scanned site, so the
+            request is refused rather than queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {type: string}
+                  running:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunningScan"}
 
   /api/v1/audit:
     get:
@@ -364,10 +404,28 @@ components:
               consentMode: {type: string}
               lastScan: {$ref: "#/components/schemas/Summary"}
               hasBaseline: {type: boolean}
+              running:
+                type: array
+                description: Scans of this series that are in flight. A series with a running scan is active even when its last stored scan is old.
+                items: {$ref: "#/components/schemas/RunningScan"}
               stale:
                 type: boolean
                 description: True when the series has never been scanned, its last scan failed, or its last scan is older than the configured threshold.
               staleReason: {type: string}
+
+    RunningScan:
+      type: object
+      description: One scan that has started and not yet finished.
+      properties:
+        scanId: {type: string}
+        target: {type: string}
+        url: {type: string}
+        consentMode: {type: string, enum: [none, reject, accept]}
+        startedAt: {type: string, format: date-time}
+        source:
+          type: string
+          enum: [schedule, api, cli]
+          description: What started the scan.
 
     Summary:
       type: object

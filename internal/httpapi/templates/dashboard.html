@@ -13,7 +13,38 @@
     <strong>{{.Stale}} stale</strong>
     <span>series without a recent successful scan</span>
   </div>
+  <div class="status {{if .Running}}status-active{{end}}">
+    {{if not .Tracked}}
+      <strong>Activity not tracked</strong>
+      <span>this instance does not run scans</span>
+    {{else if .Running}}
+      <strong>{{len .Running}} running</strong>
+      <span>scans in flight right now</span>
+    {{else}}
+      <strong>Idle</strong>
+      <span>no scan is running</span>
+    {{end}}
+  </div>
 </div>
+
+{{if .Running}}
+<table class="running">
+  <caption>Running scans</caption>
+  <thead><tr><th>Target</th><th>Mode</th><th>Scan</th><th>Started</th><th>Elapsed</th><th>Started by</th></tr></thead>
+  <tbody>
+  {{range .Running}}
+    <tr class="row-running">
+      <td><a href="/targets/{{.Target}}/{{.ConsentMode}}">{{.Target}}</a></td>
+      <td>{{.ConsentMode}}</td>
+      <td><code>{{.ScanID}}</code></td>
+      <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
+      <td>{{since .StartedAt}}</td>
+      <td>{{.Source}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
 
 {{if not .Targets}}
   <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
@@ -42,8 +73,9 @@
       </thead>
       <tbody>
       {{range .Series}}
-        <tr {{if .Stale}}class="row-stale"{{end}}>
-          <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a></td>
+        <tr class="{{if .Running}}row-running{{else if .Stale}}row-stale{{end}}">
+          <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a>
+            {{if .Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
           {{if .LastScan}}
             <td title="{{time .LastScan.StartedAt}}">{{ago .LastScan.StartedAt}}</td>
             <td><span class="term term-{{.LastScan.Termination}}">{{.LastScan.Termination}}</span></td>

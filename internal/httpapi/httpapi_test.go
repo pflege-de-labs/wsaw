@@ -46,6 +46,19 @@ func (f *fakeTrigger) Trigger(_ context.Context, target string, mode model.Conse
 func newFixture(t *testing.T, opts httpapi.Options, trigger httpapi.ScanTrigger) *fixture {
 	t.Helper()
 
+	return newFixtureLive(t, opts, trigger, nil)
+}
+
+// newFixtureLive additionally supplies the in-flight scan registry, which the
+// server treats as absent when it is nil.
+func newFixtureLive(
+	t *testing.T,
+	opts httpapi.Options,
+	trigger httpapi.ScanTrigger,
+	running func() []scanner.Running,
+) *fixture {
+	t.Helper()
+
 	dir := t.TempDir()
 
 	st, err := store.Open(store.Options{
@@ -76,6 +89,7 @@ func newFixture(t *testing.T, opts httpapi.Options, trigger httpapi.ScanTrigger)
 		Metrics: reg,
 		Trigger: trigger,
 		Targets: func() []config.Resolved { return targets },
+		Running: running,
 	})
 	if err != nil {
 		t.Fatal(err)

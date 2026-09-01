@@ -13,6 +13,7 @@ import (
 	"github.com/martint17r/wsaw/internal/consent"
 	"github.com/martint17r/wsaw/internal/model"
 	"github.com/martint17r/wsaw/internal/report"
+	"github.com/martint17r/wsaw/internal/scanner"
 )
 
 // logLevelDebug is the verbose log level the diagnostic commands select.
@@ -92,7 +93,7 @@ func cmdDebug(ctx context.Context, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "scanning %s in %s mode with %s\n", url, consentMode, a.Chrome)
 
-	out, scanErr := a.Scanner.Scan(ctx, target, consentMode)
+	out, scanErr := a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceCLI), target, consentMode)
 	if out.Result == nil {
 		return scanErr
 	}
@@ -221,7 +222,7 @@ func cmdRulesTest(ctx context.Context, args []string) error {
 
 	defer func() { _ = a.Close() }()
 
-	out, scanErr := a.Scanner.Scan(ctx, a.Targets[0], consentMode)
+	out, scanErr := a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceCLI), a.Targets[0], consentMode)
 	if out.Result == nil {
 		return scanErr
 	}

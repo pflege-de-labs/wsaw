@@ -120,6 +120,17 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 tr.row-stale { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
+/* A running scan. Marked with a left border as well as a tint, so the state
+   survives a monochrome print and a colour-blind reader (Story 5.11, AC5's
+   reasoning applied to the UI's own colour use). */
+tr.row-running {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+
+table.running { margin-bottom: 1.4rem; }
+table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3rem; }
+
 .requests td { font-size: 0.9em; }
 
 /* Status and banners */
@@ -138,6 +149,7 @@ tr.row-stale { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .status span { color: var(--muted); font-size: 0.85em; }
 .status-ok strong { color: var(--ok); }
 .status-bad strong { color: var(--bad); }
+.status-active strong { color: var(--accent); }
 
 .banner {
   border-left: 4px solid var(--border);
@@ -193,6 +205,7 @@ tr.row-stale { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .term-idle { color: var(--ok); }
 .term-timeout, .term-request-cap, .term-byte-cap { color: var(--warn); }
 .term-error, .term-skipped { color: var(--bad); }
+.term-pending { color: var(--accent); font-weight: 600; }
 
 .outcome-applied { color: var(--ok); }
 .outcome-not-needed { color: var(--muted); }

@@ -332,6 +332,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Rules:      a.Rules,
 		Logger:     a.Logger,
 		Targets:    targets,
+		Running:    a.RunningScans,
 		ConfigPath: a.Config.Path(),
 	})
 }
