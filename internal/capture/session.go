@@ -332,6 +332,14 @@ func (s *session) prepare() error {
 		),
 	}
 
+	// Cookies are cleared for every scan, warm cache or not. A stored consent
+	// decision is precisely what must not carry over: a scan that inherits one
+	// sees no banner and records the site's whole tracking stack as
+	// pre-consent traffic. The browser process is the real isolation boundary
+	// (one scan per browser by default); this is the belt to that braces, and
+	// it is what keeps a deliberately reused browser honest.
+	actions = append(actions, network.ClearBrowserCookies())
+
 	if !s.opts.WarmCache {
 		// Cold cache is the default: it is what makes two scans comparable
 		// and what an unprimed visitor actually experiences.
@@ -696,12 +704,22 @@ func (s *session) collectCookies() {
 	var cookies []*network.Cookie
 
 	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		c, err := storage.GetCookies().Do(ctx)
+		get := storage.GetCookies()
+
+		// Scoped to this scan's browser context. Unscoped, Storage.getCookies
+		// answers for the browser's default context, which is not where an
+		// isolated scan's cookies live — it would report another scan's jar,
+		// or none at all.
+		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" {
+			get = get.WithBrowserContextID(c.BrowserContextID)
+		}
+
+		res, err := get.Do(ctx)
 		if err != nil {
 			return err
 		}
 
-		cookies = c
+		cookies = res
 
 		return nil
 	}))
@@ -777,6 +795,7 @@ func (o *Options) environment() model.Environment {
 		BasicAuth:      o.BasicAuthUser.IsSet(),
 		Proxy:          secret.RedactURL(o.Proxy),
 		WarmCache:      o.WarmCache,
+		BrowserReused:  o.BrowserReused,
 	}
 
 	// Header names are echoed for reproducibility; values never are.

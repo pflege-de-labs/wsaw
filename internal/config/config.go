@@ -139,7 +139,18 @@ type Browser struct {
 	// or mounted noexec.
 	ProfileDir string `yaml:"profileDir,omitempty"`
 
-	PoolSize           int      `yaml:"poolSize,omitempty"`
+	PoolSize int `yaml:"poolSize,omitempty"`
+
+	// MaxScansPerBrowser is how many scans one browser process may serve
+	// before it is replaced. The default is 1, which is what makes per-scan
+	// isolation hold by construction: a browser has its own profile
+	// directory, so one scan per browser means one cookie jar per scan.
+	//
+	// Raising it trades that guarantee for fewer browser launches. wsaw still
+	// clears cookies and storage between scans and records that the browser
+	// was reused in every affected result, but a site can persist state in
+	// ways a clear does not reach. Raise it only where throughput matters
+	// more than the consent comparison.
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`
 }
@@ -433,8 +444,10 @@ func New() *Config {
 			Robots:       RobotsIgnore,
 		},
 		Browser: Browser{
-			PoolSize:           0, // resolved from NumCPU at runtime
-			MaxScansPerBrowser: 50,
+			PoolSize: 0, // resolved from NumCPU at runtime
+			// One scan per browser: see the field comment. Consent state
+			// leaking between scans invalidates every comparison wsaw makes.
+			MaxScansPerBrowser: 1,
 		},
 		Store: Store{
 			MaxPerSeries: 200,

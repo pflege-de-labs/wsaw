@@ -133,6 +133,9 @@ type Options struct {
 	// because it changes what the numbers mean.
 	WarmCache bool
 
+	// BrowserReused records that this scan is not the first on its browser.
+	BrowserReused bool
+
 	// WsawVersion and ChromeVersion are recorded for reproducibility.
 	WsawVersion   string
 	ChromeVersion string

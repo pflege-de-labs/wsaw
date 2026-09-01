@@ -99,25 +99,49 @@ const helperScript = `
     } catch (e) { /* polling below is the fallback */ }
 
     while (Date.now() < deadline) {
-      if (settled || cmpStatus() !== null) return true;
+      if (settled || cmpStatus() !== null) {
+        // Snapshot the state before wsaw touches anything. Verification
+        // compares against this, because "a choice is on record" is only
+        // evidence of *our* choice if none was on record beforehand.
+        const s = cmpStatus();
+        window.__wsawCmpPrior = s ? {exists: !!s.consentExists, data: s.consentData || ''} : {exists: false, data: ''};
+        return true;
+      }
       await new Promise(r => setTimeout(r, 100));
     }
 
     return false;
   };
 
-  // __wsawCmpRecorded waits for the CMP to report that a choice is on record,
-  // which is the read-back that turns "we called setConsent" into evidence.
+  // __wsawCmpRecorded waits for evidence that *this* interaction was recorded.
+  //
+  // Waiting only for consentExists was wrong: a page carrying consent from an
+  // earlier scan satisfies it immediately, so the rule reported "applied and
+  // verified" while having changed nothing. Real evidence is a transition
+  // from no-consent to consent, or a change in the consent data.
   window.__wsawCmpRecorded = async (timeoutMs) => {
     const deadline = Date.now() + (timeoutMs || 5000);
+    const prior = window.__wsawCmpPrior || {exists: false, data: ''};
 
     while (Date.now() < deadline) {
       const s = cmpStatus();
-      if (s && s.consentExists) return true;
+      if (s && s.consentExists && (!prior.exists || (s.consentData || '') !== prior.data)) {
+        return true;
+      }
       await new Promise(r => setTimeout(r, 100));
     }
 
     return false;
+  };
+
+  // __wsawCmpChanged reports the same evidence synchronously, for a rule's
+  // verify expression.
+  window.__wsawCmpChanged = () => {
+    const s = cmpStatus();
+    if (!s || !s.consentExists) return false;
+    const prior = window.__wsawCmpPrior;
+    if (!prior) return false;
+    return !prior.exists || (s.consentData || '') !== prior.data;
   };
 
   // Consent-container detection for the heuristic fallback.

@@ -236,8 +236,22 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 		return nil, nil, errors.New("browser is no longer usable")
 	}
 
-	// A fresh browser context is a separate incognito-style context with its
-	// own cookie jar, cache, storage, and service workers.
+	// A new tab, deliberately, rather than a new CDP browser context.
+	//
+	// A separate browser context would be the tidier boundary, but Chrome can
+	// refuse to create one — a managed install answers
+	// Target.createBrowserContext with "Not allowed" — and isolation is a
+	// correctness requirement, not something that may quietly degrade on
+	// someone's laptop (Tenet 2). The boundary is therefore the browser
+	// process itself: a browser serves one scan by default, and its profile
+	// directory is its own.
+	//
+	// This matters because a tab created here inherits the browser's cookie
+	// jar. When browsers were reused across scans, an accept-mode scan
+	// granted consent and the reject scan that followed inherited it, saw no
+	// banner, and recorded the site's entire tracking stack as firing before
+	// any consent decision — the product's headline finding, manufactured by
+	// wsaw itself.
 	scanCtx, cancelScan := chromedp.NewContext(b.browserCtx)
 
 	// The scan's own deadline and cancellation come from ctx, but the browser

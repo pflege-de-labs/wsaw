@@ -204,15 +204,16 @@ rules:
           })()
       - click: "#cmpwelcomebtnno, .cmpboxbtnno, .cmpboxbtnnoall"
         optional: true
-    # consentExists is the CMP's own statement that a choice is on record.
-    # The banner being gone is accepted only as a fallback, for deployments
-    # where the API is not reachable from the top frame.
+    # Verification asks whether *this* interaction was recorded, not merely
+    # whether some choice is on record: a page carrying consent from an
+    # earlier scan would satisfy the latter without wsaw having done
+    # anything. The banner being gone is accepted only as a fallback, for
+    # deployments where the API is not reachable from the top frame.
     verify: |
       (() => {
         try {
-          if (typeof window.__cmp === 'function') {
-            const s = window.__cmp('consentStatus');
-            if (s && typeof s === 'object' && 'consentExists' in s) return !!s.consentExists;
+          if (typeof window.__cmp === 'function' && window.__wsawCmpChanged) {
+            return window.__wsawCmpChanged();
           }
         } catch (e) { /* fall through to the markup check */ }
         const box = document.getElementById('cmpbox');

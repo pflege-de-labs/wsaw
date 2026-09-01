@@ -170,6 +170,12 @@ type Environment struct {
 	Proxy string `json:"proxy,omitempty"`
 
 	WarmCache bool `json:"warmCache"`
+
+	// BrowserReused is true when this scan ran on a browser process that had
+	// already served another scan. Isolation then rests on wsaw clearing
+	// state rather than on the process boundary, which is weaker, so it is
+	// recorded rather than left invisible.
+	BrowserReused bool `json:"browserReused,omitempty"`
 }
 
 // Consent describes the CMP encountered and the interaction performed.

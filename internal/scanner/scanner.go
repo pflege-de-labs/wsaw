@@ -207,6 +207,11 @@ func (s *Scanner) capture(
 		}
 	}()
 
+	// Read before the scan context is created, since that increments the
+	// counter. A browser that has already served a scan means isolation rests
+	// on clearing state rather than on the process boundary.
+	reused := lease.Browser.Scans() > 0
+
 	scanCtx, cancelScan, err := lease.Browser.NewScanContext(ctx)
 	if err != nil {
 		discarded = true
@@ -220,6 +225,7 @@ func (s *Scanner) capture(
 	defer cancelScan()
 
 	opts := s.captureOptions(target, mode)
+	opts.BrowserReused = reused
 	opts.WsawVersion = s.opts.WsawVersion
 	opts.ChromeVersion = s.opts.ChromeVersion
 	opts.Secrets = s.deps.Secrets

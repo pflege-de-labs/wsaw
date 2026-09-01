@@ -77,9 +77,18 @@ func newCMPSiteWith(t *testing.T, neverIdle bool) *cmpSite {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 
-	siteMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	siteMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, cmpFixtureHTML(s.neverIdle))
+
+		// A real CMP stores its decision in a cookie and does not ask again.
+		// The fixture must do the same, or a test for state leaking between
+		// scans cannot fail.
+		prior := ""
+		if c, err := r.Cookie("cmpconsent"); err == nil {
+			prior = c.Value
+		}
+
+		_, _ = fmt.Fprint(w, cmpFixtureHTML(s.neverIdle, prior))
 	})
 
 	s.site = httptest.NewServer(siteMux)
@@ -112,7 +121,9 @@ func (s *cmpSite) target() config.Resolved {
 // cmpFixtureHTML models the documented API surface: a stub that queues, an
 // init after a delay, setConsent(0|1), consentStatus, close, and the
 // addEventListener events wsaw's readiness check subscribes to.
-func cmpFixtureHTML(neverIdle bool) string {
+func thirdHostFor() string { return cmpThirdHost }
+
+func cmpFixtureHTML(neverIdle bool, priorConsent string) string {
 	poller := ""
 	if neverIdle {
 		// Keeps a request in flight indefinitely, so settle() can never
@@ -120,25 +131,41 @@ func cmpFixtureHTML(neverIdle bool) string {
 		poller = `<script>setInterval(function(){fetch('/poll?t=' + Date.now());}, 250);</script>`
 	}
 
+	// With a decision already stored the banner is not rendered at all, just
+	// as a real CMP would not ask twice.
+	banner := `
+<div id="cmpbox" style="position:fixed;bottom:0;width:600px;height:140px;background:#eee">
+  <p>We use cookies. Please choose whether to allow tracking.</p>
+  <button id="cmpwelcomebtnyes" class="cmpboxbtn cmpboxbtnyes">Accept all</button>
+  <button id="cmpwelcomebtnno" class="cmpboxbtn cmpboxbtnno">Reject all</button>
+</div>`
+	if priorConsent != "" {
+		banner = "<!-- consent already stored: " + priorConsent + " -->"
+	}
+
+	// A site with stored consent fires its tags on load, without waiting to
+	// be asked again. Modelling that is what gives the isolation test its
+	// teeth: a scan that inherited another scan's cookie jar records those
+	// tags as pre-consent traffic, which is exactly how the bug appeared in
+	// real scan data.
+	if priorConsent == "accept" {
+		banner += `<script src="http://` + thirdHostFor() + `/tag.js?c=stored"></script>`
+	}
+
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><title>consentmanager fixture</title></head>
 <body>
 <h1>fixture</h1>
 <img src="http://%s/px.gif" alt="">
-
-<div id="cmpbox" style="position:fixed;bottom:0;width:600px;height:140px;background:#eee">
-  <p>We use cookies. Please choose whether to allow tracking.</p>
-  <button id="cmpwelcomebtnyes" class="cmpboxbtn cmpboxbtnyes">Accept all</button>
-  <button id="cmpwelcomebtnno" class="cmpboxbtn cmpboxbtnno">Reject all</button>
-</div>
+%s
 
 <script>
 (function () {
   var ready = false;
   var queue = [];
   var listeners = {};
-  var consentExists = false;
-  var consentData = '';
+  var consentExists = %t;
+  var consentData = %q;
   var choice = null;
 
   function fire(name) {
@@ -155,7 +182,10 @@ func cmpFixtureHTML(neverIdle bool) string {
       case 'setConsent':
         choice = parameter === 1 ? 'accept' : 'reject';
         consentExists = true;
-        consentData = 'CM-' + choice;
+        consentData = 'CM-' + choice + '-' + Date.now();
+        // Persisted, so a scan that inherited another scan's jar would find
+        // the decision already made.
+        document.cookie = 'cmpconsent=' + choice + '; path=/; max-age=3600';
         // A real CMP only loads tagging once a choice permits it. The
         // fixture loads a third-party tag on accept, so a test can tell the
         // two choices apart by their network effect.
@@ -218,7 +248,8 @@ func cmpFixtureHTML(neverIdle bool) string {
 })();
 </script>
 %s
-</body></html>`, cmpThirdHost, cmpThirdHost, cmpInitDelayMs, poller)
+</body></html>`,
+		cmpThirdHost, banner, priorConsent != "", priorConsent, cmpThirdHost, cmpInitDelayMs, poller)
 }
 
 // TestConsentmanagerRejectUsesTheVendorAPI is the point of the rule: the
@@ -475,5 +506,94 @@ func TestConsentRunsOnAPageThatNeverGoesIdle(t *testing.T) {
 	// A truncated scan must still report honestly that it was truncated.
 	if !res.Truncated() && res.Termination == model.TermTimeout {
 		t.Error("a timed-out scan did not report itself as truncated")
+	}
+}
+
+// TestScansDoNotInheritConsentFromEachOther is the regression test for a bug
+// found in production data.
+//
+// chromedp.NewContext opens a new tab, inheriting the parent's browser
+// context and therefore its cookie jar. Because the pool reuses a browser
+// across many scans, a scan in accept mode granted consent and the reject
+// scan that followed inherited it: the site's whole tracking stack was
+// recorded as firing before any consent decision, and the product's headline
+// finding was manufactured by wsaw itself.
+//
+// Both scans run on the same pooled browser, which is the condition that
+// exposed it.
+func TestScansDoNotInheritConsentFromEachOther(t *testing.T) {
+	info := requireChrome(t)
+
+	site := newCMPSite(t)
+
+	s, closePool := newScannerFor(t, info, site.resolverRules())
+	defer closePool()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	target := site.target()
+
+	// Accept first, which stores a consent decision in the browser.
+	accepted, err := s.Scan(ctx, target, model.ConsentAccept)
+	if err != nil {
+		t.Fatalf("accept scan: %v", err)
+	}
+
+	if accepted.Result.Consent.Outcome != model.OutcomeApplied {
+		t.Fatalf("accept outcome = %q (%s), want applied",
+			accepted.Result.Consent.Outcome, accepted.Result.Consent.Reason)
+	}
+
+	// Reject next, on the same pooled browser. It must meet a banner.
+	rejected, err := s.Scan(ctx, target, model.ConsentReject)
+	if err != nil {
+		t.Fatalf("reject scan: %v", err)
+	}
+
+	c := rejected.Result.Consent
+
+	if c.Outcome == model.OutcomeNotNeeded {
+		t.Fatalf("the reject scan found no banner: consent leaked from the accept scan (%s)", c.Reason)
+	}
+
+	if c.Outcome != model.OutcomeApplied {
+		t.Errorf("reject outcome = %q (%s), want applied", c.Outcome, c.Reason)
+	}
+
+	// The decisive check: with an inherited jar the accept-only tag fires
+	// before wsaw touches anything, which is exactly how the bug showed up in
+	// real data.
+	for _, req := range rejected.Result.Requests {
+		if strings.Contains(req.URL, "/tag.js") && req.Phase == model.PhasePre {
+			t.Errorf("the accept-only tag fired pre-consent during a reject scan: consent state leaked (%s)", req.URL)
+		}
+	}
+}
+
+// TestPreExistingConsentIsNotTakenAsVerification guards the second half of
+// the same problem: reading "a choice is on record" proves nothing if a
+// choice was already on record before wsaw acted.
+func TestPreExistingConsentIsNotTakenAsVerification(t *testing.T) {
+	info := requireChrome(t)
+
+	site := newCMPSite(t)
+
+	s, closePool := newScannerFor(t, info, site.resolverRules())
+	defer closePool()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	out, err := s.Scan(ctx, site.target(), model.ConsentReject)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// On a clean scan the consent data changes, so verification has real
+	// evidence and the outcome is applied.
+	if out.Result.Consent.Outcome != model.OutcomeApplied {
+		t.Errorf("outcome = %q (%s), want applied on a clean scan",
+			out.Result.Consent.Outcome, out.Result.Consent.Reason)
 	}
 }
