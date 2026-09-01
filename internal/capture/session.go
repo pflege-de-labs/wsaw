@@ -82,7 +82,8 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 	stopParent := context.AfterFunc(ctx, cancelRun)
 	defer stopParent()
 
-	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes, opts.MaxRequests, opts.MaxBytes)
+	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes,
+		opts.MaxRequests, opts.MaxBytes, opts.StallAfter)
 
 	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
 
@@ -630,6 +631,16 @@ func (s *session) screenshot(kind string) error {
 func (s *session) finish(runErr error) {
 	s.res.Requests = s.rec.requests()
 	s.res.Warnings = append(s.res.Warnings, s.rec.capturedWarnings()...)
+
+	// Requests still in flight at the end are reported rather than left to be
+	// inferred from a missing end offset, so a reader can tell an incomplete
+	// observation from a fast one.
+	if stalled := s.rec.stalled(); len(stalled) > 0 {
+		s.res.Warnings = append(s.res.Warnings, fmt.Sprintf(
+			"%d request(s) never reported completion and were not waited for; "+
+				"this is usual for cross-origin iframes, whose completion events go to a separate browser target",
+			len(stalled)))
+	}
 
 	s.mu.Lock()
 	s.res.Screenshots = s.screenshots

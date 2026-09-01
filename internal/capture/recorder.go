@@ -33,7 +33,13 @@ const (
 type recorder struct {
 	mu sync.Mutex
 
-	start      time.Time
+	start time.Time
+
+	// origin is the first CDP timestamp seen, which all offsets are measured
+	// from. See offset for why the wall clock cannot be used.
+	origin     time.Time
+	haveOrigin bool
+
 	classifier *classify.Classifier
 	normalizer *normalize.Normalizer
 
@@ -47,6 +53,10 @@ type recorder struct {
 	// inflight counts requests that have neither finished nor failed, which
 	// drives idle detection.
 	inflight int
+
+	// stallAfter is how long a request may be in flight before it stops
+	// counting towards network idle.
+	stallAfter time.Duration
 
 	totalBytes  int64
 	maxRequests int
@@ -73,9 +83,14 @@ type record struct {
 	finished bool
 	// wantBody marks a hop selected for body hashing.
 	wantBody bool
+
+	// observedAt is when wsaw saw the request begin, in wall-clock terms. It
+	// is used only to decide whether an unfinished request has stalled, which
+	// must not depend on the CDP clock.
+	observedAt time.Time
 }
 
-func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64) *recorder {
+func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64, stallAfter time.Duration) *recorder {
 	types := make(map[string]struct{}, len(hashTypes))
 	for _, t := range hashTypes {
 		types[t] = struct{}{}
@@ -89,6 +104,7 @@ func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalize
 		current:     make(map[network.RequestID]*record),
 		maxRequests: maxRequests,
 		maxBytes:    maxBytes,
+		stallAfter:  stallAfter,
 		phase:       model.PhasePre,
 		idleSignal:  make(chan struct{}, 1),
 		bodyWanted:  make(chan network.RequestID, 256),
@@ -105,13 +121,35 @@ func (r *recorder) setPhase(p model.ConsentPhase) {
 	r.phase = p
 }
 
+// offset converts a CDP timestamp into an offset from the start of the scan.
+//
+// It anchors to the first timestamp observed rather than to the wall clock.
+// CDP reports a monotonic clock whose epoch is "an arbitrary point in the
+// past", and the client library turns that into a wall-clock time by adding
+// the *Go process's* idea of system boot time. Those two epochs do not agree,
+// so subtracting a wall-clock start produced a negative number for every
+// event, which clamped to zero: every request in every result carried a start
+// offset of 0 and no end offset at all, making completed requests look as
+// though the scan had been cut off mid-flight.
+//
+// Anchoring to the first observed event sidesteps the epoch question
+// entirely and yields exactly what the schema documents: time since the scan
+// began.
+//
+// Callers hold r.mu.
 func (r *recorder) offset(t *time.Time) time.Duration {
 	if t == nil {
 		return 0
 	}
 
-	d := t.Sub(r.start)
+	if !r.haveOrigin {
+		r.origin = *t
+		r.haveOrigin = true
+	}
+
+	d := t.Sub(r.origin)
 	if d < 0 {
+		// Events are monotonic in practice; treat any inversion as the start.
 		return 0
 	}
 
@@ -171,6 +209,8 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 	if _, ok := r.hashTypes[rec.req.ResourceType]; ok && !rec.req.NonNetwork {
 		rec.wantBody = true
 	}
+
+	rec.observedAt = time.Now()
 
 	r.records = append(r.records, rec)
 	r.current[ev.RequestID] = rec
@@ -386,11 +426,59 @@ func (r *recorder) addWarning(msg string) {
 	r.warnings = append(r.warnings, msg)
 }
 
+// snapshot reports how many requests are actively in flight, and whether a
+// budget has been exhausted.
+//
+// A request that has been in flight longer than the stall threshold is not
+// counted. Chrome hands cross-origin iframes to out-of-process targets, and
+// their completion events never reach this session, so such a request stays
+// in flight for ever. Counting it would mean the network never reads as
+// quiet, and every scan of any page embedding a third-party iframe — a
+// review widget, a video, a map — would run to its hard timeout and be
+// reported as truncated. Stalled requests are still recorded, and their
+// number is reported as a warning, so nothing is hidden (Tenet 5).
 func (r *recorder) snapshot() (inflight int, exceeded capReason) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.inflight, r.exceeded
+	return r.activeInflightLocked(time.Now()), r.exceeded
+}
+
+func (r *recorder) activeInflightLocked(now time.Time) int {
+	if r.inflight == 0 || r.stallAfter <= 0 {
+		return r.inflight
+	}
+
+	active := 0
+
+	for _, rec := range r.records {
+		if rec.finished {
+			continue
+		}
+
+		if now.Sub(rec.observedAt) < r.stallAfter {
+			active++
+		}
+	}
+
+	return active
+}
+
+// stalled returns the requests still in flight at the end of the scan, so the
+// result can say how many observations are incomplete.
+func (r *recorder) stalled() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []string
+
+	for _, rec := range r.records {
+		if !rec.finished {
+			out = append(out, rec.req.URL)
+		}
+	}
+
+	return out
 }
 
 // requests returns the recorded requests in a deterministic order. Ordering by

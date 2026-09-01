@@ -24,6 +24,13 @@ const (
 	DefaultNavTimeout   = 30 * time.Second
 	DefaultBodyTimeout  = 5 * time.Second
 	DefaultMaxBodyBytes = 8 << 20 // 8 MiB
+
+	// DefaultStallAfter is how long a request may be in flight before it
+	// stops counting towards network idle. Cross-origin iframes are handed to
+	// out-of-process targets whose completion events never reach this
+	// session, so without this every page embedding one would run to its hard
+	// timeout.
+	DefaultStallAfter = 10 * time.Second
 )
 
 // HashResourceTypes are the resource types whose bodies are fingerprinted by
@@ -63,6 +70,10 @@ type Options struct {
 	// scan with a recorded reason rather than a crash.
 	MaxRequests int
 	MaxBytes    int64
+
+	// StallAfter is how long a request may be in flight before idle detection
+	// stops waiting for it. Zero means DefaultStallAfter.
+	StallAfter time.Duration
 
 	// ConsentBudget is how long the consent hook may take. Capture reserves
 	// it out of HardTimeout so that a page which never reaches network idle
@@ -159,6 +170,10 @@ func (o *Options) withDefaults() Options {
 
 	if out.MaxBodyBytes <= 0 {
 		out.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+
+	if out.StallAfter <= 0 {
+		out.StallAfter = DefaultStallAfter
 	}
 
 	if len(out.HashResourceTypes) == 0 {

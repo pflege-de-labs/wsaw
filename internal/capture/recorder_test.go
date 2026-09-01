@@ -29,7 +29,7 @@ func newTestRecorder(t *testing.T) *recorder {
 		t.Fatal(err)
 	}
 
-	return newRecorder(time.Now(), cl, n, []string{"script"}, 100, 1<<20)
+	return newRecorder(time.Now(), cl, n, []string{"script"}, 100, 1<<20, DefaultStallAfter)
 }
 
 func mono(offset time.Duration) *cdp.MonotonicTime {
@@ -194,7 +194,7 @@ func TestRecorderRequestCapIsRecordedNotIgnored(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 3, 0)
+	r := newRecorder(time.Now(), cl, n, nil, 3, 0, DefaultStallAfter)
 
 	for i := range 10 {
 		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeXHR))
@@ -214,7 +214,7 @@ func TestRecorderByteCap(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 100, 1000)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 1000, DefaultStallAfter)
 
 	r.requestWillBeSent(willBeSent("1", "https://example.com/big", "GET", network.ResourceTypeOther))
 	r.loadingFinished(&network.EventLoadingFinished{RequestID: "1", EncodedDataLength: 2000, Timestamp: mono(0)})
@@ -460,5 +460,121 @@ func TestRecorderWarningsAreDeduplicated(t *testing.T) {
 
 	if got := len(r.capturedWarnings()); got != 2 {
 		t.Errorf("got %d warnings, want 2", got)
+	}
+}
+
+// TestRecorderOffsetsAreRelativeToTheFirstEvent covers a bug that made every
+// completed request look as though the scan had been cut off mid-flight.
+//
+// CDP timestamps use a monotonic clock whose epoch is unrelated to the wall
+// clock. Measuring against time.Now() produced a negative value for every
+// event, which clamped to zero, so every request carried a start offset of 0
+// and no end offset at all.
+func TestRecorderOffsetsAreRelativeToTheFirstEvent(t *testing.T) {
+	t.Parallel()
+
+	r := newTestRecorder(t)
+
+	// A monotonic clock far from the wall clock, as Chrome's actually is.
+	base := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *cdp.MonotonicTime {
+		m := cdp.MonotonicTime(base.Add(d))
+
+		return &m
+	}
+
+	first := willBeSent("1", "https://example.com/a.js", "GET", network.ResourceTypeScript)
+	first.Timestamp = at(0)
+	r.requestWillBeSent(first)
+
+	second := willBeSent("2", "https://example.com/b.js", "GET", network.ResourceTypeScript)
+	second.Timestamp = at(300 * time.Millisecond)
+	r.requestWillBeSent(second)
+
+	r.loadingFinished(&network.EventLoadingFinished{
+		RequestID: "1", EncodedDataLength: 10, Timestamp: at(500 * time.Millisecond),
+	})
+	r.loadingFinished(&network.EventLoadingFinished{
+		RequestID: "2", EncodedDataLength: 20, Timestamp: at(900 * time.Millisecond),
+	})
+
+	byURL := make(map[string]model.Request)
+	for _, req := range r.requests() {
+		byURL[req.URL] = req
+	}
+
+	a, b := byURL["https://example.com/a.js"], byURL["https://example.com/b.js"]
+
+	if a.Timing.StartOffset != 0 {
+		t.Errorf("first request start offset = %v, want 0", a.Timing.StartOffset)
+	}
+
+	if a.Timing.EndOffset != 500*time.Millisecond {
+		t.Errorf("first request end offset = %v, want 500ms; a completed request must not look unfinished",
+			a.Timing.EndOffset)
+	}
+
+	if b.Timing.StartOffset != 300*time.Millisecond {
+		t.Errorf("second request start offset = %v, want 300ms", b.Timing.StartOffset)
+	}
+
+	if b.Timing.EndOffset != 900*time.Millisecond {
+		t.Errorf("second request end offset = %v, want 900ms", b.Timing.EndOffset)
+	}
+}
+
+// TestStalledRequestsDoNotBlockIdle is the other half of the same symptom: a
+// cross-origin iframe's completion events go to a different browser target,
+// so its request stays in flight for ever. Counting it would mean the network
+// never reads as quiet and every such page ran to its hard timeout.
+func TestStalledRequestsDoNotBlockIdle(t *testing.T) {
+	t.Parallel()
+
+	cl, _ := classify.New("https://example.com/", nil)
+	n, _ := normalize.New(normalize.Rules{})
+
+	const stallAfter = 50 * time.Millisecond
+
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, stallAfter)
+
+	// An iframe document that never reports completion.
+	r.requestWillBeSent(willBeSent("1", "https://widget.test/frame.html", "GET", network.ResourceTypeDocument))
+
+	if inflight, _ := r.snapshot(); inflight != 1 {
+		t.Fatalf("inflight = %d immediately after the request, want 1", inflight)
+	}
+
+	time.Sleep(2 * stallAfter)
+
+	if inflight, _ := r.snapshot(); inflight != 0 {
+		t.Errorf("inflight = %d after the stall threshold, want 0: a request that never completes must not hold the scan open", inflight)
+	}
+
+	// It is still recorded, and still reported as incomplete.
+	if got := len(r.requests()); got != 1 {
+		t.Errorf("recorded %d requests, want the stalled one kept", got)
+	}
+
+	if got := r.stalled(); len(got) != 1 {
+		t.Errorf("stalled() = %v, want the one unfinished request reported", got)
+	}
+}
+
+// TestFreshRequestsStillBlockIdle guards the other direction: the stall
+// threshold must not cause a scan to finish while a page is genuinely loading.
+func TestFreshRequestsStillBlockIdle(t *testing.T) {
+	t.Parallel()
+
+	cl, _ := classify.New("https://example.com/", nil)
+	n, _ := normalize.New(normalize.Rules{})
+
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, time.Hour)
+
+	for i := range 3 {
+		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeScript))
+	}
+
+	if inflight, _ := r.snapshot(); inflight != 3 {
+		t.Errorf("inflight = %d, want 3: requests still loading must hold the scan open", inflight)
 	}
 }
