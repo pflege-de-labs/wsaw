@@ -14,6 +14,7 @@ import (
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/logging"
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/store"
 )
 
 // io_EOF is aliased so Parse can recognize an empty document without
@@ -291,6 +292,8 @@ func (c *Config) validateScheduler(add addFunc) {
 		}
 	}
 
+	validateStoreDriver(c.Store, add)
+
 	if c.Store.MaxPerSeries < 0 {
 		add(0, "store.maxPerSeries", "must not be negative")
 	}
@@ -405,6 +408,59 @@ func isRemoteListen(listen string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// validateStoreDriver refuses a store that cannot work, at load time. A
+// daemon that starts and then cannot write a result is a watcher that is not
+// watching (Tenet 8).
+func validateStoreDriver(st Store, add addFunc) {
+	known := false
+
+	for _, d := range store.Drivers() {
+		if st.StoreDriver() == d {
+			known = true
+
+			break
+		}
+	}
+
+	if !known {
+		add(0, "store.driver", "%q is not valid; use %s",
+			st.Driver, strings.Join(store.Drivers(), ", "))
+
+		return
+	}
+
+	if st.MaxAttempts < 0 {
+		add(0, "store.maxAttempts", "must not be negative; 1 disables retrying")
+	}
+
+	if st.RetryBackoff < 0 {
+		add(0, "store.retryBackoff", "must not be negative")
+	}
+
+	if st.IsServerStore() {
+		if st.DSN == "" {
+			add(0, "store.dsn", "the %s driver needs a connection string", st.StoreDriver())
+		}
+
+		if st.Path != "" {
+			add(0, "store.path",
+				"path is a file for the sqlite driver and means nothing to %s; remove it or set driver: sqlite",
+				st.StoreDriver())
+		}
+
+		return
+	}
+
+	if st.DSN != "" {
+		add(0, "store.dsn", "dsn belongs to a server database; the sqlite driver uses store.path")
+	}
+
+	if st.MaxOpenConns != 0 || st.MaxIdleConns != 0 || st.ConnMaxLifetime != 0 {
+		add(0, "store.maxOpenConns",
+			"connection-pool settings apply to a server database; sqlite is deliberately serialised")
 	}
 }
 

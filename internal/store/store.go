@@ -3,7 +3,10 @@
 // Persistence goes through database/sql, which makes the driver the seam
 // rather than requiring a second implementation of everything (Tenet 12).
 // SQLite is the default, through a CGo-free driver so the single static
-// binary still cross-compiles to every supported platform (Tenet 14).
+// binary still cross-compiles to every supported platform (Tenet 14);
+// PostgreSQL and MySQL are options for a deployment that already runs one
+// (Story 4.7). What differs between them is confined to dialect.go — the
+// queries, the transactions and the decoding are one implementation.
 //
 // A result is stored as its JSON document plus the few columns needed to
 // index it. The document is deliberately not shredded into normalised tables:
@@ -19,15 +22,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	// The CGo-free SQLite driver. It is a large dependency — a transpiled
-	// SQLite — and that is the price of keeping CGo off: a driver needing CGo
-	// would end cross-compilation to four platforms from one machine.
-	_ "modernc.org/sqlite"
-
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/secret"
 )
 
 // ErrNotFound is returned when a requested record does not exist.
@@ -36,6 +34,14 @@ var ErrNotFound = errors.New("not found")
 // Store is the result database. It is safe for concurrent use.
 type Store struct {
 	db *sql.DB
+	d  dialect
+
+	// Retry policy. A server database is reachable over a network, so a
+	// dropped connection is an ordinary event rather than a catastrophe
+	// (Story 4.7, AC7).
+	attempts int
+	backoff  time.Duration
+	onRetry  func(op string, attempt int, err error)
 
 	// artifactDir holds evidence files. Artifacts live outside the database
 	// because screenshots and bodies would bloat it, are written once and
@@ -46,13 +52,44 @@ type Store struct {
 
 // Options configures a store.
 type Options struct {
-	// Path is the database file.
+	// Driver is sqlite (the default), postgres, or mysql.
+	Driver string
+
+	// Path is the database file, for the sqlite driver.
 	Path string
+
+	// DSN is the connection string, for a server database. It is a secret:
+	// a DSN carries a password, so it is redacted everywhere a webhook token
+	// is. Driver-specific settings that are not wsaw's business — TLS mode,
+	// connect timeout, the server's own parameters — belong in it.
+	DSN secret.Value
+
 	// ArtifactDir holds screenshots and stored bodies.
 	ArtifactDir string
+
 	// Timeout is how long a statement waits for a busy database before
 	// failing, which is how SQLite's single-writer constraint surfaces.
 	Timeout time.Duration
+
+	// MaxOpenConns and MaxIdleConns bound the pool for a server database.
+	// Ignored for SQLite, which is deliberately serialised.
+	MaxOpenConns int
+	MaxIdleConns int
+	// ConnMaxLifetime retires a pooled connection before the server does.
+	ConnMaxLifetime time.Duration
+
+	// MaxAttempts is how many times a store operation is tried when the
+	// failure is transient — a dropped connection, a restarted server, a
+	// deadlock. One means no retry. Zero takes the default.
+	MaxAttempts int
+	// RetryBackoff is the delay before the second attempt; it doubles for
+	// each attempt after that.
+	RetryBackoff time.Duration
+
+	// OnRetry is called before each retry. A retry that nobody can see is a
+	// flapping database that looks healthy, so the caller is given the chance
+	// to log and count it (Tenet 8).
+	OnRetry func(op string, attempt int, err error)
 }
 
 func (o *Options) timeout() time.Duration {
@@ -63,31 +100,100 @@ func (o *Options) timeout() time.Duration {
 	return 5 * time.Second
 }
 
-// Open creates or opens a store. Parent directories are created with
-// restrictive permissions, since results can contain personal data (NFR §4).
-func Open(opts Options) (*Store, error) {
-	if opts.Path == "" {
-		return nil, errors.New("store: Path is required")
+func (o *Options) maxOpenConns() int {
+	if o.MaxOpenConns > 0 {
+		return o.MaxOpenConns
 	}
 
-	if dir := filepath.Dir(opts.Path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("creating store directory %s: %w", dir, err)
+	// Enough for the browser pool's scans plus the web interface, small
+	// enough that several wsaw instances on one shared database do not
+	// exhaust its connection limit between them.
+	return 8
+}
+
+func (o *Options) maxIdleConns() int {
+	if o.MaxIdleConns > 0 {
+		return o.MaxIdleConns
+	}
+
+	return min(2, o.maxOpenConns())
+}
+
+func (o *Options) connMaxLifetime() time.Duration {
+	if o.ConnMaxLifetime > 0 {
+		return o.ConnMaxLifetime
+	}
+
+	// Shorter than a typical server-side idle timeout, so wsaw retires a
+	// connection before the server drops it under a scan.
+	return 30 * time.Minute
+}
+
+func (o *Options) maxAttempts() int {
+	if o.MaxAttempts > 0 {
+		return o.MaxAttempts
+	}
+
+	// Three attempts covers a failover or a restart without turning a
+	// genuinely broken database into a long wait.
+	return 3
+}
+
+func (o *Options) retryBackoff() time.Duration {
+	if o.RetryBackoff > 0 {
+		return o.RetryBackoff
+	}
+
+	return 200 * time.Millisecond
+}
+
+// describe names the store for a log line or an error, without revealing a
+// DSN's credentials.
+func (o *Options) describe() string {
+	if o.Driver == "" || o.Driver == DriverSQLite {
+		return o.Path
+	}
+
+	if o.DSN.IsSet() {
+		return o.Driver + " " + secret.RedactURL(o.DSN.Reveal())
+	}
+
+	return o.Driver
+}
+
+// Open creates or opens a store. For SQLite, parent directories are created
+// with restrictive permissions, since results can contain personal data
+// (NFR §4).
+func Open(opts Options) (*Store, error) {
+	d, err := dialectFor(opts.Driver)
+	if err != nil {
+		return nil, err
+	}
+
+	if d.name() == DriverSQLite {
+		if opts.Path == "" {
+			return nil, errors.New("store: Path is required")
+		}
+
+		if dir := filepath.Dir(opts.Path); dir != "" {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, fmt.Errorf("creating store directory %s: %w", dir, err)
+			}
 		}
 	}
 
-	db, err := sql.Open("sqlite", dsn(opts))
+	dsn, err := d.dsn(opts)
 	if err != nil {
-		return nil, fmt.Errorf("opening store %s: %w", opts.Path, err)
+		return nil, err
 	}
 
-	// SQLite takes one writer at a time. Serialising here respects that
-	// rather than discovering it as intermittent "database is locked" errors
-	// under concurrent scans; wsaw's statements are short, so the cost is not
-	// measurable against a scan that takes seconds.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
+	db, err := sql.Open(d.sqlDriver(), dsn)
+	if err != nil {
+		// The DSN is never echoed: it carries a password.
+		return nil, fmt.Errorf("opening store %s: %w", opts.describe(), err)
+	}
+
+	d.tune(db, opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout()+5*time.Second)
 	defer cancel()
@@ -95,10 +201,17 @@ func Open(opts Options) (*Store, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 
-		return nil, fmt.Errorf("opening store %s: %w", opts.Path, err)
+		return nil, fmt.Errorf("opening store %s: %w", opts.describe(), err)
 	}
 
-	s := &Store{db: db, artifactDir: opts.ArtifactDir}
+	s := &Store{
+		db:          db,
+		d:           d,
+		attempts:    opts.maxAttempts(),
+		backoff:     opts.retryBackoff(),
+		onRetry:     opts.OnRetry,
+		artifactDir: opts.ArtifactDir,
+	}
 
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
@@ -106,7 +219,7 @@ func Open(opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	if err := s.ensureFilePermissions(opts.Path); err != nil {
+	if err := d.afterOpen(opts); err != nil {
 		_ = db.Close()
 
 		return nil, err
@@ -123,91 +236,95 @@ func Open(opts Options) (*Store, error) {
 	return s, nil
 }
 
-// dsn builds the connection string, including the pragmas that make SQLite
-// behave correctly for a long-running process.
-func dsn(opts Options) string {
-	pragmas := []string{
-		// WAL lets readers proceed while a scan is being written, which is
-		// what the web interface needs while the daemon works.
-		"journal_mode(WAL)",
-		// Wait rather than failing immediately when another statement holds
-		// the write lock.
-		fmt.Sprintf("busy_timeout(%d)", opts.timeout().Milliseconds()),
-		"foreign_keys(ON)",
-		// NORMAL is durable under process loss with WAL; FULL would fsync on
-		// every commit for protection against power loss that a scan result
-		// does not warrant.
-		"synchronous(NORMAL)",
-	}
+// Driver reports which database this store is using, for logs and for the
+// tests that must run against every dialect.
+func (s *Store) Driver() string { return s.d.name() }
 
-	q := make([]string, 0, len(pragmas))
-	for _, p := range pragmas {
-		q = append(q, "_pragma="+p)
-	}
+// retry runs one store operation, trying again while the failure is
+// transient. It exists because a server database is reached over a network:
+// a restart, a failover, or a deadlock is an ordinary event, and failing a
+// scan's result on the first dropped packet would lose an observation for no
+// good reason.
+//
+// A permanent failure — a constraint violation, a malformed statement, a
+// missing table — is returned on the first attempt. Retrying one only makes
+// the failure slower and hides its cause.
+//
+// The operations retried here are idempotent by construction: the writes are
+// upserts keyed by identity and deletes by identity. The exception is an
+// audit entry, which is an append: if a connection drops after the server
+// committed but before wsaw heard so, a retry can write it twice. A
+// duplicated audit line is visible and harmless; a lost approval record is
+// neither, so this is the right way round.
+func (s *Store) retry(ctx context.Context, op string, fn func(context.Context) error) error {
+	var lastErr error
 
-	return "file:" + opts.Path + "?" + strings.Join(q, "&")
-}
-
-// ensureFilePermissions tightens the database files. SQLite creates them with
-// the process umask, and results can contain personal data.
-func (s *Store) ensureFilePermissions(path string) error {
-	// The WAL and shared-memory files carry the same data as the database.
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if _, err := os.Stat(p); err != nil {
-			continue
+	for attempt := 1; attempt <= s.attempts; attempt++ {
+		if attempt > 1 {
+			if err := s.wait(ctx, attempt); err != nil {
+				return err
+			}
 		}
 
-		if err := os.Chmod(p, 0o600); err != nil {
-			return fmt.Errorf("setting permissions on %s: %w", p, err)
+		err := fn(ctx)
+		if err == nil {
+			return nil
+		}
+
+		// A cancelled caller is not a broken database, and retrying its work
+		// would only delay the shutdown it asked for.
+		if ctx.Err() != nil {
+			return err
+		}
+
+		if !s.d.isTransient(err) {
+			return err
+		}
+
+		lastErr = err
+
+		// Reported only when another attempt actually follows: a "retrying"
+		// line after the last attempt would overstate what happened.
+		if s.onRetry != nil && attempt < s.attempts {
+			s.onRetry(op, attempt, err)
 		}
 	}
 
-	return nil
+	return fmt.Errorf("%s failed after %d attempts: %w", op, s.attempts, lastErr)
 }
 
-// migrations are applied in order; the index plus one is the schema version.
-// Forward only: a migration that has shipped is never edited, because an
-// existing store has already applied it.
-var migrations = []string{
-	`
-	create table results (
-		target       text    not null,
-		consent_mode text    not null,
-		scan_id      text    not null,
-		started_at   integer not null,
-		termination  text    not null,
-		document     text    not null,
-		primary key (target, consent_mode, scan_id)
-	) strict;
+// wait sleeps before an attempt, with exponential backoff, and gives up as
+// soon as the context does.
+func (s *Store) wait(ctx context.Context, attempt int) error {
+	delay := s.backoff * (1 << (attempt - 2))
 
-	-- The one index every result query uses: newest-first within a series,
-	-- which also serves "the scan before this one" and count-based pruning.
-	create index results_series
-		on results (target, consent_mode, started_at desc, scan_id desc);
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 
-	create table baselines (
-		target       text    not null,
-		consent_mode text    not null,
-		scan_id      text    not null,
-		approved_at  integer not null,
-		document     text    not null,
-		primary key (target, consent_mode)
-	) strict;
-
-	create table audit (
-		id       integer primary key autoincrement,
-		at       integer not null,
-		document text    not null
-	) strict;
-	`,
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
+
+// q rewrites a query written with ? placeholders into the dialect's form.
+// Every query in this package is written once, with ?, and passed through
+// here — so a query cannot be correct for one database and malformed for
+// another.
+func (s *Store) q(query string) string { return s.d.rebind(query) }
 
 // migrate brings the schema up to date, and refuses to run against a newer
 // one. A binary that does not understand the schema must not write to it.
+//
+// The mechanism is identical for every dialect: the same numbered migrations,
+// applied in the same order, recorded wherever that dialect records them.
 func (s *Store) migrate(ctx context.Context) error {
-	var current int
+	migrations := s.d.migrations()
 
-	if err := s.db.QueryRowContext(ctx, "pragma user_version").Scan(&current); err != nil {
+	current, err := s.d.schemaVersion(ctx, s.db)
+	if err != nil {
 		return fmt.Errorf("reading the store's schema version: %w", err)
 	}
 
@@ -218,27 +335,71 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 
 	for v := current; v < len(migrations); v++ {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("starting schema migration %d: %w", v+1, err)
+		if err := s.applyMigration(ctx, migrations[v], v+1); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyMigration runs one version's statements and records the new version.
+//
+// Where DDL is transactional the two happen together, so a half-applied
+// schema is impossible. Where it is not — MySQL commits implicitly on DDL —
+// the version is recorded only after every statement has succeeded, and the
+// statements are written so that a rerun after a partial failure continues
+// rather than trips over what already exists. Pretending otherwise, by
+// wrapping MySQL in a transaction that cannot roll back, would be worse than
+// saying so.
+func (s *Store) applyMigration(ctx context.Context, statements []string, version int) error {
+	if !s.d.ddlIsTransactional() {
+		for _, stmt := range statements {
+			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("applying schema migration %d: %w", version, err)
+			}
 		}
 
-		if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
-			_ = tx.Rollback()
-
-			return fmt.Errorf("applying schema migration %d: %w", v+1, err)
+		if err := s.d.setSchemaVersion(ctx, s.db, version); err != nil {
+			return fmt.Errorf("recording schema version %d: %w", version, err)
 		}
 
-		// user_version does not accept a placeholder.
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("pragma user_version = %d", v+1)); err != nil {
-			_ = tx.Rollback()
+		return nil
+	}
 
-			return fmt.Errorf("recording schema version %d: %w", v+1, err)
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("starting schema migration %d: %w", version, err)
+	}
 
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("committing schema migration %d: %w", v+1, err)
+	defer func() { _ = tx.Rollback() }()
+
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("applying schema migration %d: %w", version, err)
 		}
+	}
+
+	if err := s.d.setSchemaVersion(ctx, tx, version); err != nil {
+		return fmt.Errorf("recording schema version %d: %w", version, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing schema migration %d: %w", version, err)
+	}
+
+	return nil
+}
+
+// Ping reports whether the database is reachable.
+//
+// For SQLite this is nearly free and nearly always true. For a server
+// database it is the difference between a wsaw that is working and one that
+// is scanning into a void, which readiness has to be able to tell apart: a
+// watcher that cannot record what it saw is not watching (Tenet 8).
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("the %s store is not reachable: %w", s.d.name(), err)
 	}
 
 	return nil
@@ -271,17 +432,18 @@ func (s *Store) PutResult(res *model.Result) error {
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
-	const q = `
+	q := `
 		insert into results (target, consent_mode, scan_id, started_at, termination, document)
-		values (?, ?, ?, ?, ?, ?)
-		on conflict (target, consent_mode, scan_id) do update set
-			started_at  = excluded.started_at,
-			termination = excluded.termination,
-			document    = excluded.document`
+		values (?, ?, ?, ?, ?, ?)` +
+		s.d.upsert(resultKey, resultUpdate)
 
-	_, err = s.db.ExecContext(ctx, q,
-		res.Target, string(res.ConsentMode), res.ScanID,
-		res.StartedAt.UnixNano(), string(res.Termination), string(document))
+	err = s.retry(ctx, "storing a result", func(ctx context.Context) error {
+		_, err := s.db.ExecContext(ctx, s.q(q),
+			res.Target, string(res.ConsentMode), res.ScanID,
+			res.StartedAt.UnixNano(), string(res.Termination), string(document))
+
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("storing result %s: %w", res.ScanID, err)
 	}
@@ -300,30 +462,39 @@ func (s *Store) Series() ([]Series, error) {
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
-	rows, err := s.db.QueryContext(ctx,
-		`select distinct target, consent_mode from results order by target, consent_mode`)
-	if err != nil {
-		return nil, fmt.Errorf("listing series: %w", err)
-	}
-
-	defer func() { _ = rows.Close() }()
-
 	var out []Series
 
-	for rows.Next() {
-		var se Series
+	// The whole read is inside the retried function, including the row scan:
+	// a connection that drops half way through a result set has to be redone
+	// from the start, not resumed.
+	err := s.retry(ctx, "listing series", func(ctx context.Context) error {
+		out = nil
 
-		var mode string
-
-		if err := rows.Scan(&se.Target, &mode); err != nil {
-			return nil, fmt.Errorf("listing series: %w", err)
+		rows, err := s.db.QueryContext(ctx,
+			s.q(`select distinct target, consent_mode from results order by target, consent_mode`))
+		if err != nil {
+			return err
 		}
 
-		se.Mode = model.ConsentMode(mode)
-		out = append(out, se)
-	}
+		defer func() { _ = rows.Close() }()
 
-	if err := rows.Err(); err != nil {
+		for rows.Next() {
+			var (
+				se   Series
+				mode string
+			)
+
+			if err := rows.Scan(&se.Target, &mode); err != nil {
+				return err
+			}
+
+			se.Mode = model.ConsentMode(mode)
+			out = append(out, se)
+		}
+
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("listing series: %w", err)
 	}
 
@@ -389,43 +560,49 @@ func (s *Store) ListResults(target string, mode model.ConsentMode, limit int) ([
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("listing results for %s/%s: %w", target, mode, err)
-	}
-
-	defer func() { _ = rows.Close() }()
-
 	var out []Summary
 
-	for rows.Next() {
-		var scanID, document string
+	err := s.retry(ctx, "listing results", func(ctx context.Context) error {
+		out = nil
 
-		if err := rows.Scan(&scanID, &document); err != nil {
-			return nil, fmt.Errorf("listing results for %s/%s: %w", target, mode, err)
+		rows, err := s.db.QueryContext(ctx, s.q(q), args...)
+		if err != nil {
+			return err
 		}
 
-		var res model.Result
+		defer func() { _ = rows.Close() }()
 
-		if err := json.Unmarshal([]byte(document), &res); err != nil {
-			// One unreadable record must not make a target's whole history
-			// unreadable, and it must not vanish either: it is reported in
-			// place, as itself (Tenet 5).
-			out = append(out, Summary{
-				ScanID:      scanID,
-				Target:      target,
-				ConsentMode: mode,
-				Termination: model.TermError,
-				Error:       "stored result could not be decoded: " + err.Error(),
-			})
+		for rows.Next() {
+			var scanID, document string
 
-			continue
+			if err := rows.Scan(&scanID, &document); err != nil {
+				return err
+			}
+
+			var res model.Result
+
+			if err := json.Unmarshal([]byte(document), &res); err != nil {
+				// One unreadable record must not make a target's whole
+				// history unreadable, and it must not vanish either: it is
+				// reported in place, as itself (Tenet 5). This is a decoding
+				// failure, not a database one, so it is never retried.
+				out = append(out, Summary{
+					ScanID:      scanID,
+					Target:      target,
+					ConsentMode: mode,
+					Termination: model.TermError,
+					Error:       "stored result could not be decoded: " + err.Error(),
+				})
+
+				continue
+			}
+
+			out = append(out, summarize(&res))
 		}
 
-		out = append(out, summarize(&res))
-	}
-
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("listing results for %s/%s: %w", target, mode, err)
 	}
 
@@ -508,7 +685,9 @@ func (s *Store) PreviousResult(target string, mode model.ConsentMode, scanID str
 func (s *Store) queryResult(ctx context.Context, query string, args ...any) (*model.Result, error) {
 	var document string
 
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&document)
+	err := s.retry(ctx, "reading a result", func(ctx context.Context) error {
+		return s.db.QueryRowContext(ctx, s.q(query), args...).Scan(&document)
+	})
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

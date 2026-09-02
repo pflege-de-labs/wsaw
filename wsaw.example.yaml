@@ -103,8 +103,49 @@ browser:
   noSandbox: false
 
 store:
-  # Defaults to the platform state directory when empty.
+  # sqlite (the default), postgres, or mysql.
+  #
+  # SQLite needs no server and is what the single-binary deployment assumes:
+  # one binary, one file. The other two exist for an organisation that would
+  # rather back up and replicate results the way it does everything else.
+  # Both drivers are pure Go, so the binary still cross-compiles without CGo.
+  #
+  # A server database removes the file and its lock. It does *not* make wsaw
+  # multi-node: two instances sharing one database would still disagree about
+  # baselines and would duplicate every scheduled scan.
+  driver: sqlite
+
+  # Defaults to the platform state directory when empty. sqlite only.
   path: ""
+
+  # For postgres or mysql instead of path. A DSN carries a password, so it
+  # belongs in a secret reference rather than in this file. Anything
+  # driver-specific — TLS mode, connect timeout — goes in the DSN itself:
+  #
+  #   driver: postgres
+  #   dsn: "${env:WSAW_STORE_DSN}"   # postgres://wsaw@db:5432/wsaw?sslmode=verify-full
+  #
+  #   driver: mysql
+  #   dsn: "${env:WSAW_STORE_DSN}"   # wsaw@tcp(db:3306)/wsaw?tls=true
+  #
+  # dsn: ""
+  # maxOpenConns: 8
+  # maxIdleConns: 2
+  # connMaxLifetime: 30m
+
+  # A server database is reached over a network, so a restart, a failover or a
+  # deadlock is retried rather than failing the scan's result. A permanent
+  # failure — a constraint violation — is never retried: that would only make
+  # it slower. Every retry is logged and counted.
+  maxAttempts: 3       # 1 disables retrying
+  retryBackoff: 200ms  # doubles for each attempt after the first
+
+  # Screenshots and stored bodies stay on disk whichever driver is used: they
+  # do not belong in a row, and keeping them out leaves room to move them to
+  # object storage later. Set this when the store is a server database, or
+  # they land next to where the sqlite file would have been.
+  artifactDir: ""
+
   maxAge: 2160h  # 90 days; Go duration units, so hours
   maxPerSeries: 200
   writeReport: false

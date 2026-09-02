@@ -78,7 +78,9 @@ Most of wsaw's logic — normalization, diffing, severity, scheduling, retention
 
 ## 14. Single static binary, no runtime surprises
 
-Pure Go, CGo-free, cross-compiled for linux/darwin × amd64/arm64. No Node.js driver, no runtime browser downloads, no external database. The one external dependency is Chrome, and that is checked and reported at startup.
+Pure Go, CGo-free, cross-compiled for linux/darwin × amd64/arm64. No Node.js driver, no runtime browser downloads, and **no external database required**. The one external dependency is Chrome, and that is checked and reported at startup.
+
+A server database is an option, not a requirement (Story 4.7). The default deployment is still one binary and one file: PostgreSQL and MySQL exist for an organisation that would rather back up and replicate results the way it does everything else. What is absolute is the CGo-free part — every driver wsaw ships is pure Go, because a CGo driver would end cross-compilation to four platforms from one machine, which is the promise this tenet is really about.
 
 *Trade-off:* rules out some convenient libraries (notably CGo SQLite, Playwright). Deployment simplicity is worth more.
 

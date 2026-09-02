@@ -76,6 +76,52 @@ test:
 test-fast:
 	WSAW_SKIP_BROWSER_TESTS=1 go test ./...
 
+# The store's behaviour must be identical on every dialect, so the same suite
+# is run against each of them (Story 4.7, AC5). These targets start a database
+# in a container, run the suite against it, and take it down again — so a
+# developer needs a container runtime for them but not for `make test`.
+#
+# Ports are deliberately not the defaults, so a local PostgreSQL or MySQL is
+# never touched by a test run.
+STORE_TEST_RUNTIME ?= podman
+PG_IMAGE           ?= docker.io/library/postgres:17-alpine
+MYSQL_IMAGE        ?= docker.io/library/mysql:8.4
+PG_PORT            ?= 55432
+MYSQL_PORT         ?= 53306
+
+.PHONY: test-store-all
+test-store-all: test test-store-postgres test-store-mysql
+
+.PHONY: test-store-postgres
+test-store-postgres:
+	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-pg \
+		-e POSTGRES_PASSWORD=wsaw -e POSTGRES_USER=wsaw -e POSTGRES_DB=wsaw \
+		-p $(PG_PORT):5432 $(PG_IMAGE)
+	@echo "waiting for postgres"
+	@for i in $$(seq 1 60); do \
+		$(STORE_TEST_RUNTIME) exec wsaw-test-pg pg_isready -U wsaw >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
+	- WSAW_TEST_STORE_DRIVER=postgres \
+	  WSAW_TEST_POSTGRES_DSN="postgres://wsaw:wsaw@127.0.0.1:$(PG_PORT)/wsaw?sslmode=disable" \
+	  go test -count=1 ./internal/store/
+	$(STORE_TEST_RUNTIME) stop wsaw-test-pg
+
+.PHONY: test-store-mysql
+test-store-mysql:
+	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-mysql \
+		-e MYSQL_ROOT_PASSWORD=wsaw -e MYSQL_DATABASE=wsaw \
+		-p $(MYSQL_PORT):3306 $(MYSQL_IMAGE)
+	@echo "waiting for mysql"
+	@for i in $$(seq 1 60); do \
+		$(STORE_TEST_RUNTIME) exec wsaw-test-mysql mysqladmin ping -uroot -pwsaw >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
+	- WSAW_TEST_STORE_DRIVER=mysql \
+	  WSAW_TEST_MYSQL_DSN="root:wsaw@tcp(127.0.0.1:$(MYSQL_PORT))/mysql" \
+	  go test -count=1 ./internal/store/
+	$(STORE_TEST_RUNTIME) stop wsaw-test-mysql
+
 .PHONY: cover
 cover:
 	go test -coverprofile=coverage.out ./...

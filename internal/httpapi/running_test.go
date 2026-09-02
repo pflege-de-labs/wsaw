@@ -326,3 +326,46 @@ func TestUIRescanRefusesWhileOneIsRunning(t *testing.T) {
 		t.Errorf("a duplicate rescan started %d scans", got)
 	}
 }
+
+// TestReadinessFailsWhenTheStoreIsUnreachable is Story 4.7's consequence for
+// readiness: with a server database the store is a network dependency, and a
+// wsaw that cannot record what it observes is not ready however healthy its
+// browser is (Tenet 8).
+func TestReadinessFailsWhenTheStoreIsUnreachable(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{}, nil)
+
+	// Ready while the store is open.
+	if resp := f.get("/api/v1/ready"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("ready = %d with a working store, want 200", resp.StatusCode)
+	}
+
+	// Closing the store is the cheapest stand-in for a database that has gone
+	// away: every operation on it now fails, which is what matters here.
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := f.get("/api/v1/ready")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("ready = %d with an unreachable store, want 503", resp.StatusCode)
+	}
+
+	var payload struct {
+		Ready  bool   `json:"ready"`
+		Reason string `json:"reason"`
+	}
+
+	if err := json.Unmarshal([]byte(body(t, resp)), &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if payload.Ready {
+		t.Error("readiness reported true with an unreachable store")
+	}
+
+	if !strings.Contains(payload.Reason, "not reachable") {
+		t.Errorf("the reason does not say the store is unreachable: %q", payload.Reason)
+	}
+}

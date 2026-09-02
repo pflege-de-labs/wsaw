@@ -216,7 +216,52 @@ time() - max by (target, consent_mode) (wsaw_last_successful_scan_timestamp_seco
 - **launchd**: [`deploy/de.pflege.wsaw.plist`](deploy/de.pflege.wsaw.plist).
 - **Container**: multi-arch, Chromium bundled and pinned, runs as a non-root user, sandbox enabled.
 
-Results live in a SQLite database reached through `database/sql`, so moving to a server database later is a change of driver rather than a rewrite. Each result is stored as its JSON document plus the columns needed to index it, which keeps the published schema the single source of truth and makes the store queryable with ordinary SQL.
+### Where results are stored
+
+Results live in a SQL database reached through `database/sql`. Each result is stored as its JSON document plus the columns needed to index it, which keeps the published schema the single source of truth and makes the store queryable with ordinary SQL. Three drivers ship, all pure Go, so the binary still cross-compiles to four platforms without CGo.
+
+**SQLite** is the default and needs no server — one binary, one file:
+
+```yaml
+store:
+  driver: sqlite
+  path: /var/lib/wsaw/wsaw.db      # empty uses the platform state directory
+```
+
+**PostgreSQL:**
+
+```yaml
+store:
+  driver: postgres
+  dsn: "${env:WSAW_STORE_DSN}"     # postgres://wsaw@db:5432/wsaw?sslmode=verify-full
+  artifactDir: /var/lib/wsaw/artifacts
+  maxOpenConns: 8
+```
+
+**MySQL** (8.0.19 or newer):
+
+```yaml
+store:
+  driver: mysql
+  dsn: "${env:WSAW_STORE_DSN}"     # wsaw@tcp(db:3306)/wsaw?tls=true
+  artifactDir: /var/lib/wsaw/artifacts
+```
+
+The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots and stored bodies stay on disk whichever driver is used: they do not belong in a row.
+
+The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread.
+
+A server database is reached over a network, so a transient failure — a restart, a failover, a deadlock — is retried:
+
+```yaml
+store:
+  maxAttempts: 3       # 1 disables retrying
+  retryBackoff: 200ms  # doubles per attempt
+```
+
+A permanent failure, such as a constraint violation, is never retried: that would only make it slower and hide the cause. Every retry is logged and counted as `wsaw_store_retries_total`, because a database that flaps while each scan quietly succeeds on the second attempt is worth knowing about before it becomes an outage.
+
+Two things a server database does **not** do. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and would duplicate every scheduled scan. And it makes the store a network dependency, so readiness fails when the database is unreachable — a wsaw that cannot record what it observed is not ready, however healthy its browser is.
 
 State lives in the platform's directory by default (`$XDG_STATE_HOME/wsaw` on Linux, `~/Library/Application Support/wsaw` on macOS) and is created `0700`.
 

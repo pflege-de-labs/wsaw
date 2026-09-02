@@ -1,30 +1,55 @@
 package store_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	gomysql "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/secret"
 	"github.com/martint17r/wsaw/internal/store"
 )
 
+// open returns a store on whichever dialect the suite is being run against.
+//
+// Every test below uses it, so one set of test bodies exercises SQLite,
+// PostgreSQL and MySQL (Story 4.7, AC5). The tests are the specification of
+// what a store does; a dialect that needed its own tests would be a dialect
+// that had changed the behaviour.
+//
+//	go test ./internal/store
+//	WSAW_TEST_STORE_DRIVER=postgres WSAW_TEST_POSTGRES_DSN=... go test ./internal/store
+//	WSAW_TEST_STORE_DRIVER=mysql    WSAW_TEST_MYSQL_DSN=...    go test ./internal/store
 func open(t *testing.T) *store.Store {
 	t.Helper()
 
-	dir := t.TempDir()
+	opts := store.Options{ArtifactDir: filepath.Join(t.TempDir(), "artifacts")}
 
-	s, err := store.Open(store.Options{
-		Path:        filepath.Join(dir, "wsaw.db"),
-		ArtifactDir: filepath.Join(dir, "artifacts"),
-	})
+	switch driver := os.Getenv("WSAW_TEST_STORE_DRIVER"); driver {
+	case "", store.DriverSQLite:
+		opts.Path = filepath.Join(t.TempDir(), "wsaw.db")
+
+	case store.DriverPostgres, store.DriverMySQL:
+		opts.Driver = driver
+		opts.DSN = secret.Literal(scratchDatabase(t, driver))
+
+	default:
+		t.Fatalf("WSAW_TEST_STORE_DRIVER=%q is not a driver this suite knows", driver)
+	}
+
+	s, err := store.Open(opts)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -36,6 +61,97 @@ func open(t *testing.T) *store.Store {
 	})
 
 	return s
+}
+
+// scratchCounter names each test's database. Tests run in parallel and each
+// one assumes an empty store, so they cannot share a schema.
+var scratchCounter atomic.Int64
+
+// scratchDatabase creates an empty database on the configured server and
+// returns a DSN pointing at it, dropping it when the test ends.
+func scratchDatabase(t *testing.T, driver string) string {
+	t.Helper()
+
+	envVar := map[string]string{
+		store.DriverPostgres: "WSAW_TEST_POSTGRES_DSN",
+		store.DriverMySQL:    "WSAW_TEST_MYSQL_DSN",
+	}[driver]
+
+	admin := os.Getenv(envVar)
+	if admin == "" {
+		t.Skipf("%s is not set; start a %s and point it there to run the store suite against it", envVar, driver)
+	}
+
+	name := fmt.Sprintf("wsaw_test_%d_%d", os.Getpid(), scratchCounter.Add(1))
+
+	db, err := sql.Open(sqlDriverFor(driver), admin)
+	if err != nil {
+		t.Fatalf("connecting to the %s server: %v", driver, err)
+	}
+
+	defer func() { _ = db.Close() }()
+
+	// The name is generated above, not taken from input, so interpolating it
+	// is safe — and neither database accepts a placeholder here anyway.
+	if _, err := db.ExecContext(t.Context(), "create database "+name); err != nil { //nolint:gosec // see above
+		t.Fatalf("creating scratch database %s: %v", name, err)
+	}
+
+	t.Cleanup(func() {
+		cleanup, err := sql.Open(sqlDriverFor(driver), admin)
+		if err != nil {
+			return
+		}
+
+		defer func() { _ = cleanup.Close() }()
+
+		// A fresh context: the test's own is already cancelled by the time
+		// cleanup runs, and the database still has to be dropped.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		//nolint:gosec // the name is generated, not user input
+		if _, err := cleanup.ExecContext(ctx, "drop database "+name); err != nil {
+			t.Logf("dropping scratch database %s: %v", name, err)
+		}
+	})
+
+	return withDatabase(t, driver, admin, name)
+}
+
+func sqlDriverFor(driver string) string {
+	if driver == store.DriverPostgres {
+		return "pgx"
+	}
+
+	return "mysql"
+}
+
+// withDatabase rewrites a DSN to point at another database on the same
+// server. The two drivers spell a DSN differently, so each is handled by its
+// own parser rather than by string surgery.
+func withDatabase(t *testing.T, driver, dsn, name string) string {
+	t.Helper()
+
+	if driver == store.DriverPostgres {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", "WSAW_TEST_POSTGRES_DSN", err)
+		}
+
+		u.Path = "/" + name
+
+		return u.String()
+	}
+
+	cfg, err := gomysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parsing WSAW_TEST_MYSQL_DSN: %v", err)
+	}
+
+	cfg.DBName = name
+
+	return cfg.FormatDSN()
 }
 
 func result(id string, at time.Time, mode model.ConsentMode) *model.Result {
@@ -831,5 +947,189 @@ func TestOpenFailsActionablyOnAnUnusablePath(t *testing.T) {
 	_, err := store.Open(store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
 	if err == nil {
 		t.Fatal("Open succeeded against an unusable path")
+	}
+}
+
+// --- Story 4.7: the same behaviour on every dialect -----------------------
+//
+// These run against whichever driver the suite is configured for, because
+// each of them is a place where a database's defaults would otherwise change
+// what wsaw records — quietly, which is the worst way to lose evidence.
+
+// TestTargetNamesAreCaseSensitive guards against a collation that folds case.
+// MySQL's default collation is case- and accent-insensitive: under it,
+// "Site" and "site" would be one series, which neither SQLite nor PostgreSQL
+// would do. Evidence must not depend on which database it landed in.
+func TestTargetNamesAreCaseSensitive(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	at := time.Now()
+
+	upper := result("scan-upper", at, model.ConsentReject)
+	upper.Target = "Site"
+
+	lower := result("scan-lower", at, model.ConsentReject)
+	lower.Target = "site"
+
+	for _, res := range []*model.Result{upper, lower} {
+		if err := s.PutResult(res); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	series, err := s.Series()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(series) != 2 {
+		t.Fatalf("got %d series for targets \"Site\" and \"site\", want 2: the store folded case", len(series))
+	}
+
+	got, err := s.ListResults("Site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 1 || got[0].ScanID != "scan-upper" {
+		t.Errorf("listing \"Site\" returned %+v, want only its own scan", got)
+	}
+}
+
+// TestLargeDocumentSurvives is why MySQL needs longtext: TEXT holds 64 KiB
+// and a result for a real page exceeds that. A store that truncated it would
+// return a document that no longer parses, having reported success.
+func TestLargeDocumentSurvives(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	res := result("scan-big", time.Now(), model.ConsentReject)
+
+	// Enough requests to push the encoded document well past 64 KiB.
+	for i := range 2000 {
+		res.Requests = append(res.Requests, model.Request{
+			RequestID:    fmt.Sprintf("req-%d", i),
+			URL:          fmt.Sprintf("https://third-party-%04d.example/asset/%d.js", i, i),
+			Host:         fmt.Sprintf("third-party-%04d.example", i),
+			Domain:       fmt.Sprintf("third-party-%04d.example", i),
+			ResourceType: "script",
+			Party:        model.ThirdParty,
+			Phase:        model.PhasePre,
+		})
+	}
+
+	if err := s.PutResult(res); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetResult("site", model.ConsentReject, "scan-big")
+	if err != nil {
+		t.Fatalf("a large result could not be read back: %v", err)
+	}
+
+	if len(got.Requests) != len(res.Requests) {
+		t.Errorf("read back %d requests, stored %d: the document was truncated",
+			len(got.Requests), len(res.Requests))
+	}
+}
+
+// TestUnicodeSurvivesTheRoundTrip is why the MySQL tables are utf8mb4: a
+// captured URL contains whatever the page put in it, including four-byte
+// characters, and a three-byte character set would refuse or mangle them.
+func TestUnicodeSurvivesTheRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	const tricky = "https://example.com/pfad/über-uns?emoji=🍪&kanji=日本語"
+
+	res := result("scan-unicode", time.Now(), model.ConsentReject)
+	res.URL = tricky
+	res.Requests = []model.Request{{RequestID: "req-1", URL: tricky, Host: "example.com"}}
+
+	if err := s.PutResult(res); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetResult("site", model.ConsentReject, "scan-unicode")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.URL != tricky {
+		t.Errorf("URL read back as %q, want %q", got.URL, tricky)
+	}
+
+	if len(got.Requests) != 1 || got.Requests[0].URL != tricky {
+		t.Errorf("request URL did not survive: %+v", got.Requests)
+	}
+}
+
+// TestOrderingSurvivesSubMillisecondStarts is why start times are stored as
+// an integer count of nanoseconds rather than as a timestamp column. MySQL's
+// DATETIME drops fractional seconds by default, and "the scan before this
+// one" is decided by this ordering.
+func TestOrderingSurvivesSubMillisecondStarts(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	base := time.Now()
+
+	for i := range 3 {
+		// One microsecond apart: below the resolution of a default DATETIME,
+		// above nothing at all.
+		if err := s.PutResult(result(
+			fmt.Sprintf("scan-%d", i),
+			base.Add(time.Duration(i)*time.Microsecond),
+			model.ConsentReject,
+		)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3", len(got))
+	}
+
+	for i, want := range []string{"scan-2", "scan-1", "scan-0"} {
+		if got[i].ScanID != want {
+			t.Fatalf("order = %s at position %d, want %s: sub-millisecond start times were flattened",
+				got[i].ScanID, i, want)
+		}
+	}
+
+	prev, err := s.PreviousResult("site", model.ConsentReject, "scan-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if prev.ScanID != "scan-1" {
+		t.Errorf("the scan before scan-2 is %s, want scan-1", prev.ScanID)
+	}
+}
+
+// TestDriverIsReported keeps the suite honest: a run that believes it is
+// testing PostgreSQL while quietly using SQLite proves nothing.
+func TestDriverIsReported(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	want := os.Getenv("WSAW_TEST_STORE_DRIVER")
+	if want == "" {
+		want = store.DriverSQLite
+	}
+
+	if got := s.Driver(); got != want {
+		t.Errorf("store driver = %q, want %q", got, want)
 	}
 }

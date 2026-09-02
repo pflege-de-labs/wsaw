@@ -1,0 +1,214 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+
+	// The pure-Go MySQL driver. Imported for its side effect of registering
+	// itself, and by name for its error type, which carries the numbers that
+	// decide what is worth retrying.
+	gomysql "github.com/go-sql-driver/mysql"
+)
+
+// mysqlDialect stores results in MySQL.
+//
+// It needs the most care of the three, because MySQL's defaults disagree with
+// the other two in ways that would corrupt evidence quietly rather than fail:
+// a case-insensitive collation would make two differently-cased target names
+// the same series, TEXT tops out at 64 KiB where a result document does not,
+// and a non-strict sql_mode truncates an over-long value instead of refusing
+// it. Each of those is pinned below.
+type mysqlDialect struct{}
+
+func (mysqlDialect) name() string      { return DriverMySQL }
+func (mysqlDialect) sqlDriver() string { return "mysql" }
+
+func (mysqlDialect) dsn(opts Options) (string, error) {
+	if !opts.DSN.IsSet() {
+		return "", fmt.Errorf("store: the %s driver needs store.dsn", DriverMySQL)
+	}
+
+	dsn := opts.DSN.Reveal()
+
+	// Strict mode is required, not preferred: without it MySQL truncates a
+	// value that does not fit and reports success, which would shorten a
+	// captured URL and change the finding. It is appended rather than
+	// demanded of the operator because it is not a matter of taste.
+	if !strings.Contains(dsn, "sql_mode") {
+		dsn = appendDSNParam(dsn, "sql_mode", "'STRICT_ALL_TABLES'")
+	}
+
+	// Timestamps are stored as integers, so the session time zone cannot
+	// affect them — but parseTime would still change how any future DATETIME
+	// column behaves, so the setting is made explicit rather than inherited.
+	if !strings.Contains(dsn, "parseTime") {
+		dsn = appendDSNParam(dsn, "parseTime", "false")
+	}
+
+	return dsn, nil
+}
+
+func appendDSNParam(dsn, key, value string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+
+	return dsn + sep + key + "=" + value
+}
+
+func (mysqlDialect) tune(db *sql.DB, opts Options) {
+	db.SetMaxOpenConns(opts.maxOpenConns())
+	db.SetMaxIdleConns(opts.maxIdleConns())
+	// A bounded lifetime matters more here than for PostgreSQL: MySQL closes
+	// idle connections itself after wait_timeout, and a pooled connection the
+	// server has already dropped surfaces as a failed scan.
+	db.SetConnMaxLifetime(opts.connMaxLifetime())
+}
+
+func (mysqlDialect) rebind(query string) string { return query }
+
+// ddlIsTransactional is false: MySQL commits implicitly on DDL, so a
+// migration cannot be rolled back. That is why every statement is written
+// `if not exists` — a retry after a partial failure has to be able to
+// continue rather than trip over what already succeeded.
+func (mysqlDialect) ddlIsTransactional() bool { return false }
+
+// upsert uses the row-alias form rather than the deprecated VALUES()
+// function, which sets the floor at MySQL 8.0.19.
+func (mysqlDialect) upsert(_, update []string) string {
+	sets := make([]string, 0, len(update))
+	for _, col := range update {
+		sets = append(sets, col+" = new."+col)
+	}
+
+	return " as new on duplicate key update " + strings.Join(sets, ", ")
+}
+
+// pruneByCount cannot use the portable form. MySQL refuses to select from the
+// table a DELETE targets (error 1093), and its optimizer merges a derived
+// table back into the outer query unless something blocks it. A multi-table
+// DELETE against a joined derived table is the form that does not depend on
+// optimizer behaviour.
+func (mysqlDialect) pruneByCount() string {
+	return `
+		delete r from results r
+		join (
+			select target, consent_mode, scan_id from (
+				select target, consent_mode, scan_id, row_number() over (
+					partition by target, consent_mode
+					order by started_at desc, scan_id desc
+				) as row_rank
+				from results
+			) as ranked
+			where row_rank > ?
+		) as doomed
+		on  r.target       = doomed.target
+		and r.consent_mode = doomed.consent_mode
+		and r.scan_id      = doomed.scan_id`
+}
+
+// migrations mirror the SQLite schema, with the three MySQL-specific choices
+// this dialect exists to make.
+func (mysqlDialect) migrations() [][]string {
+	return [][]string{
+		{
+			// varchar rather than text for key columns, because an index key
+			// has a length limit; longtext for the document, because TEXT
+			// holds 64 KiB and a result of a real page exceeds that.
+			//
+			// utf8mb4_bin, because MySQL's default collation is
+			// case-insensitive and accent-insensitive: under it, targets
+			// named "Site" and "site" would be one series, which neither
+			// SQLite nor PostgreSQL would do. Evidence must not depend on
+			// which database it landed in.
+			`create table if not exists results (
+				target       varchar(191) not null,
+				consent_mode varchar(32)  not null,
+				scan_id      varchar(64)  not null,
+				started_at   bigint       not null,
+				termination  varchar(32)  not null,
+				document     longtext     not null,
+				primary key (target, consent_mode, scan_id),
+				key results_series (target, consent_mode, started_at desc, scan_id desc)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`create table if not exists baselines (
+				target       varchar(191) not null,
+				consent_mode varchar(32)  not null,
+				scan_id      varchar(64)  not null,
+				approved_at  bigint       not null,
+				document     longtext     not null,
+				primary key (target, consent_mode)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`create table if not exists audit (
+				id       bigint   not null auto_increment primary key,
+				at       bigint   not null,
+				document longtext not null
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+		},
+	}
+}
+
+func (mysqlDialect) schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+	if _, err := db.ExecContext(ctx, schemaVersionTable+
+		` engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`); err != nil {
+		return 0, err
+	}
+
+	var version int
+
+	err := db.QueryRowContext(ctx, "select version from wsaw_schema_version where id = 1").Scan(&version)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+
+	return version, nil
+}
+
+func (mysqlDialect) setSchemaVersion(ctx context.Context, ex execer, version int) error {
+	_, err := ex.ExecContext(ctx, `
+		insert into wsaw_schema_version (id, version) values (1, ?) as new
+		on duplicate key update version = new.version`, version)
+
+	return err
+}
+
+// transientMySQLErrors are the numbers worth another attempt: a lost or
+// refused connection, a server going away, a deadlock or a lock-wait timeout.
+var transientMySQLErrors = map[uint16]bool{
+	1040: true, // too many connections
+	1042: true, // can't get hostname
+	1043: true, // bad handshake
+	1053: true, // server shutdown in progress
+	1205: true, // lock wait timeout exceeded
+	1213: true, // deadlock found
+	1290: true, // running with --read-only (a failover in progress)
+	2002: true, // can't connect to local server
+	2003: true, // can't connect to server
+	2006: true, // server has gone away
+	2013: true, // lost connection during query
+}
+
+func (mysqlDialect) isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var myErr *gomysql.MySQLError
+	if errors.As(err, &myErr) {
+		return transientMySQLErrors[myErr.Number]
+	}
+
+	return isTransientMessage(err)
+}
+
+func (mysqlDialect) afterOpen(Options) error { return nil }

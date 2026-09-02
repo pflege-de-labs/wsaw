@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,10 +15,15 @@ import (
 	"github.com/martint17r/wsaw/internal/store"
 )
 
+// storeProbeTimeout bounds the readiness store check. A probe that hangs is
+// worse than one that fails: an orchestrator waits on it instead of acting.
+const storeProbeTimeout = 3 * time.Second
+
 // JSON field names that appear in more than one response.
 const (
 	fieldReason  = "reason"
 	fieldRunning = "running"
+	fieldReady   = "ready"
 )
 
 func (s *Server) routes() {
@@ -58,9 +64,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleReady distinguishes "the process is alive" from "wsaw can actually
 // scan", which are very different things to an operator (Story 6.5).
-func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	// The store is checked first and regardless of what else is tracked. With
+	// a server database it is a network dependency that can be down while
+	// everything else is fine, and a wsaw that cannot record what it observes
+	// is not ready however healthy its browser is (Story 4.7).
+	storeCtx, cancel := context.WithTimeout(r.Context(), storeProbeTimeout)
+	defer cancel()
+
+	if err := s.deps.Store.Ping(storeCtx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			fieldReady:  false,
+			fieldReason: err.Error(),
+		})
+
+		return
+	}
+
 	if s.deps.Metrics == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ready": true, fieldReason: "readiness is not tracked"})
+		writeJSON(w, http.StatusOK, map[string]any{fieldReady: true, fieldReason: "readiness is not tracked"})
 
 		return
 	}
@@ -75,7 +97,7 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	stale := s.deps.Metrics.Stale(time.Now(), s.opts.StaleAfter)
 
 	writeJSON(w, status, map[string]any{
-		"ready":        ready,
+		fieldReady:     ready,
 		fieldReason:    reason,
 		"staleTargets": stale,
 	})

@@ -596,6 +596,65 @@ notify:
 `)
 }
 
+func TestStoreDriverValidation(t *testing.T) {
+	t.Parallel()
+
+	// SQLite stays the default and needs nothing.
+	cfg := parse(t, "targets: []")
+	if cfg.Store.StoreDriver() != "sqlite" {
+		t.Errorf("default store driver = %q, want sqlite", cfg.Store.StoreDriver())
+	}
+
+	if cfg.Store.IsServerStore() {
+		t.Error("the default store is reported as a server database")
+	}
+
+	parse(t, `
+store:
+  driver: postgres
+  dsn: "${env:WSAW_STORE_DSN}"
+  maxOpenConns: 4
+`)
+
+	parse(t, `
+store:
+  driver: mysql
+  dsn: "wsaw:pw@tcp(db:3306)/wsaw"
+`)
+
+	mustReject(t, `
+store:
+  driver: cockroach
+  dsn: "postgres://db/wsaw"
+`)
+
+	// A server driver with nowhere to connect must fail at load, not on the
+	// first scan.
+	mustReject(t, `
+store:
+  driver: postgres
+`)
+
+	// Settings that belong to the other kind of store would otherwise be
+	// silently ignored.
+	mustReject(t, `
+store:
+  driver: postgres
+  dsn: "postgres://db/wsaw"
+  path: /var/lib/wsaw/wsaw.db
+`)
+
+	mustReject(t, `
+store:
+  dsn: "postgres://db/wsaw"
+`)
+
+	mustReject(t, `
+store:
+  maxOpenConns: 8
+`)
+}
+
 func TestConcurrencyDefaultsAreBounded(t *testing.T) {
 	t.Parallel()
 

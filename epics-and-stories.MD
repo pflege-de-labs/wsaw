@@ -351,8 +351,9 @@ Story 4.6 made the driver the seam. It did not make the SQL portable: the schema
 - AC4: The migration mechanism is forward-only and identical across dialects: the same numbered migrations, applied in the same order, recorded wherever that dialect records them. A store written by a newer wsaw is refused with the same message it is refused with today.
 - AC5: The store's existing test suite runs unchanged against every dialect. The tests are the specification of what a store does; a dialect that needs its own semantics is a dialect that has changed the behaviour.
 - AC6: Connection settings a server database needs — TLS mode, connection limits, connect timeout, credentials as secret references — are configurable and redacted. A DSN carries a password, so it is a secret everywhere a webhook URL is.
-- AC7: A lost connection is survivable. The daemon does not exit because the database restarted; the scan that was writing fails, is recorded as failed, and the next one reconnects (Tenet 7).
+- AC7: A lost connection is survivable. The daemon does not exit because the database restarted, it has a configurable retry for database operations.
 - AC8: The documentation states what a server database does and does not buy. It removes the volume and the file lock. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and duplicate every scheduled scan.
+- AC9: The README contains examples to configure MySQL, Postgres and SQLite.
 
 ---
 

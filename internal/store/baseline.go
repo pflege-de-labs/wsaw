@@ -42,6 +42,30 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
+	var b *Baseline
+
+	// The retry encloses the whole transaction: a replayed transaction has to
+	// begin again, not resume.
+	err := s.retry(ctx, "approving a baseline", func(ctx context.Context) error {
+		var err error
+
+		b, err = s.setBaselineTx(ctx, target, mode, scanID, approvedBy, note)
+
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func (s *Store) setBaselineTx(
+	ctx context.Context,
+	target string,
+	mode model.ConsentMode,
+	scanID, approvedBy, note string,
+) (*Baseline, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("approving baseline for %s/%s: %w", target, mode, err)
@@ -52,7 +76,7 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 	var document string
 
 	err = tx.QueryRowContext(ctx,
-		`select document from results where target = ? and consent_mode = ? and scan_id = ?`,
+		s.q(`select document from results where target = ? and consent_mode = ? and scan_id = ?`),
 		target, string(mode), scanID).Scan(&document)
 
 	switch {
@@ -90,19 +114,16 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 		return nil, fmt.Errorf("encoding baseline: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, s.q(`
 		insert into baselines (target, consent_mode, scan_id, approved_at, document)
-		values (?, ?, ?, ?, ?)
-		on conflict (target, consent_mode) do update set
-			scan_id     = excluded.scan_id,
-			approved_at = excluded.approved_at,
-			document    = excluded.document`,
+		values (?, ?, ?, ?, ?)`+
+		s.d.upsert(baselineKey, baselineUpdate)),
 		target, string(mode), scanID, b.ApprovedAt.UnixNano(), string(payload))
 	if err != nil {
 		return nil, fmt.Errorf("storing baseline for %s/%s: %w", target, mode, err)
 	}
 
-	if err := appendAuditTx(ctx, tx, AuditEntry{
+	if err := s.appendAuditTx(ctx, tx, AuditEntry{
 		At:      b.ApprovedAt,
 		Actor:   approvedBy,
 		Action:  "baseline-approved",
@@ -128,9 +149,11 @@ func (s *Store) GetBaseline(target string, mode model.ConsentMode) (*Baseline, e
 
 	var document string
 
-	err := s.db.QueryRowContext(ctx,
-		`select document from baselines where target = ? and consent_mode = ?`,
-		target, string(mode)).Scan(&document)
+	err := s.retry(ctx, "reading a baseline", func(ctx context.Context) error {
+		return s.db.QueryRowContext(ctx,
+			s.q(`select document from baselines where target = ? and consent_mode = ?`),
+			target, string(mode)).Scan(&document)
+	})
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -153,6 +176,12 @@ func (s *Store) DeleteBaseline(target string, mode model.ConsentMode, actor stri
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
+	return s.retry(ctx, "deleting a baseline", func(ctx context.Context) error {
+		return s.deleteBaselineTx(ctx, target, mode, actor)
+	})
+}
+
+func (s *Store) deleteBaselineTx(ctx context.Context, target string, mode model.ConsentMode, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("deleting baseline for %s/%s: %w", target, mode, err)
@@ -161,12 +190,12 @@ func (s *Store) DeleteBaseline(target string, mode model.ConsentMode, actor stri
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		`delete from baselines where target = ? and consent_mode = ?`,
+		s.q(`delete from baselines where target = ? and consent_mode = ?`),
 		target, string(mode)); err != nil {
 		return fmt.Errorf("deleting baseline for %s/%s: %w", target, mode, err)
 	}
 
-	if err := appendAuditTx(ctx, tx, AuditEntry{
+	if err := s.appendAuditTx(ctx, tx, AuditEntry{
 		At:     time.Now().UTC(),
 		Actor:  actor,
 		Action: "baseline-deleted",
@@ -197,14 +226,14 @@ type AuditEntry struct {
 
 // appendAuditTx writes an audit entry inside a caller's transaction, so an
 // action and its record commit together.
-func appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
+func (s *Store) appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
 	payload, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding audit entry: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`insert into audit (at, document) values (?, ?)`,
+		s.q(`insert into audit (at, document) values (?, ?)`),
 		e.At.UnixNano(), string(payload)); err != nil {
 		return fmt.Errorf("appending audit entry: %w", err)
 	}
@@ -226,34 +255,39 @@ func (s *Store) Audit(limit int) ([]AuditEntry, error) {
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("reading audit log: %w", err)
-	}
-
-	defer func() { _ = rows.Close() }()
-
 	var out []AuditEntry
 
-	for rows.Next() {
-		var document string
+	err := s.retry(ctx, "reading the audit log", func(ctx context.Context) error {
+		out = nil
 
-		if err := rows.Scan(&document); err != nil {
-			return nil, fmt.Errorf("reading audit log: %w", err)
+		rows, err := s.db.QueryContext(ctx, s.q(q), args...)
+		if err != nil {
+			return err
 		}
 
-		var e AuditEntry
+		defer func() { _ = rows.Close() }()
 
-		if err := json.Unmarshal([]byte(document), &e); err != nil {
-			// Skipped rather than fatal, as elsewhere: one bad row must not
-			// hide the rest of the log.
-			continue
+		for rows.Next() {
+			var document string
+
+			if err := rows.Scan(&document); err != nil {
+				return err
+			}
+
+			var e AuditEntry
+
+			if err := json.Unmarshal([]byte(document), &e); err != nil {
+				// Skipped rather than fatal, as elsewhere: one bad row must
+				// not hide the rest of the log.
+				continue
+			}
+
+			out = append(out, e)
 		}
 
-		out = append(out, e)
-	}
-
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("reading audit log: %w", err)
 	}
 
@@ -270,6 +304,12 @@ func (s *Store) RecordAudit(e AuditEntry) error {
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
+	return s.retry(ctx, "recording an audit entry", func(ctx context.Context) error {
+		return s.recordAuditTx(ctx, e)
+	})
+}
+
+func (s *Store) recordAuditTx(ctx context.Context, e AuditEntry) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("recording audit entry: %w", err)
@@ -277,7 +317,7 @@ func (s *Store) RecordAudit(e AuditEntry) error {
 
 	defer func() { _ = tx.Rollback() }()
 
-	if err := appendAuditTx(ctx, tx, e); err != nil {
+	if err := s.appendAuditTx(ctx, tx, e); err != nil {
 		return err
 	}
 
@@ -320,6 +360,20 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
+	err := s.retry(ctx, "pruning results", func(ctx context.Context) error {
+		var err error
+
+		stats, err = s.pruneTx(ctx, now, r)
+
+		return err
+	})
+
+	return stats, err
+}
+
+func (s *Store) pruneTx(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
+	var stats PruneStats
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return stats, fmt.Errorf("pruning results: %w", err)
@@ -329,7 +383,7 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 
 	if r.MaxAge > 0 {
 		res, err := tx.ExecContext(ctx,
-			`delete from results where started_at < ?`, now.Add(-r.MaxAge).UnixNano())
+			s.q(`delete from results where started_at < ?`), now.Add(-r.MaxAge).UnixNano())
 		if err != nil {
 			return stats, fmt.Errorf("pruning results by age: %w", err)
 		}
@@ -341,17 +395,10 @@ func (s *Store) Prune(now time.Time, r Retention) (PruneStats, error) {
 
 	if r.MaxPerSeries > 0 {
 		// Ranked within each series by the same ordering every listing uses,
-		// so "the newest N" means the same thing here as it does there.
-		res, err := tx.ExecContext(ctx, `
-			delete from results where rowid in (
-				select rowid from (
-					select rowid, row_number() over (
-						partition by target, consent_mode
-						order by started_at desc, scan_id desc
-					) as rank
-					from results
-				) where rank > ?
-			)`, r.MaxPerSeries)
+		// so "the newest N" means the same thing here as it does there. The
+		// statement itself is the dialect's: MySQL refuses to select from the
+		// table a delete targets, so it needs a different shape.
+		res, err := tx.ExecContext(ctx, s.q(s.d.pruneByCount()), r.MaxPerSeries)
 		if err != nil {
 			return stats, fmt.Errorf("pruning results by count: %w", err)
 		}

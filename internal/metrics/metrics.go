@@ -36,6 +36,7 @@ type Registry struct {
 
 	browserRestarts int64
 	notifyFailures  int64
+	storeRetries    int64
 	notifySent      int64
 
 	durations map[labels]*histogram
@@ -141,6 +142,16 @@ func (r *Registry) NotifyFailed() {
 	defer r.mu.Unlock()
 
 	r.notifyFailures++
+}
+
+// StoreRetried counts a store operation that had to be retried. A database
+// that is flapping while every scan succeeds on the second attempt is a
+// degradation worth alerting on before it becomes an outage (Story 4.7).
+func (r *Registry) StoreRetried() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.storeRetries++
 }
 
 // SetQueueDepth records how many scans are waiting.
@@ -254,6 +265,7 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_browser_restarts_total", "Browsers discarded and replaced.", float64(r.browserRestarts))
 	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
 	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
+	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))

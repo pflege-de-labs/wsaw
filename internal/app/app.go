@@ -144,6 +144,10 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 }
 
 func (a *App) openStore() error {
+	if a.Config.Store.IsServerStore() {
+		return a.openServerStore()
+	}
+
 	path := a.Config.Store.Path
 	if path == "" {
 		dir, err := defaultStateDir()
@@ -159,17 +163,92 @@ func (a *App) openStore() error {
 		artifacts = filepath.Join(filepath.Dir(path), "artifacts")
 	}
 
-	st, err := store.Open(store.Options{Path: path, ArtifactDir: artifacts})
+	st, err := store.Open(store.Options{
+		Path:         path,
+		ArtifactDir:  artifacts,
+		MaxAttempts:  a.Config.Store.MaxAttempts,
+		RetryBackoff: a.Config.Store.RetryBackoff.Duration(),
+		OnRetry:      a.logStoreRetry,
+	})
 	if err != nil {
 		return err
 	}
 
-	a.Store = st
-	a.closers = append(a.closers, st.Close)
+	a.adoptStore(st)
 
-	a.Logger.Info("store opened", "path", path, "artifacts", artifacts)
+	a.Logger.Info("store opened", "driver", st.Driver(), "path", path, "artifacts", artifacts)
 
 	return nil
+}
+
+// openServerStore opens a store on PostgreSQL or MySQL (Story 4.7).
+//
+// Artifacts still live on disk. Screenshots and stored bodies do not belong
+// in a row, and keeping them out is what leaves the door open to object
+// storage later — so a server-backed deployment still needs somewhere to put
+// them, and says where.
+func (a *App) openServerStore() error {
+	dsn, err := secret.Resolve(a.Config.Store.DSN)
+	if err != nil {
+		return fmt.Errorf("store.dsn: %w", err)
+	}
+
+	// Registered before it is used, so a DSN cannot reach a log line or an
+	// error message: it carries a password (Story 4.7, AC6).
+	a.Secrets.Add(dsn)
+
+	artifacts := a.Config.Store.ArtifactDir
+	if artifacts == "" {
+		dir, err := defaultStateDir()
+		if err != nil {
+			return err
+		}
+
+		artifacts = filepath.Join(dir, "artifacts")
+	}
+
+	st, err := store.Open(store.Options{
+		Driver:          a.Config.Store.StoreDriver(),
+		DSN:             dsn,
+		ArtifactDir:     artifacts,
+		MaxOpenConns:    a.Config.Store.MaxOpenConns,
+		MaxIdleConns:    a.Config.Store.MaxIdleConns,
+		ConnMaxLifetime: a.Config.Store.ConnMaxLifetime.Duration(),
+		MaxAttempts:     a.Config.Store.MaxAttempts,
+		RetryBackoff:    a.Config.Store.RetryBackoff.Duration(),
+		OnRetry:         a.logStoreRetry,
+	})
+	if err != nil {
+		return err
+	}
+
+	a.adoptStore(st)
+
+	a.Logger.Info("store opened",
+		"driver", st.Driver(),
+		// The DSN's credentials are stripped: the endpoint is useful in a log,
+		// the password never is.
+		"dsn", secret.RedactURL(dsn.Reveal()),
+		"artifacts", artifacts,
+	)
+
+	return nil
+}
+
+// logStoreRetry makes a retry visible. A database that is flapping while
+// every scan quietly succeeds on the second attempt is exactly the kind of
+// degradation an operator should be told about before it becomes an outage
+// (Tenet 8).
+func (a *App) logStoreRetry(op string, attempt int, err error) {
+	a.Logger.Warn("store operation failed, retrying",
+		"operation", op, "attempt", attempt, "error", err)
+
+	a.Metrics.StoreRetried()
+}
+
+func (a *App) adoptStore(st *store.Store) {
+	a.Store = st
+	a.closers = append(a.closers, st.Close)
 }
 
 func (a *App) loadRules() (*consent.RuleSet, error) {

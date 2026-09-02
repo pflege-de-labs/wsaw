@@ -18,6 +18,7 @@ import (
 
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/store"
 )
 
 // Config is the whole configuration.
@@ -186,6 +187,29 @@ type ContainerBrowser struct {
 
 // Store configures persistence.
 type Store struct {
+	// Driver is sqlite (the default), postgres, or mysql. SQLite needs no
+	// server and is what the single-binary deployment assumes; the others
+	// exist for a deployment that already runs one (Story 4.7).
+	Driver string `yaml:"driver,omitempty"`
+	// DSN is the connection string for a server database. It may be a secret
+	// reference, and should be: a DSN carries a password.
+	DSN string `yaml:"dsn,omitempty"`
+
+	// MaxOpenConns and MaxIdleConns bound the connection pool for a server
+	// database. Ignored for SQLite, which is deliberately serialised.
+	MaxOpenConns int `yaml:"maxOpenConns,omitempty"`
+	MaxIdleConns int `yaml:"maxIdleConns,omitempty"`
+	// ConnMaxLifetime retires a pooled connection before the server does.
+	ConnMaxLifetime Duration `yaml:"connMaxLifetime,omitempty"`
+
+	// MaxAttempts is how many times a store operation is tried when the
+	// failure is transient — a dropped connection, a restarted server, a
+	// deadlock. 1 disables retrying; empty takes the default.
+	MaxAttempts int `yaml:"maxAttempts,omitempty"`
+	// RetryBackoff is the delay before the second attempt, doubling after
+	// that.
+	RetryBackoff Duration `yaml:"retryBackoff,omitempty"`
+
 	Path         string   `yaml:"path,omitempty"`
 	ArtifactDir  string   `yaml:"artifactDir,omitempty"`
 	OutputDir    string   `yaml:"outputDir,omitempty"`
@@ -199,6 +223,19 @@ type Store struct {
 	// WriteReport emits a Markdown report per scan.
 	WriteReport bool `yaml:"writeReport,omitempty"`
 }
+
+// StoreDriver returns the configured driver, defaulting to SQLite.
+func (s Store) StoreDriver() string {
+	if s.Driver == "" {
+		return store.DriverSQLite
+	}
+
+	return s.Driver
+}
+
+// IsServerStore reports whether the store is a database with a server, which
+// is what decides whether a DSN is required and a path is meaningless.
+func (s Store) IsServerStore() bool { return s.StoreDriver() != store.DriverSQLite }
 
 // Scheduler configures the daemon loop.
 type Scheduler struct {
