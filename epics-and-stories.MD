@@ -29,6 +29,7 @@ Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 - [Epic 4 — Storage, Baselines & Change Detection](#epic-4--storage-baselines--change-detection)
 - [Epic 5 — Reporting, Export & Alerting](#epic-5--reporting-export--alerting)
 - [Epic 6 — Operations, Packaging & Distribution](#epic-6--operations-packaging--distribution)
+- [Epic 7 — Containerised End-to-End Testing](#epic-7--containerised-end-to-end-testing)
 - [Technical Decisions](#technical-decisions-proposed-for-review)
 - [Open Questions](#open-questions-for-the-product-owner)
 
@@ -611,11 +612,115 @@ Kubernetes also removes the mechanism Story 1.8 relies on. There is no container
 
 ---
 
+# Epic 7 — Containerised End-to-End Testing
+
+Prove that wsaw works as a deployed system — its own container, a server database in another, and a real consent banner in a third — rather than only as a set of packages that pass their unit tests.
+
+**Goal:** one command brings up a stack of wsaw, a database, and a fixture website running [Klaro](https://github.com/kiprotect/klaro), runs a scan against it, and asserts on what landed in the database. The same stack runs under Docker Compose and as a Podman pod, and runs in CI without a live third-party website.
+
+**Why this is worth its own epic.** Everything wsaw's fast test suite proves, it proves in one process. The things that break a deployment are the things that only exist between processes: a browser in a container cannot reach the host's loopback (Story 1.8, AC10), a database connection is a network that can drop, a consent banner behaves differently when it is served over a real origin than when it is a fixture string in a Go test. Those are exactly the failures an operator meets first and the current suite cannot see at all.
+
+**Klaro is the fixture on purpose.** It is open source, self-hostable, has no tenant to register and no rate limit to respect, and wsaw already ships a rule for it (`internal/consent/rules/vendors.yaml`). So the fixture exercises the real rule pack against the real CMP rather than a synthetic banner written to match the rule — which would only ever prove that the rule matches itself. It is also a genuine CMP: it blocks scripts before consent and releases them after, so "fired despite reject" is a thing the fixture can actually do.
+
+**Scope:** a store dialect seam and server-database drivers, a Klaro fixture image, a Compose stack, a Podman pod, the end-to-end assertions, and the CI wiring.
+
+**Out of scope:** replacing the fast suite. These tests are slow, need a container runtime, and must never become the thing that has to pass before a developer can commit. Also out of scope: making wsaw multi-node. A server database removes the store's file lock; it does not make two wsaw instances agree about a baseline (Tenet 18 stands until a story retires it).
+
+**Prerequisite worth stating plainly:** wsaw's store is SQLite today, and the SQL it emits is SQLite's — `strict` tables, `pragma user_version`, `rowid`, `json_extract`, `?` placeholders. There is no Postgres or MySQL support to test yet. Story 7.1 is therefore the bulk of this epic's real work, and 7.5 and 7.6 cannot start before it lands.
+
+### Story 7.1 — A dialect seam, and drivers for Postgres and MySQL
+
+*As an Operator, I want wsaw to store results in the database my organisation already runs, so that backup, replication, and retention are handled the way everything else is.*
+
+Story 4.6 made the driver the seam. It did not make the SQL portable: the schema is declared `strict`, the migration version lives in `pragma user_version`, `Prune` deletes by `rowid`, summaries are derived with `json_extract`, and placeholders are `?`. Each of those is a deliberate SQLite choice that a second database does not share, and this story is where they become a dialect rather than an assumption.
+
+- AC1: A dialect interface covers exactly what differs: placeholder style, the schema DDL, how the schema version is stored and read, the upsert form, the JSON accessor, and the delete-by-identity form used by retention. Everything else stays one implementation — a second copy of the query set would drift.
+- AC2: `postgres` and `mysql` join `sqlite` as configured store drivers, selected by configuration with SQLite remaining the default. A deployment that does not ask for a server database must not acquire one.
+- AC3: **The single-binary promise survives.** Both drivers are pure Go (`jackc/pgx` and `go-sql-driver/mysql`), CGo stays off, and cross-compilation to linux/darwin × amd64/arm64 is verified as part of the story (Tenet 14).
+- AC4: The migration mechanism is forward-only and identical across dialects: the same numbered migrations, applied in the same order, recorded wherever that dialect records them. A store written by a newer wsaw is refused with the same message it is refused with today.
+- AC5: The store's existing test suite runs unchanged against every dialect. The tests are the specification of what a store does; a dialect that needs its own semantics is a dialect that has changed the behaviour.
+- AC6: Connection settings a server database needs — TLS mode, connection limits, connect timeout, credentials as secret references — are configurable and redacted. A DSN carries a password, so it is a secret everywhere a webhook URL is.
+- AC7: A lost connection is survivable. The daemon does not exit because the database restarted; the scan that was writing fails, is recorded as failed, and the next one reconnects (Tenet 7).
+- AC8: The documentation states what a server database does and does not buy. It removes the volume and the file lock. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and duplicate every scheduled scan.
+
+### Story 7.2 — A Klaro fixture website
+
+*As a Developer, I want a self-hosted site with a real consent banner so that end-to-end tests exercise the shipped consent rules without depending on anyone else's website.*
+
+- AC1: A container image serves a small static site with Klaro installed and configured, pinned to a specific Klaro version. An unpinned CMP would make the test suite fail on someone else's release schedule.
+- AC2: The page loads assets from a **second** origin in the stack, so first-party and third-party attribution is exercised rather than assumed. A single-origin fixture cannot tell a working classifier from a broken one.
+- AC3: Klaro is configured so that at least one third-party asset is blocked before consent and loaded after it, and at least one loads unconditionally. The unconditional one is the point: it is what "contacted before any consent decision" looks like, and the test asserts wsaw reports it.
+- AC4: The fixture is deterministic. No live third parties, no clock-dependent content, no randomised URLs — two scans of the unchanged fixture must produce an empty diff, which is what makes a non-empty diff meaningful (Tenet 6).
+- AC5: The fixture can be changed by the test between scans in a controlled way — one extra third-party host, one changed script body — so the diff engine and the severity rules are exercised on real captures rather than on hand-built results.
+- AC6: The image is built from source in the repository, and its build is part of the stack rather than a step someone has to remember.
+
+### Story 7.3 — A Docker Compose stack
+
+*As a Developer, I want `docker compose up` to bring up the whole system so that reproducing a deployment problem takes a minute rather than an afternoon.*
+
+- AC1: A Compose file defines four services: wsaw, the database, the Klaro fixture site, and the third-party origin the fixture loads from.
+- AC2: Services address each other by name on a Compose network. This is what makes the stack work at all: a browser inside the wsaw container cannot reach the host's loopback, and Story 1.8 AC10 makes wsaw refuse such a target with an explanation rather than silently scan its own container.
+- AC3: The browser runs **inside** the wsaw container, not as a sibling. Mounting the runtime socket would give a container that renders hostile pages the ability to start privileged containers, which is a worse trade than losing sibling-container isolation.
+- AC4: wsaw waits for the database to be *ready*, not merely started, through a health check. A race that usually passes is worse than one that always fails.
+- AC5: The database service is parameterised so the same file serves Postgres and MySQL, through a profile or an override file. Two nearly-identical Compose files would drift.
+- AC6: `/dev/shm` is sized for the browser. The default 64 MiB makes Chrome crash on real pages, and the fix belongs in the shipped file rather than in a troubleshooting section.
+- AC7: The stack runs unprivileged and holds no real credentials. The passwords in it are obviously fixtures, and the file says so, so that nobody copies it into production and inherits them.
+- AC8: Bringing the stack down removes its volumes, so a stale database from an earlier run cannot make a test pass or fail for reasons that are not in the code.
+
+### Story 7.4 — A Podman pod
+
+*As an Operator, I want the same stack as a Podman pod so that the rootless runtime we prefer is a first-class path and not an afterthought.*
+
+Story 1.8 already prefers Podman where a runtime is being detected. The deployment story should not then be Docker-only.
+
+- AC1: The stack is expressible as a Podman pod, shipped either as a Kubernetes YAML for `podman kube play` or as a script that creates the pod and its containers — whichever the repository can also validate in CI.
+- AC2: Containers in the pod share a network namespace and therefore reach each other on `localhost`. This is a genuine difference from the Compose stack, not a translation of it, and the fixture URLs differ accordingly — a port collision between services is a real failure mode here and the ports are assigned to avoid it.
+- AC3: It runs rootless. Where rootless Podman needs something extra for Chrome — user namespaces, a seccomp adjustment — it is in the shipped definition with the reason, not left for the operator to rediscover.
+- AC4: The same assertions run against the pod as against Compose. Two stacks that are tested differently are two systems.
+- AC5: If `podman kube play` is used, the manifest is close enough to Story 6.10's Kubernetes manifests to be worth comparing, and the documentation says where they differ and why.
+
+### Story 7.5 — End-to-end test against Postgres
+
+*As a Compliance Officer, I want proof that a wsaw deployment backed by Postgres records what it observed, so that the evidence chain holds outside a developer's laptop.*
+
+- AC1: The test brings up the stack with Postgres, scans the Klaro fixture in all three consent modes, and asserts on the rows the database actually holds — read back through SQL, not through wsaw's own API. Asking the writer whether it wrote correctly proves less.
+- AC2: The consent assertions are the substance: in `none` the banner is present and untouched; in `reject` the banner is dismissed and the blocked third party stays absent; in `accept` it appears. Klaro's own state is checked too, so a scan that clicked nothing and a scan that clicked correctly cannot both pass.
+- AC3: The third party the fixture loads unconditionally is reported as contacted before any consent decision, in every mode. This is the product's headline finding, and it is asserted end-to-end rather than in a unit test on a hand-built result.
+- AC4: Two scans of the unchanged fixture produce an empty diff; a scan after the fixture changes produces exactly the expected changes with the expected severities. Diff noise is a defect of equal weight to a missed asset (Tenet 6).
+- AC5: The schema is created by wsaw's own migrations against an empty database, and running the daemon twice against the same database is a no-op the second time. A migration that only works on a fresh schema is a migration that fails in production.
+- AC6: The database is restarted mid-run and the daemon survives it: the scan in flight is recorded as failed, and the next scan reconnects and succeeds (Story 7.1, AC7).
+- AC7: Baseline approval and its audit entry are asserted to be atomic under Postgres, not merely assumed to have carried over from SQLite.
+- AC8: The test cleans up after itself — containers, volumes, networks — whether it passes or fails, and reports the container logs of every service on failure. A red end-to-end test that says only "assertion failed" costs more time than it saves.
+
+### Story 7.6 — End-to-end test against MySQL
+
+*As an Operator running MySQL rather than Postgres, I want the same guarantees, so that the choice of database is a deployment decision and not a support tier.*
+
+- AC1: The same assertions as Story 7.5 run against MySQL. They are one test body parameterised by dialect, not two test files that will drift.
+- AC2: The dialect differences MySQL forces are exercised rather than hidden: its upsert form, its JSON accessor, its identifier and reserved-word rules, and the absence of `rowid` in the retention delete.
+- AC3: Character set and collation are pinned to `utf8mb4` and asserted. Captured URLs and page-controlled strings contain everything Unicode has; a database that silently truncates at a four-byte character would corrupt evidence quietly, which is the worst way to lose it.
+- AC4: `sql_mode` is strict, so a value that does not fit is an error rather than a silent truncation. A store that quietly shortens a URL has changed the finding.
+- AC5: Timestamps survive a round trip at the precision wsaw relies on for ordering. MySQL's default `DATETIME` drops fractional seconds, and "the scan before this one" is decided by that ordering.
+- AC6: Where MySQL cannot do something the same way, the difference is recorded in the dialect documentation rather than worked around silently in the test.
+
+### Story 7.7 — Run the stack in CI, and keep it out of the fast suite
+
+*As a Developer, I want the end-to-end tests to run automatically without slowing down the loop I work in.*
+
+- AC1: The end-to-end tests are behind a build tag or an explicit opt-in, so `go test ./...` on a machine with no container runtime still passes and still means something.
+- AC2: They run in CI on a schedule and before a release, not on every push. A twenty-minute gate on every commit is a gate people learn to route around.
+- AC3: Their failure is a release blocker. A test that can fail without consequence is documentation.
+- AC4: Images are pinned by digest and cached between runs, so the tests do not fail because an upstream base image moved, and do not take ten minutes pulling.
+- AC5: On failure, CI keeps the artefacts that make the failure diagnosable: every service's logs, the stored result documents, and the diff that was produced.
+- AC6: The whole stack comes up and the assertions complete within a documented time budget, and exceeding it fails the run. An end-to-end suite with no budget grows until it is skipped.
+
+---
+
 ## Technical Decisions (proposed, for review)
 
 1. **CDP library:** drive Chrome via `chromedp`/`cdproto` rather than WebDriver — network-domain fidelity and initiator chains are the core product, and WebDriver does not expose them well. Playwright-Go is rejected as it requires a Node-based driver process.
 2. **Chrome is an external runtime dependency** on bare-metal installs, and bundled in the container image. wsaw does not download browsers at runtime.
-3. **Storage:** SQLite through `database/sql`, with a CGo-free driver, so the single-binary and cross-compilation promise holds while the driver stays the seam for a server database later (Story 4.6). No external DB is required in v1.
+3. **Storage:** SQLite through `database/sql`, with a CGo-free driver, so the single-binary and cross-compilation promise holds while the driver stays the seam for a server database later (Story 4.6). No external DB is required in v1. Postgres and MySQL become options — never requirements — once Story 7.1 turns the SQLite-specific SQL into a dialect.
 4. **Config:** YAML file plus flags/env overrides. A target list is inherently file-shaped, so config-file-less operation is supported only for one-shot CLI runs.
 5. **Consent rules ship as data, not code** (embedded YAML rule pack), so rules can be updated by users and by releases without recompilation.
 6. **v1 is single-node.** Distributed scheduling, sharding, and a web UI are explicitly deferred.
