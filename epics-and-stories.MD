@@ -509,6 +509,20 @@ The generic notifier also emits one event per change, which is right for a webho
 - AC9: The legacy `MessageCard` format is available as an explicit opt-in for tenants still running a connector webhook, documented as deprecated, and not the default.
 - AC10: Delivery is tested against a local fixture server asserting the exact posted payload, so the card structure is covered without a Teams tenant. A live tenant is never required to run the test suite.
 
+### Story 5.15 — Link to the last scan from the dashboard
+
+*As an Operator, I want to open a target's last scan straight from the dashboard so that seeing something odd and looking at it are one click apart, not two.*
+
+The dashboard already shows each series' last scan time, outcome and counts — everything except a way to reach the scan it is describing. Today that means going via the series page, which is the right screen for browsing history and the wrong one when the row in front of you already said what you wanted to know.
+
+- AC1: The last-scan cell on the dashboard links to that scan's result page. An icon may carry the link instead of, or in addition to, the cell text.
+- AC2: The link points at the **specific scan** the row describes, not at "the latest". A row that says "3h ago" and opens a scan from four minutes ago has misrepresented what the reader clicked.
+- AC3: A series that has never been scanned renders no link. The explicit "never scanned" state stays as it is — a link to nothing is worse than no link (Tenet 5).
+- AC4: A failed or skipped scan is still linked. That is the row a reader most needs to open, and a UI that only links the healthy ones hides its failures.
+- AC5: The link's accessible name says where it goes — the target, mode and scan — rather than "click here". Where an icon is used it carries a text alternative, and the icon is never the only indication that the row is reachable (Story 5.11's reasoning applied to the UI's own affordances).
+- AC6: A row whose series has a scan in flight still links to the last **finished** scan; the pending row itself links nowhere, because there is no result yet, and says so (Story 5.12).
+- AC7: It is a server-rendered anchor, so it works with JavaScript disabled and can be opened in a new tab, bookmarked, and copied like any other link (Story 5.7, AC6).
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
