@@ -207,6 +207,12 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .term-error, .term-skipped { color: var(--bad); }
 .term-pending { color: var(--accent); font-weight: 600; }
 
+/* The last-scan link on the dashboard. The cell's own text is the link, so
+   the arrow is decoration: an icon must never be the only indication that a
+   row is reachable (Story 5.15, AC5). */
+.scan-link { white-space: nowrap; }
+.open-icon { font-size: 0.85em; margin-left: 0.25em; opacity: 0.7; }
+
 .outcome-applied { color: var(--ok); }
 .outcome-not-needed { color: var(--muted); }
 .outcome-unverified { color: var(--warn); }

@@ -41,7 +41,9 @@
        view, since the store only learns of a scan when it ends. */}}
   {{range .Running}}
     <tr class="row-running">
-      <td><code>{{.ScanID}}</code></td>
+      {{/* Deliberately not a link: there is no result until the scan ends. */}}
+      <td title="this scan has not finished, so there is no result to open yet"><code>{{.ScanID}}</code>
+        <span class="muted">no result yet</span></td>
       <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
       <td class="muted">running for {{since .StartedAt}}</td>
       <td><span class="term term-pending">pending</span></td>

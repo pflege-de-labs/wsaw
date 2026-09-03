@@ -36,7 +36,8 @@
     <tr class="row-running">
       <td><a href="/targets/{{.Target}}/{{.ConsentMode}}">{{.Target}}</a></td>
       <td>{{.ConsentMode}}</td>
-      <td><code>{{.ScanID}}</code></td>
+      {{/* No link: a running scan has no result to open yet (Story 5.15, AC6). */}}
+      <td title="this scan has not finished, so there is no result to open yet"><code>{{.ScanID}}</code></td>
       <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
       <td>{{since .StartedAt}}</td>
       <td>{{.Source}}</td>
@@ -77,7 +78,15 @@
           <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a>
             {{if .Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
           {{if .LastScan}}
-            <td title="{{time .LastScan.StartedAt}}">{{ago .LastScan.StartedAt}}</td>
+            {{/* The link points at this specific scan, never at "latest": a
+                 row that says "3h ago" and opens a scan from four minutes ago
+                 has misrepresented what the reader clicked. A failed scan is
+                 linked too — that is the row most worth opening. */}}
+            <td title="{{time .LastScan.StartedAt}}">
+              <a class="scan-link"
+                 href="/results/{{$target.Name}}/{{.Mode}}/{{.LastScan.ScanID}}"
+                 aria-label="Open the last scan of {{$target.Name}} in {{.Mode}} mode, {{.LastScan.ScanID}}"
+                >{{ago .LastScan.StartedAt}}<span class="open-icon" aria-hidden="true">↗</span></a></td>
             <td><span class="term term-{{.LastScan.Termination}}">{{.LastScan.Termination}}</span></td>
             <td><span class="outcome outcome-{{.LastScan.ConsentOutcome}}">{{.LastScan.ConsentOutcome}}</span>
               {{if .LastScan.ConsentCMP}}<span class="cmp">{{.LastScan.ConsentCMP}}</span>{{end}}</td>

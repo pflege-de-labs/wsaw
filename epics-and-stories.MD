@@ -513,8 +513,6 @@ The generic notifier also emits one event per change, which is right for a webho
 
 *As an Operator, I want to open a target's last scan straight from the dashboard so that seeing something odd and looking at it are one click apart, not two.*
 
-The dashboard already shows each series' last scan time, outcome and counts — everything except a way to reach the scan it is describing. Today that means going via the series page, which is the right screen for browsing history and the wrong one when the row in front of you already said what you wanted to know.
-
 - AC1: The last-scan cell on the dashboard links to that scan's result page. An icon may carry the link instead of, or in addition to, the cell text.
 - AC2: The link points at the **specific scan** the row describes, not at "the latest". A row that says "3h ago" and opens a scan from four minutes ago has misrepresented what the reader clicked.
 - AC3: A series that has never been scanned renders no link. The explicit "never scanned" state stays as it is — a link to nothing is worse than no link (Tenet 5).
