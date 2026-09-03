@@ -74,7 +74,11 @@
 ## 9. License & Compliance
 
 - Source code under the MIT license (see `LICENSE`).
-- All dependencies license-compatible with MIT; automated license checking in CI.
+- All dependencies license-compatible with MIT; automated license checking in CI, as a gate rather than a report. The allowed set is MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC and MPL-2.0.
+- **MPL-2.0 is accepted for a dependency wsaw links unmodified, and only then.** MPL-2.0 §3.3 permits distributing the larger work under other terms — MIT here — provided the MPL-covered files stay under MPL and their source remains available. wsaw links such a dependency as published, never patched or vendored with changes, so shipping an MIT-licensed binary is compliant. The obligation this creates is to keep the notice and to be able to point at the exact source, which the SBOM's pinned versions satisfy. Modifying an MPL-covered dependency would change that analysis and is therefore not done without revisiting this decision.
+  - Today this applies to exactly one dependency: `github.com/go-sql-driver/mysql`, reached only when the store's `mysql` driver is configured (Story 4.7). Everything else is MIT, Apache-2.0 or BSD.
+  - The alternatives were examined rather than assumed. The one permissively-licensed MySQL driver with a working `database/sql` implementation (`go-mysql-org/go-mysql`, MIT) pulls roughly ten further modules into the build, including a complete SQL parser and a logging framework, which is a worse trade for a tool whose selling point is detecting supply-chain change (Tenet 19). The remaining candidates are either forks of the same MPL code or predate `context` support, which wsaw's deadline rule requires.
+- MySQL is optional at *runtime* — SQLite is the default and PostgreSQL's driver is MIT — but the driver is compiled into the binary regardless, because it registers itself on import. A distributor who cannot accept MPL-2.0 in a shipped artefact at all therefore needs the import excluded, not merely the configuration avoided; a build tag is the lever, and it is deliberately not in place today because nobody has that requirement.
 - Chrome/Chromium redistribution terms respected in the container image; Chromium is preferred over Chrome where redistribution matters.
 - A SBOM is generated in CI
 

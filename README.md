@@ -306,3 +306,10 @@ Deliberate non-goals for this version:
 ## Licence
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 web care lbj GmbH.
+
+Dependency licences are gated in CI, not merely reported: the build fails on
+anything outside MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC and MPL-2.0,
+and `make licenses` runs the same check locally. The tree is MIT and BSD apart
+from one MPL-2.0 module, `github.com/go-sql-driver/mysql`, which wsaw links
+unmodified — see NFR §9 for why that is accepted and what would change the
+answer. A per-release SBOM records the exact versions.

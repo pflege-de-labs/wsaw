@@ -143,6 +143,9 @@ soak:
 #
 # v2, because v1's classifier is from 2021 and misreads several ordinary
 # BSD-3 files.
+#
+# MPL-2.0 is allowed on purpose, for a dependency linked unmodified — see
+# NFR §9. Keep this list in step with the one in .github/workflows/ci.yaml.
 .PHONY: licenses
 licenses:
 	go run github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION) check ./... \

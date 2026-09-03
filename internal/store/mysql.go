@@ -10,6 +10,14 @@ import (
 	// The pure-Go MySQL driver. Imported for its side effect of registering
 	// itself, and by name for its error type, which carries the numbers that
 	// decide what is worth retrying.
+	//
+	// This is the one MPL-2.0 dependency in the tree, and the only one, which
+	// is a deliberate decision rather than an oversight: it is linked
+	// unmodified, which MPL-2.0 §3.3 permits inside an MIT-licensed work.
+	// Patching or vendoring it with changes would invalidate that, and the
+	// permissively-licensed alternatives cost roughly ten further modules
+	// including a complete SQL parser. NFR §9 records the reasoning; read it
+	// before replacing this import.
 	gomysql "github.com/go-sql-driver/mysql"
 )
 

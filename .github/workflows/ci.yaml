@@ -141,6 +141,13 @@ jobs:
       # wsaw is MIT; a copyleft dependency would be a licensing problem, so
       # this is a gate rather than a report.
       #
+      # MPL-2.0 is in the allowed set deliberately, not by accident: §3.3
+      # permits shipping the larger work under other terms provided the
+      # MPL-covered files stay MPL and their source stays available, and wsaw
+      # links such a dependency unmodified. Today that is exactly one module,
+      # github.com/go-sql-driver/mysql. See NFR §9 for the full reasoning and
+      # for what would invalidate it.
+      #
       # v2 and a pinned version, both deliberately. v1's licence classifier is
       # from 2021 and fails to recognise several perfectly ordinary BSD-3
       # files — modernc.org/mathutil's among them — which makes the gate fail
