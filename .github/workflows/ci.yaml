@@ -24,6 +24,9 @@ env:
   GO_VERSION: "1.26"
   # Pinned, and built from source below with the Go above — see the lint job.
   GOLANGCI_LINT_VERSION: "v2.13.2"
+  # Pinned: a floating licence classifier can change a gate's verdict without
+  # anything in this repository changing.
+  GO_LICENSES_VERSION: "v2.0.1"
 
 jobs:
   test:
@@ -137,9 +140,20 @@ jobs:
           cache: true
       # wsaw is MIT; a copyleft dependency would be a licensing problem, so
       # this is a gate rather than a report.
+      #
+      # v2 and a pinned version, both deliberately. v1's licence classifier is
+      # from 2021 and fails to recognise several perfectly ordinary BSD-3
+      # files — modernc.org/mathutil's among them — which makes the gate fail
+      # for a reason that has nothing to do with licensing. Lowering
+      # --confidence_threshold makes it pass by classifying that file as
+      # BSD-2-Clause, which is simply the wrong answer, and a compliance
+      # check that reports the wrong licence is worse than one that errors.
+      #
+      # Pinned because a floating classifier can change a gate's verdict
+      # without anything in this repository changing.
       - name: Check licenses
         run: |
-          go run github.com/google/go-licenses@latest check ./... \
+          go run github.com/google/go-licenses/v2@${{ env.GO_LICENSES_VERSION }} check ./... \
             --allowed_licenses=MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
 
   sbom:

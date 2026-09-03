@@ -43,8 +43,11 @@ release: clean
 	@cd $(DIST) && shasum -a 256 wsaw_* > SHA256SUMS
 	@echo "checksums written to $(DIST)/SHA256SUMS"
 
+# Keep in step with GO_LICENSES_VERSION in .github/workflows/ci.yaml.
+GO_LICENSES_VERSION ?= v2.0.1
+
 .PHONY: check
-check: fmt vet lint test
+check: fmt vet lint licenses test
 
 .PHONY: fmt
 fmt:
@@ -132,6 +135,18 @@ cover:
 .PHONY: soak
 soak:
 	go test -tags soak -timeout 60m -run TestSoak ./internal/soak/
+
+# wsaw is MIT; a copyleft dependency would be a licensing problem, so this is
+# a gate rather than a report (NFR §9). It is part of `check` on purpose: it
+# used to run only in CI, and a dependency that broke it was therefore merged
+# without anyone noticing until the push.
+#
+# v2, because v1's classifier is from 2021 and misreads several ordinary
+# BSD-3 files.
+.PHONY: licenses
+licenses:
+	go run github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION) check ./... \
+		--allowed_licenses=MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
 
 .PHONY: vulncheck
 vulncheck:
