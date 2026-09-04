@@ -1,0 +1,15 @@
+# The Klaro release the fixture serves, pinned by version and digest.
+#
+# Pinned because an unpinned CMP would make wsaw's test suite fail on
+# somebody else's release schedule (Story 7.1, AC1), and checksummed because
+# "we fetched whatever was at that URL" is not a pin.
+#
+# Klaro is BSD-3-Clause (KIProtect GmbH). It is fetched when the fixture
+# image is built, never at scan time, so a scan makes no network request
+# outside the stack (Tenet 14).
+#
+# To move to a new release: change both lines, then run
+#   make e2e-fixture-image
+# which fails if the digest does not match.
+KLARO_VERSION=0.7.21
+KLARO_SHA256=3a917a9ebdbed33f555326669db35fc03e0d0fffa5ecd5db08a34769c2c76596

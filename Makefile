@@ -161,6 +161,18 @@ sbom:
 	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest app \
 		-json -output $(DIST)/wsaw.cdx.json -main cmd/wsaw .
 
+# The end-to-end fixture image: a static site with a real Klaro banner, plus
+# the second origin that makes first/third-party attribution testable
+# (Story 7.1). Klaro is fetched by pinned version and digest during the
+# build, so the image is reproducible and a scan fetches nothing from
+# outside the stack.
+E2E_RUNTIME ?= podman
+E2E_FIXTURE_IMAGE ?= localhost/wsaw-fixture:dev
+
+.PHONY: e2e-fixture-image
+e2e-fixture-image:
+	$(E2E_RUNTIME) build -f test/e2e/fixture/Containerfile -t $(E2E_FIXTURE_IMAGE) .
+
 .PHONY: docker
 docker:
 	docker buildx build \

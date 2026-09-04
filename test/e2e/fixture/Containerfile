@@ -1,0 +1,55 @@
+# The end-to-end fixture website (Story 7.1).
+#
+# Built from source in this repository: the server is Go, its content is Go,
+# and the only outside artefact is klaro.js, fetched by pinned version and
+# verified against the digest in klaro.pinned. Nothing is fetched at scan
+# time.
+
+FROM docker.io/library/golang:1.26-alpine AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+    -o /out/fixture ./test/e2e/fixture
+
+# Fetched in its own stage so the digest check is part of the build rather
+# than a step someone has to remember (AC6). A mismatch fails here, before
+# any test has a chance to pass against unexpected content.
+FROM docker.io/library/alpine:3.21 AS klaro
+
+RUN apk add --no-cache curl tar
+
+COPY test/e2e/fixture/klaro.pinned /tmp/klaro.pinned
+
+RUN set -eu; \
+    . /tmp/klaro.pinned; \
+    curl -fsSL -o /tmp/klaro.tgz \
+      "https://registry.npmjs.org/klaro/-/klaro-${KLARO_VERSION}.tgz"; \
+    echo "${KLARO_SHA256}  /tmp/klaro.tgz" | sha256sum -c -; \
+    mkdir -p /srv/klaro; \
+    tar xzf /tmp/klaro.tgz -C /srv/klaro --strip-components=2 package/dist/klaro.js; \
+    tar xzf /tmp/klaro.tgz -C /srv/klaro --strip-components=1 package/LICENSE; \
+    test -s /srv/klaro/klaro.js
+
+FROM docker.io/library/alpine:3.21
+
+# The fixture renders attacker-controlled nothing and holds no credentials,
+# but it still runs unprivileged: a test stack that needs root teaches the
+# wrong habit.
+RUN addgroup -g 10001 -S fixture \
+    && adduser -u 10001 -S -G fixture fixture
+
+COPY --from=build /out/fixture /usr/local/bin/fixture
+COPY --from=klaro /srv/klaro /srv/klaro
+
+USER fixture
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/fixture"]
+CMD ["-role=site", "-listen=:8080"]
