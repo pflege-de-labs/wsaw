@@ -60,18 +60,57 @@ generated identifiers. Two scans of an unchanged fixture must produce an empty
 diff — that is what makes a non-empty diff mean something (Tenet 6), and it is
 verified in `fixture_test.go`.
 
-## Building and running
+## Running it
 
 ```
-make e2e-fixture-image
+make e2e-fixture-up        # build the image, start both origins, wait for health
+make e2e-fixture-scan      # scan all three consent modes
+make e2e-fixture-down      # remove the containers
 ```
+
+| Target | |
+|---|---|
+| `e2e-fixture-image` | build the image; fails on a Klaro digest mismatch |
+| `e2e-fixture-up` | start both roles on loopback and wait until each answers `/__fixture/healthz` |
+| `e2e-fixture-scan` | scan the running fixture with `--fail-on info`, so a clean run exits 0 |
+| `e2e-fixture-variant VARIANT=changed` | switch state, then scan again to see the change |
+| `e2e-fixture-logs` | follow both origins' request logs |
+| `e2e-fixture-down` | remove the containers |
+| `e2e-fixture-config` | write only the configuration, to `dist/e2e/wsaw.yaml` |
+
+`up` waits for health rather than sleeping, and prints both origins' logs if
+either never becomes healthy — a race that usually passes is worse than one
+that always fails. It is safe to run twice; it removes what is already there
+first. Ports and hostnames are overridable: `make e2e-fixture-up
+E2E_SITE_PORT=9091`.
 
 Klaro is fetched during the image build, by the version and SHA-256 in
 `fixture/klaro.pinned`, and the build fails on a digest mismatch. Nothing is
 fetched at scan time.
 
-Run it by hand — note that each role needs to know the URLs the *browser* will
-use, not its own listen address:
+### Why the generated config looks like that
+
+`e2e-fixture-config` writes `dist/e2e/wsaw.yaml` with two things a hand-run
+scan cannot do without:
+
+- **`--host-resolver-rules`**, because the fixture is published on this
+  machine's loopback and the browser has to be told its hostnames live there.
+  The hostnames matter: scanning `127.0.0.1:8081` and `127.0.0.1:8082` would
+  make both origins the same host, and the first/third-party classifier would
+  have nothing to distinguish.
+- **`runtime: local`**, because a containerised browser has its own network
+  namespace and cannot reach this host's loopback at all. wsaw refuses such a
+  target with an explanation rather than scanning its own container
+  (Story 1.8, AC10).
+
+Neither applies in the Compose stack or the Podman pod (Stories 7.2 and 7.3):
+there the services resolve each other by name and the browser runs where it
+can reach them.
+
+### Or by hand
+
+Each role needs to know the URLs the *browser* will use, not its own listen
+address:
 
 ```
 podman run --rm -p 127.0.0.1:8082:8080 localhost/wsaw-fixture:dev \
@@ -82,26 +121,6 @@ podman run --rm -p 127.0.0.1:8081:8080 localhost/wsaw-fixture:dev \
   -third-party-base=http://tracker.example:8082 \
   -extra-third-party-base=http://extra-tracker.example:8082
 ```
-
-Scanning it from this machine needs the fixture's hostnames resolved to
-loopback, which Chrome can be told to do. A containerised browser cannot reach
-the host's loopback at all, so a hand-run scan uses a local browser:
-
-```yaml
-browser:
-  runtime: local
-  extraArgs:
-    - "--host-resolver-rules=MAP site.example 127.0.0.1,MAP tracker.example 127.0.0.1,MAP extra-tracker.example 127.0.0.1"
-
-targets:
-  - name: fixture
-    url: http://site.example:8081/
-    consentModes: [none, reject, accept]
-```
-
-In the Compose stack and the Podman pod (Stories 7.2 and 7.3) none of that is
-needed: the services resolve each other by name, and the browser runs where it
-can reach them.
 
 ## Licence
 
