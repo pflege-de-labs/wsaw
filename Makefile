@@ -230,6 +230,7 @@ e2e-fixture-up: e2e-fixture-image e2e-fixture-down
 	@echo "  third party  http://127.0.0.1:$(E2E_TRACKER_PORT)/   (as $(E2E_TRACKER_BASE))"
 	@echo
 	@echo "Scan it:            make e2e-fixture-scan"
+	@echo "Look at it:         make e2e-fixture-browse"
 	@echo "Change it:          make e2e-fixture-variant VARIANT=changed"
 	@echo "Watch what it says: make e2e-fixture-logs"
 	@echo "Take it down:       make e2e-fixture-down"
@@ -289,6 +290,25 @@ e2e-fixture-variant:
 	@test -n "$(VARIANT)" || { echo "usage: make e2e-fixture-variant VARIANT=base|changed"; exit 2; }
 	@curl -fsS -X PUT --data '$(VARIANT)' \
 		http://127.0.0.1:$(E2E_SITE_PORT)/__fixture/variant
+
+# e2e-fixture-browse opens the fixture in a visible Chrome, so a person can
+# see the page and the banner wsaw scans — useful when a consent assertion
+# fails and the question is what the page actually looks like.
+#
+# It uses a throwaway profile, which is not a detail: with a shared profile an
+# already-running Chrome would take the URL and silently ignore the resolver
+# rules, so the fixture's hostnames would not resolve and the failure would
+# explain nothing. The profile is also fresh each time, so the banner appears
+# each time; pass KEEP_PROFILE=1 to keep a decision made in the last one.
+.PHONY: e2e-fixture-browse
+e2e-fixture-browse:
+	go run ./test/e2e/browse \
+		-url=$(E2E_SITE_BASE)/ \
+		-check-url=http://127.0.0.1:$(E2E_SITE_PORT)/ \
+		-profile=$(CURDIR)/$(E2E_DIR)/chrome-profile \
+		-resolver-rules="MAP $(E2E_SITE_HOST) 127.0.0.1,MAP $(E2E_TRACKER_HOST) 127.0.0.1,MAP $(E2E_EXTRA_HOST) 127.0.0.1" \
+		$(if $(KEEP_PROFILE),-keep-profile,) \
+		$(if $(CHROME_PATH),-chrome-path=$(CHROME_PATH),)
 
 .PHONY: e2e-fixture-logs
 e2e-fixture-logs:

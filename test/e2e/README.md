@@ -73,6 +73,7 @@ make e2e-fixture-down      # remove the containers
 | `e2e-fixture-image` | build the image; fails on a Klaro digest mismatch |
 | `e2e-fixture-up` | start both roles on loopback and wait until each answers `/__fixture/healthz` |
 | `e2e-fixture-scan` | scan the running fixture with `--fail-on info`, so a clean run exits 0 |
+| `e2e-fixture-browse` | open the fixture in a visible Chrome, to see the page and the banner yourself |
 | `e2e-fixture-variant VARIANT=changed` | switch state, then scan again to see the change |
 | `e2e-fixture-logs` | follow both origins' request logs |
 | `e2e-fixture-down` | remove the containers |
@@ -87,6 +88,28 @@ E2E_SITE_PORT=9091`.
 Klaro is fetched during the image build, by the version and SHA-256 in
 `fixture/klaro.pinned`, and the build fails on a digest mismatch. Nothing is
 fetched at scan time.
+
+### Looking at it yourself
+
+```
+make e2e-fixture-browse
+```
+
+This opens the fixture in a real Chrome window — the quickest way to answer
+"what does the page actually look like?" when a consent assertion fails. Close
+the window, or press Ctrl-C, to finish.
+
+It uses Chrome from wsaw's own discovery, so it finds the same browser a scan
+would, and a throwaway profile under `dist/e2e/`. The profile is not a detail:
+with a shared one, an already-running Chrome takes the URL and **silently
+ignores** the resolver rules, so the fixture's hostnames would not resolve and
+nothing on screen would explain why. The profile is fresh each run so the
+banner appears each time — pass `KEEP_PROFILE=1` to keep a decision made in
+the previous one, and `CHROME_PATH=...` to use a particular browser.
+
+Chrome is launched in its own process group and killed as a group, because
+Chrome is a tree — killing only the parent would leave renderers behind, which
+is the leak wsaw refuses to tolerate for its own browsers.
 
 ### Why the generated config looks like that
 
