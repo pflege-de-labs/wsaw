@@ -14,6 +14,7 @@ import (
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/logging"
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/retry"
 	"github.com/martint17r/wsaw/internal/store"
 )
 
@@ -244,11 +245,55 @@ func (c *Config) validateTargetBudget(t *Target, field string, add addFunc) {
 		}
 	}
 
+	validateTargetRetry(t, field, add)
+
 	if t.HardTimeout > 0 && t.IdleQuiet > 0 && t.IdleQuiet >= t.HardTimeout {
 		// Otherwise every scan would end on the hard timeout and never report
 		// a clean idle termination.
 		add(t.line, field, "idleQuiet (%s) must be shorter than hardTimeout (%s)",
 			t.IdleQuiet.Duration(), t.HardTimeout.Duration())
+	}
+}
+
+// validateTargetRetry refuses a retry schedule that cannot work (Story 3.8).
+func validateTargetRetry(t *Target, field string, add addFunc) {
+	if t.RetryAttempts < 0 {
+		add(t.line, field+".retryAttempts", "must not be negative; 1 disables retrying")
+	}
+
+	if t.RetryBackoff < 0 || t.RetryMaxBackoff < 0 {
+		add(t.line, field+".retryBackoff", "must not be negative")
+	}
+
+	if t.RetryMaxBackoff > 0 && t.RetryBackoff > t.RetryMaxBackoff {
+		add(t.line, field+".retryMaxBackoff",
+			"retryMaxBackoff (%s) must not be shorter than retryBackoff (%s)",
+			t.RetryMaxBackoff.Duration(), t.RetryBackoff.Duration())
+	}
+
+	// AC9: retrying must finish inside the target's own schedule. A retry
+	// schedule longer than the scan schedule means the next scheduled scan of
+	// a target starts while its retries are still going, which is two runs of
+	// one target at once — the thing the minimum interval exists to prevent.
+	if t.Interval <= 0 || t.RetryAttempts <= 1 {
+		return
+	}
+
+	policy := retry.Policy{
+		Attempts:   t.RetryAttempts,
+		Backoff:    t.RetryBackoff.Duration(),
+		MaxBackoff: t.RetryMaxBackoff.Duration(),
+	}
+
+	if policy.Backoff == 0 {
+		policy.Backoff = DefaultRetryBackoff
+	}
+
+	if total := policy.TotalDelay(t.Name); total >= t.Interval.Duration() {
+		add(t.line, field+".retryAttempts",
+			"%d attempts with a %s backoff wait up to %s between them, which is not shorter than this target's interval of %s: "+
+				"retries would still be running when the next scheduled scan starts",
+			t.RetryAttempts, policy.Backoff, total, t.Interval.Duration())
 	}
 }
 

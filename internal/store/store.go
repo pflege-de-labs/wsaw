@@ -651,8 +651,15 @@ func (s *Store) LatestResult(target string, mode model.ConsentMode) (*model.Resu
 	return res, nil
 }
 
-// PreviousResult returns the result immediately before the given scan ID,
-// which is what "compare against the previous scan" needs.
+// PreviousResult returns the most recent result before the given scan ID that
+// is worth comparing against.
+//
+// A failed or skipped scan is skipped over. It stays in the history — it
+// happened, and hiding it would be the quiet lie Tenet 5 forbids — but it is
+// not an observation of the site, so diffing against it would report the
+// whole site as new or as gone. That matters most for a retried scan: without
+// this, a successful retry would be compared against the failure it replaced
+// and manufacture a finding out of its own recovery (Story 3.8, AC6).
 func (s *Store) PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
 	ctx, cancel := s.opCtx()
 	defer cancel()
@@ -660,16 +667,20 @@ func (s *Store) PreviousResult(target string, mode model.ConsentMode, scanID str
 	// A row-value comparison against the anchor scan, so results sharing a
 	// start time still order deterministically — the same ordering the index
 	// and every listing use.
-	const q = `
+	q := `
 		select document from results
 		where target = ? and consent_mode = ?
+		  and termination not in (?, ?)
 		  and (started_at, scan_id) <
 		      (select started_at, scan_id from results
 		       where target = ? and consent_mode = ? and scan_id = ?)
 		order by started_at desc, scan_id desc
 		limit 1`
 
-	res, err := s.queryResult(ctx, q, target, string(mode), target, string(mode), scanID)
+	res, err := s.queryResult(ctx, q,
+		target, string(mode),
+		string(model.TermError), string(model.TermSkipped),
+		target, string(mode), scanID)
 	if err != nil {
 		return nil, fmt.Errorf("reading result before %s: %w", scanID, err)
 	}

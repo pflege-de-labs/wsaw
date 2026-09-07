@@ -12,6 +12,7 @@ import (
 	"github.com/martint17r/wsaw/internal/config"
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/model"
+	"github.com/martint17r/wsaw/internal/retry"
 	"github.com/martint17r/wsaw/internal/scanner"
 )
 
@@ -42,6 +43,13 @@ type Options struct {
 
 	// FlapWindow collapses a change and its inverse inside this window.
 	FlapWindow time.Duration
+
+	// OnRetry and OnRetriesExhausted report a scan that had to be tried
+	// again, and one that ran out of attempts. A target that only works on
+	// the third try is a finding of its own, so it has to be countable even
+	// though the retry hid it from the notifier (Story 3.8, AC7).
+	OnRetry            func(target string, mode model.ConsentMode, attempt int)
+	OnRetriesExhausted func(target string, mode model.ConsentMode, attempts int)
 
 	// Tick is how often the scheduler looks for due jobs. It bounds how late
 	// a scan can be, not how often scans happen.
@@ -259,17 +267,17 @@ func (d *Daemon) dispatch(ctx context.Context, now time.Time, sem chan struct{},
 			continue
 		}
 
-		d.markStarted(j, now)
+		attempt, previous := d.markStarted(j, now)
 
 		wg.Add(1)
 
-		go func(j *job) {
+		go func(j *job, attempt int, previous string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer d.origins.release(origin)
 
-			d.runJob(ctx, j)
-		}(j)
+			d.runJob(ctx, j, attempt, previous)
+		}(j, attempt, previous)
 	}
 }
 
@@ -290,19 +298,44 @@ func (d *Daemon) dueJobs(now time.Time) []*job {
 
 // markStarted advances the schedule before the scan runs, so a long scan does
 // not queue up duplicates of itself on every tick.
-func (d *Daemon) markStarted(j *job, now time.Time) {
+//
+// It returns the attempt this run is, read under the same lock that advances
+// the schedule so a concurrent reload cannot change it underneath.
+func (d *Daemon) markStarted(j *job, now time.Time) (attempt int, previous string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	j.lastRun = now
 	j.advance(now)
+
+	// Cleared here: the next tick must not treat this run as still pending a
+	// retry, and whether another one follows is decided when it finishes.
+	j.retrying = false
+
+	if j.attempt < 1 {
+		j.attempt = 1
+	}
+
+	return j.attempt, j.prevError
 }
 
-func (d *Daemon) runJob(ctx context.Context, j *job) {
-	out, err := d.scanner.Scan(ctx, j.target, j.mode)
+func (d *Daemon) runJob(ctx context.Context, j *job, attempt int, previous string) {
+	policy := j.target.Retry
+
+	scanCtx := scanner.WithAttempt(ctx, attempt, policy.MaxAttempts(), previous)
+
+	out, err := d.scanner.Scan(scanCtx, j.target, j.mode)
 	if err != nil {
 		d.opts.Logger.Warn("scan reported an error",
 			"target", j.target.Name, "consent_mode", string(j.mode), "error", err)
+	}
+
+	// A scan that produced no usable observation gets another attempt, and its
+	// result is not published: a failure a retry fixes must not page anyone
+	// (Story 3.8, AC7). It is still stored — the scanner did that already —
+	// so the failure remains in the history either way (Tenet 5).
+	if d.considerRetry(ctx, j, out, err, attempt, policy) {
+		return
 	}
 
 	if out.Result == nil {
@@ -310,6 +343,92 @@ func (d *Daemon) runJob(ctx context.Context, j *job) {
 	}
 
 	d.publish(ctx, out)
+}
+
+// considerRetry requeues the job when another attempt is warranted, and
+// reports whether it did.
+func (d *Daemon) considerRetry(
+	ctx context.Context,
+	j *job,
+	out scanner.Outcome,
+	scanErr error,
+	attempt int,
+	policy retry.Policy,
+) bool {
+	if !policy.Retryable(out.Result) {
+		d.finishRetries(j)
+
+		return false
+	}
+
+	if attempt >= policy.MaxAttempts() {
+		if policy.Enabled() {
+			d.opts.Logger.Warn("scan failed on every attempt",
+				"target", j.target.Name, "consent_mode", string(j.mode),
+				"attempts", policy.MaxAttempts())
+
+			if d.opts.OnRetriesExhausted != nil {
+				d.opts.OnRetriesExhausted(j.target.Name, j.mode, policy.MaxAttempts())
+			}
+		}
+
+		d.finishRetries(j)
+
+		return false
+	}
+
+	// Cancellation is not a reason to retry: the daemon is going away, and a
+	// requeue would either be dropped or delay the shutdown it was asked to
+	// perform.
+	if ctx.Err() != nil {
+		d.finishRetries(j)
+
+		return false
+	}
+
+	next := attempt + 1
+	delay := policy.Delay(next, j.key())
+
+	d.mu.Lock()
+	j.scheduleRetry(time.Now(), delay, retryReason(out, scanErr))
+	d.mu.Unlock()
+
+	d.opts.Logger.Info("scan produced no usable observation, retrying",
+		"target", j.target.Name,
+		"consent_mode", string(j.mode),
+		"attempt", attempt,
+		"attempts", policy.MaxAttempts(),
+		"next_attempt_in", delay.String(),
+		"reason", retryReason(out, scanErr),
+	)
+
+	if d.opts.OnRetry != nil {
+		d.opts.OnRetry(j.target.Name, j.mode, attempt)
+	}
+
+	return true
+}
+
+func (d *Daemon) finishRetries(j *job) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	j.resetRetries()
+}
+
+// retryReason describes why an attempt did not produce an observation, for
+// the next attempt's result to carry.
+func retryReason(out scanner.Outcome, scanErr error) string {
+	switch {
+	case out.Result == nil && scanErr != nil:
+		return scanErr.Error()
+	case out.Result == nil:
+		return "the scan produced no result"
+	case out.Result.Error != "":
+		return string(out.Result.Termination) + ": " + out.Result.Error
+	default:
+		return string(out.Result.Termination)
+	}
 }
 
 // publish applies flap suppression and hands the outcome to the sink.

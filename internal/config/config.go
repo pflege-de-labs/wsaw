@@ -109,6 +109,16 @@ type Target struct {
 	MinInterval Duration     `yaml:"minInterval,omitempty"`
 	Jitter      Duration     `yaml:"jitter,omitempty"`
 
+	// Retry of a failed scan (Story 3.8). RetryAttempts counts the first
+	// attempt, so 1 disables retrying and 3 means one scan and two retries.
+	RetryAttempts   int      `yaml:"retryAttempts,omitempty"`
+	RetryBackoff    Duration `yaml:"retryBackoff,omitempty"`
+	RetryMaxBackoff Duration `yaml:"retryMaxBackoff,omitempty"`
+	// RetryTruncated also retries a scan cut short by a timeout or a cap.
+	// Off by default: retrying every slow site doubles the load wsaw puts on
+	// it and usually reproduces the same truncation.
+	RetryTruncated *bool `yaml:"retryTruncated,omitempty"`
+
 	// Severity overrides for this target.
 	Severity diff.SeverityRules `yaml:"severity,omitempty"`
 

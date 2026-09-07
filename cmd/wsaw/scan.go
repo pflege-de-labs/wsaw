@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/martint17r/wsaw/internal/app"
 	"github.com/martint17r/wsaw/internal/config"
@@ -141,7 +142,7 @@ func runOnce(ctx context.Context, a *app.App, targets []config.Resolved) ([]scan
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			out, err := a.Scanner.Scan(scanCtx, j.target, j.mode)
+			out, err := scanWithRetries(scanCtx, a, j.target, j.mode)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -169,6 +170,95 @@ func runOnce(ctx context.Context, a *app.App, targets []config.Resolved) ([]scan
 	sortOutcomes(outcomes)
 
 	return outcomes, failures
+}
+
+// scanWithRetries runs one scan, trying again when it produced no usable
+// observation (Story 3.8, AC11).
+//
+// One-shot mode retries for the same reason the daemon does, and it matters
+// more here: a CI gate that failed because of one dropped connection teaches
+// people to re-run it until it passes, which is the opposite of a gate. The
+// exit code reports the final outcome, so the contract in Story 5.5 is
+// unchanged.
+//
+// Unlike the scheduler this waits rather than requeueing. There is no
+// schedule to protect — the command exists to finish this list and exit — and
+// configuration already refuses a retry schedule that could outlast a
+// target's interval.
+func scanWithRetries(
+	ctx context.Context,
+	a *app.App,
+	target config.Resolved,
+	mode model.ConsentMode,
+) (scanner.Outcome, error) {
+	policy := target.Retry
+
+	var (
+		out      scanner.Outcome
+		err      error
+		previous string
+	)
+
+	for attempt := 1; attempt <= policy.MaxAttempts(); attempt++ {
+		if attempt > 1 {
+			delay := policy.Delay(attempt, target.Name+"/"+string(mode))
+
+			a.Logger.Info("scan produced no usable observation, retrying",
+				"target", target.Name, "consent_mode", string(mode),
+				"attempt", attempt-1, "attempts", policy.MaxAttempts(),
+				"next_attempt_in", delay.String(), "reason", previous)
+
+			a.Metrics.ScanRetried()
+
+			timer := time.NewTimer(delay)
+
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+
+				return out, err
+			}
+
+			timer.Stop()
+		}
+
+		out, err = a.Scanner.Scan(scanner.WithAttempt(ctx, attempt, policy.MaxAttempts(), previous), target, mode)
+
+		if !policy.Retryable(out.Result) {
+			return out, err
+		}
+
+		previous = retryReason(out, err)
+
+		// A cancelled run stops trying: the caller asked for the command to
+		// end, not for it to keep working.
+		if ctx.Err() != nil {
+			return out, err
+		}
+	}
+
+	if policy.Enabled() {
+		a.Logger.Warn("scan failed on every attempt",
+			"target", target.Name, "consent_mode", string(mode), "attempts", policy.MaxAttempts())
+		a.Metrics.ScanRetriesExhausted()
+	}
+
+	return out, err
+}
+
+// retryReason describes why an attempt did not produce an observation.
+func retryReason(out scanner.Outcome, scanErr error) string {
+	switch {
+	case out.Result == nil && scanErr != nil:
+		return scanErr.Error()
+	case out.Result == nil:
+		return "the scan produced no result"
+	case out.Result.Error != "":
+		return string(out.Result.Termination) + ": " + out.Result.Error
+	default:
+		return string(out.Result.Termination)
+	}
 }
 
 func sortOutcomes(outcomes []scanner.Outcome) {

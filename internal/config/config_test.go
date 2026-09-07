@@ -596,6 +596,110 @@ notify:
 `)
 }
 
+func TestRetryConfiguration(t *testing.T) {
+	t.Parallel()
+
+	// The default is two attempts: a watcher that gives up on one dropped
+	// connection leaves a hole in a target's history until the next interval.
+	cfg := parse(t, `
+targets:
+  - name: t
+    url: https://example.com/
+`)
+
+	resolved, err := cfg.ResolveTargets(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolved[0].Retry.MaxAttempts(); got != config.DefaultRetryAttempts {
+		t.Errorf("default attempts = %d, want %d", got, config.DefaultRetryAttempts)
+	}
+
+	if !resolved[0].Retry.Enabled() {
+		t.Error("retrying is off by default; a single dropped connection would cost a whole interval")
+	}
+
+	// Defaults are inherited and targets override, like every other budget.
+	cfg = parse(t, `
+defaults:
+  retryAttempts: 4
+  retryBackoff: 30s
+targets:
+  - name: inherits
+    url: https://a.example.com/
+  - name: overrides
+    url: https://b.example.com/
+    retryAttempts: 1
+    retryTruncated: true
+`)
+
+	resolved, err = cfg.ResolveTargets(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolved[0].Retry.MaxAttempts(); got != 4 {
+		t.Errorf("inherited attempts = %d, want 4", got)
+	}
+
+	if got := resolved[0].Retry.Backoff; got != 30*time.Second {
+		t.Errorf("inherited backoff = %s, want 30s", got)
+	}
+
+	if resolved[1].Retry.Enabled() {
+		t.Error("a target that disabled retrying still has it enabled")
+	}
+
+	if !resolved[1].Retry.Truncated {
+		t.Error("a target that opted into retrying truncated scans did not get it")
+	}
+}
+
+func TestRetryScheduleMustFitTheInterval(t *testing.T) {
+	t.Parallel()
+
+	// AC9: retries that would still be running when the next scheduled scan
+	// starts mean two runs of one target at once.
+	err := parseErr(t, `
+targets:
+  - name: t
+    url: https://example.com/
+    interval: 1m
+    retryAttempts: 5
+    retryBackoff: 1m
+`)
+
+	if !strings.Contains(err.Error(), "interval") {
+		t.Errorf("the error does not explain the conflict: %v", err)
+	}
+
+	// The same retry schedule inside a longer interval is fine.
+	parse(t, `
+targets:
+  - name: t
+    url: https://example.com/
+    interval: 24h
+    retryAttempts: 5
+    retryBackoff: 1m
+`)
+
+	mustReject(t, `
+targets:
+  - name: t
+    url: https://example.com/
+    retryAttempts: -1
+`)
+
+	mustReject(t, `
+targets:
+  - name: t
+    url: https://example.com/
+    retryBackoff: 5m
+    retryMaxBackoff: 1m
+`)
+}
+
 func TestStoreDriverValidation(t *testing.T) {
 	t.Parallel()
 

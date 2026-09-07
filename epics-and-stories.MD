@@ -199,7 +199,7 @@ Run as a long-lived service that scans a list of targets on a schedule.
 
 **Goal:** operators define targets and schedules declaratively, start the daemon, and it keeps producing results without further interaction.
 
-**Scope:** target list definition, config loading and validation, hot reload, scheduler, worker pool and concurrency limits, browser pool, per-target overrides (viewport, user agent, device emulation, headers, basic auth, geolocation/timezone, proxy), one-shot CLI mode, graceful shutdown.
+**Scope:** target list definition, config loading and validation, hot reload, scheduler, retry of failed scans, worker pool and concurrency limits, browser pool, per-target overrides (viewport, user agent, device emulation, headers, basic auth, geolocation/timezone, proxy), one-shot CLI mode, graceful shutdown.
 
 **Out of scope:** distributed/multi-node scheduling (explicit non-goal for v1).
 
@@ -262,6 +262,27 @@ Run as a long-lived service that scans a list of targets on a schedule.
 - AC2: When set to `respect`, a disallowed target URL is skipped with a recorded, non-error outcome rather than a silent no-op.
 - AC3: Fetched `robots.txt` results are cached per origin for a configurable TTL; a fetch failure is a recorded outcome with a documented fallback behavior.
 - AC4: Per-origin rate limit and schedule jitter are configurable per target on top of the global defaults.
+
+### Story 3.8 — Retry a failed scan
+
+*As an Operator, I want a scan that failed for a transient reason retried promptly, so that a dropped connection or a crashed browser does not leave a hole in a target's history until the next scheduled run.*
+
+Today a failed scan is recorded honestly and then waits for its interval — up to a day with the shipped default. The record is right; the gap is avoidable.
+
+The distinction that makes this story tractable is between a failure and a finding. A page that loads nothing, refuses consent, or returns 500 is a *result*: wsaw observed it, and observing it again would only confirm it. A browser that died before navigating, a DNS lookup that failed, a container that would not start — those are *missing observations*, and the whole point of a watcher is not to miss.
+
+- AC1: Retries are configurable: how many attempts, and the backoff between them, globally and per target. Zero disables retrying entirely, and the default is stated in the documentation rather than left to be discovered.
+- AC2: Only a failed scan is retried, and only where another attempt could plausibly change the outcome — a browser or container that failed to start, a browser that crashed or hung, a navigation that failed at the network level. A scan skipped by robots policy is a decision, not a failure, and is never retried. A failed or unverified consent interaction produced a result and is not retried either: the scan saw what it saw.
+- AC3: A truncated scan — timeout, request cap, byte cap — is retried only when configured to be, off by default. Retrying every slow site doubles the load wsaw puts on it and usually reproduces the same truncation.
+- AC4: Backoff has jitter, and a retry obeys the same per-origin concurrency limit as any other scan (Tenet 17). A network blip that fails fifty targets at once must not turn their retries into a load test of fifty sites. The minimum interval, on the other hand, does **not** hold a retry back: that floor bounds how often wsaw asks a site for a *new* observation, a retry is the same observation, and with the shipped default of an hour a retry held by the floor would not be a retry at all. What bounds the extra load is that retries are counted — at most attempts-1 of them — and jittered.
+- AC5: **Every attempt is recorded as its own result, with its own scan ID.** A failure that a later attempt replaced still happened and must remain visible (Tenet 5); a retry is not a way to make a bad scan disappear.
+- AC6: **A superseded failure does not become the comparison baseline.** "The scan before this one" currently means the previous row whatever its outcome, so without this a successful retry would be diffed against the failure it replaced and the whole site would be reported as new. The retry is worthless if it manufactures a false finding.
+- AC7: Notification is on the final outcome, not on each attempt. A failure that a retry fixed does not page anyone at three in the morning. A target that needed retries stays visible as a metric, because a site that only works on the third attempt is a finding of its own (Tenet 8).
+- AC8: A pending retry does not hold a worker or delay other targets. It is requeued, not slept through, so one flapping target cannot stall the schedule.
+- AC9: Attempts and backoff together cannot outlast the target's own interval, and a configuration where they could is refused at load with the reason. A retry schedule longer than the scan schedule means overlapping runs of the same target.
+- AC10: The result records which attempt it was, how many were configured, and why the previous attempt failed, so the stored evidence explains itself without anyone having to find the matching log lines.
+- AC11: One-shot mode retries too, and the exit-code contract reports the final outcome (Story 5.5). A CI gate that failed because of one dropped connection teaches people to re-run it until it passes, which is the opposite of a gate.
+- AC12: This is not the store's retry (Story 4.7). That one retries a database operation inside a scan; this one retries the scan. They are configured separately, and neither implies the other — the documentation says so, because "wsaw retries" would otherwise mean two different things.
 
 ---
 

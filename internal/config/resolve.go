@@ -9,10 +9,23 @@ import (
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/model"
 	"github.com/martint17r/wsaw/internal/normalize"
+	"github.com/martint17r/wsaw/internal/retry"
 	"github.com/martint17r/wsaw/internal/secret"
 )
 
 const defaultInterval = 24 * time.Hour
+
+// Retry defaults (Story 3.8).
+//
+// Two attempts rather than one, because a watcher that gives up on a single
+// dropped connection leaves a hole in a target's history until the next
+// interval — up to a day. Two rather than five, because a target that is
+// genuinely broken should be reported as broken rather than hammered.
+const (
+	DefaultRetryAttempts   = 2
+	DefaultRetryBackoff    = 60 * time.Second
+	DefaultRetryMaxBackoff = 10 * time.Minute
+)
 
 // Resolved is one target with every default already applied, so downstream
 // code never has to ask "was this set globally or per target?".
@@ -63,6 +76,10 @@ type Resolved struct {
 	Robots      RobotsPolicy
 	MinInterval time.Duration
 	Jitter      time.Duration
+
+	// Retry is what to do when a scan produces no usable observation
+	// (Story 3.8).
+	Retry retry.Policy
 
 	Severity diff.SeverityRules
 }
@@ -122,7 +139,13 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 		Robots:            firstRobots(t.Robots, d.Robots),
 		MinInterval:       firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
 		Jitter:            firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
-		Severity:          mergeSeverity(c.Detection.Severity, d.Severity, t.Severity),
+		Retry: retry.Policy{
+			Attempts:   firstInt(t.RetryAttempts, d.RetryAttempts, DefaultRetryAttempts),
+			Backoff:    firstDuration(t.RetryBackoff, d.RetryBackoff, DefaultRetryBackoff),
+			MaxBackoff: firstDuration(t.RetryMaxBackoff, d.RetryMaxBackoff, DefaultRetryMaxBackoff),
+			Truncated:  firstBool(t.RetryTruncated, d.RetryTruncated, false),
+		},
+		Severity: mergeSeverity(c.Detection.Severity, d.Severity, t.Severity),
 	}
 
 	// An explicit target cron clears an inherited interval, and vice versa,

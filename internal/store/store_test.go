@@ -1133,3 +1133,112 @@ func TestDriverIsReported(t *testing.T) {
 		t.Errorf("store driver = %q, want %q", got, want)
 	}
 }
+
+// --- Story 3.8: a failed scan is not a comparison baseline ----------------
+
+// TestPreviousResultSkipsFailedScans is AC6. Without it, a scan that
+// succeeded after a retry would be compared against the failure it replaced,
+// and the diff would report the whole site as new — a finding manufactured
+// out of wsaw's own recovery.
+func TestPreviousResultSkipsFailedScans(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	base := time.Now().Add(-time.Hour)
+
+	good := result("scan-good", base, model.ConsentReject)
+
+	failed := result("scan-failed", base.Add(time.Minute), model.ConsentReject)
+	failed.Termination = model.TermError
+	failed.Error = "the browser crashed"
+
+	skipped := result("scan-skipped", base.Add(2*time.Minute), model.ConsentReject)
+	skipped.Termination = model.TermSkipped
+	skipped.Error = "disallowed by robots.txt"
+
+	retried := result("scan-retried", base.Add(3*time.Minute), model.ConsentReject)
+
+	for _, res := range []*model.Result{good, failed, skipped, retried} {
+		if err := s.PutResult(res); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prev, err := s.PreviousResult("site", model.ConsentReject, "scan-retried")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if prev.ScanID != "scan-good" {
+		t.Errorf("the scan before scan-retried is %s, want scan-good: a failed or skipped scan is not an observation of the site",
+			prev.ScanID)
+	}
+
+	// The failures are still there. A retry must not be a way to make a bad
+	// scan disappear (Tenet 5).
+	summaries, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(summaries) != 4 {
+		t.Errorf("history holds %d results, want all 4 including the failures", len(summaries))
+	}
+}
+
+// A truncated scan is still an observation — it saw real assets, just not all
+// of them — so it remains a usable baseline. Only failures and skips do not.
+func TestPreviousResultKeepsTruncatedScans(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	base := time.Now().Add(-time.Hour)
+
+	truncated := result("scan-truncated", base, model.ConsentReject)
+	truncated.Termination = model.TermTimeout
+
+	current := result("scan-current", base.Add(time.Minute), model.ConsentReject)
+
+	for _, res := range []*model.Result{truncated, current} {
+		if err := s.PutResult(res); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	prev, err := s.PreviousResult("site", model.ConsentReject, "scan-current")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if prev.ScanID != "scan-truncated" {
+		t.Errorf("the scan before scan-current is %s, want scan-truncated", prev.ScanID)
+	}
+}
+
+// With nothing but failures behind it, there is no baseline — and that has to
+// read as "nothing to compare against" rather than as an empty site.
+func TestPreviousResultReportsNothingWhenOnlyFailuresPrecede(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	base := time.Now().Add(-time.Hour)
+
+	failed := result("scan-failed", base, model.ConsentReject)
+	failed.Termination = model.TermError
+	failed.Error = "the browser crashed"
+
+	current := result("scan-current", base.Add(time.Minute), model.ConsentReject)
+
+	for _, res := range []*model.Result{failed, current} {
+		if err := s.PutResult(res); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := s.PreviousResult("site", model.ConsentReject, "scan-current"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("PreviousResult = %v, want ErrNotFound", err)
+	}
+}

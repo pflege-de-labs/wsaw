@@ -28,6 +28,24 @@ defaults:
   # else's. There is no safe universal default, so the choice is explicit.
   robots: ignore
 
+  # Retrying a scan that produced no usable observation — a browser that
+  # crashed, a container that would not start, a navigation that failed at the
+  # network level. Without it, one dropped connection costs a whole interval:
+  # a hole in the target's history until the next scheduled run.
+  #
+  # A failure is retried; a finding is not. A page that loads nothing, refuses
+  # consent, or answers 500 is something wsaw *saw*, and scanning it again
+  # would report the same thing at the site's expense.
+  #
+  # retryAttempts counts the first attempt, so 1 disables retrying.
+  retryAttempts: 2
+  retryBackoff: 60s
+  retryMaxBackoff: 10m
+  # Also retry a scan cut short by a timeout or a cap. Off by default:
+  # retrying every slow site doubles the load and usually reproduces the same
+  # truncation.
+  retryTruncated: false
+
   # Capture budget. Exceeding any of these ends the scan with a recorded
   # reason rather than hanging.
   idleQuiet: 2s

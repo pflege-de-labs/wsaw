@@ -128,6 +128,23 @@ type Result struct {
 	// list is incomplete and must not be read as "nothing was loaded".
 	Error string `json:"error,omitempty"`
 
+	// Attempt is which attempt of a retried scan produced this result,
+	// counting from 1, and Attempts is how many were allowed. They are
+	// recorded so a stored result explains itself: a reader looking at a
+	// success at 03:05 can see that 03:04 failed without going to find the
+	// matching log lines (Story 3.8).
+	Attempt  int `json:"attempt,omitempty"`
+	Attempts int `json:"attempts,omitempty"`
+	// PreviousError is why the attempt before this one failed. Empty on a
+	// first attempt.
+	PreviousError string `json:"previousError,omitempty"`
+
+	// Superseded marks a failed result that a later attempt replaced. The
+	// failure stays in the history — a retry is not a way to make a bad scan
+	// disappear (Tenet 5) — but a superseded one is not what the next scan is
+	// compared against.
+	Superseded bool `json:"superseded,omitempty"`
+
 	// FinalURL is the document URL after redirects, if the document loaded.
 	FinalURL string `json:"finalUrl,omitempty"`
 

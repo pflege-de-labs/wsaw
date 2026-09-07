@@ -163,6 +163,52 @@ a second scan of a target and consent mode that is already scanning is refused
 (`409`) rather than queued, because two concurrent scans of one series would
 produce two results for the same moment and double the load on the scanned site.
 
+## When a scan fails
+
+A scan that produced no usable observation is retried:
+
+```yaml
+defaults:
+  retryAttempts: 2       # counts the first attempt; 1 disables retrying
+  retryBackoff: 60s      # doubles per attempt, jittered
+  retryMaxBackoff: 10m
+  retryTruncated: false  # also retry a timeout or a cap
+```
+
+The distinction that decides what gets retried is between a failure and a
+finding. A browser that crashed, a container that would not start, a
+navigation that failed at the network level — those are **missing
+observations**, and not missing them is the whole job. A page that loads
+nothing, refuses consent, or answers 500 is a **result**: wsaw saw it, and
+scanning again would report the same thing at the site's expense. A scan
+skipped by robots policy is a decision, not a failure, and is never retried.
+
+Four consequences worth knowing:
+
+- **Every attempt stays in the history**, with its own scan ID, and each
+  result records which attempt it was and why the previous one failed. A retry
+  is not a way to make a bad scan disappear.
+- **A failed scan is never the comparison baseline.** Without that, a
+  successful retry would be diffed against the failure it replaced and report
+  the whole site as new — a finding manufactured out of wsaw's own recovery.
+- **Notification is on the final outcome.** A failure a retry fixed pages
+  nobody; `wsaw_scan_retries_total` and `wsaw_scan_retries_exhausted_total`
+  still count it, because a site that only works on the third attempt is a
+  finding of its own.
+- **A pending retry does not hold a worker**, so one flapping target cannot
+  stall the schedule. Retries skip the minimum interval — that floor bounds
+  how often wsaw asks for a *new* observation, and a retry is the same one —
+  but they stay inside the per-origin concurrency limit and are jittered, so a
+  blip that fails fifty targets does not become a load test of fifty sites.
+
+`wsaw scan` retries too, and its exit code reports the final outcome: a CI
+gate that fails on one dropped connection teaches people to re-run it until it
+passes, which is the opposite of a gate.
+
+This is not the store's retry (`store.maxAttempts`), which retries a database
+operation *inside* a scan. They are configured separately and neither implies
+the other.
+
 ## Notifications
 
 A **webhook** notifier posts one JSON event per change, optionally templated, which is the right shape for something that routes or deduplicates events.

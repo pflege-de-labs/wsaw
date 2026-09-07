@@ -37,6 +37,8 @@ type Registry struct {
 	browserRestarts int64
 	notifyFailures  int64
 	storeRetries    int64
+	scanRetries     int64
+	retriesExceeded int64
 	notifySent      int64
 
 	durations map[labels]*histogram
@@ -154,6 +156,27 @@ func (r *Registry) StoreRetried() {
 	r.storeRetries++
 }
 
+// ScanRetried counts a scan that had to be tried again, and
+// ScanRetriesExhausted one that ran out of attempts.
+//
+// Both matter even though a successful retry is deliberately not notified: a
+// target that only works on the third attempt is a finding of its own, and
+// without a counter the retry would hide it (Story 3.8, AC7).
+func (r *Registry) ScanRetried() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.scanRetries++
+}
+
+// ScanRetriesExhausted counts a scan that failed on every attempt.
+func (r *Registry) ScanRetriesExhausted() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.retriesExceeded++
+}
+
 // SetQueueDepth records how many scans are waiting.
 func (r *Registry) SetQueueDepth(n int) {
 	r.mu.Lock()
@@ -266,6 +289,8 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
 	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
 	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
+	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
+	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))

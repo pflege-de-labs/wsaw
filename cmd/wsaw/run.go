@@ -16,6 +16,7 @@ import (
 	"github.com/martint17r/wsaw/internal/daemon"
 	"github.com/martint17r/wsaw/internal/diff"
 	"github.com/martint17r/wsaw/internal/httpapi"
+	"github.com/martint17r/wsaw/internal/model"
 	"github.com/martint17r/wsaw/internal/notify"
 	"github.com/martint17r/wsaw/internal/scanner"
 	"github.com/martint17r/wsaw/internal/secret"
@@ -113,6 +114,10 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		FlapWindow:           a.Config.Detection.FlapWindow.Duration(),
 		Logger:               a.Logger,
 		OnQueueDepth:         a.Metrics.SetQueueDepth,
+		OnRetry:              func(string, model.ConsentMode, int) { a.Metrics.ScanRetried() },
+		OnRetriesExhausted: func(string, model.ConsentMode, int) {
+			a.Metrics.ScanRetriesExhausted()
+		},
 	})
 	if err != nil {
 		return err

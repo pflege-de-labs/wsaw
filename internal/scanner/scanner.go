@@ -126,11 +126,17 @@ type Outcome struct {
 func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.ConsentMode) (out Outcome, err error) {
 	scanID := newScanID()
 
+	attempt := attemptOf(ctx)
+
 	log := s.deps.Logger.With(
 		"scan_id", scanID,
 		"target", target.Name,
 		"consent_mode", string(mode),
 	)
+
+	if attempt.attempt > 1 {
+		log = log.With("attempt", attempt.attempt, "attempts", attempt.attempts)
+	}
 
 	if s.deps.Metrics.ScanStarted != nil {
 		s.deps.Metrics.ScanStarted(target.Name, mode)
@@ -400,7 +406,21 @@ func (s *Scanner) checkRobots(ctx context.Context, target config.Resolved) robot
 // the result: the caller still gets it, and losing the observation silently
 // would be worse than a noisy log.
 func (s *Scanner) persist(ctx context.Context, log *slog.Logger, res *model.Result) {
-	if s.deps.Store == nil || res == nil {
+	if res == nil {
+		return
+	}
+
+	// Stamped here rather than at each of the places a result is built,
+	// because every result — captured, failed, skipped, panicked — passes
+	// through this one function on its way to being stored. Stamping at the
+	// call sites would eventually miss one, and the point is that a stored
+	// result explains itself (Story 3.8, AC10).
+	attempt := attemptOf(ctx)
+	res.Attempt = attempt.attempt
+	res.Attempts = attempt.attempts
+	res.PreviousError = attempt.previous
+
+	if s.deps.Store == nil {
 		return
 	}
 

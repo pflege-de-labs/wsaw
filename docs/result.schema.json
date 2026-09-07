@@ -81,6 +81,24 @@
       "type": "string",
       "description": "Set when the scan failed. Its presence invalidates the asset list."
     },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which attempt of a retried scan produced this result, counting from 1. Absent when retrying is disabled."
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many attempts were allowed for this scan."
+    },
+    "previousError": {
+      "type": "string",
+      "description": "Why the attempt before this one failed. Absent on a first attempt."
+    },
+    "superseded": {
+      "type": "boolean",
+      "description": "True on a failed result that a later attempt replaced. The failure remains in the history, but a superseded result is not what the next scan is compared against."
+    },
     "environment": {
       "$ref": "#/$defs/environment"
     },
