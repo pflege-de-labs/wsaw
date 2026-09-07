@@ -613,6 +613,26 @@ The trade-off has to be stated rather than discovered. **A stateless link cannot
 - AC11: The token does not leak through wsaw's own surfaces: it is scrubbed from logs, kept out of results and error messages, and the existing `Referrer-Policy: no-referrer` keeps it out of other sites' logs. A URL is a poor place for a secret, which is the other reason validity is short.
 - AC12: Sharing is off until configured. It publishes data that can be personal to whoever holds a link (NFR §4, Tenet 19), so it is opt-in, and the documentation says plainly what a link grants, for how long, and that revocation before expiry means rotating the key.
 
+### Story 5.20 — Identify the baseline in a target's history, and link to it
+
+*As a Compliance Officer reading a target's history, I want to see which scan is the approved baseline and open it in one click, so that "what changed" has a visible other half.*
+
+Every change wsaw reports is a statement about a comparison, and on the history page the thing being compared against is the one item that cannot be opened. The panel above the table names the baseline's scan ID and then leaves the reader to find that ID by eye in a hundred rows of near-identical hex; the ID is `<code>`, not a link; the row that holds it looks like every other row; and that row still offers "Approve as baseline", an action that would record an approval for the state that is already approved.
+
+None of this is a missing feature so much as a missing sentence. The page already has the baseline in hand — it renders its scan ID, its approval time and who approved it. What it does not do is connect that to the row it belongs to, or to the result it names.
+
+- AC1: The baseline's scan ID in the panel above the history links to that scan's result page. Seeing which scan is the baseline and reading it are one click apart, not a copy-paste and a search (Story 5.15's reasoning, applied to the other end of the comparison).
+- AC2: The history row that is the baseline is marked as such. The marking is legible on its own — a label or an icon with a text alternative — and never colour alone, so a reader finds it by scanning the table rather than by matching hex digits.
+- AC3: The marked row still links to its own result, exactly like every other row. Marking a row must not cost it the affordance every other row has.
+- AC4: The baseline row does not offer "Approve as baseline"; it says that it is the baseline. Re-approving the current baseline writes an audit record for a change that did not happen, which makes the audit log harder to read for no gain (Story 5.10).
+- AC5: **A baseline that is not in the list is reported as absent from it, not left silently unmarked.** The history shows a bounded number of recent scans and retention prunes beyond that, so an approved baseline can be older than the window. The panel still links to it, and says that the row is not in the table below — an unmarked table must never be readable as "no scan here is the baseline" (Tenet 5).
+- AC6: **The link never dangles.** A baseline keeps its own copy of the approved result precisely so that retention cannot invalidate it, which means the baseline can outlive the result row it was approved from. Where the underlying result is gone, the panel says that the approved copy is still held and offers no link into a 404 — or serves the baseline's own stored copy and says that is what it is showing.
+- AC7: A series with no approved baseline keeps saying so, and keeps saying what scans are compared against instead. That panel is already right; this story does not change it.
+- AC8: Everything here is a server-rendered anchor and works with JavaScript disabled (Story 5.7, AC6), under the same authentication and read-only rules as the rest of the interface. A read-only deployment sees the marking and the link: identifying the baseline is a read, and the approve control is the only part of this that is not.
+- AC9: None of it appears on a shared view. A share link is one result with no navigation into the interface (Story 5.19, AC8), and a link to the baseline would be a link out of the shared scope.
+
+Not in this story, and worth its own: a scan detail page saying "this scan is the current baseline", and the Changes section naming — and linking — the scan it was compared against rather than calling it "the baseline".
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
