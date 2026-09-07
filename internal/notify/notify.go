@@ -376,30 +376,35 @@ func (d *Dispatcher) Start(ctx context.Context) {
 	go func() {
 		defer d.wg.Done()
 
+		// Delivery never inherits cancellation. An event that has left the
+		// queue is as committed as one still in it, so cancelling mid-send
+		// would discard exactly the alert the drain below exists to save --
+		// and it would do so invisibly, as a "context canceled" delivery
+		// error. Every notifier bounds its own attempts with a per-request
+		// timeout and a retry ceiling, so a detached delivery still ends.
+		sendCtx := context.WithoutCancel(ctx)
+
 		for {
 			select {
 			case <-ctx.Done():
 				// Drain what is already queued so a shutdown does not silently
 				// discard alerts that were about to be sent.
-				d.drain(context.WithoutCancel(ctx))
+				d.drain(sendCtx)
 
 				return
 
 			case env := <-d.queue:
-				// Cancellation and a queued event can both be ready, and
-				// select picks between ready cases at random. Delivering with
-				// the cancelled context would fail exactly the alerts the
-				// drain below exists to save, so shutdown is re-checked here.
-				if ctx.Err() != nil {
-					drainCtx := context.WithoutCancel(ctx)
+				d.deliver(sendCtx, env)
 
-					d.deliver(drainCtx, env)
-					d.drain(drainCtx)
+				// Cancellation and a queued event can both be ready, and
+				// select picks between ready cases at random, so shutdown is
+				// re-checked here rather than after another trip round the
+				// loop that may pick the queue again.
+				if ctx.Err() != nil {
+					d.drain(sendCtx)
 
 					return
 				}
-
-				d.deliver(ctx, env)
 			}
 		}
 	}()
