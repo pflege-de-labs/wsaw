@@ -157,6 +157,15 @@ func (s *session) markInteracted() {
 	s.rec.setPhase(model.PhasePost)
 }
 
+// interacted reports whether the pre-consent phase has already been ended by
+// an actual interaction, as opposed to capture's own backstop.
+func (s *session) interacted() bool {
+	s.interactedMu.Lock()
+	defer s.interactedMu.Unlock()
+
+	return s.interactedOnce
+}
+
 // listen registers the CDP event handlers. Handlers must not block: they hand
 // work to the recorder and return immediately.
 func (s *session) listen() {
@@ -242,6 +251,11 @@ func (s *session) execute(hooks Hooks) error {
 		// interaction is a finding, not a lost scan.
 		s.res.Consent = consent
 
+		// Whether the hook itself acted, read before the backstop below makes
+		// the answer yes for every scan. Only the hook's own call means the
+		// page was touched.
+		acted := s.interacted()
+
 		// A hook that never reported an interaction still ends the pre-consent
 		// phase here: the phase describes the timeline, not success.
 		s.markInteracted()
@@ -262,8 +276,16 @@ func (s *session) execute(hooks Hooks) error {
 			s.rec.addWarning("consent interaction: " + s.scrub(err.Error()))
 		}
 
-		if err := s.screenshot("after-consent"); err != nil {
-			s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
+		// Only shoot the second frame if something actually happened to the
+		// page. Consent mode "none" returns from the hook without touching
+		// anything, and so does a page with no banner to click; shooting
+		// anyway costs a Chrome round-trip to produce a byte-identical copy
+		// of the first frame, which a reader then has to be told is not
+		// evidence of an interaction that never took place.
+		if acted {
+			if err := s.screenshot("after-consent"); err != nil {
+				s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
+			}
 		}
 
 		s.settle(s.runCtx)
