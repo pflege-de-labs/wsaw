@@ -384,7 +384,20 @@
           "description": "Why no digest was taken. A missing digest is always explained rather than silently absent."
         },
         "bodyRef": {
-          "type": "string"
+          "type": "string",
+          "description": "Reference to the stored response body, present when body storage is on. Bodies live outside this document as content-addressed files; fetch one with GET /api/v1/artifacts/{ref}."
+        },
+        "body": {
+          "type": "string",
+          "description": "The stored response body itself. Present only in an export — a HAR, a downloaded result, or the API's result endpoint — and never in the document as stored, which keeps bodies outside it. A result read from the store therefore has bodyRef and no body."
+        },
+        "bodyEncoding": {
+          "enum": ["base64"],
+          "description": "Present when body is base64-encoded because the bytes are not text. Absent when body is the body as text."
+        },
+        "bodyStoredSize": {
+          "type": "integer",
+          "description": "How many bytes of the body were kept. Smaller than decodedSize when the size cap truncated it, which is the difference between a short body and a truncated one."
         },
         "timing": {
           "type": "object",

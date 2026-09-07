@@ -21,7 +21,12 @@ import (
 )
 
 // WriteJSON writes a result as indented JSON.
-func WriteJSON(w io.Writer, res *model.Result) error {
+//
+// load resolves stored response bodies and may be nil, in which case the
+// result carries the references it was stored with and no bodies.
+func WriteJSON(w io.Writer, res *model.Result, load BodyLoader) error {
+	res = WithBodies(res, load)
+
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 
@@ -33,11 +38,11 @@ func WriteJSON(w io.Writer, res *model.Result) error {
 }
 
 // WriteJSONL writes one result per line, for streaming large runs.
-func WriteJSONL(w io.Writer, results ...*model.Result) error {
+func WriteJSONL(w io.Writer, load BodyLoader, results ...*model.Result) error {
 	enc := json.NewEncoder(w)
 
 	for _, res := range results {
-		if err := enc.Encode(res); err != nil {
+		if err := enc.Encode(WithBodies(res, load)); err != nil {
 			return fmt.Errorf("writing JSONL result: %w", err)
 		}
 	}

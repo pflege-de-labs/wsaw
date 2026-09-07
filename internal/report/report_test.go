@@ -76,7 +76,7 @@ func TestWriteJSONRoundTrips(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteJSON(&b, fixture()); err != nil {
+	if err := report.WriteJSON(&b, fixture(), nil); err != nil {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestWriteJSONLIsOnePerLine(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteJSONL(&b, fixture(), fixture()); err != nil {
+	if err := report.WriteJSONL(&b, nil, fixture(), fixture()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -300,7 +300,7 @@ func TestWriteHARIsValidAndExcludesNonNetwork(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteHAR(&b, fixture()); err != nil {
+	if err := report.WriteHAR(&b, fixture(), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -365,7 +365,7 @@ func TestHARCarriesBodyDigest(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteHAR(&b, fixture()); err != nil {
+	if err := report.WriteHAR(&b, fixture(), nil); err != nil {
 		t.Fatal(err)
 	}
 

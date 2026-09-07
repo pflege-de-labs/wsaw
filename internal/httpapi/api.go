@@ -35,6 +35,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}", s.handleResults)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}", s.handleResult)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/har", s.handleResultHAR)
+	s.mux.HandleFunc("GET /api/v1/artifacts/{ref...}", s.handleArtifact)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/csv", s.handleResultCSV)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/report", s.handleResultMarkdown)
 	s.mux.HandleFunc("GET /api/v1/diff/{target}/{mode}/{scan}", s.handleDiff)
@@ -305,7 +306,87 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, res)
+	// Stored bodies are inlined unless the caller says otherwise. Keeping
+	// them was already an explicit opt-in per target, so a client that asked
+	// for bodies to be kept should not have to ask again to see them — but a
+	// client polling this endpoint for metadata can turn them off, because a
+	// page's worth of scripts is a lot of JSON.
+	writeJSON(w, http.StatusOK, report.WithBodies(res, s.bodyLoader(r)))
+}
+
+// bodyLoader resolves stored bodies for an export, unless the request opted
+// out with bodies=false.
+func (s *Server) bodyLoader(r *http.Request) report.BodyLoader {
+	if v := r.URL.Query().Get("bodies"); v == "false" || v == "0" || v == "no" {
+		return nil
+	}
+
+	return func(ref string) ([]byte, error) {
+		return s.deps.Store.GetArtifact(ref)
+	}
+}
+
+// handleArtifact serves a stored body or screenshot.
+//
+// Without this route a stored body was unreachable: capture wrote it, the
+// result named it, and nothing could read it back. The reference is validated
+// by the store, which confines it to the artifact directory (Tenet 9).
+//
+// It is served as an attachment with an opaque content type, never as
+// something a browser will render. The bytes came from a scanned page, so
+// rendering them on wsaw's own origin would be handing a hostile page a
+// same-origin script context (Story 5.11, AC5).
+func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
+	ref := r.PathValue("ref")
+	if ref == "" {
+		writeJSONError(w, http.StatusBadRequest, "an artifact reference is required")
+
+		return
+	}
+
+	data, err := s.deps.Store.GetArtifact(ref)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+safeArtifactFilename(ref)+`"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Belt and braces on top of the global policy: nothing in a captured
+	// artifact may execute or load anything, whatever a browser decides to
+	// do with the type above.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+
+	// #nosec G705 -- these bytes are page-controlled by definition, which is
+	// why the headers above make them inert: an opaque type, an attachment
+	// disposition, nosniff, and a sandbox policy. The analyser sees the taint
+	// and not the mitigation; TestAStoredBodyIsServedAsAnInertDownload sees
+	// the mitigation. Serving the bytes is the point of the endpoint —
+	// refusing to would leave stored evidence unreachable.
+	if _, err := w.Write(data); err != nil {
+		s.deps.Logger.Error("writing artifact", "error", err)
+	}
+}
+
+// safeArtifactFilename builds a download name from a reference. References
+// are content-addressed — a kind and a hex digest — but the value still
+// arrives from the request, so it is reduced to characters that cannot break
+// the header.
+func safeArtifactFilename(ref string) string {
+	out := make([]rune, 0, len(ref))
+
+	for _, r := range ref {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			out = append(out, r)
+		default:
+			out = append(out, '-')
+		}
+	}
+
+	return "wsaw-" + string(out) + ".bin"
 }
 
 func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +398,7 @@ func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(res, "har")+`"`)
 
-	if err := report.WriteHAR(w, res); err != nil {
+	if err := report.WriteHAR(w, res, s.bodyLoader(r)); err != nil {
 		s.deps.Logger.Error("writing HAR", "error", err)
 	}
 }

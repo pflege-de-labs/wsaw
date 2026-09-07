@@ -277,13 +277,28 @@ func lessOutcome(a, b scanner.Outcome) bool {
 	return a.Result.ConsentMode < b.Result.ConsentMode
 }
 
+// bodyLoader resolves stored response bodies for an export.
+//
+// A body that storeBodies kept lives outside the result document, so without
+// this an export names bodies that nothing in it can reach — which is not
+// evidence of anything (Story 1.6, AC2).
+func bodyLoader(a *app.App) report.BodyLoader {
+	if a.Store == nil {
+		return nil
+	}
+
+	return func(ref string) ([]byte, error) {
+		return a.Store.GetArtifact(ref)
+	}
+}
+
 // emit writes results in the requested format, to stdout or to the output
 // directory.
 func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 	dir := a.Config.Store.OutputDir
 
 	if dir == "" {
-		return emitStdout(outcomes, format)
+		return emitStdout(outcomes, format, bodyLoader(a))
 	}
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -294,7 +309,7 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 		base := filepath.Join(dir, sanitize(out.Result.Target)+"-"+string(out.Result.ConsentMode))
 
 		if err := writeAtomic(base+".json", func(f *os.File) error {
-			return report.WriteJSON(f, out.Result)
+			return report.WriteJSON(f, out.Result, bodyLoader(a))
 		}); err != nil {
 			return err
 		}
@@ -309,7 +324,7 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 
 		if a.Config.Store.WriteHAR {
 			if err := writeAtomic(base+".har", func(f *os.File) error {
-				return report.WriteHAR(f, out.Result)
+				return report.WriteHAR(f, out.Result, bodyLoader(a))
 			}); err != nil {
 				return err
 			}
@@ -317,7 +332,7 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 
 		if a.Config.Store.WriteJSONL {
 			if err := writeAtomic(base+".jsonl", func(f *os.File) error {
-				return report.WriteJSONL(f, out.Result)
+				return report.WriteJSONL(f, bodyLoader(a), out.Result)
 			}); err != nil {
 				return err
 			}
@@ -327,11 +342,11 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 	return nil
 }
 
-func emitStdout(outcomes []scanner.Outcome, format string) error {
+func emitStdout(outcomes []scanner.Outcome, format string, load report.BodyLoader) error {
 	switch format {
 	case "json":
 		for _, out := range outcomes {
-			if err := report.WriteJSON(os.Stdout, out.Result); err != nil {
+			if err := report.WriteJSON(os.Stdout, out.Result, load); err != nil {
 				return err
 			}
 		}
@@ -342,7 +357,7 @@ func emitStdout(outcomes []scanner.Outcome, format string) error {
 			results = append(results, out.Result)
 		}
 
-		return report.WriteJSONL(os.Stdout, results...)
+		return report.WriteJSONL(os.Stdout, load, results...)
 
 	case "csv":
 		for _, out := range outcomes {

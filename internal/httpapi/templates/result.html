@@ -146,6 +146,10 @@
         <td class="wrap"><code>{{.URL}}</code>
           {{if .BodySHA256}}<span class="digest" title="response body sha256">{{.BodySHA256}}</span>{{end}}
           {{if .BodyUnavailable}}<span class="muted" title="{{.BodyUnavailable}}">no digest</span>{{end}}
+          {{/* A stored body is a download, never something this page renders:
+               the bytes came from a scanned site (Story 5.11, AC5). */}}
+          {{if .BodyRef}}<a class="body-link" href="/api/v1/artifacts/{{.BodyRef}}"
+             title="download the stored response body">body</a>{{end}}
           {{if .RedirectTo}}<span class="redirect">→ {{.RedirectTo}}</span>{{end}}
         </td>
         <td class="num">{{bytes .TransferSize}}</td>

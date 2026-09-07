@@ -146,6 +146,38 @@ Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Th
 
 A missing script digest always carries a `bodyUnavailable` reason. wsaw never reports a script as unchanged because it could not read it.
 
+### Response bodies
+
+Every script gets a SHA-256 digest by default. Set `storeBodies: true` on a target to keep the bodies themselves:
+
+```yaml
+targets:
+  - name: marketing-site
+    url: https://www.example.com/
+    storeBodies: true
+```
+
+Bodies are kept outside the result document, as content-addressed files, so a
+result stays small enough to read on every page of history. Every **export**
+resolves them, though, because a result that names a body nothing can reach is
+not evidence of anything:
+
+- the **HAR** carries each body in `response.content.text`, base64-encoded
+  when the bytes are not text — which is what lets DevTools and every HAR
+  viewer show it;
+- the **JSON** result carries it in `body`, alongside the `bodyRef` it was
+  stored under. Add `?bodies=false` when polling the API for metadata only;
+- **`GET /api/v1/artifacts/{ref}`** serves one directly, and the result page
+  links it.
+
+A stored body is always served as an opaque attachment, never as something a
+browser will render: those bytes came from a scanned site, and rendering them
+on wsaw's own origin would hand a hostile page a same-origin context. A body
+the size cap truncated says so — `bodyStoredSize` next to `decodedSize`, and a
+note in the HAR — because a short body and a truncated one are different
+facts. Bodies can contain personal data, so `storeBodies` is off by default
+and retention applies to them as it does to everything else.
+
 The result schema is published at [`docs/result.schema.json`](docs/result.schema.json) and the HTTP API at [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Web interface and API

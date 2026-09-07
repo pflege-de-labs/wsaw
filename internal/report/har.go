@@ -84,6 +84,11 @@ type harResponse struct {
 type harContent struct {
 	Size     int64  `json:"size"`
 	MimeType string `json:"mimeType"`
+	// Text is the response body, and Encoding is "base64" when it is not
+	// text. Both are how a HAR carries a body at all: without them a HAR
+	// viewer has nothing to show, which is most of the reason to export one.
+	Text     string `json:"text,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
 	Comment  string `json:"comment,omitempty"`
 }
 
@@ -93,9 +98,52 @@ type harTimings struct {
 	Receive float64 `json:"receive"`
 }
 
+// bodyNote states what the export did about bodies, so a HAR with empty
+// responses is never ambiguous between "the site served nothing" and "wsaw
+// did not keep it".
+func bodyNote(res *model.Result, load BodyLoader) string {
+	switch {
+	case load == nil:
+		return "Response bodies are not included in this export."
+
+	case !anyStoredBody(res):
+		return "No response bodies were stored for this scan; enable storeBodies to keep them."
+
+	default:
+		return "Response bodies are included where they were stored, base64-encoded when not text."
+	}
+}
+
+func anyStoredBody(res *model.Result) bool {
+	for i := range res.Requests {
+		if res.Requests[i].BodyRef != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func appendNote(existing, note string) string {
+	if existing == "" {
+		return note
+	}
+
+	return existing + "; " + note
+}
+
 // WriteHAR exports a result as HAR 1.2.
-func WriteHAR(w io.Writer, res *model.Result) error {
+//
+// load resolves stored response bodies, and may be nil. When it is, the HAR
+// carries no bodies and says so in its comment rather than leaving a reader
+// to wonder whether the page really loaded empty responses.
+func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 	const pageID = "page_1"
+
+	// Bodies are inlined into a copy, so the caller's result — usually the
+	// stored document — does not grow by the size of every script on the
+	// page.
+	res = WithBodies(res, load)
 
 	doc := har{
 		Log: harLog{
@@ -108,7 +156,8 @@ func WriteHAR(w io.Writer, res *model.Result) error {
 				PageTimings:     harPageTiming{OnContentLoad: -1, OnLoad: float64(res.Duration.Milliseconds())},
 			}},
 			Comment: "Exported by wsaw. Request and response headers are not retained, " +
-				"because they can carry credentials and identifiers; header lists are therefore empty.",
+				"because they can carry credentials and identifiers; header lists are therefore empty. " +
+				bodyNote(res, load),
 		},
 	}
 
@@ -166,6 +215,25 @@ func WriteHAR(w io.Writer, res *model.Result) error {
 
 		if req.BodySHA256 != "" {
 			entry.Response.Content.Comment = "sha256=" + req.BodySHA256
+		}
+
+		// The body, where one was stored and could be read.
+		if req.Body != "" {
+			entry.Response.Content.Text = req.Body
+			entry.Response.Content.Encoding = req.BodyEncoding
+
+			// size stays what the browser reported, so a body the size cap
+			// truncated is visibly shorter than the response it came from
+			// rather than quietly redefining the response's size.
+			if req.BodyStoredSize > 0 && req.BodyStoredSize < req.DecodedSize {
+				entry.Response.Content.Comment = appendNote(entry.Response.Content.Comment,
+					fmt.Sprintf("truncated: %d of %d bytes stored", req.BodyStoredSize, req.DecodedSize))
+			}
+		}
+
+		if req.BodyUnavailable != "" {
+			entry.Response.Content.Comment = appendNote(entry.Response.Content.Comment,
+				"body unavailable: "+req.BodyUnavailable)
 		}
 
 		doc.Log.Entries = append(doc.Log.Entries, entry)

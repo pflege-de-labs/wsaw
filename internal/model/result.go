@@ -296,6 +296,20 @@ type Request struct {
 	// BodyRef points at a stored body artifact, when body storage is on.
 	BodyRef string `json:"bodyRef,omitempty"`
 
+	// Body carries the stored response body itself. It is present only in an
+	// export — a HAR, or a downloaded result — and never in the stored
+	// document, which keeps bodies outside it as content-addressed files
+	// (Story 4.6, AC9). A result read back from the store therefore has
+	// BodyRef and no Body; an exported one has both.
+	Body string `json:"body,omitempty"`
+	// BodyEncoding is empty when Body is the body as text, and "base64" when
+	// the bytes are not text and had to be encoded.
+	BodyEncoding string `json:"bodyEncoding,omitempty"`
+	// BodyStoredSize is how many bytes were actually kept, which is smaller
+	// than DecodedSize when the size cap truncated the body. Stating both is
+	// the difference between a short body and a truncated one.
+	BodyStoredSize int64 `json:"bodyStoredSize,omitempty"`
+
 	Timing Timing `json:"timing"`
 }
 

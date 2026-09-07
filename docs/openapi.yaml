@@ -134,11 +134,20 @@ paths:
     get:
       tags: [results]
       summary: Fetch one full result
-      description: Use "latest" as the scan identifier for the most recent result.
+      description: >
+        Use "latest" as the scan identifier for the most recent result.
+        Stored response bodies are included inline, since keeping them was
+        already an explicit opt-in per target.
       parameters:
         - {$ref: "#/components/parameters/target"}
         - {$ref: "#/components/parameters/mode"}
         - {$ref: "#/components/parameters/scan"}
+        - name: bodies
+          in: query
+          description: >
+            Set to `false` for metadata only, which is what a client polling
+            this endpoint wants; the `bodyRef` of each body is still returned.
+          schema: {type: string, enum: ["false", "0", "no"]}
       responses:
         "200":
           description: The result, conforming to docs/result.schema.json.
@@ -146,6 +155,31 @@ paths:
             application/json:
               schema:
                 $ref: "./result.schema.json"
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/artifacts/{ref}:
+    get:
+      tags: [results]
+      summary: Fetch a stored response body or screenshot
+      description: >
+        Artifacts live outside the result document as content-addressed files;
+        a result names one in its `bodyRef` or screenshot field. They are
+        served as an opaque attachment and never as anything a browser will
+        render: the bytes came from a scanned page, so rendering them on
+        wsaw's own origin would hand a hostile page a same-origin context.
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The reference from a result, such as `body/<sha256>`.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The artifact's bytes.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
 
   /api/v1/results/{target}/{mode}/{scan}/har:
