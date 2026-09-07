@@ -340,6 +340,10 @@ type API struct {
 	// WebUI serves the browser interface.
 	WebUI *bool `yaml:"webui,omitempty"`
 
+	// Share configures the expiring links that let somebody read one result
+	// without this token (Story 5.19).
+	Share Share `yaml:"share,omitempty"`
+
 	// RefreshInterval is how often the interface reloads itself for a viewer
 	// who has expressed no preference; zero means not at all. It is only the
 	// default — the choice belongs to whoever is looking, and is made on the
@@ -349,6 +353,46 @@ type API struct {
 	ReadOnly bool `yaml:"readOnly,omitempty"`
 	// AllowAdHocScan permits triggering scans through the API.
 	AllowAdHocScan *bool `yaml:"allowAdHocScan,omitempty"`
+}
+
+// Share configures result sharing by expiring link (Story 5.19).
+//
+// Off until configured: a link publishes data that can be personal to whoever
+// holds it, and it cannot be revoked before it expires (NFR §4, Tenet 19).
+type Share struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Key signs the links. It may be a secret reference, and should be — it
+	// is a credential, and deliberately not the API token: sharing must not
+	// be derivable from admin access, and withdrawing sharing must not mean
+	// rotating the operator's own credential.
+	Key string `yaml:"key,omitempty"`
+
+	// Validity is how long a link lasts by default, and MaxValidity the
+	// longest any request may ask for.
+	Validity    Duration `yaml:"validity,omitempty"`
+	MaxValidity Duration `yaml:"maxValidity,omitempty"`
+
+	// BaseURL is where this wsaw is reachable from, so a minted link is
+	// something an operator can copy and send rather than assemble.
+	BaseURL string `yaml:"baseUrl,omitempty"`
+}
+
+// Share defaults. A week is long enough for a review round and short enough
+// that a forgotten link stops working.
+const (
+	DefaultShareValidity    = 7 * 24 * time.Hour
+	DefaultShareMaxValidity = 30 * 24 * time.Hour
+)
+
+// ShareValidity returns the configured default validity, or the default.
+func (s Share) ShareValidity() time.Duration {
+	return s.Validity.Or(DefaultShareValidity)
+}
+
+// ShareMaxValidity returns the configured maximum, or the default.
+func (s Share) ShareMaxValidity() time.Duration {
+	return s.MaxValidity.Or(DefaultShareMaxValidity)
 }
 
 // Notifier kinds.

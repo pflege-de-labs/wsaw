@@ -1,0 +1,35 @@
+{{define "share-link.html"}}{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+
+<h1>Share this scan</h1>
+
+<p>Anyone with this link can read <code>{{.Target}}</code> in
+<span class="mode">{{.ConsentMode}}</span> mode, scan <code>{{.ScanID}}</code>.
+They cannot reach anything else, and they cannot change anything.</p>
+
+<div class="panel">
+  {{/* An input rather than a paragraph, so the whole link can be selected in
+       one gesture: half a copied token is a link that fails for the person it
+       was sent to. No inline script — the CSP forbids it, and a text input is
+       selectable without any. */}}
+  <p><input type="text" class="share-link" value="{{.URL}}" readonly size="80"
+            aria-label="the share link"></p>
+  <p>Expires {{time .ExpiresAt}} — {{.Validity}} from now.</p>
+</div>
+
+{{if not .Absolute}}
+<p class="empty">This is a path rather than a full URL: set
+<code>api.share.baseUrl</code> so wsaw can print something sendable.</p>
+{{end}}
+
+<p><strong>This link cannot be withdrawn before it expires.</strong> wsaw keeps
+no record of it — the link carries its own authority — so there is nothing to
+delete. To invalidate every outstanding link at once, rotate
+<code>api.share.key</code>.</p>
+
+<p><a href="/results/{{.Target}}/{{.ConsentMode}}/{{.ScanID}}">Back to the scan</a></p>
+
+{{end}}
+{{template "foot" $page}}
+{{end}}

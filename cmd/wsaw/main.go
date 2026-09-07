@@ -72,6 +72,9 @@ func run(ctx context.Context, args []string) int {
 	case "config":
 		err = cmdConfig(rest)
 
+	case "share":
+		err = cmdShare(ctx, rest)
+
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
 
@@ -120,6 +123,7 @@ Commands:
   debug          Scan one URL with verbose output, for rule authoring
   rules          Inspect or test consent rules
   config         Validate and print the effective configuration
+  share          Mint an expiring link to one scan result
   version        Print build information
 
 Exit codes for "scan":

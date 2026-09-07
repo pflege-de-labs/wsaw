@@ -49,6 +49,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/baseline/{target}/{mode}", s.handleDeleteBaseline)
 	s.mux.HandleFunc("POST /api/v1/scan/{target}/{mode}", s.handleTriggerScan)
 
+	s.shareRoutes()
+
 	if s.opts.MetricsEnabled && s.deps.Metrics != nil {
 		s.mux.HandleFunc("GET "+s.opts.MetricsPath, s.handleMetrics)
 	}
@@ -349,6 +351,14 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.serveArtifact(w, r, ref)
+}
+
+// serveArtifact writes one stored artifact with the headers its kind
+// deserves. It is shared by the authenticated route and by the share-link
+// route, so a shared reader cannot be served bytes under weaker headers than
+// an operator would get.
+func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref string) {
 	data, err := s.deps.Store.GetArtifact(ref)
 	if err != nil {
 		writeStoreError(w, err)

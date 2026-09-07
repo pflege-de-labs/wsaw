@@ -307,6 +307,47 @@ This is not the store's retry (`store.maxAttempts`), which retries a database
 operation *inside* a scan. They are configured separately and neither implies
 the other.
 
+## Sharing one result
+
+Sending somebody the API token gives them every result, every target and
+every write action, and cannot be taken back. A share link gives them one
+scan, read-only, until it expires:
+
+```yaml
+api:
+  share:
+    enabled: true
+    key: "${env:WSAW_SHARE_KEY}"   # at least 32 characters, and not the API token
+    validity: 168h                  # the default a link gets
+    maxValidity: 720h               # the most any request may ask for
+    baseUrl: https://wsaw.example.com
+```
+
+Mint one from the result page, from the API, or from the shell when the
+interface is not exposed:
+
+```
+wsaw share --target marketing-site --mode reject --scan latest --validity 48h
+```
+
+The link opens a page with that scan and nothing else — no navigation, no
+audit log, no configuration path, no write actions — and it says at the top
+that it is a shared, read-only view and when it stops working. The JSON, HAR
+and CSV downloads come with it, because evidence a reader cannot take away is
+evidence they cannot check, and so do that scan's screenshots.
+
+**A link cannot be revoked before it expires.** Nothing is stored, so there is
+nothing to delete: verification is arithmetic on the token itself. That is why
+validity is short by default and why the scope is a single result. To withdraw
+access in a hurry, rotate `api.share.key` — every outstanding link stops
+working at once.
+
+What a link cannot do, by construction: open another scan, reach the target
+list or the audit log, write anything at all, or fetch any stored artifact
+other than the ones its own result names. The token is signed HS256 with a
+pinned algorithm — the signature is checked before any claim is read — and it
+is kept out of wsaw's logs, results and error messages.
+
 ## Notifications
 
 A **webhook** notifier posts one JSON event per change, optionally templated, which is the right shape for something that routes or deduplicates events.

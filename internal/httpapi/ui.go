@@ -121,9 +121,13 @@ type page struct {
 	ReadOnly   bool
 	AllowScan  bool
 	ConfigPath string
-	CSRF       string
-	Flash      string
-	FlashError string
+	// ShareEnabled offers the button that mints a link to one result
+	// (Story 5.19). Off unless sharing is configured, so the interface never
+	// shows an action that would fail.
+	ShareEnabled bool
+	CSRF         string
+	Flash        string
+	FlashError   string
 
 	// Refresh is what this page does about reloading itself, and why
 	// (Story 5.16).
@@ -172,15 +176,16 @@ func (s *Server) renderWith(
 	w http.ResponseWriter, r *http.Request, name, title string, data any, running int, hold string,
 ) {
 	p := page{
-		Title:      title,
-		Version:    s.opts.Version,
-		ReadOnly:   s.opts.ReadOnly,
-		AllowScan:  s.opts.AllowAdHocScan && !s.opts.ReadOnly,
-		ConfigPath: s.deps.ConfigPath,
-		CSRF:       s.csrfToken(),
-		Flash:      r.URL.Query().Get("ok"),
-		FlashError: r.URL.Query().Get("err"),
-		Data:       data,
+		Title:        title,
+		Version:      s.opts.Version,
+		ReadOnly:     s.opts.ReadOnly,
+		AllowScan:    s.opts.AllowAdHocScan && !s.opts.ReadOnly,
+		ConfigPath:   s.deps.ConfigPath,
+		ShareEnabled: s.sharingEnabled(),
+		CSRF:         s.csrfToken(),
+		Flash:        r.URL.Query().Get("ok"),
+		FlashError:   r.URL.Query().Get("err"),
+		Data:         data,
 	}
 
 	p.Refresh = s.refreshFor(r, running)

@@ -46,6 +46,14 @@
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/har">HAR</a>
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/csv">CSV</a>
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/report">report</a>
+    {{if $page.ShareEnabled}}
+    {{/* A link somebody else can open, instead of handing them this token
+         (Story 5.19). A POST because it mints a credential. */}}
+    <form method="post" action="/share/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}" class="inline">
+      <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+      <button type="submit">Share…</button>
+    </form>
+    {{end}}
   </p>
 </section>
 

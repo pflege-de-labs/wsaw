@@ -86,6 +86,7 @@ func (c *Config) Validate() error {
 	c.validateConsent(add)
 	c.validateAPI(add)
 	c.validateAPIRefresh(add)
+	c.validateShare(add)
 	c.validateNotifiers(add)
 	c.validateLogging(add)
 
@@ -527,6 +528,46 @@ func (c *Config) validateAPIRefresh(add addFunc) {
 		add(0, "api.refreshInterval",
 			"%s is below the %s floor: every refresh re-renders the dashboard and reads every target's latest result",
 			d, floor)
+	}
+}
+
+// validateShare refuses a sharing configuration that cannot be safe
+// (Story 5.19).
+func (c *Config) validateShare(add addFunc) {
+	sh := c.API.Share
+
+	if !sh.Enabled {
+		// Settings without the switch would look as though sharing were on.
+		if sh.Key != "" || sh.Validity != 0 || sh.MaxValidity != 0 || sh.BaseURL != "" {
+			add(0, "api.share.enabled",
+				"share settings are present but sharing is off; set enabled: true or remove them")
+		}
+
+		return
+	}
+
+	if sh.Key == "" {
+		add(0, "api.share.key",
+			"sharing needs a signing key, as a secret reference; it must not be the API token, "+
+				"or withdrawing a share link would mean rotating admin access")
+	}
+
+	if sh.Validity < 0 || sh.MaxValidity < 0 {
+		add(0, "api.share.validity", "must not be negative")
+	}
+
+	if sh.ShareValidity() > sh.ShareMaxValidity() {
+		add(0, "api.share.validity",
+			"the default validity (%s) exceeds the maximum (%s)",
+			sh.ShareValidity(), sh.ShareMaxValidity())
+	}
+
+	if sh.BaseURL != "" {
+		u, err := url.Parse(sh.BaseURL)
+		if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+			add(0, "api.share.baseUrl",
+				"%q is not an absolute http or https URL such as \"https://wsaw.example.com\"", sh.BaseURL)
+		}
 	}
 }
 

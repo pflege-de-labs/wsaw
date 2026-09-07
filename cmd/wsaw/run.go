@@ -20,6 +20,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/notify"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/share"
 )
 
 // cmdRun runs wsaw as a daemon.
@@ -355,6 +356,44 @@ func resolveNotifier(a *app.App, n config.Notifier) (resolvedNotifier, error) {
 	return out, nil
 }
 
+// buildShareSigner builds the share-link signer, or nil when sharing is off.
+//
+// Off is the default: a share link publishes data that can be personal to
+// whoever holds it, and it cannot be revoked before it expires (Story 5.19,
+// AC12).
+func buildShareSigner(a *app.App) (*share.Signer, error) {
+	sh := a.Config.API.Share
+
+	if !sh.Enabled {
+		return nil, nil
+	}
+
+	key, err := secret.Resolve(sh.Key)
+	if err != nil {
+		return nil, fmt.Errorf("api.share.key: %w", err)
+	}
+
+	// Registered as a secret: it signs credentials, so it must never reach a
+	// log line or an error message (AC11).
+	a.Secrets.Add(key)
+
+	signer, err := share.New(share.Options{
+		Key:         key.Reveal(),
+		Validity:    sh.ShareValidity(),
+		MaxValidity: sh.ShareMaxValidity(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	a.Logger.Info("result sharing enabled",
+		"validity", sh.ShareValidity().String(),
+		"max_validity", sh.ShareMaxValidity().String(),
+		"base_url", sh.BaseURL)
+
+	return signer, nil
+}
+
 func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved) (*httpapi.Server, error) {
 	token, err := secret.Resolve(a.Config.API.Token)
 	if err != nil {
@@ -362,6 +401,11 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 	}
 
 	a.Secrets.Add(token)
+
+	signer, err := buildShareSigner(a)
+	if err != nil {
+		return nil, err
+	}
 
 	webUI := true
 	if a.Config.API.WebUI != nil {
@@ -381,6 +425,8 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		WebUI:          webUI,
 		ReadOnly:       a.Config.API.ReadOnly,
 		AllowAdHocScan: allowAdHoc,
+		Share:          signer,
+		ShareBaseURL:   a.Config.API.Share.BaseURL,
 		RefreshDefault: a.Config.API.RefreshInterval.Duration(),
 		MetricsEnabled: a.Config.Metrics.Enabled,
 		MetricsPath:    a.Config.Metrics.Path,

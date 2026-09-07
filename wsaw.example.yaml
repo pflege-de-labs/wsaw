@@ -232,6 +232,26 @@ api:
   readOnly: false
   allowAdHocScan: true
 
+  # Sharing one result by an expiring link, so a colleague or an auditor can
+  # read the evidence without being given this token (Story 5.19).
+  #
+  # Off until configured, because a link publishes data that can be personal
+  # to whoever holds it — and because of the one thing to understand before
+  # enabling it: a link cannot be revoked before it expires. Nothing is
+  # stored, so there is nothing to delete; rotating the key below invalidates
+  # every outstanding link at once.
+  #
+  # The key is a credential and must not be the API token: sharing should not
+  # be derivable from admin access, and withdrawing a link should not mean
+  # rotating the credential you use.
+  share:
+    enabled: false
+    # key: "${env:WSAW_SHARE_KEY}"   # at least 32 characters
+    validity: 168h                   # a week; what a link lasts by default
+    maxValidity: 720h                # 30 days; the most anyone may ask for
+    # Where this wsaw is reachable from, so a minted link is sendable.
+    # baseUrl: https://wsaw.example.com
+
 metrics:
   enabled: true
   path: /metrics

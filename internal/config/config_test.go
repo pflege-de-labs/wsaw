@@ -847,3 +847,83 @@ api:
   refreshInterval: -5s
 `)
 }
+
+// Story 5.19: sharing is off until configured, and a configuration that
+// cannot be safe is refused at load.
+func TestShareValidation(t *testing.T) {
+	t.Parallel()
+
+	// Off by default.
+	cfg := parse(t, "targets: []")
+	if cfg.API.Share.Enabled {
+		t.Error("sharing is on by default; a share link publishes data that can be personal")
+	}
+
+	parse(t, `
+api:
+  enabled: true
+  share:
+    enabled: true
+    key: "${env:WSAW_SHARE_KEY}"
+    validity: 24h
+    maxValidity: 168h
+    baseUrl: https://wsaw.example.com
+`)
+
+	// Enabled without a key cannot sign anything.
+	err := parseErr(t, `
+api:
+  enabled: true
+  share:
+    enabled: true
+`)
+
+	if !strings.Contains(err.Error(), "signing key") {
+		t.Errorf("the error does not say a key is needed: %v", err)
+	}
+
+	// Settings without the switch would read as though sharing were on.
+	mustReject(t, `
+api:
+  enabled: true
+  share:
+    key: "${env:WSAW_SHARE_KEY}"
+`)
+
+	// A default longer than the maximum is a contradiction.
+	mustReject(t, `
+api:
+  enabled: true
+  share:
+    enabled: true
+    key: "${env:WSAW_SHARE_KEY}"
+    validity: 720h
+    maxValidity: 24h
+`)
+
+	mustReject(t, `
+api:
+  enabled: true
+  share:
+    enabled: true
+    key: "${env:WSAW_SHARE_KEY}"
+    baseUrl: wsaw.example.com
+`)
+
+	// The documented defaults apply when nothing is said.
+	cfg = parse(t, `
+api:
+  enabled: true
+  share:
+    enabled: true
+    key: "${env:WSAW_SHARE_KEY}"
+`)
+
+	if got := cfg.API.Share.ShareValidity(); got != config.DefaultShareValidity {
+		t.Errorf("default validity = %s, want %s", got, config.DefaultShareValidity)
+	}
+
+	if got := cfg.API.Share.ShareMaxValidity(); got != config.DefaultShareMaxValidity {
+		t.Errorf("default maximum = %s, want %s", got, config.DefaultShareMaxValidity)
+	}
+}

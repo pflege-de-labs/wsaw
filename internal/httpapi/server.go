@@ -27,6 +27,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/share"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -56,6 +57,15 @@ type Options struct {
 	// MetricsEnabled serves the Prometheus endpoint.
 	MetricsEnabled bool
 	MetricsPath    string
+
+	// Share signs and verifies the links that let somebody read one result
+	// without the API token (Story 5.19). Nil disables sharing entirely,
+	// which is the default: a share link publishes data that can be personal
+	// to whoever holds it.
+	Share *share.Signer
+	// ShareBaseURL is where this wsaw is reachable from, so a minted link is
+	// something an operator can copy and send rather than assemble.
+	ShareBaseURL string
 
 	// RefreshDefault is how often the interface reloads itself for a viewer
 	// who has expressed no preference. Zero means not at all. It is only the
@@ -274,6 +284,17 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		// The login form itself must be reachable unauthenticated.
 		if r.URL.Path == "/login" {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		// A shared link carries its own authority and is verified by the
+		// handler, which checks the signature, the expiry and the exact
+		// result before serving anything. It is the one prefix that does not
+		// use the API token — and nothing outside it accepts a share token
+		// (Story 5.19).
+		if strings.HasPrefix(r.URL.Path, "/shared/") {
 			next.ServeHTTP(w, r)
 
 			return

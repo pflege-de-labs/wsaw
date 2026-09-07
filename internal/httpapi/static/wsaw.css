@@ -242,6 +242,9 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .term-error, .term-skipped { color: var(--bad); }
 .term-pending { color: var(--accent); font-weight: 600; }
 
+/* The share link, wide enough to select in one gesture. */
+.share-link { width: 100%; font-family: ui-monospace, monospace; font-size: 0.9em; padding: 0.4rem; }
+
 /* A link to a stored response body. It downloads; it never renders. */
 .body-link { font-size: 0.85em; }
 

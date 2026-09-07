@@ -1,0 +1,168 @@
+{{define "shared.html"}}<!DOCTYPE html>
+{{/* The page a share link opens (Story 5.19).
+
+     Deliberately not built on the interface's layout. That layout carries
+     navigation, the configuration path, the audit link and the write forms,
+     and a shared reader gets none of those: the link grants one result,
+     read-only, and the page should not even hint at a way out of it (AC8). */}}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Result.Target}} — {{.Result.ConsentMode}} — shared scan</title>
+<link rel="stylesheet" href="/static/wsaw.css">
+</head>
+<body>
+
+{{/* Said plainly and first: the reader knows the link is temporary, and the
+     sender can see what they sent (AC9). */}}
+<div class="freshness">
+  <span class="as-of">Shared scan result — read only</span>
+  <span class="next">this link expires {{time .ExpiresAt}}</span>
+  <span class="spacer"></span>
+  <span class="version">wsaw {{.Version}}</span>
+</div>
+
+<main>
+<h1>{{.Result.Target}} <span class="mode">{{.Result.ConsentMode}}</span></h1>
+<p class="url">{{.Result.URL}}</p>
+
+<section>
+  <h2>Scan</h2>
+  <dl>
+    <dt>Scan</dt><dd><code>{{.Result.ScanID}}</code></dd>
+    <dt>Started</dt><dd>{{time .Result.StartedAt}}</dd>
+    <dt>Duration</dt><dd>{{dur .Result.Duration}}</dd>
+    <dt>Outcome</dt>
+    <dd><span class="term term-{{.Result.Termination}}">{{.Result.Termination}}</span>
+      {{if .Result.Error}}<span class="error-detail">{{.Result.Error}}</span>{{end}}</dd>
+    <dt>Chrome</dt><dd>{{.Result.Environment.ChromeVersion}}</dd>
+  </dl>
+
+  <p class="downloads">
+    <a href="{{.Link "json"}}">JSON</a>
+    <a href="{{.Link "har"}}">HAR</a>
+    <a href="{{.Link "csv"}}">CSV</a>
+  </p>
+</section>
+
+<section>
+  <h2>Consent</h2>
+  <dl>
+    <dt>Outcome</dt>
+    <dd><span class="outcome outcome-{{.Result.Consent.Outcome}}">{{.Result.Consent.Outcome}}</span>
+      {{if .Result.Consent.Reason}}<span class="reason">{{.Result.Consent.Reason}}</span>{{end}}</dd>
+    <dt>CMP</dt>
+    <dd>{{if .Result.Consent.CMP}}{{.Result.Consent.CMP}}{{else}}<span class="muted">none detected</span>{{end}}</dd>
+    {{if .Result.Consent.Mechanism}}
+    <dt>Mechanism</dt>
+    <dd><code>{{.Result.Consent.Mechanism}}</code>
+      {{if .Result.Consent.Heuristic}}<span class="badge badge-warn">heuristic label matching — treat with caution</span>{{end}}</dd>
+    {{end}}
+  </dl>
+</section>
+
+<section>
+  <h2>Screenshots</h2>
+  {{if not .Screenshots}}
+    <p class="empty">No screenshots were captured for this scan.</p>
+  {{else}}
+    <div class="shots">
+      {{range .Screenshots}}
+      <figure class="shot">
+        <figcaption>{{.Label}}</figcaption>
+        {{if .Missing}}
+          <p class="empty">This screenshot was captured but is no longer stored.</p>
+        {{else}}
+          <a href="{{$.ArtifactLink .Ref}}">
+            <img src="{{$.ArtifactLink .Ref}}" alt="{{.Label}}" loading="lazy" decoding="async">
+          </a>
+        {{end}}
+        <p class="shot-meta">
+          {{if .Bytes}}{{bytes .Bytes}}{{end}}
+          {{if .SHA256}}<code class="digest" title="sha256 of the stored image">{{.SHA256}}</code>{{end}}
+        </p>
+      </figure>
+      {{end}}
+    </div>
+  {{end}}
+</section>
+
+{{if .Diff}}
+<section>
+  <h2>Changes</h2>
+  {{if not .Diff.Comparable}}
+    <p class="empty">No comparison was possible: {{.Diff.Reason}}</p>
+  {{else if not .Diff.Changes}}
+    <p class="empty">No changes against the baseline.</p>
+  {{else}}
+    <table>
+      <thead><tr><th>Severity</th><th>Change</th><th>Subject</th><th>Detail</th></tr></thead>
+      <tbody>
+      {{range .Diff.Changes}}
+        <tr>
+          <td><span class="sev-{{.Severity}}">{{.Severity}}</span></td>
+          <td>{{.Type}}</td>
+          <td class="wrap"><code>{{.Subject}}</code></td>
+          <td>{{.Detail}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+</section>
+{{end}}
+
+<section>
+  <h2>Hosts</h2>
+  <table>
+    <thead>
+      <tr><th>Domain</th><th>Party</th><th class="num">Requests</th><th class="num">Pre-consent</th>
+        <th class="num">Bytes</th><th class="num">Failed</th></tr>
+    </thead>
+    <tbody>
+    {{range .Hosts}}
+      <tr>
+        <td><code>{{.Domain}}</code></td>
+        <td>{{.Party}}</td>
+        <td class="num">{{.Requests}}</td>
+        <td class="num {{if .PreConsentRequests}}warn{{end}}">{{.PreConsentRequests}}</td>
+        <td class="num">{{bytes .Bytes}}</td>
+        <td class="num">{{.Failed}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Requests <span class="muted">({{.Total}})</span></h2>
+  {{if .Truncated}}
+    <p class="empty">Showing the first {{len .Requests}} of {{.Total}} requests. The JSON download has them all.</p>
+  {{end}}
+  <table class="requests">
+    <thead>
+      <tr><th>Phase</th><th>Party</th><th>Type</th><th>Status</th><th>URL</th></tr>
+    </thead>
+    <tbody>
+    {{range .Requests}}
+      <tr>
+        <td>{{.Phase}}</td>
+        <td>{{.Party}}</td>
+        <td>{{.ResourceType}}</td>
+        <td>{{if .Failed}}<span class="term-error" title="{{.FailureReason}}">failed</span>{{else}}{{.Status}}{{end}}</td>
+        <td class="wrap"><code>{{.URL}}</code></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+</main>
+
+<footer>
+  <p>Every value on this page was recorded from a scanned website and is displayed as text, never as markup.</p>
+  <p>This is a shared, read-only view of one scan. It expires {{time .ExpiresAt}}.</p>
+</footer>
+</body>
+</html>
+{{end}}

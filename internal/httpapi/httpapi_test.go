@@ -1,14 +1,17 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +32,33 @@ type fixture struct {
 	server *httptest.Server
 	store  *store.Store
 	client *http.Client
+
+	// logged captures what the server wrote, for the assertions about what
+	// must never reach a log — a share token, for one (Story 5.19, AC11).
+	logged *lockedBuffer
+}
+
+// logs returns everything the server has logged so far.
+func (f *fixture) logs() string { return f.logged.String() }
+
+// lockedBuffer is a log sink safe to read while the server is writing.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 type fakeTrigger struct {
@@ -84,8 +114,13 @@ func newFixtureLive(
 		opts.Version = "test"
 	}
 
+	logged := &lockedBuffer{}
+
 	srv, err := httpapi.New(opts, httpapi.Deps{
-		Store:   st,
+		Store: st,
+		// Debug level, because the request log — where a leaked token would
+		// show up — is written at debug.
+		Logger:  slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Metrics: reg,
 		Trigger: trigger,
 		Targets: func() []config.Resolved { return targets },
@@ -105,7 +140,7 @@ func newFixtureLive(
 		Jar:           nil,
 	}
 
-	return &fixture{t: t, server: ts, store: st, client: client}
+	return &fixture{t: t, server: ts, store: st, client: client, logged: logged}
 }
 
 func (f *fixture) seed(scanID string, mode model.ConsentMode, at time.Time, mutate func(*model.Result)) *model.Result {
