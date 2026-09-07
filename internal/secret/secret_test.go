@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 const plaintext = "hunter2-super-secret"

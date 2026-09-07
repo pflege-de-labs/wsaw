@@ -3,8 +3,8 @@ package diff
 import (
 	"strings"
 
-	"github.com/martint17r/wsaw/internal/classify"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/classify"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Options configures a comparison.

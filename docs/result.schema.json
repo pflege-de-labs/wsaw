@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/martint17r/wsaw/docs/result.schema.json",
+  "$id": "https://github.com/pflege-de-labs/wsaw/docs/result.schema.json",
   "title": "wsaw scan result",
   "description": "One scan of one target in one consent mode. This schema is wsaw's primary interface: reports, the web interface and CSV exports are all derived views over it. Changes are additive by default; removing or repurposing a field is a breaking change.",
   "type": "object",

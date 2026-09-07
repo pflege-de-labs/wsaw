@@ -3,8 +3,8 @@ package classify_test
 import (
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/classify"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/classify"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 func TestRegistrableDomain(t *testing.T) {

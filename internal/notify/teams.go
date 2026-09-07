@@ -25,9 +25,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // The card format this notifier emits. Documented so a Teams administrator can

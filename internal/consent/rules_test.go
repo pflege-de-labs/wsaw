@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/consent"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // The rule pack ships in the binary, so a broken rule file would be a broken

@@ -16,7 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 //go:embed rules/*.yaml

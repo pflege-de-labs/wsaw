@@ -17,7 +17,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // Format selects how records are rendered.

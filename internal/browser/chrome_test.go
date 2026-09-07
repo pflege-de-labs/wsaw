@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/browser"
+	"github.com/pflege-de-labs/wsaw/internal/browser"
 )
 
 // fakeChrome writes an executable stub that reports the given --version

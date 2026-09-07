@@ -15,9 +15,9 @@ import (
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/chromedp"
 
-	"github.com/martint17r/wsaw/internal/classify"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/classify"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // Context is handed to a hook so it can drive the page. It embeds the

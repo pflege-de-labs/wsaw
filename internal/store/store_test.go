@@ -17,9 +17,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/secret"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // open returns a store on whichever dialect the suite is being run against.

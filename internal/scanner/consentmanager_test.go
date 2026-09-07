@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // A fixture implementing Consentmanager's documented __cmp API, used to prove

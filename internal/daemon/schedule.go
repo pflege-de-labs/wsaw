@@ -14,8 +14,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // job is one target-and-mode pair with its own schedule.

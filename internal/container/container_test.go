@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/container"
+	"github.com/pflege-de-labs/wsaw/internal/container"
 )
 
 // Runtime detection and container lifecycle are tested against a real runtime

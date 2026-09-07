@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Registry holds wsaw's self-metrics. It is safe for concurrent use.

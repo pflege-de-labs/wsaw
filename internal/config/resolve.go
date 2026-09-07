@@ -5,12 +5,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/capture"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
-	"github.com/martint17r/wsaw/internal/retry"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/capture"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/retry"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 const defaultInterval = 24 * time.Hour

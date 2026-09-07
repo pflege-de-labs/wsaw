@@ -3,7 +3,7 @@ package diff
 import (
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // FlapSuppressor collapses a change that reverts within a window into a

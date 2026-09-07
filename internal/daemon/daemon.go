@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/retry"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/retry"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // Scanner is the scanning capability the daemon drives. It is an interface so

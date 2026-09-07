@@ -11,7 +11,7 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // These are white-box tests of the seam itself (Story 4.7). They need no

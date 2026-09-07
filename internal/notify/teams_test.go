@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/notify"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/notify"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // Story 5.14, AC10: the card structure is covered against a local fixture

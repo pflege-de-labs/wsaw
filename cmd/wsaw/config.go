@@ -9,9 +9,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/martint17r/wsaw/internal/app"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // configFlags are shared by every command that needs configuration.

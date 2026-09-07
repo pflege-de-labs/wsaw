@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/app"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/consent"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/report"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/report"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // logLevelDebug is the verbose log level the diagnostic commands select.

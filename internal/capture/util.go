@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"sort"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 func base64Encode(s string) string {

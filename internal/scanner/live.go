@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Sources name what started a scan. They are recorded so an operator seeing

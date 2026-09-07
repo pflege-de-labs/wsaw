@@ -20,14 +20,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/consent"
-	"github.com/martint17r/wsaw/internal/daemon"
-	"github.com/martint17r/wsaw/internal/metrics"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/secret"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
+	"github.com/pflege-de-labs/wsaw/internal/daemon"
+	"github.com/pflege-de-labs/wsaw/internal/metrics"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // ScanTrigger runs an ad-hoc scan of an already-configured target.

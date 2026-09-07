@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/browser"
+	"github.com/pflege-de-labs/wsaw/internal/browser"
 )
 
 func main() {

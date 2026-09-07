@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 //go:embed templates/*.html static/*

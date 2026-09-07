@@ -20,13 +20,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/browser"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/consent"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/browser"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // TestSoak scans continuously and asserts that nothing accumulates.

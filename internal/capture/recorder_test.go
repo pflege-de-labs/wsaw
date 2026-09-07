@@ -7,9 +7,9 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 
-	"github.com/martint17r/wsaw/internal/classify"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/classify"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
 // The recorder is the part of capture that turns CDP events into records, and

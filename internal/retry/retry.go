@@ -12,7 +12,7 @@ import (
 	"hash/fnv"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Policy decides whether a scan that did not produce a usable

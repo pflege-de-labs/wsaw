@@ -18,9 +18,9 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // Event is what a notifier delivers: one change plus enough context to act on

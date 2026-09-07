@@ -1,4 +1,4 @@
-module github.com/martint17r/wsaw
+module github.com/pflege-de-labs/wsaw
 
 go 1.26
 

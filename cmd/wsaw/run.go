@@ -11,15 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/app"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/daemon"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/httpapi"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/notify"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/daemon"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/notify"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // cmdRun runs wsaw as a daemon.

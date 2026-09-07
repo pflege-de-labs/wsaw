@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // HAR 1.2 export, so results open in Chrome DevTools and the HAR viewers

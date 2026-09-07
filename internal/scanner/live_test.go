@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // The registry is tested directly rather than through Scan, because Scan needs

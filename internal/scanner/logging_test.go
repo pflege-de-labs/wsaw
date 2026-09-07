@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/browser"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
-	"github.com/martint17r/wsaw/internal/robots"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/browser"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/robots"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // logLine is one structured record, decoded so assertions are about fields

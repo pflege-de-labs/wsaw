@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/report"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/report"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // storeProbeTimeout bounds the readiness store check. A probe that hangs is

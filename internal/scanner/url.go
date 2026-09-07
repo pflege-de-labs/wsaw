@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/martint17r/wsaw/internal/classify"
+	"github.com/pflege-de-labs/wsaw/internal/classify"
 )
 
 // hostAndDomain extracts the host and registrable domain of a target URL, for

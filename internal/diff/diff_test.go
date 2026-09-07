@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 func result(mode model.ConsentMode, reqs ...model.Request) *model.Result {

@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/app"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/report"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/report"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // cmdScan runs every target once and exits with the CI contract: 0 clean,

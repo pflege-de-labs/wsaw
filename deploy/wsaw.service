@@ -9,7 +9,7 @@
 
 [Unit]
 Description=wsaw — website asset watcher
-Documentation=https://github.com/martint17r/wsaw
+Documentation=https://github.com/pflege-de-labs/wsaw
 After=network-online.target
 Wants=network-online.target
 

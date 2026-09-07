@@ -3,7 +3,7 @@ package normalize_test
 import (
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
 func mustNew(t *testing.T, r normalize.Rules) *normalize.Normalizer {

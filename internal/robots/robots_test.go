@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/robots"
+	"github.com/pflege-de-labs/wsaw/internal/robots"
 )
 
 func parse(t *testing.T, body string) *robots.Rules {

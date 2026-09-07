@@ -3,7 +3,7 @@ package model_test
 import (
 	"testing"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 func TestConsentModeValid(t *testing.T) {

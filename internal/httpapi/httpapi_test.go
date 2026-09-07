@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/httpapi"
-	"github.com/martint17r/wsaw/internal/metrics"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/scanner"
-	"github.com/martint17r/wsaw/internal/secret"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/metrics"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // The server is tested through an in-process handler rather than a socket, so

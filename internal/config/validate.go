@@ -10,12 +10,12 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/martint17r/wsaw/internal/container"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/logging"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/retry"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/container"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/logging"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/retry"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // io_EOF is aliased so Parse can recognize an empty document without

@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/daemon"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/retry"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/daemon"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/retry"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // Story 3.8, from the scheduler's side. No browser needed: what is under test

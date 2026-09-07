@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // ChangeType names what changed.

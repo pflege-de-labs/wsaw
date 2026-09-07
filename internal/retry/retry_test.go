@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // The whole story turns on one distinction: a failure is a missing

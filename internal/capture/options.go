@@ -9,9 +9,9 @@ package capture
 import (
 	"time"
 
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
-	"github.com/martint17r/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
 // Defaults for the capture budget. They exist so that a hostile or broken

@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Classifier answers first-party questions for one target.

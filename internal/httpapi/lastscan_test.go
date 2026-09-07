@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/httpapi"
-	"github.com/martint17r/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Story 5.15: the dashboard already describes each series' last scan. These

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/httpapi"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/scanner"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // Story 5.12: a scan that is running exists in no stored record, so the

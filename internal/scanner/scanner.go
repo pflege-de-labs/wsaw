@@ -18,16 +18,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/martint17r/wsaw/internal/browser"
-	"github.com/martint17r/wsaw/internal/capture"
-	"github.com/martint17r/wsaw/internal/config"
-	"github.com/martint17r/wsaw/internal/consent"
-	"github.com/martint17r/wsaw/internal/diff"
-	"github.com/martint17r/wsaw/internal/model"
-	"github.com/martint17r/wsaw/internal/normalize"
-	"github.com/martint17r/wsaw/internal/robots"
-	"github.com/martint17r/wsaw/internal/secret"
-	"github.com/martint17r/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/browser"
+	"github.com/pflege-de-labs/wsaw/internal/capture"
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/robots"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // Metrics receives the counters a scan produces. Every field is optional, so
