@@ -590,6 +590,29 @@ Story 5.16 gave the interface an auto-refresh interval, and it applies to every 
 - AC6: Pages where something can change keep refreshing exactly as they do now: the dashboard, and a target's history, where a running scan finishes and a new result appears.
 - AC7: A manual reload still works and still shows the same record. Not refreshing is about not doing it unasked, not about making the page harder to refresh.
 
+### Story 5.19 — Share one scan result by link, without handing over the token
+
+*As a Compliance Officer, I want to send a colleague or an auditor a link to one scan result, so that they can read the evidence without being given credentials to the whole interface — and without the link becoming a permanent public URL.*
+
+Today there are two options and both are wrong. Hand over the API token, which unlocks every result, every target and every write action, and cannot be taken back from someone who has read it. Or export the JSON and email it, which detaches the evidence from the tool that explains it and from the digests that make it checkable.
+
+What is wanted is narrower than either: this result, for a while, read-only. A signed token in the URL gives exactly that and needs no share registry — the link carries its own authority, and wsaw verifies it without looking anything up.
+
+The trade-off has to be stated rather than discovered. **A stateless link cannot be revoked before it expires.** That is the price of not keeping a share table, and it is why validity is short by default, why scope is a single result, and why rotating the signing key — which invalidates every outstanding link at once — is the documented way to withdraw access in a hurry.
+
+- AC1: An authenticated operator can produce a share link for one stored result, from the result page and from the command line. The command-line path matters because the interface is not always exposed.
+- AC2: The link carries a signed token — a JWT — naming exactly one target, consent mode and scan ID, and an expiry. It is not a credential for anything else: presenting it for another result, or for the target list, the audit log or the schedule, is refused.
+- AC3: **Read-only, without exception.** A share token cannot approve a baseline, trigger a scan, change configuration, or reach any write path, whatever wsaw's read-only setting happens to be for authenticated users.
+- AC4: Validity is configurable, with a documented default and a documented maximum that a caller cannot exceed. A link that outlives the interest in the scan is a link nobody remembers sharing.
+- AC5: The token is signed with a key that is wsaw's own, kept as a secret reference like any other, and **not** the API token. Sharing must not be derivable from admin access, and withdrawing sharing must not mean rotating the credential the operator uses.
+- AC6: **The algorithm is pinned.** The verifier accepts one algorithm and rejects everything else, including `none`, rather than trusting the algorithm the token names — that is the oldest way to forge a JWT. The signature is checked before any claim is read.
+- AC7: An expired link says it has expired, and an unsigned or altered one says it is not valid. Those are different facts for the person holding the link, and the difference costs nothing to disclose.
+- AC8: The shared page shows the result — assets, hosts, consent outcome, changes, screenshots and the downloads — and nothing else. No navigation into the rest of the interface, no configuration path, no audit log, no "scan now", no "approve as baseline".
+- AC9: The page states that it is a shared view and when it expires, so the reader knows the link is not permanent and the sender can see what they sent.
+- AC10: A share token reaches the artifacts of **its own result** and no others. Screenshots and stored bodies are content-addressed rather than scoped by scan, so the check is that the reference is one the shared result actually names — otherwise a link to a harmless scan would be a key to every stored artifact.
+- AC11: The token does not leak through wsaw's own surfaces: it is scrubbed from logs, kept out of results and error messages, and the existing `Referrer-Policy: no-referrer` keeps it out of other sites' logs. A URL is a poor place for a secret, which is the other reason validity is short.
+- AC12: Sharing is off until configured. It publishes data that can be personal to whoever holds a link (NFR §4, Tenet 19), so it is opt-in, and the documentation says plainly what a link grants, for how long, and that revocation before expiry means rotating the key.
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
