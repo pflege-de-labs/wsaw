@@ -65,6 +65,48 @@
   </dl>
 </section>
 
+{{/* The evidence for everything the consent section claims (Story 5.17).
+     Shown next to it on purpose: "before" is the banner as the site
+     presented it, "after" is what wsaw's interaction did to it, and read
+     together they either corroborate the recorded outcome or contradict it.
+
+     A screenshot is a PNG Chrome produced under wsaw's control, so it may be
+     rendered — unlike a stored response body, which is the page's own bytes
+     and stays a download. */}}
+<section>
+  <h2>Screenshots</h2>
+
+  {{if not .Screenshots}}
+    <p class="empty">No screenshots were captured for this scan.
+      Set <code>screenshots: true</code> on the target to keep them; they are
+      off by default because an image of a page can contain personal data.</p>
+  {{else}}
+    <div class="shots">
+      {{range .Screenshots}}
+      <figure class="shot">
+        <figcaption>{{.Label}}</figcaption>
+        {{if .Missing}}
+          <p class="empty" title="{{.Reason}}">This screenshot was captured but is no longer stored.</p>
+        {{else}}
+          {{/* Lazy, so a result page costs nothing until a reader scrolls to
+               it, and scaled by CSS rather than by a resize step that would
+               add an image library to a tool that has none. */}}
+          <a href="/api/v1/artifacts/{{.Ref}}">
+            <img src="/api/v1/artifacts/{{.Ref}}" alt="{{.Label}}"
+                 loading="lazy" decoding="async">
+          </a>
+        {{end}}
+        <p class="shot-meta">
+          {{if .Bytes}}{{bytes .Bytes}}{{end}}
+          {{if .SHA256}}<code class="digest" title="sha256 of the stored image">{{.SHA256}}</code>{{end}}
+          {{if not .Missing}}<a href="/api/v1/artifacts/{{.Ref}}?download=1">download</a>{{end}}
+        </p>
+      </figure>
+      {{end}}
+    </div>
+  {{end}}
+</section>
+
 {{if .Diff}}
 <section>
   <h2>Changes</h2>

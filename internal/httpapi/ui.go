@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -326,6 +327,10 @@ type resultData struct {
 	Hosts  []model.HostSummary
 	Counts map[string]int
 
+	// Screenshots are the scan's evidence images, before and after the
+	// consent interaction (Story 5.17).
+	Screenshots []screenshotView
+
 	// Filter values are echoed back so the form keeps its state.
 	FilterHost  string
 	FilterType  string
@@ -337,6 +342,87 @@ type resultData struct {
 	// which must be visible rather than silent.
 	Truncated bool
 	Total     int
+}
+
+// screenshotView is one captured screenshot as the page presents it.
+type screenshotView struct {
+	// Label says what moment the image is of. The pair is the point: what
+	// the banner looked like, and what wsaw's interaction did to it.
+	Label string
+	Kind  string
+	Ref   string
+
+	SHA256 string
+	Bytes  int64
+
+	// Missing marks evidence whose file is no longer there — pruned, or on a
+	// volume that went away. Expired evidence must not look like evidence
+	// that never existed (Story 5.17, AC3).
+	Missing bool
+	Reason  string
+}
+
+// screenshotViews orders and annotates a scan's screenshots.
+//
+// Before-consent comes first and after-consent second, whatever order they
+// were recorded in, because reading them the other way round inverts what
+// they say.
+func (s *Server) screenshotViews(res *model.Result) []screenshotView {
+	labels := map[string]string{
+		"screenshot-before-consent": "Before the consent interaction",
+		"screenshot-after-consent":  "After the consent interaction",
+	}
+
+	order := map[string]int{
+		"screenshot-before-consent": 0,
+		"screenshot-after-consent":  1,
+	}
+
+	out := make([]screenshotView, 0, len(res.Screenshots))
+
+	for _, a := range res.Screenshots {
+		view := screenshotView{
+			Label:  labels[a.Kind],
+			Kind:   a.Kind,
+			Ref:    a.Ref,
+			SHA256: a.SHA256,
+			Bytes:  a.Bytes,
+		}
+
+		if view.Label == "" {
+			view.Label = a.Kind
+		}
+
+		// Checked by size rather than by reading the file: a result page must
+		// not load megabytes of PNG just to find out whether it can link to
+		// them.
+		if size, err := s.deps.Store.StatArtifact(a.Ref); err != nil {
+			view.Missing = true
+			view.Reason = "the stored image is no longer available: " + err.Error()
+		} else if size > 0 {
+			view.Bytes = size
+		}
+
+		out = append(out, view)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		oi, iok := order[out[i].Kind]
+		oj, jok := order[out[j].Kind]
+
+		switch {
+		case iok && jok:
+			return oi < oj
+		case iok:
+			return true
+		case jok:
+			return false
+		default:
+			return out[i].Kind < out[j].Kind
+		}
+	})
+
+	return out
 }
 
 // maxRenderedRequests bounds the request table. A page with tens of thousands
@@ -352,6 +438,7 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 
 	data := resultData{
 		Result:      res,
+		Screenshots: s.screenshotViews(res),
 		Diff:        s.diffFor(res),
 		Hosts:       res.HostSummaries(),
 		Counts:      res.CountsByResourceType(),

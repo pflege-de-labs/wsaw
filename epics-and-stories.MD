@@ -491,7 +491,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC2: Authentication is shared with the API (bearer token, plus a session cookie for browser use); TLS is supported.
 - AC3: **All scanned-site data rendered in the UI is treated as hostile.** URLs, header values, cookie values, DOM snippets and script content are contextually escaped; captured HTML/JS is never rendered as markup and never executed.
 - AC4: A strict `Content-Security-Policy` with no `unsafe-inline` and no external origins; `X-Content-Type-Options`, `X-Frame-Options`/`frame-ancestors`, and `Referrer-Policy` are set.
-- AC5: Captured screenshots and stored bodies are served with a non-renderable content disposition and never from the UI's own origin without sandboxing.
+- AC5: Stored response bodies are served with a non-renderable content disposition and never from the UI's own origin without sandboxing. **Narrowed by Story 5.17 for screenshots only:** a screenshot is a PNG that Chrome produced under wsaw's control — the page influenced its pixels, not its bytes — so it may be rendered as an image, served with an image content type, `nosniff`, and a policy that permits an image and forbids everything else. A response body *is* the page's bytes and keeps the opaque attachment. What is served as an image must also *be* one: the kind and the file's magic bytes both have to agree.
 - AC6: State-changing requests are CSRF-protected.
 - AC7: Secrets (basic auth, proxy credentials, webhook tokens) are redacted in every UI view, matching the API's redaction (Story 3.6).
 - AC8: A read-only mode disables all write actions, for deployments where the UI is shared with reviewers.

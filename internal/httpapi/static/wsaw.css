@@ -240,6 +240,33 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 /* A link to a stored response body. It downloads; it never renders. */
 .body-link { font-size: 0.85em; }
 
+/* Captured screenshots, side by side so before and after can be compared at
+   a glance (Story 5.17). Scaled here rather than resized on the server: wsaw
+   has no image library and is not acquiring one for a thumbnail. */
+.shots { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+.shot {
+  margin: 0;
+  flex: 1 1 22rem;
+  min-width: 18rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: var(--panel);
+}
+
+.shot figcaption { font-weight: 600; margin-bottom: 0.4rem; }
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.shot-meta { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; font-size: 0.85em; color: var(--muted); margin: 0.4rem 0 0; }
+.shot-meta .digest { font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; max-width: 12rem; white-space: nowrap; }
+
 /* The last-scan link on the dashboard. The cell's own text is the link, so
    the arrow is decoration: an icon must never be the only indication that a
    row is reachable (Story 5.15, AC5). */

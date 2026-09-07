@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/diff"
@@ -328,14 +330,17 @@ func (s *Server) bodyLoader(r *http.Request) report.BodyLoader {
 
 // handleArtifact serves a stored body or screenshot.
 //
-// Without this route a stored body was unreachable: capture wrote it, the
+// Without this route a stored artifact was unreachable: capture wrote it, the
 // result named it, and nothing could read it back. The reference is validated
 // by the store, which confines it to the artifact directory (Tenet 9).
 //
-// It is served as an attachment with an opaque content type, never as
-// something a browser will render. The bytes came from a scanned page, so
-// rendering them on wsaw's own origin would be handing a hostile page a
-// same-origin script context (Story 5.11, AC5).
+// How it comes back depends on what it is, and the distinction is the whole
+// of Story 5.17's AC5. A response body *is* the scanned page's bytes, so it
+// is served as an opaque attachment and never as anything a browser will
+// render — rendering it on wsaw's own origin would hand a hostile page a
+// same-origin script context. A screenshot is a PNG that Chrome produced
+// under wsaw's control: the page influenced its pixels, not its bytes, so it
+// may be shown as an image. As an image and nothing else.
 func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
 	if ref == "" {
@@ -351,30 +356,67 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+safeArtifactFilename(ref)+`"`)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Belt and braces on top of the global policy: nothing in a captured
-	// artifact may execute or load anything, whatever a browser decides to
-	// do with the type above.
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	// Two independent conditions, deliberately. The kind comes from wsaw's own
+	// code rather than from a page, and the magic bytes are the file itself:
+	// requiring both means a response body cannot be served as an image even
+	// if some future caller passed a reference that claimed to be one.
+	inline := !wantsDownload(r) && isScreenshotRef(ref) && isPNG(data)
 
-	// #nosec G705 -- these bytes are page-controlled by definition, which is
-	// why the headers above make them inert: an opaque type, an attachment
-	// disposition, nosniff, and a sandbox policy. The analyser sees the taint
-	// and not the mitigation; TestAStoredBodyIsServedAsAnInertDownload sees
-	// the mitigation. Serving the bytes is the point of the endpoint —
-	// refusing to would leave stored evidence unreachable.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if inline {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Disposition", `inline; filename="`+safeArtifactFilename(ref, "png")+`"`)
+		// An image and nothing else: no script, no styles, no subresources,
+		// whatever a browser might otherwise try to do with these bytes.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox")
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+safeArtifactFilename(ref, "bin")+`"`)
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	}
+
+	// #nosec G705 -- a body's bytes are page-controlled, which is why the
+	// headers above make them inert: an opaque type, an attachment
+	// disposition, nosniff, and a sandbox policy. A screenshot is wsaw's own
+	// PNG and is served as an image with an equally strict policy. The
+	// analyser sees the taint and not the mitigation; the tests in
+	// bodies_test.go and screenshots_test.go see the mitigation.
 	if _, err := w.Write(data); err != nil {
 		s.deps.Logger.Error("writing artifact", "error", err)
 	}
+}
+
+// wantsDownload reports whether the caller asked for the file rather than a
+// rendering of it, so a screenshot can still be saved as evidence.
+func wantsDownload(r *http.Request) bool {
+	switch r.URL.Query().Get("download") {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// isScreenshotRef reports whether a reference names a screenshot. The kind is
+// the first path segment and is written by wsaw, never by a scanned page.
+func isScreenshotRef(ref string) bool {
+	kind, _, ok := strings.Cut(ref, "/")
+
+	return ok && strings.HasPrefix(kind, "screenshot")
+}
+
+// isPNG checks the file's own magic bytes, so what is served as an image is
+// an image regardless of what its reference claimed.
+func isPNG(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
 }
 
 // safeArtifactFilename builds a download name from a reference. References
 // are content-addressed — a kind and a hex digest — but the value still
 // arrives from the request, so it is reduced to characters that cannot break
 // the header.
-func safeArtifactFilename(ref string) string {
+func safeArtifactFilename(ref, ext string) string {
 	out := make([]rune, 0, len(ref))
 
 	for _, r := range ref {
@@ -386,7 +428,7 @@ func safeArtifactFilename(ref string) string {
 		}
 	}
 
-	return "wsaw-" + string(out) + ".bin"
+	return "wsaw-" + string(out) + "." + ext
 }
 
 func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {

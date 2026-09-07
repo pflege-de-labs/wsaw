@@ -146,6 +146,38 @@ Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Th
 
 A missing script digest always carries a `bodyUnavailable` reason. wsaw never reports a script as unchanged because it could not read it.
 
+### Screenshots
+
+Set `screenshots: true` on a target and each scan captures the page twice —
+before the consent interaction and after it — and the scan's page shows the
+pair:
+
+```yaml
+targets:
+  - name: marketing-site
+    url: https://www.example.com/
+    screenshots: true
+```
+
+The pair is the point. "Before" is the banner as the site presented it, which
+is what a regulator asks about; "after" is what wsaw's interaction actually
+did, which is the claim every `reject`-mode finding rests on. Read together
+they either corroborate the recorded consent outcome or contradict it. Each
+image shows its size and the SHA-256 the scan recorded, and links the original
+file, so a screenshot in a compliance pack can be checked rather than trusted.
+
+A screenshot is rendered as an image; a stored response body never is. The
+difference is whose bytes they are: Chrome produced the PNG under wsaw's
+control, so the page influenced its pixels only, whereas a body *is* the
+page's bytes. Screenshots are served as `image/png` with `nosniff` and a
+policy that allows an image and nothing else, and only when the file really is
+a PNG — the kind and the magic bytes both have to agree.
+
+A screenshot that retention has since removed is reported as missing rather
+than shown as a broken image: expired evidence must not look like evidence
+that never existed. Screenshots can contain personal data, so they are off by
+default and retention applies to them like everything else.
+
 ### Response bodies
 
 Every script gets a SHA-256 digest by default. Set `storeBodies: true` on a target to keep the bodies themselves:

@@ -468,6 +468,50 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 	return ref, nil
 }
 
+// StatArtifact reports an artifact's size without reading it.
+//
+// It exists so the interface can tell "this evidence has been pruned" from
+// "this evidence is here" without loading a megabyte of PNG to find out
+// (Story 5.17, AC3).
+func (s *Store) StatArtifact(ref string) (int64, error) {
+	if s.artifactDir == "" {
+		return 0, errors.New("artifact storage is not configured")
+	}
+
+	path, err := s.artifactPath(ref)
+	if err != nil {
+		return 0, err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
+		}
+
+		return 0, fmt.Errorf("reading artifact %s: %w", ref, err)
+	}
+
+	return info.Size(), nil
+}
+
+// artifactPath resolves a reference to a path inside the artifact directory.
+//
+// References originate from stored results, which derive from page-controlled
+// data, so they are untrusted: a crafted one must not escape the directory
+// (Tenet 9).
+func (s *Store) artifactPath(ref string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(ref))
+	path := filepath.Join(s.artifactDir, clean)
+
+	rel, err := filepath.Rel(s.artifactDir, path)
+	if err != nil || rel == ".." || len(rel) >= 2 && rel[:2] == ".." {
+		return "", fmt.Errorf("artifact reference %q is outside the artifact directory", ref)
+	}
+
+	return path, nil
+}
+
 // GetArtifact reads a stored artifact. The reference is validated so that a
 // crafted path cannot escape the artifact directory.
 func (s *Store) GetArtifact(ref string) ([]byte, error) {
@@ -475,17 +519,12 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 		return nil, errors.New("artifact storage is not configured")
 	}
 
-	clean := filepath.Clean(filepath.FromSlash(ref))
-	path := filepath.Join(s.artifactDir, clean)
-
-	// Path traversal defence: references originate from stored results, which
-	// derive from page-controlled data, so they are untrusted (Tenet 9).
-	rel, err := filepath.Rel(s.artifactDir, path)
-	if err != nil || rel == ".." || len(rel) >= 2 && rel[:2] == ".." {
-		return nil, fmt.Errorf("artifact reference %q is outside the artifact directory", ref)
+	path, err := s.artifactPath(ref)
+	if err != nil {
+		return nil, err
 	}
 
-	data, err := os.ReadFile(path) //nolint:gosec // path is confined to artifactDir by the check above
+	data, err := os.ReadFile(path) //nolint:gosec // path is confined to artifactDir by artifactPath
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
