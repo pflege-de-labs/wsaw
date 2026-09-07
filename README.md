@@ -242,6 +242,16 @@ triggers: you asked for the page to hold still, and the running scan is
 visible on it anyway. The interval has a 5-second floor, because every refresh
 re-renders the whole dashboard and reads every series' latest result.
 
+The interval applies to the pages where something can change — the dashboard
+and a target's history. **A scan detail page never auto-refreshes**, whatever
+interval is in force and whether or not it is given in the URL: one finished
+scan is an immutable record, so a reload re-renders identical content and
+costs you your scroll position, the filter you just typed and the screenshot
+you were looking at. It still says when it was rendered, because that is the
+honest anchor for a tab left open an hour, and it says why it holds still
+rather than reading as though refreshing were broken. Reloading it yourself
+works as it always did.
+
 Scans in flight are shown as they happen: a `pending` row on the target page, a
 list on the dashboard, and `GET /api/v1/running` for anything else. A running
 scan exists in no stored result — the store only learns of a scan when it ends —

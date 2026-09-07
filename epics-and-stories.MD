@@ -547,7 +547,7 @@ The generic notifier also emits one event per change, which is right for a webho
 
 *As an Operator, I want the dashboard to refresh itself on an interval I can change from the page, so that it can be left on a screen and still be worth looking at.*
 
-- AC1: The dashboard refreshes itself on an interval, and the interval can be changed from a control on the dashboard, including turning it off.
+- AC1: The dashboard refreshes itself on an interval, and the interval can be changed from a control on the dashboard, including turning it off. **Narrowed by Story 5.18 for the scan detail page:** the interval applies to the pages where something can change; one finished scan is an immutable record, so that page holds still and says why.
 - AC2: The control works without JavaScript, like the rest of the core read paths (Story 5.7, AC6) — a form that submits, not a script that rewrites the page.
 - AC3: The choice is remembered per browser and survives a reload, without being written into wsaw's configuration. A viewer's display preference is not deployment configuration (Tenet 15), and one person's wall display must not change what anybody else sees.
 - AC4: The configured default is settable for the deployment, so a wall display is right the first time it is opened rather than after someone adjusts it.

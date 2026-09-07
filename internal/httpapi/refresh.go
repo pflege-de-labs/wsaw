@@ -72,7 +72,31 @@ type refreshSetting struct {
 	// remembered: a wall display is pointed at a URL, and a link somebody
 	// shares should not silently rewrite the recipient's preference.
 	FromURL bool
+
+	// HeldReason is why this particular page does not refresh whatever
+	// interval is in force, and is empty on the pages that do (Story 5.18).
+	// It is a sentence the page shows, because a page that behaves
+	// differently from the one the reader came from has to say so rather than
+	// leave them wondering whether refreshing is broken (AC2).
+	HeldReason string
 }
+
+// hold turns refreshing off for one page and records why.
+//
+// The viewer's own choice is kept, so the control still shows what the
+// interface is set to and can still be changed from here — a reader may set
+// the interval from anywhere, it just does not apply to the page they are on
+// (Story 5.18, AC5).
+func (s refreshSetting) hold(reason string) refreshSetting {
+	s.Interval = 0
+	s.HeldReason = reason
+
+	return s
+}
+
+// Held reports whether this page holds still by its own nature rather than
+// because of the interval in force.
+func (s refreshSetting) Held() bool { return s.HeldReason != "" }
 
 // Seconds renders the interval for a meta refresh and for the enhancement
 // script.

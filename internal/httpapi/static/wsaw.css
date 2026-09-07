@@ -161,6 +161,11 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .freshness.is-stale .age,
 .freshness.is-stale .next { color: var(--warn); font-weight: 600; }
 
+/* A page that holds still by its own nature (Story 5.18). It is a statement
+   of fact, not a warning: the record is finished, so this stays quiet rather
+   than borrowing the stale bar's colour. */
+.freshness.is-held .next { font-style: italic; }
+
 .refresh-form { display: flex; align-items: center; gap: 0.35rem; margin-left: auto; }
 .refresh-form label { color: var(--muted); }
 .refresh-form select, .refresh-form button { font-size: 1em; }

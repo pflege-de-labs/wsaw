@@ -150,10 +150,27 @@ type refreshChoice struct {
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title string, data any) {
-	s.renderPage(w, r, name, title, data, 0)
+	s.renderWith(w, r, name, title, data, 0, "")
 }
 
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title string, data any, running int) {
+	s.renderWith(w, r, name, title, data, running, "")
+}
+
+// renderStill renders a page that must not reload itself, whatever interval
+// is in force for the interface (Story 5.18).
+//
+// The reason is not decoration: this page behaves differently from the one
+// the reader came from, so it says why rather than leaving somebody who set
+// thirty seconds on the dashboard wondering whether refreshing is broken
+// (AC2).
+func (s *Server) renderStill(w http.ResponseWriter, r *http.Request, name, title string, data any, reason string) {
+	s.renderWith(w, r, name, title, data, 0, reason)
+}
+
+func (s *Server) renderWith(
+	w http.ResponseWriter, r *http.Request, name, title string, data any, running int, hold string,
+) {
 	p := page{
 		Title:      title,
 		Version:    s.opts.Version,
@@ -167,6 +184,17 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title 
 	}
 
 	p.Refresh = s.refreshFor(r, running)
+
+	// A page that holds still does so whatever the cookie, the URL parameter
+	// or the deployment default says: nothing on it can change, so there is
+	// nothing for a refresh to fetch (Story 5.18, AC1 and AC4).
+	if hold != "" {
+		p.Refresh = p.Refresh.hold(hold)
+	}
+
+	// The control is built from the viewer's choice rather than from the
+	// interval in force, so it still shows the interface's setting on a page
+	// that holds still.
 	p.RefreshChoices = refreshChoicesFor(p.Refresh)
 	p.RefreshTarget = refreshTarget(r)
 	p.RenderedAt = time.Now()
@@ -430,6 +458,12 @@ func (s *Server) screenshotViews(res *model.Result) []screenshotView {
 // disclosed and the full data stays available as JSON.
 const maxRenderedRequests = 2000
 
+// holdReasonFinishedScan is what the scan detail page says about not
+// refreshing. It names the cause — the scan is over — rather than reporting
+// the setting, because the reader's question is why this page differs from
+// the one they came from (Story 5.18, AC2).
+const holdReasonFinishedScan = "not refreshing: this scan is finished and cannot change"
+
 func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 	res, ok := s.loadResultUI(w, r)
 	if !ok {
@@ -463,7 +497,11 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.render(w, r, "result.html", res.Target+" — "+res.ScanID, data)
+	// This page holds still. One finished scan is an immutable record, so a
+	// refresh re-renders identical content — and it would do it on precisely
+	// the pages worth reading closely, throwing away the scroll position, a
+	// filter just typed, and the screenshot being looked at (Story 5.18).
+	s.renderStill(w, r, "result.html", res.Target+" — "+res.ScanID, data, holdReasonFinishedScan)
 }
 
 func matchesFilter(req *model.Request, d resultData) bool {

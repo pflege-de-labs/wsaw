@@ -35,20 +35,27 @@
      than implied: a page that reloads silently invites the reader to trust
      whatever is on it, and one that says how old it is cannot mislead them
      (Story 5.16, AC5 and AC6). */}}
-<div class="freshness" id="freshness"
+<div class="freshness{{if .Refresh.Held}} is-held{{end}}" id="freshness"
      data-rendered-at="{{.RenderedAt.UTC.Format "2006-01-02T15:04:05Z"}}"
      data-refresh-seconds="{{.Refresh.Seconds}}"
      data-refresh-url="{{.RefreshTarget}}">
   <span class="as-of">as of {{time .RenderedAt}}</span>
   <span class="age" id="freshness-age"></span>
+  {{/* What the page will do about its own age. A page that holds still by its
+       own nature says why, instead of reading as though refreshing were
+       broken; it makes no "next refresh" claim and gets no going-stale
+       warning, because a finished scan does not go stale (Story 5.18). */}}
   <span class="next">
-    {{if .Refresh.Enabled}}refreshing every {{.Refresh.Label}}{{else}}auto-refresh off{{end}}
+    {{if .Refresh.Held}}{{.Refresh.HeldReason}}{{else if .Refresh.Enabled}}refreshing every {{.Refresh.Label}}{{else}}auto-refresh off{{end}}
   </span>
 
   <form method="post" action="/refresh" class="refresh-form">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="return" value="{{.RefreshTarget}}">
-    <label for="refresh-interval">Refresh</label>
+    {{/* Settable from here, but not about here: the interval is the
+         interface's, and this page is not one of the pages it reloads
+         (Story 5.18, AC5). */}}
+    <label for="refresh-interval">{{if .Refresh.Held}}Refresh other pages{{else}}Refresh{{end}}</label>
     <select id="refresh-interval" name="interval">
       {{range .RefreshChoices}}
       <option value="{{.Seconds}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
