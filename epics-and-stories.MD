@@ -546,10 +546,6 @@ The generic notifier also emits one event per change, which is right for a webho
 
 *As an Operator, I want the dashboard to refresh itself on an interval I can change from the page, so that it can be left on a screen and still be worth looking at.*
 
-Today the interface reloads only while a scan is running (Story 5.12), and only at a fixed ten seconds. That is right for watching one scan finish and wrong for the other way this page is used: open on a second monitor or a wall display, where the question is not "is this scan done" but "is anything wrong right now". A page that last told the truth an hour ago is worse than no page, because it looks current.
-
-The interval belongs on the page rather than in the configuration file. It is a property of the person looking, not of the deployment: the same wsaw is watched by someone leaving it open all day and by someone who opened it to check one target. The configuration file sets the default a fresh browser gets; the page decides from there.
-
 - AC1: The dashboard refreshes itself on an interval, and the interval can be changed from a control on the dashboard, including turning it off.
 - AC2: The control works without JavaScript, like the rest of the core read paths (Story 5.7, AC6) — a form that submits, not a script that rewrites the page.
 - AC3: The choice is remembered per browser and survives a reload, without being written into wsaw's configuration. A viewer's display preference is not deployment configuration (Tenet 15), and one person's wall display must not change what anybody else sees.

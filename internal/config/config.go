@@ -339,6 +339,12 @@ type API struct {
 
 	// WebUI serves the browser interface.
 	WebUI *bool `yaml:"webui,omitempty"`
+
+	// RefreshInterval is how often the interface reloads itself for a viewer
+	// who has expressed no preference; zero means not at all. It is only the
+	// default — the choice belongs to whoever is looking, and is made on the
+	// page (Story 5.16).
+	RefreshInterval Duration `yaml:"refreshInterval,omitempty"`
 	// ReadOnly disables every write action, for shared reviewer deployments.
 	ReadOnly bool `yaml:"readOnly,omitempty"`
 	// AllowAdHocScan permits triggering scans through the API.

@@ -57,6 +57,11 @@ type Options struct {
 	MetricsEnabled bool
 	MetricsPath    string
 
+	// RefreshDefault is how often the interface reloads itself for a viewer
+	// who has expressed no preference. Zero means not at all. It is only the
+	// default: the choice belongs to whoever is looking (Story 5.16).
+	RefreshDefault time.Duration
+
 	// StaleAfter is how old a target's last success may be before the
 	// dashboard flags it. A stalled watcher must be obvious in the UI, not
 	// only in metrics (Story 5.8).

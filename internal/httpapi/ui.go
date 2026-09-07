@@ -107,6 +107,8 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
 
+	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
+
 	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
 	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
 }
@@ -122,32 +124,35 @@ type page struct {
 	Flash      string
 	FlashError string
 
-	// Refresh, in seconds, makes the page reload itself while scans are
-	// running. It is a meta refresh rather than script, because the core read
-	// paths must work with JavaScript disabled (Story 5.7, AC6).
-	Refresh int
+	// Refresh is what this page does about reloading itself, and why
+	// (Story 5.16).
+	Refresh refreshSetting
+	// RefreshChoices are the intervals the control offers.
+	RefreshChoices []refreshChoice
+	// RefreshTarget is the URL a refresh loads: this page without its flash
+	// parameters, so a reload does not re-show a message about something that
+	// happened once.
+	RefreshTarget string
+	// RenderedAt is when this page was built. It is shown, because a page
+	// that reloads silently invites the reader to trust whatever is on it
+	// (Story 5.16, AC5).
+	RenderedAt time.Time
 
 	Data any
+}
+
+// refreshChoice is one option in the interval control.
+type refreshChoice struct {
+	Label    string
+	Seconds  int
+	Selected bool
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name, title string, data any) {
 	s.renderPage(w, r, name, title, data, 0)
 }
 
-// refreshWhileRunning returns the reload interval for a page that is showing
-// in-flight scans, and zero when there is nothing to watch. A page that never
-// stops reloading would keep hitting the store for no reason.
-func refreshWhileRunning(running int) int {
-	const seconds = 10
-
-	if running == 0 {
-		return 0
-	}
-
-	return seconds
-}
-
-func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title string, data any, refresh int) {
+func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title string, data any, running int) {
 	p := page{
 		Title:      title,
 		Version:    s.opts.Version,
@@ -157,14 +162,60 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, name, title 
 		CSRF:       s.csrfToken(),
 		Flash:      r.URL.Query().Get("ok"),
 		FlashError: r.URL.Query().Get("err"),
-		Refresh:    refresh,
 		Data:       data,
 	}
+
+	p.Refresh = s.refreshFor(r, running)
+	p.RefreshChoices = refreshChoicesFor(p.Refresh)
+	p.RefreshTarget = refreshTarget(r)
+	p.RenderedAt = time.Now()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if err := s.ui.tmpl.ExecuteTemplate(w, name, p); err != nil {
 		s.deps.Logger.Error("rendering page", "template", name, "error", err)
+	}
+}
+
+// refreshChoicesFor builds the control's options, marking the one in force.
+// A viewer's own interval that is not in the list is added, so a URL-supplied
+// value is visible in the control rather than silently absent from it.
+func refreshChoicesFor(current refreshSetting) []refreshChoice {
+	intervals := append([]time.Duration(nil), refreshChoices...)
+
+	if current.HasChosen && !containsInterval(intervals, current.Chosen) {
+		intervals = append(intervals, current.Chosen)
+		sortIntervals(intervals)
+	}
+
+	out := make([]refreshChoice, 0, len(intervals))
+
+	for _, d := range intervals {
+		out = append(out, refreshChoice{
+			Label:    humaniseInterval(d),
+			Seconds:  int(d.Seconds()),
+			Selected: current.HasChosen && d == current.Chosen,
+		})
+	}
+
+	return out
+}
+
+func containsInterval(list []time.Duration, want time.Duration) bool {
+	for _, d := range list {
+		if d == want {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sortIntervals(list []time.Duration) {
+	for i := 1; i < len(list); i++ {
+		for j := i; j > 0 && list[j] < list[j-1]; j-- {
+			list[j], list[j-1] = list[j-1], list[j]
+		}
 	}
 }
 
@@ -227,7 +278,7 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderPage(w, r, "dashboard.html", "wsaw", data, refreshWhileRunning(len(data.Running)))
+	s.renderPage(w, r, "dashboard.html", "wsaw", data, len(data.Running))
 }
 
 type seriesData struct {
@@ -266,8 +317,7 @@ func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
 		data.Baseline = b
 	}
 
-	s.renderPage(w, r, "series.html", target+" — "+string(mode), data,
-		refreshWhileRunning(len(data.Running)))
+	s.renderPage(w, r, "series.html", target+" — "+string(mode), data, len(data.Running))
 }
 
 type resultData struct {

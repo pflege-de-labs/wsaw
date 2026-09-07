@@ -3,9 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{{/* A meta refresh, not script: the read paths work with JavaScript off. It is
-     set only while scans are running, so an idle page stays still. */}}
-{{if .Refresh}}<meta http-equiv="refresh" content="{{.Refresh}}">{{end}}
+{{/* Two paths to the same behaviour (Story 5.16).
+
+     Without JavaScript, a meta refresh inside <noscript>: the core read paths
+     must work with script off. Its URL is this page minus the flash
+     parameters, so a reload does not re-show a message about something that
+     happened once.
+
+     With JavaScript, refresh.js does it instead, which lets it hold off while
+     the tab is not visible and keep the age on screen honest. The two never
+     both apply, because <noscript> is inert when script runs. */}}
+{{if .Refresh.Enabled}}
+<noscript><meta http-equiv="refresh" content="{{.Refresh.Seconds}};url={{.RefreshTarget}}"></noscript>
+{{end}}
 <title>{{.Title}}</title>
 <link rel="stylesheet" href="/static/wsaw.css">
 </head>
@@ -21,6 +31,33 @@
   <span class="version">{{.Version}}</span>
 </header>
 
+{{/* When the page was built, and what it will do about that. Shown rather
+     than implied: a page that reloads silently invites the reader to trust
+     whatever is on it, and one that says how old it is cannot mislead them
+     (Story 5.16, AC5 and AC6). */}}
+<div class="freshness" id="freshness"
+     data-rendered-at="{{.RenderedAt.UTC.Format "2006-01-02T15:04:05Z"}}"
+     data-refresh-seconds="{{.Refresh.Seconds}}"
+     data-refresh-url="{{.RefreshTarget}}">
+  <span class="as-of">as of {{time .RenderedAt}}</span>
+  <span class="age" id="freshness-age"></span>
+  <span class="next">
+    {{if .Refresh.Enabled}}refreshing every {{.Refresh.Label}}{{else}}auto-refresh off{{end}}
+  </span>
+
+  <form method="post" action="/refresh" class="refresh-form">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="return" value="{{.RefreshTarget}}">
+    <label for="refresh-interval">Refresh</label>
+    <select id="refresh-interval" name="interval">
+      {{range .RefreshChoices}}
+      <option value="{{.Seconds}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+      {{end}}
+    </select>
+    <button type="submit">Set</button>
+  </form>
+</div>
+
 {{if .Flash}}<div class="flash flash-ok">{{.Flash}}</div>{{end}}
 {{if .FlashError}}<div class="flash flash-error">{{.FlashError}}</div>{{end}}
 
@@ -29,6 +66,7 @@
 
 {{define "foot"}}
 </main>
+<script src="/static/refresh.js" defer></script>
 <footer>
   <p>Every value on this page was recorded from a scanned website and is displayed as text, never as markup.</p>
   {{if .ConfigPath}}<p>Configuration: <code>{{.ConfigPath}}</code></p>{{end}}

@@ -154,6 +154,30 @@ Both are served by the same process and the same port; the web interface is a cl
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
 
+The dashboard refreshes itself, so it can be left on a screen and still be
+worth looking at:
+
+```yaml
+api:
+  refreshInterval: 30s   # the default a fresh browser gets; 0 disables it
+```
+
+That is only the default. The interval is a property of the person looking,
+not of the deployment, so there is a control on the page itself, the choice is
+remembered per browser, and `?refresh=30` in the URL sets it for a wall
+display that should need no further setup. Every page says **when it was
+rendered and what it will do about that** — a page that reloads silently
+invites you to trust whatever is on it, and one that says "as of 14:32,
+refreshing every 30s" cannot mislead you about how old it is. With JavaScript
+available it also counts the age up and marks the page stale if a refresh
+stops happening; with JavaScript off a `<noscript>` meta refresh does the
+reloading instead.
+
+Turning refreshing off wins over the automatic reload a running scan
+triggers: you asked for the page to hold still, and the running scan is
+visible on it anyway. The interval has a 5-second floor, because every refresh
+re-renders the whole dashboard and reads every series' latest result.
+
 Scans in flight are shown as they happen: a `pending` row on the target page, a
 list on the dashboard, and `GET /api/v1/running` for anything else. A running
 scan exists in no stored result — the store only learns of a scan when it ends —

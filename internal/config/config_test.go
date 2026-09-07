@@ -805,3 +805,45 @@ targets:
     robots: maybe
 `)
 }
+
+// Story 5.16: the interface's default refresh interval is configuration; the
+// interval itself is a viewer's choice, made on the page.
+func TestAPIRefreshIntervalValidation(t *testing.T) {
+	t.Parallel()
+
+	cfg := parse(t, `
+api:
+  enabled: true
+  refreshInterval: 30s
+`)
+
+	if got := cfg.API.RefreshInterval.Duration(); got != 30*time.Second {
+		t.Errorf("refreshInterval = %s, want 30s", got)
+	}
+
+	// Absent means no auto-refresh, which is what an unconfigured deployment
+	// had before this story.
+	cfg = parse(t, "targets: []")
+
+	if got := cfg.API.RefreshInterval.Duration(); got != 0 {
+		t.Errorf("default refreshInterval = %s, want 0", got)
+	}
+
+	// Below the floor is refused with the reason, because every refresh
+	// re-renders the dashboard and reads every target's latest result.
+	err := parseErr(t, `
+api:
+  enabled: true
+  refreshInterval: 1s
+`)
+
+	if !strings.Contains(err.Error(), "floor") {
+		t.Errorf("the error does not explain the floor: %v", err)
+	}
+
+	mustReject(t, `
+api:
+  enabled: true
+  refreshInterval: -5s
+`)
+}

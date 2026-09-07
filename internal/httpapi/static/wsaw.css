@@ -135,6 +135,36 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 
 /* Status and banners */
 
+/* The freshness bar: when this page was built, how old it is, and what it
+   will do about that (Story 5.16). */
+.freshness {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.freshness .next { color: var(--muted); }
+.freshness .age { font-variant-numeric: tabular-nums; }
+
+/* A page that stopped refreshing must say so rather than look current. */
+.freshness.is-stale {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}
+
+.freshness.is-stale .age,
+.freshness.is-stale .next { color: var(--warn); font-weight: 600; }
+
+.refresh-form { display: flex; align-items: center; gap: 0.35rem; margin-left: auto; }
+.refresh-form label { color: var(--muted); }
+.refresh-form select, .refresh-form button { font-size: 1em; }
+
 .status-row { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.8rem 0 1.2rem; }
 
 .status {

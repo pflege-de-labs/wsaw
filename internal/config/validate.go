@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/robfig/cron/v3"
 
@@ -84,6 +85,7 @@ func (c *Config) Validate() error {
 	c.validateDetection(add)
 	c.validateConsent(add)
 	c.validateAPI(add)
+	c.validateAPIRefresh(add)
 	c.validateNotifiers(add)
 	c.validateLogging(add)
 
@@ -506,6 +508,25 @@ func validateStoreDriver(st Store, add addFunc) {
 	if st.MaxOpenConns != 0 || st.MaxIdleConns != 0 || st.ConnMaxLifetime != 0 {
 		add(0, "store.maxOpenConns",
 			"connection-pool settings apply to a server database; sqlite is deliberately serialised")
+	}
+}
+
+// validateAPIRefresh bounds the interface's default refresh interval
+// (Story 5.16, AC8). Every refresh re-renders the dashboard and reads every
+// series' latest result, so a one-second default across a large target list
+// would be a denial of service against one's own daemon.
+func (c *Config) validateAPIRefresh(add addFunc) {
+	const floor = 5 * time.Second
+
+	d := c.API.RefreshInterval.Duration()
+
+	switch {
+	case d < 0:
+		add(0, "api.refreshInterval", "must not be negative; 0 disables auto-refresh")
+	case d > 0 && d < floor:
+		add(0, "api.refreshInterval",
+			"%s is below the %s floor: every refresh re-renders the dashboard and reads every target's latest result",
+			d, floor)
 	}
 }
 

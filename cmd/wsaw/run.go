@@ -380,6 +380,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		WebUI:          webUI,
 		ReadOnly:       a.Config.API.ReadOnly,
 		AllowAdHocScan: allowAdHoc,
+		RefreshDefault: a.Config.API.RefreshInterval.Duration(),
 		MetricsEnabled: a.Config.Metrics.Enabled,
 		MetricsPath:    a.Config.Metrics.Path,
 		Version:        a.Version,

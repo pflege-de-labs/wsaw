@@ -219,6 +219,15 @@ api:
   listen: 127.0.0.1:8712
   token: "${env:WSAW_API_TOKEN}"
   webui: true
+  # How often the interface reloads itself, for a viewer who has not chosen
+  # otherwise on the page. 0 disables it; the floor is 5s, because every
+  # refresh re-renders the dashboard and reads every target's latest result.
+  #
+  # This is only the default. The interval is a property of the person looking
+  # rather than of the deployment, so it is set on the dashboard and
+  # remembered per browser, and can be given in the URL (?refresh=30) for a
+  # wall display that should need no setup.
+  refreshInterval: 30s
   # Read-only suits a deployment shared with reviewers.
   readOnly: false
   allowAdHocScan: true
