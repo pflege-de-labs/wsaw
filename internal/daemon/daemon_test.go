@@ -318,11 +318,12 @@ func TestNoCatchUpSpreadsStartup(t *testing.T) {
 
 	var targets []config.Resolved
 
-	// The startup delay is deterministic -- an FNV hash of "name/mode" -- so
-	// these names are not arbitrary: each one lands more than three seconds
-	// into the ten second window. Names whose delay falls near the assertion
-	// below make this test a race against the scheduler rather than a check
-	// of the jitter, which is how it used to fail on a loaded runner.
+	// The startup delay is deterministic -- an FNV hash of "name/mode" scaled
+	// across the window -- so these names are not arbitrary: each one lands
+	// more than eight seconds into the ten second window. Names whose delay
+	// falls near the assertion below make this test a race against the
+	// scheduler rather than a check of the jitter, which is how it used to
+	// fail on a loaded runner.
 	for _, name := range []string{"te", "th", "tl", "to"} {
 		tgt := target(name, "https://host"+name+".example.com/")
 		tgt.Jitter = 10 * time.Second
@@ -342,7 +343,7 @@ func TestNoCatchUpSpreadsStartup(t *testing.T) {
 
 	time.Sleep(120 * time.Millisecond)
 
-	// With a ten second jitter window and no target due for another three
+	// With a ten second jitter window and no target due for another eight
 	// seconds, nothing at all should have run yet.
 	if got := fake.count(); got != 0 {
 		t.Errorf("%d scans ran immediately after startup; the jitter window was not applied", got)

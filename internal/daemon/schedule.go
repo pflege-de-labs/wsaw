@@ -9,6 +9,7 @@ package daemon
 import (
 	"fmt"
 	"hash/fnv"
+	"math/bits"
 	"sync"
 	"time"
 
@@ -140,8 +141,29 @@ func (j *job) startupDelay() time.Duration {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(j.key()))
 
-	// Sum32 is 32 bits and window is positive, so this cannot overflow.
-	return time.Duration(int64(h.Sum32()) % int64(window))
+	return spread(h.Sum32(), window)
+}
+
+// spread maps a 32-bit hash onto [0, window) by scaling rather than by
+// modulo. Sum32 counted as nanoseconds tops out at about 4.3s, so a modulo
+// silently collapses every window wider than that: a five minute jitter --
+// the shipped default -- spread targets over four seconds and left the
+// restart storm it exists to prevent almost fully intact.
+//
+// The multiplication is done in 128 bits because hash*window overflows uint64
+// for any window past ~4.3s, which is precisely the range that matters here.
+func spread(hash uint32, window time.Duration) time.Duration {
+	if window <= 0 {
+		return 0
+	}
+
+	//nolint:gosec // window is positive above, so the conversion is exact.
+	hi, lo := bits.Mul64(uint64(hash), uint64(window))
+
+	// The product is below window<<32, so this quotient is below window and
+	// therefore always fits back into a Duration.
+	//nolint:gosec // bounded by window, which is a positive int64.
+	return time.Duration(hi<<32 | lo>>32)
 }
 
 // advance computes the next run time after a completed scan.
