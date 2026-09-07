@@ -542,6 +542,26 @@ The generic notifier also emits one event per change, which is right for a webho
 - AC6: A row whose series has a scan in flight still links to the last **finished** scan; the pending row itself links nowhere, because there is no result yet, and says so (Story 5.12).
 - AC7: It is a server-rendered anchor, so it works with JavaScript disabled and can be opened in a new tab, bookmarked, and copied like any other link (Story 5.7, AC6).
 
+### Story 5.16 — Refresh the dashboard on an interval, set from the dashboard
+
+*As an Operator, I want the dashboard to refresh itself on an interval I can change from the page, so that it can be left on a screen and still be worth looking at.*
+
+Today the interface reloads only while a scan is running (Story 5.12), and only at a fixed ten seconds. That is right for watching one scan finish and wrong for the other way this page is used: open on a second monitor or a wall display, where the question is not "is this scan done" but "is anything wrong right now". A page that last told the truth an hour ago is worse than no page, because it looks current.
+
+The interval belongs on the page rather than in the configuration file. It is a property of the person looking, not of the deployment: the same wsaw is watched by someone leaving it open all day and by someone who opened it to check one target. The configuration file sets the default a fresh browser gets; the page decides from there.
+
+- AC1: The dashboard refreshes itself on an interval, and the interval can be changed from a control on the dashboard, including turning it off.
+- AC2: The control works without JavaScript, like the rest of the core read paths (Story 5.7, AC6) — a form that submits, not a script that rewrites the page.
+- AC3: The choice is remembered per browser and survives a reload, without being written into wsaw's configuration. A viewer's display preference is not deployment configuration (Tenet 15), and one person's wall display must not change what anybody else sees.
+- AC4: The configured default is settable for the deployment, so a wall display is right the first time it is opened rather than after someone adjusts it.
+- AC5: **The page says when it was rendered and when it will refresh next.** A page that reloads silently invites the reader to trust whatever is on it; a page that says "as of 14:32, next in 20s" cannot mislead them about how old it is. This is the acceptance criterion that makes the rest of the story safe.
+- AC6: A stale page is obvious when refreshing has stopped working — a tab that lost its connection, a daemon that went away, a refresh turned off and forgotten. Whatever the reason, the reader must be able to tell that what they are looking at is old (Tenet 8 applied to the interface itself).
+- AC7: Turning refreshing off wins over the automatic reload that a running scan triggers. The reader asked for the page to hold still; the running scan is visible on it, and a manual reload is one keystroke away.
+- AC8: The interval has a floor, and the floor is documented. Every refresh re-renders the whole dashboard, which reads every series' latest result — a one-second interval on a list of two hundred targets is a denial of service against one's own daemon.
+- AC9: A refresh does not repeat an action or re-show a stale message. The dashboard's write actions are already POST-then-redirect, so a reload must not re-submit one, and the flash message from an earlier action must not reappear on every subsequent refresh as though it had just happened.
+- AC10: A refresh may be skipped while the tab is not visible, where the browser can say so. Refreshing a page nobody is looking at spends the daemon's time to no purpose. It is an enhancement, not a requirement: without it the page still refreshes correctly.
+- AC11: The interval can also be given in the URL, so a wall display can be pointed at one address and need no further setup, and a shared link carries what the sender was looking at.
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
