@@ -559,6 +559,23 @@ The generic notifier also emits one event per change, which is right for a webho
 - AC10: A refresh may be skipped while the tab is not visible, where the browser can say so. Refreshing a page nobody is looking at spends the daemon's time to no purpose. It is an enhancement, not a requirement: without it the page still refreshes correctly.
 - AC11: The interval can also be given in the URL, so a wall display can be pointed at one address and need no further setup, and a shared link carries what the sender was looking at.
 
+### Story 5.17 — Show captured screenshots on the scan detail page
+
+*As a Compliance Officer, I want to see the screenshots a scan captured on the scan's own page, so that the consent banner and what wsaw did about it are visible rather than merely described.*
+
+A scan with `screenshots: true` captures the page before the consent interaction and again after it. Both are stored, both are referenced in the result — and neither is shown anywhere. They are the most directly persuasive evidence wsaw produces: a reader can be told that the banner was rejected, or they can see the banner and then see it gone.
+
+The pair matters more than either image. "Before" is the banner as the site presented it, which is what a regulator asks about; "after" is what wsaw's interaction actually did, which is the claim every `reject`-mode finding rests on. Side by side they either corroborate the recorded consent outcome or contradict it, and a contradiction is exactly what somebody needs to see.
+
+- AC1: The scan detail page shows the screenshots the scan captured, before and after the consent interaction, presented as a pair rather than as two unrelated files.
+- AC2: A scan that captured none says so, and says how to enable them, instead of rendering an empty frame or nothing at all (Tenet 5).
+- AC3: A screenshot whose stored file is gone — pruned, or on a volume that went away — is reported as missing rather than shown as a broken image. Evidence that has expired must not look like evidence that never existed.
+- AC4: Each screenshot shows its SHA-256 and its size, and offers the original file for download. A screenshot in a compliance pack is worth only as much as the reader's ability to check it against the digest the scan recorded.
+- AC5: **A screenshot may be rendered; a stored response body still may not.** Story 5.11's AC5 currently forbids both, and this story narrows it: a screenshot is a PNG that Chrome produced under wsaw's control, so the page influenced its pixels and not its bytes, whereas a response body *is* the page's bytes. Screenshots are therefore served with an image content type and nothing else — `nosniff`, no script, a policy that permits an image and forbids everything else — and bodies keep their opaque attachment.
+- AC6: The page stays cheap to open. Screenshots are large, so they are scaled for display, loaded lazily, and never inlined into the HTML; a result page must not cost megabytes before a reader has asked to look at one.
+- AC7: The images are reachable without JavaScript, like the rest of the core read paths (Story 5.7, AC6).
+- AC8: Screenshots can contain personal data, so nothing here makes them easier to reach than the results they belong to: same authentication, same read-only rules, same retention. They remain off by default (Tenet 19).
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
