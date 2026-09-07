@@ -576,6 +576,20 @@ The pair matters more than either image. "Before" is the banner as the site pres
 - AC7: The images are reachable without JavaScript, like the rest of the core read paths (Story 5.7, AC6).
 - AC8: Screenshots can contain personal data, so nothing here makes them easier to reach than the results they belong to: same authentication, same read-only rules, same retention. They remain off by default (Tenet 19).
 
+### Story 5.18 — Do not auto-refresh the scan detail page
+
+*As a Compliance Officer reading one scan, I want its page to hold still, because nothing on it can change and being reloaded costs me my place.*
+
+Story 5.16 gave the interface an auto-refresh interval, and it applies to every page. On the dashboard and on a target's history that is the point: a scan finishes, a new one appears, a series goes stale. A scan detail page is the opposite — it is one finished scan, an immutable record. Refreshing it re-renders identical content, and the pages worth reading closely are exactly the ones with the longest asset table and the screenshots, where a reload throws away scroll position, a filter that was just typed, and an image the reader was looking at.
+
+- AC1: The scan detail page does not auto-refresh, whatever interval is in force for the interface.
+- AC2: It says why, rather than quietly behaving differently from the page the reader came from. Somebody who set thirty seconds on the dashboard and then opened a scan should be told that this page holds still because the scan is finished, not left wondering whether refreshing is broken.
+- AC3: The page still says when it was rendered. That remains the honest anchor for a reader who has had the tab open for an hour — but there is no "next refresh in" claim, and no going-stale warning, because a finished scan does not go stale.
+- AC4: An interval given in the URL does not re-enable it here either. `?refresh=30` exists so a wall display needs no setup, and a wall display of one finished scan still has nothing to refresh; the parameter keeps working for the pages where something can change.
+- AC5: The interval control stays usable on this page — a reader may set the interface's interval from anywhere — but must not suggest it affects the page they are on.
+- AC6: Pages where something can change keep refreshing exactly as they do now: the dashboard, and a target's history, where a running scan finishes and a new result appears.
+- AC7: A manual reload still works and still shows the same record. Not refreshing is about not doing it unasked, not about making the page harder to refresh.
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
