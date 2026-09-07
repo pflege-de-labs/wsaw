@@ -46,8 +46,16 @@ func (j *job) key() string {
 	return j.target.Name + "/" + string(j.mode)
 }
 
-// schedule builds the job list from resolved targets.
-func buildJobs(targets []config.Resolved, now time.Time, catchUp bool) ([]*job, error) {
+// lastScanFunc reports when a target and mode were last scanned, and whether
+// they ever were.
+type lastScanFunc func(target string, mode model.ConsentMode) (time.Time, bool)
+
+// buildJobs builds the job list from resolved targets.
+//
+// lastScan may be nil, in which case every job starts as though its target
+// had never been scanned. That is only correct for a process that never
+// restarts, which is why the daemon always supplies it in practice.
+func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan lastScanFunc) ([]*job, error) {
 	var jobs []*job
 
 	for _, t := range targets {
@@ -63,6 +71,23 @@ func buildJobs(targets []config.Resolved, now time.Time, catchUp bool) ([]*job, 
 				j.schedule = sched
 			}
 
+			// Seeded from the store, so a restart continues a target's
+			// schedule instead of starting it over. Without this the minimum
+			// interval has nothing to measure from and every target is due at
+			// startup.
+			if lastScan != nil {
+				if at, ok := lastScan(t.Name, mode); ok && !at.IsZero() {
+					// A timestamp in the future would park the job for as
+					// long as the clock is wrong, so it is treated as now:
+					// clock skew must not stop a watcher watching (Tenet 8).
+					if at.After(now) {
+						at = now
+					}
+
+					j.lastRun = at
+				}
+			}
+
 			j.next = j.firstRun(now, catchUp)
 			jobs = append(jobs, j)
 		}
@@ -73,19 +98,34 @@ func buildJobs(targets []config.Resolved, now time.Time, catchUp bool) ([]*job, 
 
 // firstRun decides when a job runs for the first time after startup.
 //
-// Without catch-up the first run is soon but jittered, so a restart does not
-// fire every target at once — a restart storm against a shared origin is
-// exactly the behaviour that gets a scanner blocked.
+// A target with a known last scan continues its schedule from that scan
+// rather than from the restart: a daily target scanned an hour ago is due in
+// twenty-three hours, not now. Only a target that is genuinely overdue — or
+// has never been scanned — runs at startup, and then soon but jittered, so a
+// restart does not fire every overdue target at once. A restart storm against
+// a shared origin is exactly the behaviour that gets a scanner blocked.
 func (j *job) firstRun(now time.Time, catchUp bool) time.Time {
+	// A cron schedule is absolute: the next occurrence does not depend on when
+	// the process started or when the target last ran. The minimum interval
+	// still applies to it, and now has a last scan to measure from.
 	if j.schedule != nil {
 		return j.schedule.Next(now)
 	}
 
+	soon := now.Add(j.startupDelay())
 	if catchUp {
-		return now
+		soon = now
 	}
 
-	return now.Add(j.startupDelay())
+	if j.lastRun.IsZero() || j.interval <= 0 {
+		return soon
+	}
+
+	if due := j.lastRun.Add(j.interval + j.jitter(j.lastRun)); due.After(now) {
+		return due
+	}
+
+	return soon
 }
 
 // startupDelay spreads jobs deterministically across the jitter window. It is

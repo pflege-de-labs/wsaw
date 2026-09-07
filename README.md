@@ -339,6 +339,8 @@ State lives in the platform's directory by default (`$XDG_STATE_HOME/wsaw` on Li
 
 wsaw scans other people's infrastructure, so politeness is enforced in code rather than left to configuration discipline: per-origin concurrency separate from worker concurrency, a minimum interval applied as a hard floor after the schedule, deterministic startup jitter, and catch-up off by default so a restart is not a scan storm.
 
+A restart also continues each target's schedule instead of starting it over. The scheduler reads each target's last scan from the store when it starts, so a daily target scanned an hour before a restart is next due in twenty-three hours — not immediately. Otherwise the minimum interval would have nothing to measure from, and a daemon that restarts on every deploy would scan everything on every deploy.
+
 `robots.txt` handling is **per target** (`ignore` or `respect`). Scanning your own properties argues for one, scanning someone else's argues for the other, and there is no honest universal default.
 
 ## Privacy

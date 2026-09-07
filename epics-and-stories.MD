@@ -221,6 +221,7 @@ Run as a long-lived service that scans a list of targets on a schedule.
 - AC3: A per-origin rate limit and a minimum interval between scans of the same target are enforced.
 - AC4: `--once` runs the full target list a single time and exits with the CI exit-code contract (Story 5.5).
 - AC5: Missed schedules during downtime are not backfilled by default; catch-up is opt-in.
+- AC6: **A restart continues each target's schedule rather than starting it over.** The scheduler's own record of when a target last ran is in memory, so it is seeded from the store at startup: a daily target scanned an hour before a restart is due in twenty-three hours, not immediately. Without this, AC3's minimum interval has nothing to measure from and AC5 is vacuous — every target looks as though it had never been scanned, and a daemon that restarts on each deploy scans everything on each deploy. Only a genuinely overdue target runs at startup, and then jittered.
 
 ### Story 3.3 — Concurrency and browser pooling
 

@@ -113,6 +113,7 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		ShutdownGrace:        a.Config.Scheduler.ShutdownGrace.Or(30 * time.Second),
 		FlapWindow:           a.Config.Detection.FlapWindow.Duration(),
 		Logger:               a.Logger,
+		LastScan:             a.LastScan,
 		OnQueueDepth:         a.Metrics.SetQueueDepth,
 		OnRetry:              func(string, model.ConsentMode, int) { a.Metrics.ScanRetried() },
 		OnRetriesExhausted: func(string, model.ConsentMode, int) {

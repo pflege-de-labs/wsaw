@@ -544,6 +544,40 @@ func (a *App) Trigger(ctx context.Context, target string, mode model.ConsentMode
 	return a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceAPI), t, mode)
 }
 
+// LastScan reports when a target and consent mode were last scanned,
+// according to the store.
+//
+// The scheduler needs it at startup: its own record of the last run is
+// in-memory, so without this a restart makes every target look as though it
+// had never been scanned and the whole list is due at once (Tenet 17).
+//
+// The last *attempt* is what matters here, not the last success. A scan that
+// failed still asked the site for the page, so it still counts against how
+// often wsaw is willing to ask again.
+func (a *App) LastScan(target string, mode model.ConsentMode) (time.Time, bool) {
+	if a.Store == nil {
+		return time.Time{}, false
+	}
+
+	summaries, err := a.Store.ListResults(target, mode, 1)
+	if err != nil {
+		// A store that cannot answer must not make the scheduler think the
+		// target is new — that is the behaviour this exists to prevent. It is
+		// logged and reported as unknown, which leaves the target due soon
+		// rather than silently never.
+		a.Logger.Warn("could not read a target's last scan; its schedule will restart",
+			"target", target, "consent_mode", string(mode), "error", err)
+
+		return time.Time{}, false
+	}
+
+	if len(summaries) == 0 {
+		return time.Time{}, false
+	}
+
+	return summaries[0].StartedAt, true
+}
+
 // RunningScans lists the scans in flight, for the API and the web interface.
 // It is empty rather than an error when no scanner exists, because a read-only
 // command legitimately has none.

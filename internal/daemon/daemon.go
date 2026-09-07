@@ -59,6 +59,21 @@ type Options struct {
 
 	// OnQueueDepth reports the number of jobs waiting, for metrics.
 	OnQueueDepth func(int)
+
+	// LastScan reports when a target and consent mode were last scanned,
+	// according to the store, and whether they ever were.
+	//
+	// The scheduler's own record of that lives in memory, so without this a
+	// restart makes every target look as though it had never been scanned:
+	// the minimum interval is skipped and the whole list fires inside the
+	// startup jitter window. For a daemon that restarts on every deploy that
+	// turns a daily schedule into "on every deploy", against somebody else's
+	// site (Tenet 17).
+	//
+	// It is a function rather than the store itself so the scheduler stays
+	// testable without one (Tenet 13). Optional: without it the behaviour is
+	// the old one, which is only correct for a process that never restarts.
+	LastScan func(target string, mode model.ConsentMode) (time.Time, bool)
 }
 
 func (o *Options) withDefaults() Options {
@@ -112,7 +127,7 @@ func New(s Scanner, sink Sink, targets []config.Resolved, opts Options) (*Daemon
 
 	resolved := opts.withDefaults()
 
-	jobs, err := buildJobs(targets, time.Now(), resolved.CatchUp)
+	jobs, err := buildJobs(targets, time.Now(), resolved.CatchUp, resolved.LastScan)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +226,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) applyReload(targets []config.Resolved) {
-	jobs, err := buildJobs(targets, time.Now(), d.opts.CatchUp)
+	jobs, err := buildJobs(targets, time.Now(), d.opts.CatchUp, d.opts.LastScan)
 	if err != nil {
 		// A reload that cannot be applied leaves the previous schedule
 		// running; a watcher must not stop watching because of a bad edit.
