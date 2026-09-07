@@ -259,3 +259,169 @@ func TestScreenshotsNeedTheSameAuthenticationAsEverythingElse(t *testing.T) {
 		t.Errorf("an unauthenticated request for a screenshot = %d, want 401", resp.StatusCode)
 	}
 }
+
+// A pair whose two frames are the same image asserts an interaction that
+// changed nothing. For a scan that never interacted at all — consent mode
+// "none", or a page with no banner — that is a lie twice over, and it is what
+// every such scan stored before capture stopped shooting the second frame.
+func TestAnUnchangedPairIsShownAsOneFrame(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	beforeRef, err := f.store.PutArtifact("screenshot-before-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	afterRef, err := f.store.PutArtifact("screenshot-after-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-1", model.ConsentNone, time.Now(), func(res *model.Result) {
+		res.Consent = model.Consent{
+			Outcome: model.OutcomeNotNeeded,
+			Reason:  "consent mode is none; the page was not interacted with",
+		}
+		res.Screenshots = []model.Artifact{
+			{Kind: "screenshot-before-consent", Ref: beforeRef, SHA256: "samedigest", Bytes: 1},
+			{Kind: "screenshot-after-consent", Ref: afterRef, SHA256: "samedigest", Bytes: 1},
+		}
+	})
+
+	html := body(t, f.get("/results/site/none/scan-1", "Accept", "text/html"))
+
+	if strings.Contains(html, "/api/v1/artifacts/"+afterRef) {
+		t.Error("the duplicate frame is still shown as an image of its own")
+	}
+
+	if strings.Contains(html, "After the consent interaction") {
+		t.Error("the page still claims a consent interaction happened")
+	}
+
+	if !strings.Contains(html, "Page as loaded") {
+		t.Error("the remaining frame is not labelled as the page as it loaded")
+	}
+
+	if !strings.Contains(html, "never interacted with") {
+		t.Error("the page does not say why there is only one frame")
+	}
+
+	if !strings.Contains(html, "/api/v1/artifacts/"+beforeRef) {
+		t.Error("the surviving frame is not shown")
+	}
+}
+
+// A scan that captured only the one frame — what capture stores now when
+// nothing interacts with the page — must not be captioned as the "before" of
+// an interaction that never came.
+func TestASoleFrameFromAnUninteractedScanSaysSo(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	ref, err := f.store.PutArtifact("screenshot-before-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-1", model.ConsentNone, time.Now(), func(res *model.Result) {
+		res.Consent = model.Consent{
+			Outcome: model.OutcomeNotNeeded,
+			Reason:  "consent mode is none; the page was not interacted with",
+		}
+		res.Screenshots = []model.Artifact{
+			{Kind: "screenshot-before-consent", Ref: ref, SHA256: "digest", Bytes: 1},
+		}
+	})
+
+	html := body(t, f.get("/results/site/none/scan-1", "Accept", "text/html"))
+
+	if strings.Contains(html, "Before the consent interaction") {
+		t.Error("the frame is captioned as the before of an interaction that never happened")
+	}
+
+	if !strings.Contains(html, "Page as loaded") {
+		t.Error("the frame is not labelled as the page as it loaded")
+	}
+
+	if !strings.Contains(html, "no consent interaction was performed") {
+		t.Error("the page does not say why there is no second frame")
+	}
+}
+
+// A real interaction that happens to leave the page pixel-identical is a
+// different statement, and must read as one.
+func TestAnUnchangedPairAfterARealInteractionSaysThat(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	beforeRef, err := f.store.PutArtifact("screenshot-before-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	afterRef, err := f.store.PutArtifact("screenshot-after-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-1", model.ConsentReject, time.Now(), func(res *model.Result) {
+		res.Consent = model.Consent{Outcome: model.OutcomeApplied, CMP: "Consentmanager"}
+		res.Screenshots = []model.Artifact{
+			{Kind: "screenshot-before-consent", Ref: beforeRef, SHA256: "samedigest", Bytes: 1},
+			{Kind: "screenshot-after-consent", Ref: afterRef, SHA256: "samedigest", Bytes: 1},
+		}
+	})
+
+	html := body(t, f.get("/results/site/reject/scan-1", "Accept", "text/html"))
+
+	if !strings.Contains(html, "left the page looking") {
+		t.Error("the page does not say that the interaction changed nothing visible")
+	}
+
+	if strings.Contains(html, "never interacted with") {
+		t.Error("the page denies an interaction that did happen")
+	}
+}
+
+// An interaction that was attempted and failed is a third statement again:
+// the page is unchanged because the attempt did not work, which is a finding.
+func TestAnUnchangedPairAfterAFailedInteractionSaysThat(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	beforeRef, err := f.store.PutArtifact("screenshot-before-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	afterRef, err := f.store.PutArtifact("screenshot-after-consent", onePixelPNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-1", model.ConsentAccept, time.Now(), func(res *model.Result) {
+		res.Consent = model.Consent{
+			Outcome: model.OutcomeFailed,
+			Reason:  "no accept control could be found",
+		}
+		res.Screenshots = []model.Artifact{
+			{Kind: "screenshot-before-consent", Ref: beforeRef, SHA256: "samedigest", Bytes: 1},
+			{Kind: "screenshot-after-consent", Ref: afterRef, SHA256: "samedigest", Bytes: 1},
+		}
+	})
+
+	html := body(t, f.get("/results/site/accept/scan-1", "Accept", "text/html"))
+
+	if !strings.Contains(html, "the consent interaction failed and left the page unchanged") {
+		t.Error("the page does not say that the unchanged frame is the result of a failed interaction")
+	}
+
+	if strings.Contains(html, "never interacted with") {
+		t.Error("the page denies an interaction that was attempted")
+	}
+}

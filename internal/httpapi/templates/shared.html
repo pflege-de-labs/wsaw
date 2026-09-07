@@ -71,6 +71,7 @@
       {{range .Screenshots}}
       <figure class="shot">
         <figcaption>{{.Label}}</figcaption>
+        {{if .Note}}<p class="shot-note">{{.Note}}</p>{{end}}
         {{if .Missing}}
           <p class="empty">This screenshot was captured but is no longer stored.</p>
         {{else}}

@@ -264,6 +264,11 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 }
 
 .shot figcaption { font-weight: 600; margin-bottom: 0.4rem; }
+
+/* The note under a caption carries what the caption cannot: that this single
+   frame is the page as it loaded, because nothing interacted with it. It is
+   part of the evidence, so it reads as text rather than as a tooltip. */
+.shot-note { font-size: 0.85em; color: var(--muted); margin: 0 0 0.4rem; }
 .shot img {
   display: block;
   width: 100%;

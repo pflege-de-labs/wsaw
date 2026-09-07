@@ -385,6 +385,10 @@ type screenshotView struct {
 	Kind  string
 	Ref   string
 
+	// Note explains a frame whose label alone would mislead — above all the
+	// single frame left when nothing ever interacted with the page.
+	Note string
+
 	SHA256 string
 	Bytes  int64
 
@@ -402,13 +406,13 @@ type screenshotView struct {
 // they say.
 func (s *Server) screenshotViews(res *model.Result) []screenshotView {
 	labels := map[string]string{
-		"screenshot-before-consent": "Before the consent interaction",
-		"screenshot-after-consent":  "After the consent interaction",
+		kindBeforeConsent: "Before the consent interaction",
+		kindAfterConsent:  "After the consent interaction",
 	}
 
 	order := map[string]int{
-		"screenshot-before-consent": 0,
-		"screenshot-after-consent":  1,
+		kindBeforeConsent: 0,
+		kindAfterConsent:  1,
 	}
 
 	out := make([]screenshotView, 0, len(res.Screenshots))
@@ -455,7 +459,81 @@ func (s *Server) screenshotViews(res *model.Result) []screenshotView {
 		}
 	})
 
-	return out
+	return collapseUninteracted(res, out)
+}
+
+// Screenshot artifact kinds, as capture records them.
+const (
+	kindBeforeConsent = "screenshot-before-consent"
+	kindAfterConsent  = "screenshot-after-consent"
+)
+
+// pageAsLoadedLabel names the single frame a scan that never touched the page
+// has to show.
+const pageAsLoadedLabel = "Page as loaded"
+
+// collapseUninteracted rewrites the pair for a scan whose consent interaction
+// never touched the page.
+//
+// Two frames captioned "before" and "after" assert that an interaction
+// happened between them. Consent mode "none" and a page with no banner both
+// return from the consent hook without a click, so the second frame is the
+// first one over again — and scans taken before capture stopped shooting it
+// hold a literal byte-for-byte duplicate, which reads as "the interaction
+// changed nothing" when in truth there was no interaction. Either way the
+// honest presentation is one frame of the page as it loaded, said plainly.
+func collapseUninteracted(res *model.Result, views []screenshotView) []screenshotView {
+	before, after := -1, -1
+
+	for i, v := range views {
+		switch v.Kind {
+		case kindBeforeConsent:
+			before = i
+		case kindAfterConsent:
+			after = i
+		}
+	}
+
+	if before < 0 {
+		return views
+	}
+
+	// Not-needed is the outcome for both ways of reaching the hook's exit
+	// without acting: the mode was "none", or there was no banner.
+	uninteracted := res.Consent.Outcome == model.OutcomeNotNeeded
+
+	duplicate := after >= 0 &&
+		views[before].SHA256 != "" &&
+		views[before].SHA256 == views[after].SHA256
+
+	switch {
+	case duplicate:
+		views[before].Label = pageAsLoadedLabel
+
+		switch {
+		case uninteracted:
+			views[before].Note = "the page was never interacted with; " +
+				"the second frame this scan stored is the same image, byte for byte"
+		case res.Consent.Outcome == model.OutcomeFailed:
+			views[before].Note = "the consent interaction failed and left the page " +
+				"unchanged: the after frame is the same image, byte for byte"
+		default:
+			views[before].Note = "the consent interaction left the page looking " +
+				"identical: the after frame is the same image, byte for byte"
+		}
+
+		views = append(views[:after], views[after+1:]...)
+
+	case after < 0 && uninteracted:
+		views[before].Label = pageAsLoadedLabel
+		views[before].Note = "no consent interaction was performed, so there is no second frame"
+
+		if res.Consent.Reason != "" {
+			views[before].Note += ": " + res.Consent.Reason
+		}
+	}
+
+	return views
 }
 
 // maxRenderedRequests bounds the request table. A page with tens of thousands
