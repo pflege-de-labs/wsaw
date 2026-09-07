@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -318,13 +319,37 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 type seriesData struct {
 	Target   string
 	Mode     model.ConsentMode
-	Results  []store.Summary
+	Results  []seriesRow
 	Baseline *store.Baseline
+
+	// BaselineLink opens the approved scan's result page, and is empty when
+	// there is nothing to open (Story 5.20, AC1 and AC6).
+	BaselineLink string
+	// BaselineInHistory says whether the approved scan is one of the rows
+	// below. It is not the same question as whether the baseline exists: the
+	// history is capped, and retention prunes beyond it, so an old baseline
+	// can be real and absent at once (Story 5.20, AC5).
+	BaselineInHistory bool
+	// BaselinePruned marks a baseline whose own result has been pruned. The
+	// baseline itself survives — it holds a copy of the approved scan — but
+	// there is no result page left to link to (Story 5.20, AC6).
+	BaselinePruned bool
 
 	// Running is shown above the history as a pending row, because the scan
 	// that is happening right now is the one an operator is usually looking
 	// for and it is in no other view (Story 5.12, AC1).
 	Running []scanner.Running
+}
+
+// seriesRow is one scan in the history, and whether it is the one every other
+// row is measured against.
+type seriesRow struct {
+	store.Summary
+
+	// IsBaseline marks the approved baseline. A reader who cannot tell which
+	// row it is has to match hex digits by eye against the panel above
+	// (Story 5.20, AC2).
+	IsBaseline bool
 }
 
 func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +368,6 @@ func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
 	data := seriesData{
 		Target:  target,
 		Mode:    mode,
-		Results: results,
 		Running: runningFor(s.running(), target, mode),
 	}
 
@@ -351,7 +375,75 @@ func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
 		data.Baseline = b
 	}
 
+	data.Results = s.seriesRows(results, data.Baseline)
+	s.describeBaseline(&data)
+
 	s.renderPage(w, r, "series.html", target+" — "+string(mode), data, len(data.Running))
+}
+
+// seriesRows marks the history row that is the baseline.
+func (s *Server) seriesRows(results []store.Summary, baseline *store.Baseline) []seriesRow {
+	out := make([]seriesRow, 0, len(results))
+
+	for _, r := range results {
+		out = append(out, seriesRow{
+			Summary:    r,
+			IsBaseline: baseline != nil && r.ScanID == baseline.ScanID,
+		})
+	}
+
+	return out
+}
+
+// describeBaseline works out what the panel above the history can say about
+// the approved scan: whether it can be opened, and whether it is one of the
+// rows below.
+//
+// The two are separate questions. A baseline holds its own copy of the
+// approved result so that retention cannot invalidate it, which means it can
+// outlive the result it was approved from — and the history is capped, so a
+// baseline can also be perfectly readable and simply older than the window.
+// An unmarked table must not be readable as "none of these is the baseline"
+// (Tenet 5).
+func (s *Server) describeBaseline(data *seriesData) {
+	if data.Baseline == nil {
+		return
+	}
+
+	for _, r := range data.Results {
+		if r.IsBaseline {
+			data.BaselineInHistory = true
+
+			break
+		}
+	}
+
+	if data.BaselineInHistory {
+		data.BaselineLink = resultPath(data.Target, data.Mode, data.Baseline.ScanID)
+
+		return
+	}
+
+	// Asked rather than assumed, and asked without reading the document: a
+	// page must not load megabytes of result to find out whether it may
+	// offer an anchor to it.
+	switch found, err := s.deps.Store.HasResult(data.Target, data.Mode, data.Baseline.ScanID); {
+	case err != nil:
+		// A storage failure is not evidence that the result is gone, so the
+		// link is withheld rather than the absence asserted.
+		s.deps.Logger.Warn("could not check whether the baseline result is still stored",
+			"target", data.Target, "mode", string(data.Mode), "scan", data.Baseline.ScanID, "error", err)
+	case found:
+		data.BaselineLink = resultPath(data.Target, data.Mode, data.Baseline.ScanID)
+	default:
+		data.BaselinePruned = true
+	}
+}
+
+// resultPath is the address of one scan's result page.
+func resultPath(target string, mode model.ConsentMode, scanID string) string {
+	return "/results/" + url.PathEscape(target) + "/" + url.PathEscape(string(mode)) +
+		"/" + url.PathEscape(scanID)
 }
 
 type resultData struct {

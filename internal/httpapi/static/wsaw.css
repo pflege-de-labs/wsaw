@@ -129,6 +129,11 @@ tr.row-running {
 }
 
 table.running { margin-bottom: 1.4rem; }
+
+tr.row-baseline {
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+  box-shadow: inset 3px 0 0 0 var(--ok);
+}
 table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3rem; }
 
 .requests td { font-size: 0.9em; }
@@ -230,6 +235,10 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 
 .badge-readonly { border-color: var(--warn); color: var(--warn); }
 .badge-stale, .badge-warn { border-color: var(--warn); color: var(--warn); }
+/* The baseline marker. The word is the marker; the colour only reinforces it,
+   because a reader who cannot see the tint must still be able to tell which
+   row the other rows are measured against (Story 5.20, AC2). */
+.badge-baseline { border-color: var(--ok); color: var(--ok); }
 
 .sev-info { color: var(--muted); }
 .sev-low { color: var(--muted); }

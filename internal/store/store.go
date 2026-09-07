@@ -609,6 +609,44 @@ func (s *Store) ListResults(target string, mode model.ConsentMode, limit int) ([
 	return out, nil
 }
 
+// HasResult reports whether a result is still stored, without reading it.
+//
+// A stored document runs to megabytes, and the interface asks this question
+// to decide whether it may link to a result — a page must not load the whole
+// record to find out that it can offer an anchor to it.
+func (s *Store) HasResult(target string, mode model.ConsentMode, scanID string) (bool, error) {
+	ctx, cancel := s.opCtx()
+	defer cancel()
+
+	const q = `select 1 from results where target = ? and consent_mode = ? and scan_id = ?`
+
+	var found bool
+
+	err := s.retry(ctx, "checking for a result", func(ctx context.Context) error {
+		found = false
+
+		var one int
+
+		err := s.db.QueryRowContext(ctx, s.q(q), target, string(mode), scanID).Scan(&one)
+
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+
+		found = true
+
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking for result %s in %s/%s: %w", scanID, target, mode, err)
+	}
+
+	return found, nil
+}
+
 // GetResult returns one result by scan ID.
 func (s *Store) GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
 	ctx, cancel := s.opCtx()

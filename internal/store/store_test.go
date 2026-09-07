@@ -203,6 +203,38 @@ func TestGetResultNotFound(t *testing.T) {
 	}
 }
 
+// HasResult answers the interface's "may I link to this?" without reading a
+// document that runs to megabytes.
+func TestHasResult(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mode   model.ConsentMode
+		scanID string
+		want   bool
+	}{
+		{"stored", model.ConsentReject, "scan-1", true},
+		{"absent", model.ConsentReject, "scan-2", false},
+		{"another mode", model.ConsentAccept, "scan-1", false},
+	} {
+		got, err := s.HasResult("site", tc.mode, tc.scanID)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		if got != tc.want {
+			t.Errorf("%s: HasResult = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestSeriesAreIsolatedByConsentMode: the store must not let a query for one
 // mode return another mode's results, since comparing across modes is invalid.
 func TestSeriesAreIsolatedByConsentMode(t *testing.T) {

@@ -6,9 +6,22 @@
 
 {{if .Baseline}}
 <div class="panel">
-  <strong>Approved baseline:</strong> scan <code>{{.Baseline.ScanID}}</code>,
+  {{/* The baseline is what every change on every scan below is measured
+       against, so it is the one thing on this page that must be openable
+       (Story 5.20, AC1). */}}
+  <strong>Approved baseline:</strong> scan
+  {{if .BaselineLink}}<a href="{{.BaselineLink}}"><code>{{.Baseline.ScanID}}</code></a>{{else}}<code>{{.Baseline.ScanID}}</code>{{end}},
   approved {{time .Baseline.ApprovedAt}}{{if .Baseline.ApprovedBy}} by {{.Baseline.ApprovedBy}}{{end}}.
   {{if .Baseline.Note}}<p class="note">{{.Baseline.Note}}</p>{{end}}
+  {{/* An unmarked table must never read as "none of these is the baseline"
+       (Story 5.20, AC5 and AC6). */}}
+  {{if .BaselinePruned}}
+    <p class="note">This scan has since been pruned by retention, so there is no result page to
+      open. The baseline itself is unaffected: it holds its own copy of the approved scan, and
+      that copy is still what the scans below are compared against.</p>
+  {{else if not .BaselineInHistory}}
+    <p class="note">It is older than the scans listed below, so it is not marked in the history.</p>
+  {{end}}
 </div>
 {{else}}
 <div class="panel panel-muted">
@@ -55,8 +68,12 @@
     </tr>
   {{end}}
   {{range .Results}}
-    <tr>
-      <td><a href="/results/{{.Target}}/{{.ConsentMode}}/{{.ScanID}}"><code>{{.ScanID}}</code></a></td>
+    <tr{{if .IsBaseline}} class="row-baseline"{{end}}>
+      {{/* The marking is a word, not a colour, and it does not cost the row
+           the link every other row has (Story 5.20, AC2 and AC3). */}}
+      <td><a href="/results/{{.Target}}/{{.ConsentMode}}/{{.ScanID}}"><code>{{.ScanID}}</code></a>
+        {{if .IsBaseline}}<span class="badge badge-baseline"
+          title="every change reported on the other scans is measured against this one">baseline</span>{{end}}</td>
       <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
       <td>{{dur .Duration}}</td>
       <td><span class="term term-{{.Termination}}">{{.Termination}}</span>
@@ -66,7 +83,11 @@
       <td class="num">{{.ThirdPartyDomains}}</td>
       <td class="num {{if .PreConsentDomains}}warn{{end}}">{{.PreConsentDomains}}</td>
       <td>
-        {{if not $page.ReadOnly}}
+        {{/* Approving the baseline again would write an audit record for a
+             change that did not happen (Story 5.20, AC4). */}}
+        {{if .IsBaseline}}
+        <span class="muted">current baseline</span>
+        {{else if not $page.ReadOnly}}
         <form method="post" action="/approve/{{.Target}}/{{.ConsentMode}}" class="inline">
           <input type="hidden" name="csrf" value="{{$page.CSRF}}">
           <input type="hidden" name="scanId" value="{{.ScanID}}">
