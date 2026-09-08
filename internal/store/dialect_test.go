@@ -70,6 +70,98 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 	}
 }
 
+// TestEveryDialectDeclaresTheResultColumns is the same parity check for the
+// columns a result row carries (Stories 8.2 and 8.3). A dialect that missed one
+// would fail on the insert rather than on the migration, and only for whichever
+// database the deployment happened to be using.
+func TestEveryDialectDeclaresTheResultColumns(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range Drivers() {
+		d, err := dialectFor(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ddl := strings.ToLower(strings.Join(flatten(d.migrations()), "\n"))
+
+		for _, column := range append(append([]string{}, resultKey...), resultUpdate...) {
+			if !strings.Contains(ddl, column) {
+				t.Errorf("%s never declares the %s column of the results table", name, column)
+			}
+		}
+	}
+}
+
+// TestOnlyMySQLTreatsADropAsAlreadyApplied pins the one tolerance in the
+// migration mechanism (Story 8.4).
+//
+// MySQL commits DDL implicitly, so it can apply a migration and then lose the
+// record that it did; recognising "that column is already gone" — and "that
+// column is already there", which is the same accident one migration earlier —
+// is what keeps the next start from refusing a schema that is in fact correct.
+// The other two say `if exists` in the statement and roll back with their
+// version record, so tolerating anything for them would only hide a real
+// failure.
+func TestOnlyMySQLTreatsADropAsAlreadyApplied(t *testing.T) {
+	t.Parallel()
+
+	applied := []*gomysql.MySQLError{
+		{Number: errCantDropField, Message: "Can't DROP 'document'"},
+		{Number: errDupFieldName, Message: "Duplicate column name 'artifact_ref'"},
+	}
+
+	for _, name := range Drivers() {
+		d, err := dialectFor(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := name == DriverMySQL
+
+		for _, myErr := range applied {
+			if got := d.alreadyApplied(myErr); got != want {
+				t.Errorf("%s.alreadyApplied(%d) = %v, want %v", name, myErr.Number, got, want)
+			}
+		}
+
+		// Nothing else qualifies, in any dialect: a lock timeout or a syntax
+		// error must still fail the migration.
+		for _, other := range []error{
+			&gomysql.MySQLError{Number: 1205, Message: "lock wait timeout"},
+			errors.New("syntax error"),
+		} {
+			if d.alreadyApplied(other) {
+				t.Errorf("%s.alreadyApplied(%v) is true, which would skip a statement that failed", name, other)
+			}
+		}
+	}
+}
+
+// TestEveryDialectCountsDocumentBytes: length() counts characters in two of
+// the three, and a dry run that reported characters would tell an operator to
+// size a bucket for less than it will hold (Story 8.4, AC6).
+func TestEveryDialectCountsDocumentBytes(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range Drivers() {
+		d, err := dialectFor(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expr := d.documentByteLength()
+
+		if !strings.Contains(expr, documentColumn) {
+			t.Errorf("%s measures %q, which does not read the document column", name, expr)
+		}
+
+		if name != DriverMySQL && !strings.Contains(expr, "octet_length") && !strings.Contains(expr, "as blob") {
+			t.Errorf("%s measures %q, which counts characters rather than bytes", name, expr)
+		}
+	}
+}
+
 func flatten(groups [][]string) []string {
 	var out []string
 	for _, g := range groups {

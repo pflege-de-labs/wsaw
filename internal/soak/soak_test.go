@@ -57,7 +57,7 @@ func TestSoak(t *testing.T) {
 
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{Path: dir + "/soak.db", ArtifactDir: dir + "/artifacts"})
+	st, err := store.Open(t.Context(), store.Options{Path: dir + "/soak.db", ArtifactDir: dir + "/artifacts"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -358,9 +360,32 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 // deserves. It is shared by the authenticated route and by the share-link
 // route, so a shared reader cannot be served bytes under weaker headers than
 // an operator would get.
+//
+// The object is streamed rather than buffered. Evidence now lives in a bucket
+// and a result document runs to tens of megabytes, so reading it whole before
+// the first byte reaches the client would make the daemon's memory track the
+// size of the largest artifact times the number of readers (Story 8.1, AC7).
 func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref string) {
-	data, err := s.deps.Store.GetArtifact(ref)
+	body, size, err := s.deps.Store.OpenArtifact(ref)
 	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	defer func() {
+		if err := body.Close(); err != nil {
+			s.deps.Logger.Error("closing an artifact reader", "error", err)
+		}
+	}()
+
+	// Only the magic bytes are pulled ahead of the copy. A screenshot is served
+	// as an image and a body never is, and that decision has to be made before
+	// the headers go out — but it needs eight bytes, not the whole object.
+	head := bufio.NewReaderSize(body, len(pngMagic))
+
+	magic, err := head.Peek(len(pngMagic))
+	if err != nil && !errors.Is(err, io.EOF) {
 		writeStoreError(w, err)
 
 		return
@@ -370,7 +395,14 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref strin
 	// code rather than from a page, and the magic bytes are the file itself:
 	// requiring both means a response body cannot be served as an image even
 	// if some future caller passed a reference that claimed to be one.
-	inline := !wantsDownload(r) && isScreenshotRef(ref) && isPNG(data)
+	inline := !wantsDownload(r) && isScreenshotRef(ref) && isPNG(magic)
+
+	// Written from what the bucket reported rather than from what is copied,
+	// so the interface can show a size and a browser can cache instead of
+	// re-fetching megabytes (Story 5.17, AC4).
+	if size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
@@ -392,7 +424,10 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref strin
 	// PNG and is served as an image with an equally strict policy. The
 	// analyser sees the taint and not the mitigation; the tests in
 	// bodies_test.go and screenshots_test.go see the mitigation.
-	if _, err := w.Write(data); err != nil {
+	if _, err := io.Copy(w, head); err != nil {
+		// The status and the headers are already gone, so there is nothing to
+		// report to the client; the log line is what tells an operator that a
+		// download died half way rather than completing.
 		s.deps.Logger.Error("writing artifact", "error", err)
 	}
 }
@@ -416,10 +451,14 @@ func isScreenshotRef(ref string) bool {
 	return ok && strings.HasPrefix(kind, "screenshot")
 }
 
+// pngMagic is the signature every PNG starts with, and the only part of an
+// artifact serveArtifact has to look at before it chooses headers.
+const pngMagic = "\x89PNG\r\n\x1a\n"
+
 // isPNG checks the file's own magic bytes, so what is served as an image is
 // an image regardless of what its reference claimed.
 func isPNG(data []byte) bool {
-	return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
+	return bytes.HasPrefix(data, []byte(pngMagic))
 }
 
 // safeArtifactFilename builds a download name from a reference. References
@@ -489,16 +528,42 @@ func (s *Server) handleResultMarkdown(w http.ResponseWriter, r *http.Request) {
 
 // diffFor compares a result against its baseline, falling back to the
 // previous scan.
+//
+// The one failure it does not shrug off is a previous result whose document
+// has left the bucket. Treating that as "there is nothing earlier" would render
+// the page a first-ever scan renders, and a reader would have no way to know
+// that a comparison was owed and could not be made (Story 8.2, AC5; Tenet 5).
 func (s *Server) diffFor(res *model.Result) *diff.Report {
-	var baseline *model.Result
+	var (
+		baseline *model.Result
+		gone     bool
+	)
 
 	if b, err := s.deps.Store.GetBaseline(res.Target, res.ConsentMode); err == nil {
 		baseline = b.Result
-	} else if prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID); err == nil {
-		baseline = prev
+	} else {
+		prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID)
+
+		switch {
+		case err == nil:
+			baseline = prev
+
+		case errors.Is(err, store.ErrEvidenceGone):
+			gone = true
+
+			s.deps.Logger.Error("the result this one should be compared against names evidence the artifact bucket no longer holds",
+				"target", res.Target, "consent_mode", string(res.ConsentMode),
+				"scan_id", res.ScanID, "error", err)
+		}
 	}
 
-	return diff.Compare(baseline, res, diff.Options{})
+	rep := diff.Compare(baseline, res, diff.Options{})
+
+	if gone {
+		rep.Reason = diff.ReasonEvidenceGone
+	}
+
+	return rep
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
@@ -743,13 +808,21 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
 
-		return
-	}
+	case errors.Is(err, store.ErrEvidenceGone):
+		// 410 rather than 404 or 500. The scan is in the index, so "there is no
+		// such result" would be untrue; wsaw is working, so a server error
+		// would be untrue as well. What happened is that the evidence this
+		// result names has been deleted, and Gone is the answer that says so
+		// (Story 8.2, AC5).
+		writeJSONError(w, http.StatusGone, err.Error())
 
-	writeJSONError(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // safeFilename builds a download filename from data that ultimately comes
