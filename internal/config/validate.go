@@ -16,6 +16,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/logging"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/retry"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -81,6 +82,8 @@ func (c *Config) Validate() error {
 
 	c.validateTargets(add)
 	c.validateScheduler(add)
+	c.validateArtifacts(add)
+	c.validateSignedURLs(add)
 	c.validateNormalize(add)
 	c.validateDetection(add)
 	c.validateConsent(add)
@@ -556,6 +559,108 @@ func validateStoreDriver(st Store, add addFunc) {
 	}
 }
 
+// validateArtifacts settles where evidence goes, at load time.
+//
+// Both halves of that are refusals an operator would otherwise meet much
+// later: a scheme this build cannot open fails on the first scan rather than
+// at startup, and two settings naming two different places fails not at all —
+// it silently stores the evidence somewhere other than where the operator
+// believes it is (Story 8.6, AC2 and AC4, Tenet 15).
+func (c *Config) validateArtifacts(add addFunc) {
+	st := c.Store
+
+	if st.ArtifactDir != "" && st.ArtifactURL != "" {
+		// Refused rather than resolved by preferring one. An operator who
+		// wrote both has two ideas about where their evidence is, only one of
+		// them can be true, and a silent choice leaves the other setting
+		// looking as though it were in force.
+		add(st.Line("artifactURL"), "store.artifactURL",
+			"artifactDir%s already names a directory on local disk, and a store keeps its evidence in one place; remove one of the two",
+			atLine(st.Line("artifactDir")))
+
+		return
+	}
+
+	if st.ArtifactDir != "" {
+		if store.IsArtifactURL(st.ArtifactDir) {
+			add(st.Line("artifactDir"), "store.artifactDir",
+				"%s is a URL, and artifactDir is a directory on local disk; a bucket is named by store.artifactURL",
+				secret.RedactURL(st.ArtifactDir))
+		}
+
+		return
+	}
+
+	if st.ArtifactURL == "" || secret.IsReference(st.ArtifactURL) {
+		// A secret reference is not a URL yet. It is resolved when the store
+		// is opened, and validated there against the same rules, because
+		// reading the environment at validation time would make `wsaw config
+		// --check` depend on which shell ran it.
+		return
+	}
+
+	if err := store.ValidateArtifactURL(st.ArtifactURL); err != nil {
+		// The message comes from the bucket seam, which is the only thing that
+		// knows which providers this build linked, and it redacts the URL
+		// itself: a bucket URL can carry a credential (AC3).
+		add(st.Line("artifactURL"), "store.artifactURL", "%v", err)
+	}
+}
+
+// validateSignedURLs refuses a redirect policy that cannot do what it says.
+//
+// It is validated where the bucket is and the way the bucket is — at load,
+// with the line to change (Story 8.7, AC3, Tenet 15) — and it is a separate
+// pass because validateArtifacts stops at the first thing wrong with the
+// location, and a redirect setting is worth reporting in the same run as a
+// mistyped URL rather than after it has been fixed.
+func (c *Config) validateSignedURLs(add addFunc) {
+	st := c.Store
+
+	if !st.ArtifactSignedURLs {
+		// A lifetime without the switch would read as though redirects were
+		// on. Nothing is proxied any differently for it, which is exactly why
+		// it has to be an error: the setting would sit there looking effective.
+		if st.ArtifactSignedURLTTL != 0 {
+			add(st.Line("artifactSignedURLTTL"), "store.artifactSignedURLTTL",
+				"a lifetime is set but redirects to the bucket are off; set artifactSignedURLs: true or remove it")
+		}
+
+		return
+	}
+
+	if st.ArtifactURL == "" {
+		// Local disk is where the default deployment keeps its evidence, and a
+		// directory has no signer and no server to honour one: wsaw would go
+		// on proxying every artifact and the setting would be a comment.
+		add(st.Line("artifactSignedURLs"), "store.artifactSignedURLs",
+			"evidence is kept on local disk, which cannot sign a URL for a reader to fetch; "+
+				"a redirect needs a bucket, named by store.artifactURL")
+	}
+
+	if ttl := st.SignedURLTTL(); ttl <= 0 {
+		add(st.Line("artifactSignedURLTTL"), "store.artifactSignedURLTTL", "must be positive")
+	} else if ttl > MaxArtifactSignedURLTTL {
+		// A ceiling rather than a clamp, because clamping would leave the file
+		// saying one thing and wsaw doing another. A signed URL cannot be
+		// withdrawn before it expires, so its lifetime is the window in which
+		// whoever holds the string can read the evidence.
+		add(st.Line("artifactSignedURLTTL"), "store.artifactSignedURLTTL",
+			"%s is longer than the %s maximum; a signed URL cannot be withdrawn before it expires",
+			ttl, MaxArtifactSignedURLTTL)
+	}
+}
+
+// atLine renders a line reference for a message that names a second setting,
+// and nothing at all when the configuration did not come from a file.
+func atLine(line int) string {
+	if line <= 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(" (line %d)", line)
+}
+
 // validateAPIRefresh bounds the interface's default refresh interval
 // (Story 5.16, AC8). Every refresh re-renders the dashboard and reads every
 // series' latest result, so a one-second default across a large target list
@@ -631,7 +736,7 @@ func (c *Config) validateNotifiers(add addFunc) {
 
 		if n.URL == "" {
 			add(0, field+".url", "notifier has no url")
-		} else if !strings.HasPrefix(n.URL, "${") {
+		} else if !secret.IsReference(n.URL) {
 			u, err := url.Parse(n.URL)
 			if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) {
 				add(0, field+".url", "%q is not a valid http or https URL", n.URL)

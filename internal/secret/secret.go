@@ -35,6 +35,24 @@ func Literal(s string) Value {
 	return Value{plain: s, set: s != ""}
 }
 
+// refPrefix starts an indirect reference. It is one constant, next to the
+// resolver that parses it, because two packages used to carry their own copy
+// and the copies decided whether a credential was registered for scrubbing —
+// an answer that must not be able to differ from the resolver's.
+const refPrefix = "${"
+
+// IsReference reports whether a configured setting names a credential
+// indirectly rather than carrying it.
+//
+// Callers use it to decide how to treat a value they have not resolved yet:
+// configuration validation must not judge a reference's contents, and the
+// startup path registers what a reference resolved to for scrubbing. Both
+// questions are the same one, so it is answered here rather than by a prefix
+// test copied into each of them.
+func IsReference(setting string) bool {
+	return strings.HasPrefix(setting, refPrefix)
+}
+
 // Resolve interprets a configured reference. Supported forms:
 //
 //	${env:NAME}      read from the environment
@@ -50,7 +68,7 @@ func Resolve(ref string) (Value, error) {
 	case ref == "":
 		return v, nil
 
-	case strings.HasPrefix(ref, "${env:") && strings.HasSuffix(ref, "}"):
+	case strings.HasPrefix(ref, refPrefix+"env:") && strings.HasSuffix(ref, "}"):
 		name := ref[len("${env:") : len(ref)-1]
 		if name == "" {
 			return v, fmt.Errorf("%w: empty environment variable name", ErrUnresolved)
@@ -63,7 +81,7 @@ func Resolve(ref string) (Value, error) {
 
 		v.plain, v.set = plain, plain != ""
 
-	case strings.HasPrefix(ref, "${file:") && strings.HasSuffix(ref, "}"):
+	case strings.HasPrefix(ref, refPrefix+"file:") && strings.HasSuffix(ref, "}"):
 		path := ref[len("${file:") : len(ref)-1]
 		if path == "" {
 			return v, fmt.Errorf("%w: empty file path", ErrUnresolved)

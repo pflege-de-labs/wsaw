@@ -172,11 +172,90 @@ store:
   maxAttempts: 3       # 1 disables retrying
   retryBackoff: 200ms  # doubles for each attempt after the first
 
-  # Screenshots and stored bodies stay on disk whichever driver is used: they
-  # do not belong in a row, and keeping them out leaves room to move them to
-  # object storage later. Set this when the store is a server database, or
-  # they land next to where the sqlite file would have been.
+  # Where the evidence goes: screenshots, stored response bodies, and every
+  # scan's JSON document. The database keeps the index and a reference; the
+  # bytes live here, named by their own SHA-256, so identical bytes are one
+  # object however many scans captured them.
+  #
+  # Empty means a directory beside the database file — or beside the state
+  # directory when the store is a server database — which is the whole of what
+  # the single-binary deployment has to decide about storage. wsaw creates it
+  # 0700 and each artifact 0600: evidence can carry personal data.
   artifactDir: ""
+
+  # Object storage instead, named as a URL. Set this *or* artifactDir, never
+  # both: a store keeps its evidence in one place, and wsaw refuses a
+  # configuration that names two rather than silently picking one.
+  #
+  # s3://, gs:// and azblob:// need the build made with -tags cloudblob; the
+  # default binary reaches the local disk and nothing else. Pointed at a scheme
+  # it cannot open, either build says so at startup and names the build it is.
+  #
+  # Credentials are not configured here. Each provider's own chain resolves
+  # them, so the identity the machine already has is the one wsaw uses:
+  #
+  #   # S3. The host is the bucket; the region is required.
+  #   #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (+ AWS_SESSION_TOKEN),
+  #   #   or ~/.aws/config with AWS_PROFILE, or an instance profile / IRSA.
+  #   #   Bucket needs: s3:PutObject, s3:GetObject, s3:DeleteObject on the
+  #   #   objects, s3:ListBucket on the bucket.
+  #   artifactURL: "s3://wsaw-evidence?region=eu-central-1"
+  #
+  #   # Google Cloud Storage.
+  #   #   GOOGLE_APPLICATION_CREDENTIALS, `gcloud auth application-default
+  #   #   login`, or the attached service account (Workload Identity on GKE).
+  #   #   Service account needs: roles/storage.objectAdmin on the bucket.
+  #   artifactURL: "gs://wsaw-evidence"
+  #
+  #   # Azure Blob Storage. The host is the container, not the account.
+  #   #   AZURE_STORAGE_ACCOUNT, plus one of AZURE_STORAGE_KEY,
+  #   #   AZURE_STORAGE_SAS_TOKEN, AZURE_STORAGE_CONNECTION_STRING — or none of
+  #   #   them, which uses the default Azure credential chain (managed
+  #   #   identity, az login).
+  #   #   Identity needs: Storage Blob Data Contributor on the container.
+  #   artifactURL: "azblob://wsaw-evidence"
+  #
+  #   # An S3-compatible endpoint such as MinIO. Path-style addressing, since
+  #   # these services rarely do virtual-host buckets; region is required even
+  #   # where the service ignores it.
+  #   #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY hold the access key and
+  #   #   secret key. Add &disable_https=true for a service on plain HTTP, and
+  #   #   know that the evidence then crosses the network unencrypted.
+  #   #   Bucket needs: the same four permissions as S3.
+  #   artifactURL: "s3://wsaw-evidence?endpoint=https://minio.example.internal:9000&use_path_style=true&region=us-east-1"
+  #
+  # Where a URL of yours has to carry a credential, write it as a secret
+  # reference — artifactURL: "${env:WSAW_ARTIFACT_URL}" — and wsaw keeps it out
+  # of its logs the way it keeps a DSN out of them.
+  #
+  # Three things object storage costs that a local disk does not: a write can
+  # fail for reasons a disk would not (retried per maxAttempts, and recorded
+  # rather than hidden when it cannot be); every artifact is a request, so it
+  # costs money and latency; and a lifecycle rule on the bucket will delete
+  # evidence behind wsaw's back — leave expiry to maxAge and maxPerSeries below.
+  #
+  # The bucket must be wsaw's alone: a retention sweep walks it, and two
+  # deployments sharing one bucket write the same key shapes, so each one's
+  # sweep would collect the other's evidence. A path in the URL is not a
+  # prefix — "s3://bucket/wsaw" is refused, because every provider takes the
+  # bucket from the host and drops the path.
+  #
+  # artifactURL: ""
+
+  # Whether a reader is redirected to the bucket instead of being served by
+  # wsaw. Off, and worth leaving off unless you mean it: a signed URL moves
+  # access control from wsaw — which checks the API token, or that a share link
+  # actually covers the file asked for — to a string anyone holding it can
+  # replay until it expires, and it cannot be withdrawn before then.
+  #
+  # The lifetime defaults to 5m and may not exceed 1h. A redirect issued to
+  # somebody holding a share link is additionally cut to what is left of that
+  # link. Only a provider that signs is used this way: switching it on for a
+  # local artifact directory is a configuration error, and a bucket that
+  # refuses to sign at runtime is logged once and then served by wsaw itself.
+  #
+  # artifactSignedURLs: false
+  # artifactSignedURLTTL: 5m
 
   maxAge: 2160h  # 90 days; Go duration units, so hours
   maxPerSeries: 200

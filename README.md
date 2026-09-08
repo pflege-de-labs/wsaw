@@ -50,8 +50,11 @@ wsaw scan --url https://example.com/ --browser-runtime local
 
 ```sh
 make build            # ./dist/wsaw
+make build-cloudblob  # ./dist/wsaw_cloudblob, with the S3, GCS and Azure drivers
 make release          # all four platforms, with checksums
 ```
+
+Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: take the default one unless you intend to keep evidence in object storage, in which case see [the artifact bucket](#the-artifact-bucket).
 
 Or run the container:
 
@@ -103,6 +106,8 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw rules list` / `rules test <url>` | Inspect consent rules, or test them against a live page |
 | `wsaw config` | Print the *resolved* configuration, or `--check` to validate |
 | `wsaw store migrate` | Bring the store's schema up to date; `--dry-run` reports what would move |
+| `wsaw store prune` | Apply retention and reclaim the artifacts it orphans; `--dry-run` lists them |
+| `wsaw store sweep` | Delete artifacts nothing references any more; `--dry-run` lists them |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
@@ -497,7 +502,9 @@ The metric that matters is `wsaw_last_successful_scan_timestamp_seconds`. It is 
 time() - max by (target, consent_mode) (wsaw_last_successful_scan_timestamp_seconds) > 172800
 ```
 
-`/api/v1/ready` separates "the process is alive" from "Chrome is usable and configuration is loaded", and lists stale targets. The dashboard flags a series as stale when it has never been scanned, when its last scan failed, or when it is simply old.
+`/api/v1/ready` separates "the process is alive" from "wsaw can actually scan and store the result": Chrome is usable, configuration is loaded, the database answers and the artifact bucket is still there. It lists stale targets with it. The dashboard flags a series as stale when it has never been scanned, when its last scan failed, or when it is simply old.
+
+Poll that endpoint rather than the `wsaw_ready` gauge for readiness. The gauge covers what the process knows about itself — Chrome usable, configuration loaded — and deliberately not the store, because asking a database and a bucket whether they answer costs a round trip each and a metrics scrape is not the place to spend it. A wsaw whose database or bucket has gone away reports 503 on `/api/v1/ready` while `wsaw_ready` stays 1; the reason it gives says which half is unreachable, and the detail — which bucket, which directory — goes to the log rather than into a response body that is unauthenticated when no API token is configured.
 
 ## Deployment
 
@@ -542,23 +549,123 @@ The schema is created and migrated by wsaw on startup, forward-only, and a store
 
 #### The artifact bucket
 
-`store.artifactDir` names where evidence goes. A plain path is a directory on local disk, which is the default and needs no configuration:
+The storage model is two halves. The database holds the index — one row per scan, with the target, the consent mode, the scan ID, the start time and the counts a listing shows. The bucket holds everything with bytes in it: the scan's JSON document, its screenshots, and any response bodies it stored. Each object is named `kind/sha256-of-its-bytes`, so identical bytes are one object however many scans captured them, and the row records the reference. Listing results, rendering the dashboard and answering the API's index endpoints touch the database only; the bucket is read when somebody asks for a document or a screenshot.
+
+Two settings can name the bucket, and at most one of them may be set:
+
+```yaml
+store:
+  artifactDir: /var/lib/wsaw/artifacts                   # a directory on local disk
+```
+
+```yaml
+store:
+  artifactURL: "s3://wsaw-evidence?region=eu-central-1"  # object storage
+```
+
+Setting neither is the default, and is what the single-binary deployment wants: artifacts land in an `artifacts` directory beside the database file, or beside the state directory when the store is a server database. Nothing to configure, no external service.
+
+`store.artifactDir` means exactly what it always meant — a directory on local disk — so an upgrade needs no configuration edit. It is now served by the same code path as a bucket, with the same key layout the directory implementation used, so an existing artifacts directory is read and written unchanged, with nothing moved. A URL written into `artifactDir`, or both settings set at once, is a configuration error naming the line: wsaw does not pick one and leave the other looking as though it were in force.
+
+Credentials are not wsaw's business. Each provider's own chain resolves them, which is what lets a deployment use the identity it already has — an instance profile, a workload identity, `az login` — instead of copying keys into a file wsaw reads. If a URL of yours has to carry a credential anyway, write it as a secret reference (`artifactURL: "${env:WSAW_ARTIFACT_URL}"`); wsaw then keeps it out of its logs the way it keeps a DSN out of them. Either way, the printable form of the URL has its password and its whole query string removed before wsaw logs it, prints it in `wsaw config`, or names it in an error.
+
+**A local directory** — the default. No credentials. wsaw creates the directory `0700` and each artifact `0600`, so evidence is readable only by the account wsaw runs as; that account needs write access to the parent directory.
 
 ```yaml
 store:
   artifactDir: /var/lib/wsaw/artifacts
 ```
 
-It also accepts a bucket URL, and the same key layout is used either way (`kind/sha256hex`), so an existing artifact directory is readable by the new code with nothing moved:
+**S3.** The host is the bucket; the region belongs in the URL because the SDK will not guess it.
 
 ```yaml
 store:
-  artifactDir: "s3://wsaw-evidence?region=eu-central-1"
+  artifactURL: "s3://wsaw-evidence?region=eu-central-1"
 ```
 
-**`s3://`, `gs://` and `azblob://` resolve only in a build made with `-tags cloudblob`.** The three cloud SDKs cost more than the rest of wsaw put together — the default binary measures about 37 MB, the `cloudblob` one about 77 MB — so which providers are compiled in is a deliberate decision rather than a default (Story 8.8). The stock binary links the local file driver alone, opens no cloud SDK and resolves no credential chain; pointed at an unsupported scheme it fails at startup, names the URL, and lists what it does support. Credentials come from the provider's own environment (the AWS, Google and Azure chains); any that do appear in the URL are redacted wherever wsaw prints it.
+Credentials come from the AWS chain: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN` for temporary credentials), or `~/.aws/config` with `AWS_PROFILE`, or the role attached to the machine — an instance profile on EC2, IRSA or Pod Identity on EKS. The bucket policy needs `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `arn:aws:s3:::wsaw-evidence/*`, and `s3:ListBucket` on the bucket itself. Deletion is needed for retention and `s3:ListBucket` for the sweep; a wsaw that may only write will start, and then fail its first prune.
 
-Retention currently deletes rows and leaves the objects they referenced in the bucket. Pruning does not yet reclaim storage — the sweep that collects unreferenced artifacts is Story 8.5 — so a bucket that now holds every scan's document grows until then.
+**Google Cloud Storage.**
+
+```yaml
+store:
+  artifactURL: "gs://wsaw-evidence"
+```
+
+Credentials come from Google's application default credentials: `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account key, `gcloud auth application-default login` for a workstation, or the attached service account — Workload Identity on GKE, the default service account on GCE. The service account needs `roles/storage.objectAdmin` on the bucket, which covers creating, reading, listing and deleting objects without granting anything over the bucket's own configuration.
+
+**Azure Blob Storage.** The host is the container, not the storage account; the account is named by the environment.
+
+```yaml
+store:
+  artifactURL: "azblob://wsaw-evidence"
+```
+
+Set `AZURE_STORAGE_ACCOUNT`, and then one of: `AZURE_STORAGE_KEY` for a shared key, `AZURE_STORAGE_SAS_TOKEN` for a SAS token, `AZURE_STORAGE_CONNECTION_STRING`, or nothing at all — with none of them set the default Azure credential chain is used, which is what a managed identity or an `az login` session arrives through. The identity needs **Storage Blob Data Contributor** on the container. A SAS token is a credential in an environment variable, and it expires: when it does, wsaw fails its startup probe rather than losing evidence quietly.
+
+**An S3-compatible endpoint — MinIO, Ceph, and the rest.** Same driver, with the endpoint named and path-style addressing turned on, since these services rarely do virtual-host buckets:
+
+```yaml
+store:
+  artifactURL: "s3://wsaw-evidence?endpoint=https://minio.example.internal:9000&use_path_style=true&region=us-east-1"
+```
+
+Credentials are still the AWS ones: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` hold MinIO's access key and secret key. `region` is required by the SDK even where the service ignores it. The bucket needs the same four permissions as S3; MinIO's built-in `readwrite` policy scoped to the one bucket is enough. For a service on plain HTTP inside a private network, add `&disable_https=true` — and know that the evidence then crosses that network unencrypted.
+
+**`s3://`, `gs://` and `azblob://` resolve only in a build made with `-tags cloudblob`.** The three cloud SDKs cost more than the rest of wsaw put together — the default binary measures about 37 MB, the `cloudblob` one about 77 MB — so which providers are compiled in is a deliberate decision rather than a default (Story 8.8). The default binary speaks `file://` and plain directory paths and nothing else: it opens no cloud SDK and resolves no credential chain, so a local deployment does not acquire cloud behaviour by being linked against it. Pointed at a scheme it cannot open, either build fails at startup, names the URL, says which build it is, and lists what that build does support. Both builds are released; the tagged one is named as such.
+
+wsaw writes to the bucket while it is starting, and removes what it wrote. A bucket that is unreachable, that does not exist, or that refuses writes — a read-only policy, a credential with read scope, an expired SAS token — fails the start with a message naming the bucket, rather than turning tonight's first scan into evidence nobody can store. Reachability then stays part of readiness: `/api/v1/ready` reports not-ready when the bucket has stopped answering, on the same argument as the database, because a wsaw that cannot record what it observed is not ready however healthy its browser is.
+
+**Serving what the bucket holds.** Where the evidence sits is not the reader's problem: the API route (`/api/v1/artifacts/…`) and the share-link route serve a screenshot or a stored body from the bucket exactly as they served it from a directory, with the same headers — a stored body stays an opaque attachment that no browser will render, a screenshot stays an image and nothing else. Objects are streamed rather than read into memory, so a forty-megabyte result document costs the daemon a buffer rather than a copy. What bounds such a fetch is progress rather than a stopwatch: the bucket gets a deadline to open the object and a deadline for each further piece of it, so a bucket that has stopped answering is abandoned while a large download over a slow link is served to the end rather than cut off after its headers have gone out. Each response carries its length and a strong `ETag`, which is free to be exactly right because an artifact's key *is* the SHA-256 of its bytes: a browser that already holds a screenshot revalidates it and gets a 304 instead of the megabytes. Evidence retention has removed is reported as evidence that is no longer stored — on the result page as such, on the route as a 404 — never as a broken image or a stack trace. A share link still reaches only the artifacts its own result names, which matters more with a bucket than with a directory: every scan's evidence shares one keyspace, and a key is nothing but a digest.
+
+**Redirecting readers to the bucket, if you want that.** wsaw can answer an artifact request with a redirect to a signed URL instead of copying the bytes through itself. It is off by default and stays off unless you turn it on, because it moves access control from wsaw — which checks the API token, or that a share link actually covers the file being asked for — to a URL anybody holding it can replay until it expires:
+
+```yaml
+store:
+  artifactURL: "s3://wsaw-evidence?region=eu-central-1"
+  artifactSignedURLs: true      # off by default
+  artifactSignedURLTTL: 5m      # default 5m, maximum 1h
+```
+
+What a redirect also gives up is wsaw's own response headers — but not what they are for: every artifact is written to the bucket as `application/octet-stream`, so a provider hands it over as an opaque download, from the bucket's origin rather than from wsaw's. The lifetime is short, and a redirect issued to someone holding a share link is additionally cut to whatever is left of that link — a link expiring in thirty seconds cannot be turned into five minutes of access to the evidence it names. A signed URL cannot be withdrawn before it expires, which is why the ceiling is an hour rather than a suggestion. Only a provider that can sign gets used this way: turning it on against a local artifact directory is a configuration error naming the line, and a bucket that refuses to sign at runtime is logged once and then served by wsaw itself, rather than failing requests.
+
+**What object storage costs you.** Three things worth knowing before moving evidence off local disk:
+
+- **It is remote, so a write can fail for reasons a disk would not.** A dropped connection, a throttled request, an expired credential, a bucket policy someone changed this morning. wsaw retries what its error code says is transient (`store.maxAttempts`, `store.retryBackoff`), records a failure it cannot recover as a failure rather than as an empty result, and keeps the scan's blast radius to that one scan.
+- **Requests cost money and latency.** Every screenshot, every stored body and every result document is one PUT; opening a result in the interface is a GET; a retention sweep lists every key wsaw owns. None of it is expensive by object-storage standards, but it is not free either, and `wsaw store migrate --dry-run` will tell you how many objects and bytes an upgrade is about to write before you find out from an invoice.
+- **A lifecycle rule on the bucket will delete evidence behind wsaw's back.** If you set one — a transition to a cold tier or an expiry after 30 days — it applies to objects wsaw's index still references, and there is no way for wsaw to object. Screenshots start coming back as evidence that is no longer stored, and a baseline can lose the scan it approved. Let wsaw's own retention (`store.maxAge`, `store.maxPerSeries`) decide what goes, and leave expiry rules off the bucket it owns. A cold-storage transition is the same trap in slower form: a restore is not a GET, and wsaw will not wait for one. It has a second, quieter effect: a *result document* removed that way leaves a row whose evidence wsaw can no longer enumerate, and while such a row exists no screenshot and no stored body is ever reclaimed again (see [retention](#retention-reclaims-what-it-stops-referencing)). `wsaw store prune` prints how many rows are in that state; the only remedy today is to delete them, and rebuilding the index from the bucket is not implemented yet.
+- **The bucket, or a prefix that is wsaw's alone, must be wsaw's alone.** A retention sweep walks it. It deletes only keys of the shape wsaw writes — `body/<sha256>`, `screenshot-…/<sha256>`, `result/<sha256>`, `probe/<sha256>` — and counts anything else as "not written by wsaw" and leaves it, but two wsaw deployments sharing one bucket write the same shapes, and each one's sweep would then collect the other's evidence. Give each deployment its own bucket. Note that a path in the URL is *not* a prefix: `s3://bucket/wsaw` is refused at startup, because every provider takes the bucket from the host and silently drops the path.
+
+#### Retention reclaims what it stops referencing
+
+Retention is configured exactly as it always was — `store.maxAge` and `store.maxPerSeries` — and pruning now deletes the artifacts the results it removed were the last to reference: their documents, their screenshots, their stored bodies. The daemon does it hourly and reports `wsaw_results_pruned_total`, `wsaw_artifacts_deleted_total` and `wsaw_artifact_bytes_freed_total`, so whether a bucket is being kept in bounds is a number rather than an impression.
+
+What is *not* deleted matters as much. Artifacts are content-addressed, so two scans that captured identical bytes share one object: deletion is decided by which results still reference a key, never by how old the key is. An artifact another result still names is kept, and so is one the baseline's own copy of an approved scan names — a baseline is never pruned, and neither is the evidence it points at.
+
+Two commands, both with a dry run, because deleting evidence does not come back:
+
+```
+wsaw store prune --dry-run    # what the configured retention would remove, and the bytes
+wsaw store prune              # apply it
+wsaw store sweep --dry-run    # artifacts nothing references any more
+wsaw store sweep              # collect them
+```
+
+A dry run prints the first 20 entries with an exact count; `--limit=N` prints N of them and `--limit=0` prints all of them, which is what to use before applying a retention change you have not seen the consequence of.
+
+`prune` is what the daemon does on its own every hour. `sweep` is not: it walks every key in the bucket, which against object storage is a request per page, so it is asked for rather than scheduled. It exists for what a prune cannot see — an object left behind by a scan that was interrupted between writing the bucket and committing its row, and a key an earlier prune's delete was refused.
+
+Both are safe to run while wsaw is scanning. An unreferenced object is left alone if it was written in the last 24 hours, and also if a scan running now has *taken* it: artifacts are content-addressed, so a scan that captures an unchanged asset writes nothing at all — the key is already there, dated by whichever scan first stored those bytes — and wsaw records the take so that neither a prune nor a sweep can collect an object the scan in progress is about to reference. Objects in the bucket that wsaw did not write are counted separately and never deleted.
+
+A sweep refuses to walk the bucket at all if the store's index holds nothing — no results, no baselines, no references, no takes. An index that knows nothing cannot tell garbage from a year of evidence, and that is what a database restored without its bucket, or a fresh store pointed at an existing one, looks like from inside a sweep. `--allow-empty-index` says the empty history is real and sweeps anyway; there is no undo, and rebuilding an index from the bucket is not implemented yet.
+
+Neither command runs at all if the bucket is unreachable. A deletion against a bucket that has gone away — an unmounted volume, an expired credential — answers "already gone" for every key, which would be reported as a successful reclaim and would clear the very records that say those objects still need collecting.
+
+A bucket that refuses a delete does not fail the prune. The key is counted as `wsaw_artifact_deletions_failed_total`, its reference is kept as the record that it still needs collecting, and the next sweep meets it again.
+
+One case holds artifact collection back on purpose. If a stored result's document has gone missing from the bucket or no longer decodes, wsaw cannot know which screenshots and bodies that result named — so it will not declare any screenshot or body unreferenced while such a row exists, and says so in the prune's output ("unknown: N results do not say which artifacts they reference"). Result documents are still collected, because a row records where its own document went regardless. Absence of a reference is not evidence of an unreferenced artifact.
+
+That state is sticky, and worth knowing about: it lasts as long as the affected rows do, so a bucket lifecycle rule that removed one result document stops screenshot and body reclamation for the whole store until those rows are gone. Deleting them — tightening `store.maxAge` so they expire, or removing them from the store — is the remedy available today; rebuilding the index from the bucket is planned and not implemented.
 
 A server database is reached over a network, so a transient failure — a restart, a failover, a deadlock — is retried:
 

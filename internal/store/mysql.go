@@ -105,12 +105,7 @@ func (mysqlDialect) pruneByCount() string {
 	return `
 		delete r from results r
 		join (
-			select target, consent_mode, scan_id from (
-				select target, consent_mode, scan_id, row_number() over (
-					partition by target, consent_mode
-					order by started_at desc, scan_id desc
-				) as row_rank
-				from results
+			select target, consent_mode, scan_id from (` + rankedResults + `
 			) as ranked
 			where row_rank > ?
 		) as doomed
@@ -206,6 +201,49 @@ func (mysqlDialect) migrations() [][]string {
 		// alreadyApplied instead of in the statement.
 		{
 			`alter table results drop column document`,
+		},
+
+		// Version 4 (Story 8.5): the artifact reference index. The sqlite
+		// dialect carries the reasoning for the table; what is MySQL's own is
+		// that the index is declared inside the CREATE rather than as a
+		// separate statement — there is no `create index if not exists` here —
+		// and that the ALTER cannot say `if not exists`, so the tolerance for a
+		// rerun after a lost version record lives in alreadyApplied instead.
+		//
+		// The key is 1660 bytes at four bytes per character, inside InnoDB's
+		// 3072-byte limit. The collation is the table's own utf8mb4_bin, so a
+		// reference cannot match case-insensitively — two references differing
+		// only in case would otherwise name one row and one object.
+		{
+			`create table if not exists result_artifacts (
+				target       varchar(191) not null,
+				consent_mode varchar(32)  not null,
+				scan_id      varchar(64)  not null,
+				artifact_ref varchar(128) not null,
+				primary key (target, consent_mode, scan_id, artifact_ref),
+				key result_artifacts_ref (artifact_ref)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`alter table results add column refs_indexed int not null default 0`,
+		},
+
+		// Version 5 (Story 8.5): the claim table and the document references
+		// version 4 could not fill. The sqlite dialect carries the reasoning;
+		// what is MySQL's own is that duplicate rows are skipped with `insert
+		// ignore`, there being no `on conflict` clause here, and that the
+		// claim key repeats the collation the reference table declares so that
+		// two references differing only in case cannot name one claim.
+		{
+			`create table if not exists artifact_claims (
+				artifact_ref varchar(128) not null,
+				claimed_at   bigint       not null,
+				primary key (artifact_ref)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`insert ignore into result_artifacts (target, consent_mode, scan_id, artifact_ref)
+				select target, consent_mode, scan_id, artifact_ref
+				  from results
+				 where artifact_ref <> ''`,
 		},
 	}
 }

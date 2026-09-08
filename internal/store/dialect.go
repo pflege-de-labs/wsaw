@@ -225,6 +225,37 @@ func upsertExcluded(conflict, update []string) string {
 const (
 	resultsTable   = "results"
 	documentColumn = "document"
+
+	// resultArtifactsTable records which artifacts each result names, so
+	// retention can decide what to delete with a query rather than by reading
+	// every document back out of the bucket (Story 8.5, AC2).
+	resultArtifactsTable = "result_artifacts"
+
+	// artifactClaimsTable records the artifacts a scan has stored but not
+	// referenced yet, which is the only thing that tells a deduplicated write
+	// from an object nobody wants (see claims.go).
+	artifactClaimsTable = "artifact_claims"
+
+	// refsIndexedColumn says whether that record is complete for a row. It is
+	// on the results table rather than inferred from the presence of rows in
+	// resultArtifactsTable, because "this result names no screenshots" and
+	// "nobody has worked out what this result names" are different facts, and
+	// only the second one makes deleting an artifact unsafe.
+	refsIndexedColumn = "refs_indexed"
+)
+
+// The states refsIndexedColumn holds.
+//
+// They are separated because they call for different behaviour and because
+// retrying costs a bucket read per row. An older wsaw's row starts at
+// refsUnknown and the backfill works through them; a row whose document is
+// gone or will not decode is marked refsUnderivable so that the next start
+// does not read it again, and neither state lets a sweep conclude that a
+// screenshot or a body is unreferenced.
+const (
+	refsUnknown     = 0
+	refsRecorded    = 1
+	refsUnderivable = 2
 )
 
 var (
@@ -244,7 +275,14 @@ var (
 		"requests", "third_party_domains", "pre_consent_domains",
 	}
 
-	resultUpdate = append(append([]string{}, resultScanned...), resultDerived...)
+	// resultReferenced is written by a scan's own insert and by nothing else.
+	// The document migration deliberately leaves it at its default, because
+	// moving a document into the bucket does not tell anyone which screenshots
+	// and bodies that document names — working that out is the backfill's job
+	// (Story 8.5, AC2).
+	resultReferenced = []string{refsIndexedColumn}
+
+	resultUpdate = append(append(append([]string{}, resultScanned...), resultDerived...), resultReferenced...)
 
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{"scan_id", "approved_at", "document"}
@@ -263,6 +301,38 @@ func countColumn(ctx context.Context, db *sql.DB, query string, args ...any) (bo
 	return n > 0, nil
 }
 
+// rankedResults numbers every result within its series, newest first, by the
+// same ordering every listing uses — so "the newest N" means the same thing to
+// retention as it does to the interface.
+//
+// It is one constant because three statements are built from it: the portable
+// count-based delete, MySQL's own, and the select a dry run lists the doomed
+// results with (Story 8.5, AC6). Written out three times, a dry run could
+// eventually report something other than what the prune would remove.
+const rankedResults = `
+		select target, consent_mode, scan_id, started_at, row_number() over (
+			partition by target, consent_mode
+			order by started_at desc, scan_id desc
+		) as row_rank
+		from results`
+
+// expiredByCount selects the results a count-based retention would remove.
+const expiredByCount = `
+	select target, consent_mode, scan_id, started_at from (` + rankedResults + `
+	) as ranked
+	where row_rank > ?`
+
+// expiredByAgePredicate is what "too old to keep" means. It is one constant
+// because two statements are built from it — the delete a prune runs and the
+// select a dry run lists — and a boundary edited in one of two copies would
+// leave the dry run describing a different set from the prune it claims to
+// describe (Story 8.5, AC6).
+const expiredByAgePredicate = ` where started_at < ?`
+
+// expiredByAge selects the results an age-based retention would remove.
+const expiredByAge = `
+	select target, consent_mode, scan_id, started_at from ` + resultsTable + expiredByAgePredicate
+
 // pruneByCountPortable deletes all but the newest keep results per series,
 // identified by primary key rather than by any physical row identifier.
 //
@@ -271,12 +341,7 @@ func countColumn(ctx context.Context, db *sql.DB, query string, args ...any) (bo
 // declares, so ranking on it works everywhere and needs no dialect at all.
 const pruneByCountPortable = `
 	delete from results where (target, consent_mode, scan_id) in (
-		select target, consent_mode, scan_id from (
-			select target, consent_mode, scan_id, row_number() over (
-				partition by target, consent_mode
-				order by started_at desc, scan_id desc
-			) as row_rank
-			from results
+		select target, consent_mode, scan_id from (` + rankedResults + `
 		) as ranked
 		where row_rank > ?
 	)`

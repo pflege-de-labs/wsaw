@@ -162,6 +162,91 @@ func (sqliteDialect) migrations() [][]string {
 		{
 			`alter table results drop column document`,
 		},
+
+		// Version 4 (Story 8.5): which artifacts each result names becomes a
+		// table, so retention can work out what a deletion orphans without
+		// reading a single document back out of the bucket (AC2).
+		//
+		// A row per (result, artifact) rather than a list column, because the
+		// question retention asks is "does any surviving result still name
+		// this key?" — an indexed equality lookup against one column, not a
+		// substring search through a list nothing can index. Artifacts are
+		// content-addressed, so two scans that captured identical bytes share
+		// one object and the same reference appears under both of them; that
+		// sharing is the whole reason deletion has to be decided by reference
+		// rather than by age (AC1).
+		//
+		// The document's own reference is recorded here too, even though the
+		// results row already carries it in artifact_ref. The duplication is
+		// deliberate: it makes one table the complete answer to "what does
+		// this result name", so the sweep is one query per page of bucket keys
+		// instead of two against tables with different shapes. Both are
+		// written from the same list in one transaction, so they cannot drift.
+		//
+		// There is deliberately no foreign key to results. A row here is meant
+		// to outlive the result it belonged to: after retention deletes the
+		// result, the rows left behind are precisely the list of artifacts
+		// that may now be unreferenced, which is what makes an interrupted
+		// prune resumable instead of a silent leak (AC3, AC4). A cascade would
+		// delete exactly the work list.
+		{
+			`create table if not exists result_artifacts (
+				target       text not null,
+				consent_mode text not null,
+				scan_id      text not null,
+				artifact_ref text not null,
+				primary key (target, consent_mode, scan_id, artifact_ref)
+			) strict`,
+
+			// The index the reference check is: without it, deciding whether
+			// one key is still referenced would scan the table once per
+			// artifact considered for deletion.
+			`create index if not exists result_artifacts_ref
+				on result_artifacts (artifact_ref)`,
+
+			`alter table results add column refs_indexed integer not null default 0`,
+		},
+
+		// Version 5 (Story 8.5): the two things version 4 left retention
+		// unable to decide.
+		//
+		// The first is what an in-flight scan has taken. Artifacts are
+		// content-addressed, so a scan that captures an unchanged asset stores
+		// nothing — the key is already there — and it holds no reference to it
+		// until its row commits, minutes later. Between those two moments the
+		// only evidence that anyone wants those bytes is this table: the write
+		// records a claim, the result that lands releases it, and retention
+		// treats a claim younger than the grace period as a reference it
+		// cannot see yet (AC3). The object's own modification time cannot
+		// answer that question, because a deduplicated write does not change
+		// it — it is still the time of the first scan that stored those bytes,
+		// possibly months ago.
+		//
+		// The second is every existing row's own document reference. Version 4
+		// created the reference table empty and left it to be filled by a
+		// backfill that reads each document out of the bucket, which is
+		// best-effort by design: a store the backfill has not reached yet has
+		// no row here at all, and a sweep would then find the document of a
+		// live result unreferenced and collect it. Where a document lives is
+		// the one reference a row already knows, in artifact_ref, so it is
+		// recorded in SQL — before any bucket read, for every row, in one
+		// statement — and the sweep's exemption for result documents becomes
+		// true rather than nearly true (Tenet 5).
+		{
+			`create table if not exists artifact_claims (
+				artifact_ref text    not null primary key,
+				claimed_at   integer not null
+			) strict`,
+
+			// Duplicates are ignored rather than prevented: a row this wsaw
+			// wrote already has its document reference here, and a rerun after
+			// a lost version record must be a no-op.
+			`insert into result_artifacts (target, consent_mode, scan_id, artifact_ref)
+				select target, consent_mode, scan_id, artifact_ref
+				  from results
+				 where artifact_ref <> ''
+				    on conflict do nothing`,
+		},
 	}
 }
 

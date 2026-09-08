@@ -229,8 +229,49 @@ type Store struct {
 	// that.
 	RetryBackoff Duration `yaml:"retryBackoff,omitempty"`
 
-	Path         string   `yaml:"path,omitempty"`
-	ArtifactDir  string   `yaml:"artifactDir,omitempty"`
+	Path string `yaml:"path,omitempty"`
+
+	// ArtifactDir is a directory on local disk holding the evidence:
+	// screenshots, stored bodies, and every result document. Empty puts it
+	// beside the database, which is what the single-binary deployment wants
+	// and why it needs no configuration (Tenet 14).
+	ArtifactDir string `yaml:"artifactDir,omitempty"`
+	// ArtifactURL names an object-storage bucket to hold the same evidence
+	// instead, as a URL — "s3://bucket", "gs://bucket", "azblob://container".
+	// It exists so that pointing wsaw at storage an organisation already runs
+	// is one line rather than a second implementation of everything
+	// (Story 8.6, AC1).
+	//
+	// Exactly one of the two is set. Setting both is refused rather than
+	// resolved by preferring one, because an operator who wrote both has two
+	// ideas about where their evidence is and only one of them is true.
+	//
+	// A credential in the URL is a secret reference and is redacted wherever
+	// wsaw prints it, but the provider's own credential chain is the way this
+	// is meant to be authenticated (AC3).
+	ArtifactURL string `yaml:"artifactURL,omitempty"`
+
+	// ArtifactSignedURLs lets wsaw answer a request for a screenshot or a
+	// stored body with a redirect to the bucket instead of copying the bytes
+	// through itself.
+	//
+	// Off by default, and deliberately: a redirect moves access control from
+	// wsaw — which checks the API token, or that a share link actually covers
+	// the file being asked for — to a URL that anyone holding it can replay
+	// until it expires. That is a decision about who guards the evidence, not
+	// an optimisation, so it is taken by an operator rather than by wsaw
+	// (Story 8.7, AC3).
+	ArtifactSignedURLs bool `yaml:"artifactSignedURLs,omitempty"`
+	// ArtifactSignedURLTTL is how long such a redirect stays usable. Empty
+	// takes DefaultArtifactSignedURLTTL, and MaxArtifactSignedURLTTL is the
+	// ceiling: a signed URL cannot be withdrawn before it expires, so a long
+	// one is a standing grant on evidence rather than a link to it.
+	//
+	// A redirect issued from a share link is additionally cut to what is left
+	// of that link, because a reader must not come away with access outliving
+	// the link that gave it to them.
+	ArtifactSignedURLTTL Duration `yaml:"artifactSignedURLTTL,omitempty"`
+
 	OutputDir    string   `yaml:"outputDir,omitempty"`
 	MaxAge       Duration `yaml:"maxAge,omitempty"`
 	MaxPerSeries int      `yaml:"maxPerSeries,omitempty"`
@@ -241,6 +282,100 @@ type Store struct {
 	WriteHAR bool `yaml:"writeHar,omitempty"`
 	// WriteReport emits a Markdown report per scan.
 	WriteReport bool `yaml:"writeReport,omitempty"`
+
+	// lines records which line each store setting was written on, so a
+	// validation failure can point at the line to change (Tenet 15).
+	lines map[string]int
+}
+
+// UnmarshalYAML decodes the store section and records where each of its
+// settings was written.
+//
+// The line matters here for the same reason it matters for a target: two
+// settings that contradict each other — a directory and a bucket URL — are
+// fixed by editing one line, and an operator should be told which one rather
+// than being sent to search the file (Story 8.6, AC4).
+func (s *Store) UnmarshalYAML(node *yaml.Node) error {
+	// A distinct type avoids recursing into this method.
+	type plain Store
+
+	// The outer decoder's strict setting does not reach a type with its own
+	// unmarshaller, and node.Decode has no strict mode. Re-encoding the node
+	// and decoding it strictly restores the guarantee, exactly as Target does:
+	// a misspelled store setting must be an error, not a line that silently
+	// does nothing.
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return fmt.Errorf("line %d: re-encoding the store section: %w", node.Line, err)
+	}
+
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+
+	var p plain
+
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("store section starting at line %d: %w", node.Line, err)
+	}
+
+	*s = Store(p)
+	s.lines = keyLines(node)
+
+	return nil
+}
+
+// keyLines maps each key of a mapping node to the line it was written on.
+func keyLines(node *yaml.Node) map[string]int {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	lines := make(map[string]int, len(node.Content)/2)
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		lines[node.Content[i].Value] = node.Content[i].Line
+	}
+
+	return lines
+}
+
+// Line reports the line a store setting was written on, and zero when the
+// configuration did not come from a file — which is why every message that
+// uses it must still read correctly without a line.
+func (s Store) Line(key string) int { return s.lines[key] }
+
+// ArtifactLocation returns where the evidence goes, resolved from the two
+// settings that can name it. Empty means nothing was configured, and the
+// caller supplies the default beside the database (Story 8.6, AC1).
+//
+// Both being set is a validation failure, so this preferring one is not a
+// silent resolution of the conflict: nothing reaches this method until
+// Validate has refused that configuration.
+func (s Store) ArtifactLocation() string {
+	if s.ArtifactURL != "" {
+		return s.ArtifactURL
+	}
+
+	return s.ArtifactDir
+}
+
+// Signed artifact URL bounds (Story 8.7, AC3).
+//
+// Five minutes is long enough for a browser to follow a redirect and load the
+// image behind it, including a page holding a dozen of them, and short enough
+// that a URL copied out of a network tab is worthless by the time anyone
+// looks. The hour is a ceiling rather than a suggestion: a signed URL cannot
+// be revoked, so its lifetime is the window in which evidence is readable by
+// whoever holds the string.
+const (
+	DefaultArtifactSignedURLTTL = 5 * time.Minute
+	MaxArtifactSignedURLTTL     = time.Hour
+)
+
+// SignedURLTTL returns how long a signed artifact URL may live, or the
+// default.
+func (s Store) SignedURLTTL() time.Duration {
+	return s.ArtifactSignedURLTTL.Or(DefaultArtifactSignedURLTTL)
 }
 
 // StoreDriver returns the configured driver, defaulting to SQLite.

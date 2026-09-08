@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"gocloud.dev/blob"
 	"gocloud.dev/blob/fileblob"
@@ -71,6 +72,19 @@ const (
 	// by a page, so this is a sanity limit rather than a defence.
 	maxKindLength = 64
 
+	// The kinds this store writes, which are also the only first segments a
+	// reference may carry (validKind). They are named here rather than at
+	// their call sites because retention reads the same list from the other
+	// end: an object under any other prefix was not written by this store, and
+	// a sweep must not treat it as garbage of its own making (Story 8.5, AC4).
+	artifactKindBody = "body"
+	// artifactKindScreenshot is a kind on its own and the prefix of the two
+	// capture writes, "screenshot-before-consent" and
+	// "screenshot-after-consent".
+	artifactKindScreenshot = "screenshot"
+	// kindSuffixSeparator joins a screenshot to the moment it was taken.
+	kindSuffixSeparator = "-"
+
 	// artifactContentType is written deliberately rather than sniffed. The
 	// bytes come from a hostile page, and a bucket that advertises them as
 	// text/html would let a provider's own URL serve a captured script as a
@@ -89,6 +103,17 @@ const (
 // attack — from evidence that has been pruned.
 var errInvalidRef = errors.New("invalid artifact reference")
 
+// ErrSigningUnsupported marks a bucket whose provider cannot produce a signed
+// URL — the local directory, which has no server to honour one, or an
+// S3-compatible endpoint reached with credentials that cannot sign.
+//
+// It is exported and a sentinel because the HTTP layer has to tell it from a
+// bucket that is broken: a provider that cannot sign is a reason to go on
+// serving the bytes through wsaw, which is what an operator had before they
+// asked for redirects, while a bucket that is unreachable is a failure worth
+// reporting (Story 8.7, AC3).
+var ErrSigningUnsupported = errors.New("this artifact bucket cannot sign URLs")
+
 // bucket is the store's one door to where artifacts live.
 //
 // It exists so that "the artifact directory" becomes "the artifact bucket": a
@@ -101,6 +126,11 @@ type bucket struct {
 	b        *blob.Bucket
 	location string
 	retry    retryFunc
+
+	// dir is the directory a local bucket is rooted at, and empty for every
+	// other provider. It exists for one question — is this bucket still there
+	// — which the local driver cannot be asked any other way; see reachable.
+	dir string
 }
 
 // retryFunc has the shape of Store.retry on purpose.
@@ -194,13 +224,14 @@ func openBucket(ctx context.Context, location string) (*bucket, error) {
 		return nil, errors.New("store: no artifact location configured; give a directory path or a bucket URL")
 	}
 
-	if !strings.Contains(location, schemeSeparator) {
+	if !IsArtifactURL(location) {
 		return openFileBucket(location)
 	}
 
 	u, err := url.Parse(location)
 	if err != nil {
-		return nil, fmt.Errorf("artifact location %q is not a valid URL: %w", secret.RedactURL(location), err)
+		return nil, fmt.Errorf("artifact location %s is not a valid URL: %w",
+			secret.RedactURL(location), parseFailure(err))
 	}
 
 	// The "file" scheme is resolved here instead of through gocloud's URL
@@ -231,30 +262,152 @@ func openBucket(ctx context.Context, location string) (*bucket, error) {
 	return &bucket{b: b, location: location, retry: retryOnce}, nil
 }
 
-// unsupportedSchemeError names the URL and what this binary can actually
-// reach, because "unsupported scheme" without that list sends an operator to
-// the source to find out (Tenet 15).
+// IsArtifactURL reports whether location names a bucket by URL rather than a
+// directory on local disk.
+//
+// It is exported because configuration draws the same line and must draw it
+// the same way: store.artifactDir is a path and store.artifactURL is a URL,
+// and each has to refuse the other's value rather than pass it on to be
+// misread here (Story 8.6, AC2).
+func IsArtifactURL(location string) bool {
+	return strings.Contains(location, schemeSeparator)
+}
+
+// ValidateArtifactURL reports whether this binary could open the bucket raw
+// names, without opening it.
+//
+// Configuration is validated completely at load, with the line an operator
+// has to change (Tenet 15), and a URL whose scheme no provider in this build
+// answers is exactly the mistake that would otherwise surface as a failed
+// scan hours later. What this cannot answer is whether the bucket exists and
+// accepts a write — that needs a request, and it is the startup probe's job
+// (Story 8.6, AC4).
+func ValidateArtifactURL(raw string) error {
+	if !IsArtifactURL(raw) {
+		return fmt.Errorf(
+			"%q is not a URL; a directory on local disk is named by store.artifactDir instead",
+			truncateForMessage(raw),
+		)
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		// The URL is redacted even while being rejected: a malformed URL can
+		// still carry a working credential in the part that did parse. That is
+		// also why the parse failure is unwrapped first — url.Error quotes the
+		// whole input back, which would put the credential in the message this
+		// line exists to keep it out of.
+		return fmt.Errorf("%s is not a valid URL: %w", secret.RedactURL(raw), parseFailure(err))
+	}
+
+	if u.Scheme == fileScheme {
+		path, err := filePathFromURL(u)
+		if err != nil {
+			return err
+		}
+
+		if path == "" {
+			// Redacted like every branch around it: a file URL that names no
+			// directory can still carry userinfo or a query string, and the
+			// message this returns is printed by "wsaw config --check" and
+			// logged at startup.
+			return fmt.Errorf("%s names no directory; a file bucket is a path, as in \"file:///var/lib/wsaw/artifacts\"",
+				secret.RedactURL(raw))
+		}
+
+		return nil
+	}
+
+	if !blob.DefaultURLMux().ValidBucketScheme(u.Scheme) {
+		return unsupportedSchemeError(raw, u.Scheme)
+	}
+
+	if u.Host == "" {
+		return fmt.Errorf("%s names no bucket; the host of the URL is the bucket, as in \"s3://my-bucket\"",
+			secret.RedactURL(raw))
+	}
+
+	if path := strings.Trim(u.Path, refSeparator); path != "" {
+		// Refused rather than ignored. Every cloud opener gocloud provides
+		// takes the bucket or container from the URL's host alone and drops
+		// its path — s3blob, gcsblob and azureblob all do — so
+		// "s3://bucket/wsaw" would put evidence at the root of the bucket
+		// while the operator read the configuration as scoping wsaw to a
+		// subtree. A retention sweep walks what it is given, so the difference
+		// is not cosmetic: configuration that is silently ignored is worse
+		// than configuration that is refused (Tenet 15).
+		return fmt.Errorf(
+			"%s names a path within the bucket, which this provider ignores; give the bucket alone, as in \"%s://%s\"",
+			secret.RedactURL(raw), u.Scheme, u.Host,
+		)
+	}
+
+	return nil
+}
+
+// parseFailure returns why a URL would not parse, without the URL.
+func parseFailure(err error) error {
+	var perr *url.Error
+	if errors.As(err, &perr) && perr.Err != nil {
+		return perr.Err
+	}
+
+	return err
+}
+
+// unsupportedSchemeError names the URL, the build, and what that build can
+// actually reach.
+//
+// All three, because "unsupported scheme" alone reads as a bug in wsaw: which
+// schemes resolve is a build-time decision (Story 8.8, AC3), so an operator
+// whose s3:// URL is refused needs to be told that they are running the build
+// without the cloud providers rather than sent to the source to find out
+// (Tenet 15).
 func unsupportedSchemeError(location, scheme string) error {
-	supported := append([]string{"a plain directory path"}, blob.DefaultURLMux().BucketSchemes()...)
+	schemes := blob.DefaultURLMux().BucketSchemes()
+	urls := make([]string, 0, len(schemes))
+
+	for _, s := range schemes {
+		urls = append(urls, s+schemeSeparator)
+	}
 
 	return fmt.Errorf(
-		"artifact location %s uses the %q scheme, which this build does not support; it supports %s%s",
-		secret.RedactURL(location), scheme, strings.Join(supported, ", "), cloudBuildHint(),
+		"%s uses the %q scheme, which %s cannot open; it opens %s, and a directory path written without a scheme%s",
+		secret.RedactURL(location), scheme, buildDescription(), strings.Join(urls, ", "), cloudBuildHint(),
 	)
 }
 
+// buildDescription names the binary the operator is running, in the words the
+// release uses for it.
+func buildDescription() string {
+	if cloudProvidersLinked() {
+		return "this build (made with -tags cloudblob)"
+	}
+
+	return "this build (the default one, made without -tags cloudblob)"
+}
+
 // cloudBuildHint tells an operator how to get the cloud providers when they
-// are not compiled in, and says nothing when they already are. It reads the
-// registered schemes rather than a build flag, so the message cannot disagree
-// with what the binary can do.
+// are not compiled in, and says nothing when they already are.
 func cloudBuildHint() string {
+	if cloudProvidersLinked() {
+		return ""
+	}
+
+	return "; s3://, gs:// and azblob:// need a build made with -tags cloudblob"
+}
+
+// cloudProvidersLinked reads the registered schemes rather than a build flag,
+// so a message about what this binary supports cannot disagree with what it
+// actually does.
+func cloudProvidersLinked() bool {
 	for _, s := range blob.DefaultURLMux().BucketSchemes() {
 		if s == cloudProbeScheme {
-			return ""
+			return true
 		}
 	}
 
-	return "; a build with -tags cloudblob also supports s3, gs and azblob"
+	return false
 }
 
 // filePathFromURL applies the same host convention gocloud's file opener
@@ -270,8 +423,8 @@ func filePathFromURL(u *url.URL) (string, error) {
 
 	default:
 		return "", fmt.Errorf(
-			"artifact location %q names host %q; a file bucket is local, so its host must be empty, \"localhost\" or \".\"",
-			u.String(), u.Host,
+			"artifact location %s names host %q; a file bucket is local, so its host must be empty, \"localhost\" or \".\"",
+			secret.RedactURL(u.String()), u.Host,
 		)
 	}
 }
@@ -310,7 +463,7 @@ func openFileBucket(dir string) (*bucket, error) {
 		return nil, fmt.Errorf("opening artifact directory %s: %w", dir, err)
 	}
 
-	return &bucket{b: b, location: dir, retry: retryOnce}, nil
+	return &bucket{b: b, location: dir, retry: retryOnce, dir: dir}, nil
 }
 
 // String names the bucket for a log line or an error, with any credentials
@@ -510,6 +663,64 @@ func (b *bucket) probeWritable(ctx context.Context) error {
 	return nil
 }
 
+// reachable reports whether the bucket still answers.
+//
+// This is the readiness question rather than the startup one (Story 8.6, AC5):
+// a wsaw whose evidence store has gone away is not ready, however healthy its
+// browser is, and it is the same argument that puts the database in readiness
+// (Story 4.7). It lists one key rather than writing one, for two reasons. A
+// probe object per poll would cost a request, a delete and a piece of litter
+// every few seconds against a bucket that charges per request; and whether the
+// bucket accepts writes has already been established at startup by
+// probeWritable, where paying for it once is worth it.
+//
+// It also does not retry. A readiness probe is polled and the caller bounds
+// it: an answer of "not ready yet" arriving promptly is more useful to an
+// orchestrator than a correct answer arriving after three backoffs.
+func (b *bucket) reachable(ctx context.Context) error {
+	if b.dir != "" {
+		return b.directoryReachable()
+	}
+
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	found, err := b.b.IsAccessible(ctx)
+	if err != nil {
+		return fmt.Errorf("the artifact bucket %s is not reachable: %w", b, err)
+	}
+
+	if !found {
+		// A bucket that answers "no such bucket" is a configuration mistake or
+		// a bucket somebody deleted, and either way wsaw has nowhere to put
+		// the next scan's evidence.
+		return fmt.Errorf("the artifact bucket %s does not exist", b)
+	}
+
+	return nil
+}
+
+// directoryReachable asks the filesystem the question a listing cannot answer.
+//
+// The local driver's listing walks the tree and skips whatever it cannot read,
+// returning no error, so an artifact directory that has gone away — an
+// unmounted volume being the case that matters — lists as empty and looks
+// perfectly healthy. That is the shape of failure Tenet 8 is about: wsaw would
+// report itself ready while every scan's evidence went nowhere. A stat is the
+// honest question to ask of a filesystem, and it costs nothing.
+func (b *bucket) directoryReachable() error {
+	info, err := os.Stat(b.dir)
+	if err != nil {
+		return fmt.Errorf("the artifact directory %s is not reachable: %w", b.dir, err)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("the artifact directory %s is not a directory any more", b.dir)
+	}
+
+	return nil
+}
+
 // get reads a whole artifact.
 //
 // It stays for the callers that genuinely need the bytes in hand — a stored
@@ -538,7 +749,22 @@ func (b *bucket) get(ctx context.Context, ref string) ([]byte, error) {
 	return data, nil
 }
 
-// newReader opens an artifact for streaming and reports its size.
+// artifactStream is an artifact opened for reading, with what the object's
+// own attributes said about it.
+//
+// The attributes travel with the stream because the provider reported them in
+// the round trip that opened it. Asking the bucket again for a size and a
+// modification time it has already given would cost a second request per
+// artifact served, and against a bucket that charges per request that is a
+// bill rather than a rounding error (Story 8.7, AC4).
+type artifactStream struct {
+	io.ReadCloser
+
+	size    int64
+	modTime time.Time
+}
+
+// newReader opens an artifact for streaming.
 //
 // This is what the HTTP layer serves from: a multi-megabyte document must not
 // have to exist in memory on both sides of the call, and the size is needed
@@ -547,9 +773,9 @@ func (b *bucket) get(ctx context.Context, ref string) ([]byte, error) {
 // Only opening the reader is retried. Once bytes are flowing there is nothing
 // to retry — the response has begun — and pretending otherwise would mean
 // buffering the object, which is the thing this method exists to avoid.
-func (b *bucket) newReader(ctx context.Context, ref string) (io.ReadCloser, int64, error) {
+func (b *bucket) newReader(ctx context.Context, ref string) (*artifactStream, error) {
 	if err := validateRef(ref); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	var r *blob.Reader
@@ -564,24 +790,63 @@ func (b *bucket) newReader(ctx context.Context, ref string) (io.ReadCloser, int6
 
 		return nil
 	}); err != nil {
-		return nil, 0, artifactError("reading", ref, err)
+		return nil, artifactError("reading", ref, err)
 	}
 
-	return r, r.Size(), nil
+	return &artifactStream{ReadCloser: r, size: r.Size(), modTime: r.ModTime()}, nil
 }
 
-// stat reports an artifact's size without reading it.
+// signedURL asks the provider for a URL that grants one GET of one artifact
+// for ttl, so a reader can fetch it from the bucket without the bytes passing
+// through wsaw at all.
+//
+// Whether that is possible is the provider's answer rather than a build-time
+// fact: S3, GCS and Azure sign, the local directory has no signer and no
+// server to honour one, and an S3-compatible endpoint reached with credentials
+// that cannot sign refuses too. Each of those arrives as
+// gcerrors.Unimplemented, and is translated into ErrSigningUnsupported so a
+// caller can go back to serving the bytes itself rather than failing a request
+// that an operator's opt-in was only ever meant to make cheaper.
+func (b *bucket) signedURL(ctx context.Context, ref string, ttl time.Duration) (string, error) {
+	if err := validateRef(ref); err != nil {
+		return "", err
+	}
+
+	var signed string
+
+	if err := b.do(ctx, "signing an artifact URL", func(ctx context.Context) error {
+		u, err := b.b.SignedURL(ctx, ref, &blob.SignedURLOptions{Expiry: ttl})
+		if err != nil {
+			return err
+		}
+
+		signed = u
+
+		return nil
+	}); err != nil {
+		if gcerrors.Code(err) == gcerrors.Unimplemented {
+			return "", fmt.Errorf("%w: %w", ErrSigningUnsupported, err)
+		}
+
+		return "", fmt.Errorf("signing a URL for artifact %s in bucket %s: %w", ref, b, err)
+	}
+
+	return signed, nil
+}
+
+// stat reports what the bucket knows about an artifact without reading it:
+// how large it is, and when it was written.
 //
 // It exists so the interface can tell "this evidence has been pruned" from
 // "this evidence is here" without fetching a megabyte of PNG to find out
 // (Story 5.17, AC3) — which matters more against a bucket, where the fetch
 // costs a round trip and a request.
-func (b *bucket) stat(ctx context.Context, ref string) (int64, error) {
+func (b *bucket) stat(ctx context.Context, ref string) (artifactObject, error) {
 	if err := validateRef(ref); err != nil {
-		return 0, err
+		return artifactObject{}, err
 	}
 
-	var size int64
+	obj := artifactObject{ref: ref}
 
 	if err := b.do(ctx, "reading artifact attributes", func(ctx context.Context) error {
 		attrs, err := b.b.Attributes(ctx, ref)
@@ -589,14 +854,14 @@ func (b *bucket) stat(ctx context.Context, ref string) (int64, error) {
 			return err
 		}
 
-		size = attrs.Size
+		obj.size, obj.modTime = attrs.Size, attrs.ModTime
 
 		return nil
 	}); err != nil {
-		return 0, artifactError("reading", ref, err)
+		return artifactObject{}, artifactError("reading", ref, err)
 	}
 
-	return size, nil
+	return obj, nil
 }
 
 // exists reports whether an artifact is stored, without distinguishing that
@@ -641,21 +906,29 @@ func (b *bucket) remove(ctx context.Context, ref string) error {
 	return nil
 }
 
+// artifactObject is one key a listing reported: what it is called, how many
+// bytes it holds, and when the bucket last wrote it.
+//
+// The write time is here because the retention sweep cannot do without it. A
+// key that nothing references is either garbage from an interrupted write or
+// an artifact whose row has not been committed yet, and the only thing that
+// tells those apart from outside is how long ago it was written (Story 8.5,
+// AC3).
+type artifactObject struct {
+	ref     string
+	size    int64
+	modTime time.Time
+}
+
 // list walks the keys under a prefix, calling fn for each.
 //
 // A callback and a page at a time, rather than a slice: a bucket that holds
 // every document of every scan has more keys than a caller should have to
-// hold in memory, and the sweeps that will use this (Story 8.5) care about
-// one key at a time. An error from fn stops the walk and is returned as is,
-// so a caller can abandon a listing without inventing a sentinel.
-//
-// It has a caller today, and it is the test suite rather than the daemon:
-// AC3's promise is that writing the same screenshot twice costs *one copy*,
-// and counting what a bucket holds is the only way to assert that against a
-// provider with no directory to look in. It is kept for that, deliberately,
-// rather than as an unused half of Story 8.5's sweep — which will decide for
-// itself what a walk needs from a grace period and a cursor.
-func (b *bucket) list(ctx context.Context, prefix string, fn func(ref string, size int64) error) error {
+// hold in memory, and the retention sweep that uses this (Story 8.5, AC3)
+// cares about one key at a time. An error from fn stops the walk and is
+// returned as is, so a caller can abandon a listing without inventing a
+// sentinel.
+func (b *bucket) list(ctx context.Context, prefix string, fn func(obj artifactObject) error) error {
 	if err := validatePrefix(prefix); err != nil {
 		return err
 	}
@@ -690,7 +963,7 @@ func (b *bucket) list(ctx context.Context, prefix string, fn func(ref string, si
 				continue
 			}
 
-			if err := fn(obj.Key, obj.Size); err != nil {
+			if err := fn(artifactObject{ref: obj.Key, size: obj.Size, modTime: obj.ModTime}); err != nil {
 				return err
 			}
 		}
@@ -737,6 +1010,13 @@ func validateRef(ref string) error {
 	return nil
 }
 
+// isArtifactRef reports whether a key is one this store could have written.
+//
+// It is validateRef as a question rather than as a failure, for the retention
+// sweep's walk of the bucket: a key that is not ours is not an error to
+// explain to anybody, it is a key to leave alone and count (Story 8.5, AC4).
+func isArtifactRef(ref string) bool { return validateRef(ref) == nil }
+
 // validatePrefix accepts what a listing may be narrowed to: the whole bucket,
 // one kind, or a partially typed reference within a kind. It is the same
 // whitelist validateRef applies, relaxed only in that the digest may be
@@ -756,28 +1036,71 @@ func validatePrefix(prefix string) error {
 	return nil
 }
 
-// validKind accepts the segment names this store writes — "body",
-// "screenshot-before-consent", "result" — and nothing a filesystem or an
-// object store reads as structure. The test is byte-wise, which rejects every
+// validKind accepts the kinds this store writes and nothing else: "body",
+// "result", the write probe, and a screenshot with or without the moment it
+// was taken ("screenshot-before-consent", "screenshot-after-consent").
+//
+// It is an allow-list rather than a character class because the retention
+// sweep reads it as one. A sweep walks the bucket and deletes what no result
+// references, so anything the shape test accepts is a key the sweep believes
+// wsaw wrote — and a character class accepts every "<lowercase word>/<64 hex>"
+// in the bucket, including another tool's objects and another wsaw
+// deployment's. Naming the kinds keeps that decision to the four prefixes this
+// store actually produces (Story 8.5, AC3 and AC4).
+//
+// The screenshot suffix is still checked byte-wise, which rejects every
 // non-ASCII byte along with control characters, dots, slashes and backslashes
 // rather than reasoning about what each of them might mean somewhere.
 func validKind(kind string) bool {
-	if kind == "" || len(kind) > maxKindLength {
+	if len(kind) > maxKindLength {
 		return false
 	}
 
-	for i := range len(kind) {
-		c := kind[i]
+	switch kind {
+	case artifactKindBody, artifactKindResult, artifactKindProbe, artifactKindScreenshot:
+		return true
+	}
+
+	suffix, ok := strings.CutPrefix(kind, artifactKindScreenshot+kindSuffixSeparator)
+
+	return ok && validKindSuffix(suffix)
+}
+
+// validKindSuffix accepts what may follow "screenshot-": the moment the shot
+// was taken, in the same restricted alphabet a kind itself is written in.
+func validKindSuffix(suffix string) bool {
+	if suffix == "" {
+		return false
+	}
+
+	for i := range len(suffix) {
+		c := suffix[i]
 
 		switch {
 		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case c == '-' && i > 0 && i < len(kind)-1:
+		case c == '-' && i > 0 && i < len(suffix)-1:
 		default:
 			return false
 		}
 	}
 
 	return true
+}
+
+// artifactDigest returns the SHA-256 sum a reference carries, and the empty
+// string for one that carries none.
+//
+// The digest is the second half of every key this store writes, so it is
+// already in hand wherever a reference is — which is what makes a strong
+// cache validator for an artifact free to produce (Story 8.7, AC4). Reading it
+// out of the reference belongs here, with the rest of what knows that layout.
+func artifactDigest(ref string) string {
+	_, digest, found := strings.Cut(ref, refSeparator)
+	if !found || !isDigest(digest) {
+		return ""
+	}
+
+	return digest
 }
 
 // isDigest reports whether s is a complete lowercase hex SHA-256 sum, which

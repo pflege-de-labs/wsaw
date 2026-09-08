@@ -109,6 +109,41 @@ func (postgresDialect) migrations() [][]string {
 		{
 			`alter table results drop column if exists document`,
 		},
+
+		// Version 4 (Story 8.5): the artifact reference index. The sqlite
+		// dialect carries the reasoning; `if not exists` is what makes a rerun
+		// after a lost version record a no-op here.
+		{
+			`create table if not exists result_artifacts (
+				target       text not null,
+				consent_mode text not null,
+				scan_id      text not null,
+				artifact_ref text not null,
+				primary key (target, consent_mode, scan_id, artifact_ref)
+			)`,
+
+			`create index if not exists result_artifacts_ref
+				on result_artifacts (artifact_ref)`,
+
+			`alter table results add column if not exists refs_indexed integer not null default 0`,
+		},
+
+		// Version 5 (Story 8.5): the claim table and the document references
+		// version 4 could not fill. The sqlite dialect carries the reasoning;
+		// `if not exists` and `on conflict do nothing` are what make a rerun
+		// after a lost version record a no-op here.
+		{
+			`create table if not exists artifact_claims (
+				artifact_ref text   not null primary key,
+				claimed_at   bigint not null
+			)`,
+
+			`insert into result_artifacts (target, consent_mode, scan_id, artifact_ref)
+				select target, consent_mode, scan_id, artifact_ref
+				  from results
+				 where artifact_ref <> ''
+				    on conflict do nothing`,
+		},
 	}
 }
 

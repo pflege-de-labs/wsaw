@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -148,6 +149,10 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 // quick: a store written before Story 8.2 moves every document it holds into
 // the artifact bucket on its first open, and a service manager stopping wsaw
 // during that has to be able to interrupt it (Story 8.4, AC3).
+//
+// It also writes to the bucket before returning. A bucket that cannot be
+// written to has to fail the start, naming itself, rather than turning the
+// first scan of the night into evidence nobody can store (Story 8.6, AC4).
 func (a *App) openStore(ctx context.Context) error {
 	opts, err := StoreOptions(a.Config, a.Secrets)
 	if err != nil {
@@ -168,6 +173,12 @@ func (a *App) openStore(ctx context.Context) error {
 	}
 
 	a.adoptStore(st)
+
+	// Adopted before it is probed, so that a store which opens and then fails
+	// its probe is still closed on the way out (Story 8.6, AC4).
+	if err := st.ProbeArtifactBucket(ctx); err != nil {
+		return fmt.Errorf("the artifact bucket is not usable: %w", err)
+	}
 
 	a.Logger.Info(
 		"store opened",
@@ -192,16 +203,28 @@ func (a *App) openStore(ctx context.Context) error {
 //
 // A DSN is registered with the secret registry when one is given, so it cannot
 // reach a log line or an error message: it carries a password (Story 4.7,
-// AC6). Passing a nil registry is for a caller that has no logger to protect.
+// AC6). A bucket URL that carries a credential is registered on the same
+// argument (Story 8.6, AC3). Passing a nil registry is for a caller that has
+// no logger to protect.
 //
-// For SQLite, artifacts sit beside the database file; for a server database
-// they sit in the state directory, since there is no file to sit beside.
+// Where the evidence goes is store.artifactURL when a bucket is configured and
+// store.artifactDir when a local directory is, and with neither set it is
+// derived: for SQLite, artifacts sit beside the database file; for a server
+// database they sit in the state directory, since there is no file to sit
+// beside. That derived default is the whole of what the single-binary
+// deployment needs to configure about storage, which is to say nothing
+// (Story 8.6, AC1).
 // Screenshots, stored bodies and — since Story 8.2 — result documents do not
 // belong in a row, so a server-backed deployment still needs somewhere to put
 // them and says where.
 func StoreOptions(cfg *config.Config, secrets *secret.Registry) (store.Options, error) {
+	artifacts, err := artifactLocation(cfg, secrets)
+	if err != nil {
+		return store.Options{}, err
+	}
+
 	opts := store.Options{
-		ArtifactDir:  cfg.Store.ArtifactDir,
+		ArtifactDir:  artifacts,
 		MaxAttempts:  cfg.Store.MaxAttempts,
 		RetryBackoff: cfg.Store.RetryBackoff.Duration(),
 	}
@@ -249,6 +272,117 @@ func StoreOptions(cfg *config.Config, secrets *secret.Registry) (store.Options, 
 	}
 
 	return opts, nil
+}
+
+// artifactLocation resolves where evidence goes, from the two settings that
+// can name it, and protects whatever credential the answer carries.
+//
+// store.artifactDir is a path and is taken literally: a directory is not a
+// credential. store.artifactURL may be a secret reference and should be
+// wherever it carries one — an S3-compatible endpoint authenticated by query
+// string is the ordinary case, and the AWS, Google and Azure chains are the
+// way everything else is meant to authenticate (Story 8.6, AC3).
+//
+// What joins the secret registry depends on how the URL was written. A setting
+// written as a secret reference is registered whole: its author declared the
+// value secret, and wsaw is in no position to argue about which part of it is.
+// A URL written out in full is registered piece by piece — the password in its
+// userinfo, and the value of any query parameter whose name says it carries a
+// credential — because the rest of it is the bucket's own name, and scrubbing
+// that would cost an operator the one detail those log lines exist for.
+//
+// Registering anything at all is necessary because the URL does not only
+// travel through wsaw's own formatting. store.Options.ArtifactLocation drops
+// the query string and the password from what wsaw prints, but gocloud quotes
+// the whole URL back in the errors its openers return, so an inline
+// "s3://bucket?...secret_access_key=..." reaches a wrapped error, the startup
+// log and stderr unless the central scrubber has been told the value. That is
+// the case the registry's own doc comment names as its reason to exist (Story
+// 8.6, AC3).
+func artifactLocation(cfg *config.Config, secrets *secret.Registry) (string, error) {
+	if cfg.Store.ArtifactURL == "" {
+		return cfg.Store.ArtifactDir, nil
+	}
+
+	ref, err := secret.Resolve(cfg.Store.ArtifactURL)
+	if err != nil {
+		return "", fmt.Errorf("store.artifactURL: %w", err)
+	}
+
+	if secrets != nil {
+		registerArtifactURLSecrets(secrets, cfg.Store.ArtifactURL, ref)
+	}
+
+	return ref.Reveal(), nil
+}
+
+// registerArtifactURLSecrets tells the scrubber whatever the artifact URL
+// carries that must never be printed.
+func registerArtifactURLSecrets(secrets *secret.Registry, setting string, resolved secret.Value) {
+	if secret.IsReference(setting) {
+		secrets.Add(resolved)
+
+		return
+	}
+
+	location := resolved.Reveal()
+
+	if !store.IsArtifactURL(location) {
+		// A directory on local disk, named through store.artifactURL. A path
+		// is not a credential.
+		return
+	}
+
+	u, err := url.Parse(location)
+	if err != nil {
+		// Registered whole rather than parsed: wsaw cannot establish which
+		// part of a URL it could not read holds a credential, and the cost of
+		// being wrong in this direction is a bucket name missing from a log
+		// line rather than a leaked key. The URL is refused by validation
+		// anyway; this is about what gets printed while refusing it.
+		secrets.Add(resolved)
+
+		return
+	}
+
+	if password, set := u.User.Password(); set {
+		secrets.Add(secret.Literal(password))
+	}
+
+	for name, values := range u.Query() {
+		if !namesACredential(name) {
+			continue
+		}
+
+		for _, v := range values {
+			secrets.Add(secret.Literal(v))
+		}
+	}
+}
+
+// credentialParamHints are what a URL query parameter is called when it
+// carries a credential.
+//
+// Substrings rather than exact names, because there are four providers and
+// each spells it differently — access_key_id and secret_access_key for S3,
+// sas_token for Azure, private_key_path and access_id for GCS — and a new
+// parameter in a library upgrade must be covered by default rather than after
+// somebody notices it in a log. Matching too widely costs a redacted region
+// name in one log line; matching too narrowly costs a leaked key.
+var credentialParamHints = []string{"secret", "key", "token", "password", "credential", "signature", "sas"}
+
+// namesACredential reports whether a query parameter's name says its value is
+// one.
+func namesACredential(name string) bool {
+	lower := strings.ToLower(name)
+
+	for _, hint := range credentialParamHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // logStoreRetry makes a retry visible. A database that is flapping while
@@ -610,10 +744,20 @@ func (a *App) RunningScans() []scanner.Running {
 }
 
 // Retention returns the configured retention policy.
-func (a *App) Retention() store.Retention {
+func (a *App) Retention() store.Retention { return RetentionFor(a.Config) }
+
+// RetentionFor reads a retention policy out of configuration without needing a
+// running App.
+//
+// It exists for the maintenance command that applies retention on request
+// (Story 8.5, AC6): that command loads configuration and opens a store, and
+// nothing else. Reading the two settings there instead would be a second place
+// that decides what `maxAge` and `maxPerSeries` mean, and a dry run whose
+// retention differed from the daemon's would be a dry run of the wrong thing.
+func RetentionFor(cfg *config.Config) store.Retention {
 	return store.Retention{
-		MaxAge:       a.Config.Store.MaxAge.Duration(),
-		MaxPerSeries: a.Config.Store.MaxPerSeries,
+		MaxAge:       cfg.Store.MaxAge.Duration(),
+		MaxPerSeries: cfg.Store.MaxPerSeries,
 	}
 }
 
@@ -732,16 +876,55 @@ func (a *App) PruneLoop(ctx context.Context) {
 			return
 
 		case now := <-ticker.C:
-			stats, err := a.Store.Prune(now, retention)
-			if err != nil {
-				a.Logger.Error("pruning old results failed", "error", err)
-
-				continue
-			}
-
-			if stats.ResultsDeleted > 0 {
-				a.Logger.Info("pruned old results", "results_deleted", stats.ResultsDeleted)
-			}
+			a.pruneOnce(ctx, now, retention)
 		}
+	}
+}
+
+// pruneOnce applies retention once and reports what it reclaimed.
+//
+// Pruning deletes artifacts as well as rows now (Story 8.5), so one number is
+// no longer the whole story: an operator watching a bucket needs the bytes, and
+// a bucket that refuses a delete has to be visible rather than quietly leaking
+// (AC5). The counts also go to the metrics registry, for the same reason every
+// other store degradation does — one nobody can see is one nobody fixes
+// (Tenet 8).
+func (a *App) pruneOnce(ctx context.Context, now time.Time, retention store.Retention) {
+	stats, err := a.Store.Prune(ctx, now, retention)
+
+	// Recorded before the failure is handled, and from the same stats either
+	// way. A prune deletes its rows in a committed transaction and collects
+	// artifacts afterwards, outside it, so a run that failed half way through
+	// the collection has still removed everything it counted. Dropping those
+	// counts because the run ended badly would leave an operator watching a
+	// bucket reclaim gigabytes with every metric flat — the invisible
+	// degradation this function's own reporting exists to prevent (Tenet 8).
+	a.Metrics.Pruned(stats.ResultsDeleted, stats.ArtifactsDeleted, stats.BytesFreed)
+	a.Metrics.ArtifactDeletionsFailed(stats.ArtifactsFailed)
+
+	if err != nil {
+		a.Logger.Error("pruning old results failed", "error", err,
+			"results_deleted", stats.ResultsDeleted,
+			"artifacts_deleted", stats.ArtifactsDeleted,
+			"bytes_freed", stats.BytesFreed)
+
+		return
+	}
+
+	if stats.ArtifactsFailed > 0 {
+		a.Logger.Warn("some unreferenced artifacts could not be deleted and were left for the next sweep",
+			"artifacts_failed", stats.ArtifactsFailed)
+	}
+
+	if stats.UnknownReferences > 0 {
+		a.Logger.Warn("some stored results do not record which artifacts they reference, so screenshots and stored bodies were left alone",
+			"results", stats.UnknownReferences)
+	}
+
+	if stats.ResultsDeleted > 0 || stats.ArtifactsDeleted > 0 {
+		a.Logger.Info("pruned old results",
+			"results_deleted", stats.ResultsDeleted,
+			"artifacts_deleted", stats.ArtifactsDeleted,
+			"bytes_freed", stats.BytesFreed)
 	}
 }

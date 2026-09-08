@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
@@ -67,6 +68,16 @@ type Options struct {
 	// something an operator can copy and send rather than assemble.
 	ShareBaseURL string
 
+	// SignedArtifactURLs lets an artifact request be answered with a redirect
+	// to the bucket rather than with the bytes. Off unless an operator asked
+	// for it: a redirect moves access control from wsaw to whoever holds the
+	// URL until it expires (Story 8.7, AC3).
+	SignedArtifactURLs bool
+	// SignedArtifactURLTTL is how long such a redirect may be honoured. A
+	// redirect issued to a shared reader is additionally cut to what is left
+	// of their share link.
+	SignedArtifactURLTTL time.Duration
+
 	// RefreshDefault is how often the interface reloads itself for a viewer
 	// who has expressed no preference. Zero means not at all. It is only the
 	// default: the choice belongs to whoever is looking (Story 5.16).
@@ -112,6 +123,15 @@ type Server struct {
 	http *http.Server
 
 	ui *uiRenderer
+
+	// noSigning records that the artifact bucket cannot produce signed URLs,
+	// so the fallback to serving the bytes costs one attempt for the life of
+	// the process rather than one per request. Whether a provider signs is a
+	// property of the provider (Story 8.7, AC3).
+	noSigning atomic.Bool
+	// signingWarned keeps a bucket that fails to sign for some other reason
+	// from writing a log line per screenshot on every page view.
+	signingWarned atomic.Bool
 }
 
 // New builds the server.
@@ -194,7 +214,8 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.http.Addr = ln.Addr().String()
 
-	s.deps.Logger.Info("http server listening",
+	s.deps.Logger.Info(
+		"http server listening",
 		"addr", s.http.Addr,
 		"web_ui", s.opts.WebUI,
 		"read_only", s.opts.ReadOnly,
@@ -348,7 +369,8 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, r)
 
-		s.deps.Logger.Debug("http request",
+		s.deps.Logger.Debug(
+			"http request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,

@@ -81,6 +81,7 @@ func oldLayoutStore(t *testing.T) *oldLayout {
 
 	o.db = rawDB(t, o.opts)
 	o.dropSummaryColumns(t)
+	o.dropReferenceIndex(t)
 
 	// longtext for MySQL, because a result document exceeds the 64 KiB a TEXT
 	// holds; no default there either, since MySQL takes no literal default for
@@ -120,6 +121,27 @@ func (o *oldLayout) dropSummaryColumns(t *testing.T) {
 	}
 
 	o.exec(t, "alter table results "+strings.Join(drops, ", "))
+}
+
+// dropReferenceIndex removes what migrations 4 and 5 added, so that both have
+// something to do when the store is opened again (Story 8.5).
+//
+// Taking a store back to version 1 means taking back every migration since it,
+// not only the one a test is looking at: a fixture that left a later
+// migration's schema in place would make the upgrade fail on the duplicate
+// rather than exercise it.
+func (o *oldLayout) dropReferenceIndex(t *testing.T) {
+	t.Helper()
+
+	o.exec(t, "drop table if exists artifact_claims")
+	o.exec(t, "drop table if exists result_artifacts")
+
+	ifExists := ""
+	if o.driver == store.DriverPostgres {
+		ifExists = "if exists "
+	}
+
+	o.exec(t, "alter table results drop column "+ifExists+"refs_indexed")
 }
 
 // setVersion rewinds the recorded schema version, which is where each dialect
