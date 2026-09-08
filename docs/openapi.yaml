@@ -162,25 +162,82 @@ paths:
       tags: [results]
       summary: Fetch a stored response body or screenshot
       description: >
-        Artifacts live outside the result document as content-addressed files;
-        a result names one in its `bodyRef` or screenshot field. They are
-        served as an opaque attachment and never as anything a browser will
-        render: the bytes came from a scanned page, so rendering them on
-        wsaw's own origin would hand a hostile page a same-origin context.
+        Artifacts live outside the result document as content-addressed objects
+        in the artifact bucket; a result names one in its `bodyRef` or
+        screenshot field. A response body is served as an opaque attachment and
+        never as anything a browser will render: the bytes came from a scanned
+        page, so rendering them on wsaw's own origin would hand a hostile page a
+        same-origin context. A screenshot is wsaw's own PNG and is served inline
+        as `image/png` under a policy that permits an image and nothing else;
+        `?download=1` asks for it as an attachment instead.
+
+
+        The response is streamed from the bucket and carries `Content-Length`,
+        a strong `ETag` (the reference is the SHA-256 of the bytes, so the tag
+        cannot go stale) and `Last-Modified`, so a client revalidates instead of
+        re-fetching megabytes.
       parameters:
         - name: ref
           in: path
           required: true
           description: The reference from a result, such as `body/<sha256>`.
           schema: {type: string}
+        - name: download
+          in: query
+          description: Set to `1`, `true` or `yes` to receive a screenshot as an attachment rather than inline.
+          schema: {type: string, enum: ["1", "true", "yes"]}
+        - name: If-None-Match
+          in: header
+          description: The `ETag` a client already holds. A match is answered with 304.
+          schema: {type: string}
+        - name: If-Modified-Since
+          in: header
+          description: >
+            The `Last-Modified` a client already holds, used only when no
+            `If-None-Match` is offered.
+          schema: {type: string}
       responses:
         "200":
           description: The artifact's bytes.
+          headers:
+            Content-Length: {schema: {type: integer}, description: The object's size, from the bucket.}
+            ETag:
+              schema: {type: string}
+              description: '`"sha256:<digest>"` — strong, because the reference addresses the bytes by that digest.'
+            Last-Modified: {schema: {type: string}, description: When the bucket wrote the object.}
+            Cache-Control:
+              schema: {type: string}
+              description: >
+                `private, no-cache` — a client may keep the bytes but must
+                revalidate, so wsaw stays in charge of who may see them.
           content:
             application/octet-stream:
               schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+        "302":
+          description: >
+            A signed bucket URL, issued instead of the bytes. This happens only
+            where the operator has set `store.artifactSignedURLs` and the
+            provider can sign; it is off by default, because a redirect moves
+            access control from wsaw to the bucket. The `Location` is valid for
+            `store.artifactSignedURLTTL` and never longer than the share link
+            that produced it, and the response is `Cache-Control: no-store`
+            because it stops working when the signature expires.
+          headers:
+            Location: {schema: {type: string}, description: The signed URL at the bucket.}
+            Cache-Control: {schema: {type: string}}
+        "304":
+          description: >
+            The copy the client already holds is the artifact. Carries the
+            validators and no body.
+          headers:
+            ETag: {schema: {type: string}}
+            Last-Modified: {schema: {type: string}}
+            Cache-Control: {schema: {type: string}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/results/{target}/{mode}/{scan}/har:
     get:
@@ -398,6 +455,15 @@ components:
           schema: {$ref: "#/components/schemas/Error"}
     ReadOnly:
       description: Refused; wsaw is read-only or the action is disabled.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    EvidenceGone:
+      description: >
+        The record exists and the evidence it names does not: retention or a
+        lifecycle rule on the bucket has removed it. Distinct from 404, which
+        means there is no such record — absence is reported rather than
+        inferred.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}

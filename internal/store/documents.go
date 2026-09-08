@@ -528,3 +528,288 @@ func documentMigrationUpdate() string {
 	return `update ` + resultsTable + ` set ` + strings.Join(sets, ", ") +
 		` where target = ? and consent_mode = ? and scan_id = ?`
 }
+
+// schemaArtifactReferences is the schema version that adds the index of which
+// artifacts each result names (Story 8.5). It is named here, beside the
+// migration that moved the documents, because the two are halves of one
+// upgrade: the documents went to the bucket, and this is what makes them
+// deletable again.
+const schemaArtifactReferences = 4
+
+// indexArtifactReferences records, for every stored result that has no such
+// record yet, which artifacts it names.
+//
+// It is the backfill of migration 4, and it cannot be one of that migration's
+// statements: what a result references is inside the document, which by then
+// lives in the bucket, so deriving it is a read per row rather than SQL. It
+// runs after the numbered migrations for the same reason the document move runs
+// before its own — the work is not expressible where the schema change is.
+//
+// A store that came through the upgrade without this would be a store that
+// cannot prune: every artifact would look unreferenced, and retention would
+// have to refuse to delete rather than delete evidence it could not account
+// for. That is why it is retried on every start until it is done.
+//
+// No row can fail an Open. A row whose document is missing or undecodable is
+// marked as one whose references cannot be derived — recording the document's
+// own reference, which the row knows regardless — and a store that stops
+// answering part way through leaves the rest for the next start. Refusing to
+// open a store because one old result will not decode would take a whole
+// history offline over one row, which is the opposite of what Story 8.2, AC5
+// asks for.
+//
+// The one thing here that can fail an Open is the count below, and that is
+// deliberate rather than an oversight in the paragraph above: a database that
+// will not answer a single count is not a store to open and start scanning
+// into, and it is the same query every other start depends on.
+func (s *Store) indexArtifactReferences(ctx context.Context) error {
+	pending, err := s.countUnindexedResults(ctx)
+	if err != nil {
+		return err
+	}
+
+	if pending == 0 {
+		return nil
+	}
+
+	s.log.Info("recording which artifacts each stored result references",
+		"results", pending, "bucket", s.bucket.String())
+
+	indexed, underivable := s.indexEveryBatch(ctx, documentBatchSize)
+
+	// "backlog" is what there was to do, not what is left: a run that indexed
+	// every one of a hundred rows logging "pending: 100" would read as a run
+	// that made no progress at all.
+	s.log.Info("recorded which artifacts each stored result references",
+		"results", indexed, "underivable", underivable, "backlog", pending,
+		"remaining", pending-indexed)
+
+	return nil
+}
+
+// countUnindexedResults counts the rows whose references are still to be
+// derived. It is one count on a column with a default, so a store with nothing
+// to do pays a single query for the check.
+func (s *Store) countUnindexedResults(ctx context.Context) (int, error) {
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	q := `select count(*) from ` + resultsTable + ` where ` + refsIndexedColumn + ` = ?`
+
+	var n int
+
+	err := s.retry(ctx, "counting results without recorded artifact references", func(ctx context.Context) error {
+		return s.db.QueryRowContext(ctx, s.q(q), refsUnknown).Scan(&n)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("counting the results whose artifact references are still to be derived: %w", err)
+	}
+
+	return n, nil
+}
+
+// indexEveryBatch walks the rows whose references are still to be derived, a
+// page of keys at a time.
+//
+// It stops on a run of consecutive failures for the reason the document move
+// does: a store that has refused several rows in a row has stopped answering
+// rather than met several bad rows, and grinding through the rest of the table
+// against it would spend the whole retry policy per row.
+func (s *Store) indexEveryBatch(ctx context.Context, batch int) (indexed, underivable int) {
+	var (
+		after  *resultRowKey
+		inARow int
+	)
+
+	for {
+		rows, err := s.unindexedResults(ctx, after, batch)
+		if err != nil {
+			s.log.Warn("the results whose artifact references are missing could not be listed",
+				"error", err)
+
+			return indexed, underivable
+		}
+
+		if len(rows) == 0 {
+			return indexed, underivable
+		}
+
+		for _, row := range rows {
+			key := row.key
+			after = &key
+
+			derived, err := s.indexOneResult(ctx, row)
+			if err != nil {
+				inARow++
+
+				s.log.Warn("the artifacts a stored result references could not be recorded",
+					"scan_id", row.key.scanID, "target", row.key.target,
+					"consent_mode", row.key.mode, "error", err)
+
+				if inARow >= maxConsecutiveBucketFailures {
+					s.log.Error("recording which artifacts each result references was stopped",
+						"reason", "several rows in a row could not be recorded, so the store is treated as unavailable",
+						"recorded", indexed, "bucket", s.bucket.String())
+
+					return indexed, underivable
+				}
+
+				continue
+			}
+
+			inARow = 0
+			indexed++
+
+			if !derived {
+				underivable++
+			}
+		}
+
+		s.log.Info("recording artifact references", "results", indexed, "underivable", underivable)
+	}
+}
+
+// unindexedResult is one row waiting for its references to be derived: which
+// row it is, and where its document is.
+type unindexedResult struct {
+	key resultRowKey
+	ref resultRef
+}
+
+// unindexedResults reads the next page of rows whose references are still to be
+// derived.
+func (s *Store) unindexedResults(ctx context.Context, after *resultRowKey, batch int) ([]unindexedResult, error) {
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	q := `select target, consent_mode, scan_id, ` + refColumns + ` from ` + resultsTable +
+		` where ` + refsIndexedColumn + ` = ?`
+
+	args := []any{refsUnknown}
+
+	if after != nil {
+		// The same row-value comparison the document move pages with, so the
+		// three key columns order as one and a row that could not be recorded
+		// is not met again until the next run.
+		q += ` and (target, consent_mode, scan_id) > (?, ?, ?)`
+		args = append(args, after.args()...)
+	}
+
+	q += ` order by target, consent_mode, scan_id limit ?`
+	args = append(args, batch)
+
+	var out []unindexedResult
+
+	err := s.retry(ctx, "listing results without recorded artifact references", func(ctx context.Context) error {
+		out = nil
+
+		rows, err := s.db.QueryContext(ctx, s.q(q), args...)
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			var u unindexedResult
+
+			if err := rows.Scan(&u.key.target, &u.key.mode, &u.key.scanID,
+				&u.ref.ref, &u.ref.size, &u.ref.digest); err != nil {
+				return err
+			}
+
+			out = append(out, u)
+		}
+
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing the results whose artifact references are still to be derived: %w", err)
+	}
+
+	return out, nil
+}
+
+// indexOneResult derives one row's artifact references and records them,
+// reporting whether they could be derived at all.
+//
+// A document that is gone or will not decode is not an error here. Its own
+// reference is still recorded — the row knows where the document was put, and
+// nothing else does — and the row is marked as one whose remaining references
+// are unknown, which is what stops a sweep from concluding that a screenshot
+// belonging to it is garbage (Tenet 5). Marking it also stops the next start
+// from reading the same broken object again.
+func (s *Store) indexOneResult(ctx context.Context, row unindexedResult) (derived bool, err error) {
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	refs, derived := s.refsForRow(ctx, row)
+
+	state := refsRecorded
+	if !derived {
+		state = refsUnderivable
+	}
+
+	if err := s.recordResultRefs(ctx, row.key, refs, state); err != nil {
+		return false, err
+	}
+
+	return derived, nil
+}
+
+// refsForRow reads a row's document and lists what it names, falling back to
+// the document's own reference when the document cannot be read.
+func (s *Store) refsForRow(ctx context.Context, row unindexedResult) (refs []string, derived bool) {
+	if row.ref.ref == "" {
+		// A row that names no document at all. Migration 3 refuses to finish
+		// while one exists, so this is a row edited outside wsaw: there is
+		// nothing to read and nothing to record.
+		return nil, false
+	}
+
+	res, err := s.readDocument(ctx, row.ref)
+	if err != nil {
+		s.log.Warn("a stored result's document could not be read, so only its own reference was recorded",
+			"scan_id", row.key.scanID, "target", row.key.target,
+			"consent_mode", row.key.mode, "artifact", row.ref.ref, "error", err)
+
+		return []string{row.ref.ref}, false
+	}
+
+	return artifactRefsOf(res, row.ref.ref), true
+}
+
+// recordResultRefs writes one row's references and marks the row accordingly,
+// in one transaction so that a row can never claim references it does not have.
+func (s *Store) recordResultRefs(ctx context.Context, key resultRowKey, refs []string, state int) error {
+	err := s.retry(ctx, "recording a result's artifact references", func(ctx context.Context) error {
+		return s.recordResultRefsTx(ctx, key, refs, state)
+	})
+	if err != nil {
+		return fmt.Errorf("recording the artifact references of scan %s: %w", key.scanID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) recordResultRefsTx(ctx context.Context, key resultRowKey, refs []string, state int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	if err := s.replaceArtifactRefsTx(ctx, tx, key, refs); err != nil {
+		return err
+	}
+
+	q := `update ` + resultsTable + ` set ` + refsIndexedColumn +
+		` = ? where target = ? and consent_mode = ? and scan_id = ?`
+
+	if _, err := tx.ExecContext(ctx, s.q(q), append([]any{state}, key.args()...)...); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}

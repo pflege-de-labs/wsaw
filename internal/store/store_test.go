@@ -461,7 +461,7 @@ func TestBaselineSurvivesRetentionPruning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestPruneByCount(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(time.Now(), store.Retention{MaxPerSeries: 3})
+	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestPruneWithNoRetentionKeepsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(time.Now(), store.Retention{})
+	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,18 +606,28 @@ func TestStatArtifactTellsPrunedFromPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	size, err := s.StatArtifact(ref)
+	info, err := s.StatArtifact(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("StatArtifact: %v", err)
 	}
 
-	if size != int64(len("png-bytes")) {
-		t.Errorf("StatArtifact = %d bytes, want %d", size, len("png-bytes"))
+	if info.Size != int64(len("png-bytes")) {
+		t.Errorf("StatArtifact = %d bytes, want %d", info.Size, len("png-bytes"))
+	}
+
+	// The digest an entity tag is built from is the reference's own second
+	// half, so it is reported without a second look at the object.
+	if _, want, _ := strings.Cut(ref, "/"); info.Digest != want {
+		t.Errorf("StatArtifact reports digest %q, want %q", info.Digest, want)
+	}
+
+	if info.ModTime.IsZero() {
+		t.Error("StatArtifact reports no modification time, so no Last-Modified can be written")
 	}
 
 	absent := "screenshot/" + strings.Repeat("00", 32)
 
-	if _, err := s.StatArtifact(absent); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.StatArtifact(t.Context(), absent); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("stat of a pruned artifact = %v, want ErrNotFound", err)
 	}
 }

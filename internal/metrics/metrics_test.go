@@ -247,3 +247,33 @@ func TestNilResultIsIgnored(t *testing.T) {
 	// Must not panic: a scan that produced nothing at all still calls through.
 	r.ScanFinished("site", model.ConsentReject, nil)
 }
+
+// TestRetentionCountsAreExposed covers Story 8.5, AC5. Retention is the only
+// thing that ever removes anything from the artifact bucket, so whether it is
+// keeping storage in bounds — and whether the bucket is refusing its deletes —
+// is only answerable from outside the process (Tenet 8).
+func TestRetentionCountsAreExposed(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	r.Pruned(7, 12, 4096)
+	r.Pruned(1, 2, 100)
+	r.ArtifactDeletionsFailed(3)
+	// Nothing failed on this run, and a call that adds nothing must not create
+	// a counter that suggests otherwise.
+	r.ArtifactDeletionsFailed(0)
+
+	out := render(t, r)
+
+	for _, want := range []string{
+		"wsaw_results_pruned_total 8",
+		"wsaw_artifacts_deleted_total 14",
+		"wsaw_artifact_bytes_freed_total 4196",
+		"wsaw_artifact_deletions_failed_total 3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics output does not contain %q", want)
+		}
+	}
+}

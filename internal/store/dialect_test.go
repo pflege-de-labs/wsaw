@@ -56,7 +56,7 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 
 		ddl := strings.ToLower(strings.Join(flatten(d.migrations()), "\n"))
 
-		for _, table := range []string{"results", "baselines", "audit"} {
+		for _, table := range []string{"results", "baselines", "audit", "result_artifacts"} {
 			if !strings.Contains(ddl, "table if not exists "+table) {
 				t.Errorf("%s does not create the %s table", name, table)
 			}
@@ -67,6 +67,30 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 		if !strings.Contains(ddl, "results_series") {
 			t.Errorf("%s does not create the results_series index", name)
 		}
+	}
+}
+
+// TestTheClaimTableIsTheLatestMigration pins the version number Story 8.5
+// names against the list it indexes.
+//
+// The backfill that fills the reference table runs after the numbered
+// migrations rather than as one of them, so nothing else would notice if the
+// constant and the list stopped agreeing — and a version number that named a
+// different migration would be a comment that lies.
+func TestTheClaimTableIsTheLatestMigration(t *testing.T) {
+	t.Parallel()
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaArtifactClaims {
+		t.Errorf("the schema has %d migrations, schemaArtifactClaims says %d",
+			got, schemaArtifactClaims)
+	}
+
+	// The claim table is the version after the reference index, and both
+	// numbers are quoted in comments that explain what each one did. A
+	// renumbering that left them out of order would make those comments wrong.
+	if schemaArtifactClaims != schemaArtifactReferences+1 {
+		t.Errorf("the claim table is version %d and the reference index is version %d; they are consecutive",
+			schemaArtifactClaims, schemaArtifactReferences)
 	}
 }
 

@@ -1,15 +1,11 @@
 package httpapi
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/diff"
@@ -80,9 +76,18 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := s.deps.Store.Ping(storeCtx); err != nil {
+		// The class goes in the body and the detail goes to the log. This
+		// endpoint answers every caller when no API token is configured, which
+		// is the default, and the store's own account of the failure names the
+		// artifact bucket or the directory it used to be — a deployment's
+		// filesystem layout is not something to publish to whoever can reach
+		// the port (Tenet 19). An operator gets the whole error in the log
+		// line beside it.
+		s.deps.Logger.Warn("readiness: the store is not reachable", "error", err)
+
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			fieldReady:  false,
-			fieldReason: err.Error(),
+			fieldReason: storeReadinessReason(err),
 		})
 
 		return
@@ -108,6 +113,26 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		fieldReason:    reason,
 		"staleTargets": stale,
 	})
+}
+
+// storeReadinessReason names which half of the store is not answering, and
+// nothing else.
+//
+// Which half is worth publishing: it is the difference between a database
+// outage and a bucket outage, and it tells an operator or an orchestrator
+// where to look without naming a path, a host or a bucket. Anything the store
+// could not classify reads as the store as a whole.
+func storeReadinessReason(err error) string {
+	switch {
+	case errors.Is(err, store.ErrBucketUnreachable):
+		return store.ErrBucketUnreachable.Error()
+
+	case errors.Is(err, store.ErrDatabaseUnreachable):
+		return store.ErrDatabaseUnreachable.Error()
+
+	default:
+		return "the result store is not reachable"
+	}
 }
 
 // TargetView is a target plus its current state, which is what the dashboard
@@ -330,154 +355,6 @@ func (s *Server) bodyLoader(r *http.Request) report.BodyLoader {
 	return func(ref string) ([]byte, error) {
 		return s.deps.Store.GetArtifact(ref)
 	}
-}
-
-// handleArtifact serves a stored body or screenshot.
-//
-// Without this route a stored artifact was unreachable: capture wrote it, the
-// result named it, and nothing could read it back. The reference is validated
-// by the store, which confines it to the artifact directory (Tenet 9).
-//
-// How it comes back depends on what it is, and the distinction is the whole
-// of Story 5.17's AC5. A response body *is* the scanned page's bytes, so it
-// is served as an opaque attachment and never as anything a browser will
-// render — rendering it on wsaw's own origin would hand a hostile page a
-// same-origin script context. A screenshot is a PNG that Chrome produced
-// under wsaw's control: the page influenced its pixels, not its bytes, so it
-// may be shown as an image. As an image and nothing else.
-func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
-	ref := r.PathValue("ref")
-	if ref == "" {
-		writeJSONError(w, http.StatusBadRequest, "an artifact reference is required")
-
-		return
-	}
-
-	s.serveArtifact(w, r, ref)
-}
-
-// serveArtifact writes one stored artifact with the headers its kind
-// deserves. It is shared by the authenticated route and by the share-link
-// route, so a shared reader cannot be served bytes under weaker headers than
-// an operator would get.
-//
-// The object is streamed rather than buffered. Evidence now lives in a bucket
-// and a result document runs to tens of megabytes, so reading it whole before
-// the first byte reaches the client would make the daemon's memory track the
-// size of the largest artifact times the number of readers (Story 8.1, AC7).
-func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref string) {
-	body, size, err := s.deps.Store.OpenArtifact(ref)
-	if err != nil {
-		writeStoreError(w, err)
-
-		return
-	}
-
-	defer func() {
-		if err := body.Close(); err != nil {
-			s.deps.Logger.Error("closing an artifact reader", "error", err)
-		}
-	}()
-
-	// Only the magic bytes are pulled ahead of the copy. A screenshot is served
-	// as an image and a body never is, and that decision has to be made before
-	// the headers go out — but it needs eight bytes, not the whole object.
-	head := bufio.NewReaderSize(body, len(pngMagic))
-
-	magic, err := head.Peek(len(pngMagic))
-	if err != nil && !errors.Is(err, io.EOF) {
-		writeStoreError(w, err)
-
-		return
-	}
-
-	// Two independent conditions, deliberately. The kind comes from wsaw's own
-	// code rather than from a page, and the magic bytes are the file itself:
-	// requiring both means a response body cannot be served as an image even
-	// if some future caller passed a reference that claimed to be one.
-	inline := !wantsDownload(r) && isScreenshotRef(ref) && isPNG(magic)
-
-	// Written from what the bucket reported rather than from what is copied,
-	// so the interface can show a size and a browser can cache instead of
-	// re-fetching megabytes (Story 5.17, AC4).
-	if size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-	}
-
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if inline {
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Content-Disposition", `inline; filename="`+safeArtifactFilename(ref, "png")+`"`)
-		// An image and nothing else: no script, no styles, no subresources,
-		// whatever a browser might otherwise try to do with these bytes.
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox")
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+safeArtifactFilename(ref, "bin")+`"`)
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-	}
-
-	// #nosec G705 -- a body's bytes are page-controlled, which is why the
-	// headers above make them inert: an opaque type, an attachment
-	// disposition, nosniff, and a sandbox policy. A screenshot is wsaw's own
-	// PNG and is served as an image with an equally strict policy. The
-	// analyser sees the taint and not the mitigation; the tests in
-	// bodies_test.go and screenshots_test.go see the mitigation.
-	if _, err := io.Copy(w, head); err != nil {
-		// The status and the headers are already gone, so there is nothing to
-		// report to the client; the log line is what tells an operator that a
-		// download died half way rather than completing.
-		s.deps.Logger.Error("writing artifact", "error", err)
-	}
-}
-
-// wantsDownload reports whether the caller asked for the file rather than a
-// rendering of it, so a screenshot can still be saved as evidence.
-func wantsDownload(r *http.Request) bool {
-	switch r.URL.Query().Get("download") {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
-// isScreenshotRef reports whether a reference names a screenshot. The kind is
-// the first path segment and is written by wsaw, never by a scanned page.
-func isScreenshotRef(ref string) bool {
-	kind, _, ok := strings.Cut(ref, "/")
-
-	return ok && strings.HasPrefix(kind, "screenshot")
-}
-
-// pngMagic is the signature every PNG starts with, and the only part of an
-// artifact serveArtifact has to look at before it chooses headers.
-const pngMagic = "\x89PNG\r\n\x1a\n"
-
-// isPNG checks the file's own magic bytes, so what is served as an image is
-// an image regardless of what its reference claimed.
-func isPNG(data []byte) bool {
-	return bytes.HasPrefix(data, []byte(pngMagic))
-}
-
-// safeArtifactFilename builds a download name from a reference. References
-// are content-addressed — a kind and a hex digest — but the value still
-// arrives from the request, so it is reduced to characters that cannot break
-// the header.
-func safeArtifactFilename(ref, ext string) string {
-	out := make([]rune, 0, len(ref))
-
-	for _, r := range ref {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			out = append(out, r)
-		default:
-			out = append(out, '-')
-		}
-	}
-
-	return "wsaw-" + string(out) + "." + ext
 }
 
 func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {

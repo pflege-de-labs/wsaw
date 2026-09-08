@@ -109,9 +109,13 @@ type Options struct {
 	// connect timeout, the server's own parameters — belong in it.
 	DSN secret.Value
 
-	// ArtifactDir holds the evidence: screenshots, stored bodies, and every
-	// result document. It is required, because a store that has nowhere to put
-	// a document cannot record a scan.
+	// ArtifactDir names where the evidence goes: screenshots, stored bodies,
+	// and every result document. A path is a directory on local disk and
+	// anything with a scheme is a bucket URL, which is the one place that
+	// distinction is not made — configuration keeps the two apart as
+	// store.artifactDir and store.artifactURL and resolves them to this single
+	// location (Story 8.6, AC1). It is required, because a store that has
+	// nowhere to put a document cannot record a scan.
 	ArtifactDir string
 
 	// Timeout is how long a statement waits for a busy database before
@@ -305,7 +309,10 @@ func connect(ctx context.Context, opts Options) (*Store, error) {
 		// beside the database" is the configuration layer's job, which knows
 		// where the state directory is; a store that guessed would guess the
 		// process's working directory, and retention would later sweep it.
-		return nil, errors.New("store: store.artifactDir is required: a scan's result document is stored there")
+		return nil, errors.New(
+			"store: an artifact location is required: a scan's result document is stored there. " +
+				"Set store.artifactDir for a directory on local disk, or store.artifactURL for a bucket",
+		)
 	}
 
 	if d.name() == DriverSQLite {
@@ -487,7 +494,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	// The one piece of schema work that is not a statement and does not belong
+	// to a single version: recording which artifacts each stored result names
+	// (Story 8.5). Migration 4 creates the table, but filling it means reading
+	// documents out of the bucket, so it is finished here — and attempted again
+	// on every start, because a store whose references are incomplete is a
+	// store retention cannot safely reclaim anything from. It reports its own
+	// per-row failures rather than returning them.
+	return s.indexArtifactReferences(ctx)
 }
 
 // prepareMigration runs the part of a numbered migration that SQL cannot
@@ -567,18 +581,65 @@ func (s *Store) applyMigration(ctx context.Context, statements []string, version
 	return nil
 }
 
-// Ping reports whether the database is reachable.
+// Ping reports whether the store is reachable — both halves of it.
 //
-// For SQLite this is nearly free and nearly always true. For a server
-// database it is the difference between a wsaw that is working and one that
-// is scanning into a void, which readiness has to be able to tell apart: a
-// watcher that cannot record what it saw is not watching (Tenet 8).
+// For SQLite the database half is nearly free and nearly always true. For a
+// server database it is the difference between a wsaw that is working and one
+// that is scanning into a void, which readiness has to be able to tell apart:
+// a watcher that cannot record what it saw is not watching (Tenet 8).
+//
+// The artifact bucket is checked for the same reason and through the same
+// call, because since Story 8.2 it holds the result document itself: a
+// reachable database with an unreachable bucket cannot store a scan either,
+// and readiness that only asked about rows would report a wsaw as ready when
+// every scan it ran was about to fail (Story 8.6, AC5). One call rather than
+// two, so no caller can check one half and forget the other.
+// Both halves are wrapped in a sentinel naming which half it was. Readiness is
+// served on an endpoint that has no authentication when no API token is
+// configured, so what goes in the response body has to be a reason class while
+// the detail — which names the bucket, or the directory an unmounted volume
+// used to be — goes to the log (Tenet 19).
 func (s *Store) Ping(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("the %s store is not reachable: %w", s.d.name(), err)
+		return fmt.Errorf("%w: the %s store: %w", ErrDatabaseUnreachable, s.d.name(), err)
+	}
+
+	if err := s.bucket.reachable(ctx); err != nil {
+		return fmt.Errorf("%w: %w", ErrBucketUnreachable, err)
 	}
 
 	return nil
+}
+
+// The two halves of a store that readiness has to tell apart, and the only
+// part of a failed Ping that is safe to publish unauthenticated.
+//
+// They are sentinels rather than strings so a caller matches them with
+// errors.Is instead of reading a message, and exported because the reason a
+// readiness endpoint gives is a public interface (Story 8.6, AC5).
+var (
+	// ErrDatabaseUnreachable marks a store whose database did not answer.
+	ErrDatabaseUnreachable = errors.New("the result database is not reachable")
+
+	// ErrBucketUnreachable marks a store whose artifact bucket did not answer.
+	// A wsaw in that state can no more record a scan than one with no
+	// database: since Story 8.2 the result document itself lives there.
+	ErrBucketUnreachable = errors.New("the artifact bucket is not reachable")
+)
+
+// ProbeArtifactBucket writes a small object to the artifact bucket and removes
+// it again.
+//
+// It is what turns "the bucket is misconfigured" from a scan failure hours
+// later into a startup failure naming the bucket (Story 8.6, AC4, Tenet 15).
+// Reachability is not enough to establish: a bucket that lists happily and
+// refuses writes — a read-only policy, an expired credential with read scope,
+// a full disk — looks healthy to every check short of a write.
+//
+// The write costs one request and one delete per start, which is the price of
+// finding out now rather than after a scan has been run and cannot be stored.
+func (s *Store) ProbeArtifactBucket(ctx context.Context) error {
+	return s.bucket.probeWritable(ctx)
 }
 
 // Close releases the database and the artifact bucket.
@@ -662,10 +723,14 @@ func (s *Store) PutResult(res *model.Result) error {
 	// (Story 8.3, AC4).
 	args := resultArgs(summarize(res), ref)
 
-	err = s.retry(ctx, "storing a result", func(ctx context.Context) error {
-		_, err := s.db.ExecContext(ctx, s.q(resultInsert()+s.d.upsert(resultKey, resultUpdate)), args...)
+	// Which artifacts this result names, worked out here where the decoded
+	// result is in hand, so retention never has to read a document back out of
+	// the bucket to find out (Story 8.5, AC2).
+	key := resultRowKey{target: res.Target, mode: string(res.ConsentMode), scanID: res.ScanID}
+	refs := artifactRefsOf(res, ref.ref)
 
-		return err
+	err = s.retry(ctx, "storing a result", func(ctx context.Context) error {
+		return s.putResultTx(ctx, key, args, refs)
 	})
 	if err != nil {
 		return fmt.Errorf("storing result %s: %w", res.ScanID, err)
@@ -731,10 +796,16 @@ func resultKeyArgs(sum Summary) []any {
 // resultUpdateArgs binds the columns of resultUpdate — everything a row carries
 // that is not its identity.
 func resultUpdateArgs(sum Summary, ref resultRef) []any {
-	return append(
+	args := append(
 		[]any{sum.StartedAt.UnixNano(), string(sum.Termination)},
 		resultDerivedArgs(sum, ref)...,
 	)
+
+	// resultReferenced, bound here rather than in resultDerivedArgs: a row
+	// this store writes has its artifact references recorded in the same
+	// transaction, while a row the document migration rewrites does not, and
+	// binding it with the derived columns would claim otherwise.
+	return append(args, refsRecorded)
 }
 
 // resultDerivedArgs binds the columns of resultDerived: where the document is,

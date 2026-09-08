@@ -98,12 +98,32 @@ func newFixtureLive(
 ) *fixture {
 	t.Helper()
 
+	return newFixtureIn(t, opts, trigger, running, "")
+}
+
+// newFixtureIn additionally names the artifact location, so a test can put the
+// evidence somewhere other than a plain directory beside the database — a
+// bucket URL, for the paths that only a provider offers (Story 8.7, AC3).
+// Empty takes the directory every other test uses.
+func newFixtureIn(
+	t *testing.T,
+	opts httpapi.Options,
+	trigger httpapi.ScanTrigger,
+	running func() []scanner.Running,
+	location string,
+) *fixture {
+	t.Helper()
+
 	dir := t.TempDir()
 	artifacts := filepath.Join(dir, "artifacts")
 
+	if location == "" {
+		location = artifacts
+	}
+
 	st, err := store.Open(t.Context(), store.Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
-		ArtifactDir: artifacts,
+		ArtifactDir: location,
 	})
 	if err != nil {
 		t.Fatal(err)

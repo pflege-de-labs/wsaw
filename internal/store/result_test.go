@@ -237,7 +237,7 @@ func TestAnArtifactCanBeStreamedRatherThanBuffered(t *testing.T) {
 		t.Fatalf("PutArtifact: %v", err)
 	}
 
-	r, size, err := s.OpenArtifact(ref)
+	r, err := s.OpenArtifact(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("OpenArtifact: %v", err)
 	}
@@ -248,8 +248,14 @@ func TestAnArtifactCanBeStreamedRatherThanBuffered(t *testing.T) {
 		}
 	}()
 
-	if size != int64(len(want)) {
-		t.Errorf("OpenArtifact reports %d bytes, want %d: Content-Length is written before the body is", size, len(want))
+	if r.Size != int64(len(want)) {
+		t.Errorf("OpenArtifact reports %d bytes, want %d: Content-Length is written before the body is", r.Size, len(want))
+	}
+
+	// The digest comes back with the stream, because a strong entity tag is
+	// written before the body too (Story 8.7, AC4).
+	if r.Digest == "" {
+		t.Error("OpenArtifact reports no digest")
 	}
 
 	got, err := io.ReadAll(r)
@@ -263,7 +269,7 @@ func TestAnArtifactCanBeStreamedRatherThanBuffered(t *testing.T) {
 
 	// A reference this store never wrote is refused as absent, exactly as
 	// GetArtifact refuses it: the value reaches both from a URL.
-	if _, _, err := s.OpenArtifact("../escape"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.OpenArtifact(t.Context(), "../escape"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("OpenArtifact on a crafted reference = %v, want ErrNotFound", err)
 	}
 }

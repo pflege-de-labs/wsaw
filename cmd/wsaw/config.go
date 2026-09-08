@@ -264,15 +264,22 @@ func cmdConfig(args []string) error {
 		return nil
 	}
 
+	st, err := resolvedStore(cfg)
+	if err != nil {
+		return err
+	}
+
 	// Resolved targets are printed rather than the raw file, because the
 	// resolved view is what actually runs. Secrets render as their redacted
 	// form through their own marshaller.
 	out, err := yaml.Marshal(struct {
 		Targets     []config.Resolved `yaml:"resolvedTargets"`
+		Store       storeView         `yaml:"store"`
 		Concurrency int               `yaml:"concurrency"`
 		PoolSize    int               `yaml:"browserPoolSize"`
 	}{
 		Targets:     targets,
+		Store:       st,
 		Concurrency: cfg.Concurrency(),
 		PoolSize:    cfg.PoolSize(),
 	})
@@ -283,4 +290,52 @@ func cmdConfig(args []string) error {
 	fmt.Print(string(out))
 
 	return nil
+}
+
+// storeView is where this configuration would keep its results and its
+// evidence, which is not otherwise visible: both locations have a default that
+// is derived rather than written in the file, and an operator asking "where
+// does it put things" should not have to reconstruct that derivation from the
+// documentation.
+type storeView struct {
+	Driver string `yaml:"driver"`
+	// Location is the database file or the server's endpoint; Artifacts is the
+	// directory or bucket holding screenshots, stored bodies and result
+	// documents.
+	Location  string `yaml:"location"`
+	Artifacts string `yaml:"artifacts"`
+	// ArtifactRedirects says whether a reader is sent to the bucket instead of
+	// being served by wsaw, and for how long such a link then works. It is
+	// printed because it decides who guards the evidence, and that is not
+	// something to discover from a redirect (Story 8.7, AC3).
+	ArtifactRedirects string `yaml:"artifactRedirects"`
+}
+
+// resolvedStore reports the store the way a running wsaw would open it.
+//
+// Both locations come from the store's own naming functions rather than from
+// the configuration text: a DSN carries a password and a bucket URL can carry
+// a credential, and this command prints to a terminal whose output is
+// frequently pasted into a ticket (Story 4.7, AC6; Story 8.6, AC3).
+func resolvedStore(cfg *config.Config) (storeView, error) {
+	opts, err := app.StoreOptions(cfg, nil)
+	if err != nil {
+		return storeView{}, err
+	}
+
+	return storeView{
+		Driver:            cfg.Store.StoreDriver(),
+		Location:          opts.Location(),
+		Artifacts:         opts.ArtifactLocation(),
+		ArtifactRedirects: artifactRedirects(cfg),
+	}, nil
+}
+
+// artifactRedirects describes the redirect policy in one line.
+func artifactRedirects(cfg *config.Config) string {
+	if !cfg.Store.ArtifactSignedURLs {
+		return "off; wsaw serves every artifact itself"
+	}
+
+	return "signed bucket URLs, valid for " + cfg.Store.SignedURLTTL().String()
 }
