@@ -135,6 +135,12 @@ type session struct {
 	mu          sync.Mutex
 	screenshots []model.Artifact
 
+	// surfaceGone records that a capture from the compositor surface already
+	// timed out once. Screenshots are taken repeatedly in one scan, and a
+	// browser that produced no frame for the first request will not produce
+	// one for the next: retrying would spend the reservation again per frame.
+	surfaceGone bool
+
 	interactedMu   sync.Mutex
 	interactedOnce bool
 	interactedAt   time.Time
@@ -638,14 +644,8 @@ func (s *session) screenshot(kind string) error {
 		return nil
 	}
 
-	const screenshotTimeout = 15 * time.Second
-
-	ctx, cancel := context.WithTimeout(s.runCtx, screenshotTimeout)
-	defer cancel()
-
-	var buf []byte
-
-	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+	buf, err := s.captureFrame()
+	if err != nil {
 		return fmt.Errorf("capturing screenshot: %w", err)
 	}
 
@@ -664,6 +664,114 @@ func (s *session) screenshot(kind string) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// captureFrame photographs the page.
+//
+// Two capture paths exist and both are needed. Capturing from the surface is
+// what the compositor actually put on screen, so it is tried first — but
+// Chrome answers it only once the compositor produces a frame, and a headless
+// browser with nothing left to draw produces none. On a Linux CI runner that
+// is the ordinary case after the page has settled: the request never returns
+// and the whole screenshot budget is spent waiting for a frame that has no
+// reason to exist. That cost the after-consent frame on every Linux scan, and
+// a missing frame is exactly the evidence this product is for.
+//
+// So the surface path gets a reservation rather than the whole budget, and
+// what remains pays for a capture from the renderer view, which composes the
+// page on demand and needs no frame. The fallback is second, not first,
+// because it omits anything the browser draws over the page.
+func (s *session) captureFrame() ([]byte, error) {
+	const (
+		surfaceBudget = 5 * time.Second
+		viewBudget    = 10 * time.Second
+	)
+
+	var surfaceErr error
+
+	if !s.surfaceUnavailable() {
+		surfaceCtx, cancelSurface := context.WithTimeout(s.runCtx, surfaceBudget)
+		defer cancelSurface()
+
+		var buf []byte
+
+		// Brought to front first: Chrome composites the visible tab, and a
+		// scan tab that is not the frontmost one has no frame to hand over at
+		// all.
+		buf, surfaceErr = s.captureFromSurface(surfaceCtx)
+		if surfaceErr == nil {
+			return buf, nil
+		}
+
+		s.markSurfaceUnavailable()
+
+		// Recorded once, because the two paths can differ and a reader
+		// comparing frames is entitled to know they were taken differently.
+		s.rec.addWarning("screenshots taken from the renderer view: the " +
+			"compositor produced no frame (" + s.scrub(surfaceErr.Error()) + ")")
+	}
+
+	viewCtx, cancelView := context.WithTimeout(s.runCtx, viewBudget)
+	defer cancelView()
+
+	buf, viewErr := s.captureFromView(viewCtx)
+	if viewErr != nil {
+		if surfaceErr != nil {
+			return nil, fmt.Errorf("from the surface: %w; from the renderer view: %w",
+				surfaceErr, viewErr)
+		}
+
+		return nil, viewErr
+	}
+
+	return buf, nil
+}
+
+func (s *session) surfaceUnavailable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.surfaceGone
+}
+
+func (s *session) markSurfaceUnavailable() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.surfaceGone = true
+}
+
+func (s *session) captureFromSurface(ctx context.Context) ([]byte, error) {
+	var buf []byte
+
+	if err := chromedp.Run(ctx, page.BringToFront(), captureAction(&buf, true)); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
+}
+
+func (s *session) captureFromView(ctx context.Context) ([]byte, error) {
+	var buf []byte
+
+	if err := chromedp.Run(ctx, captureAction(&buf, false)); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
+}
+
+func captureAction(buf *[]byte, fromSurface bool) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		out, err := page.CaptureScreenshot().WithFromSurface(fromSurface).Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		*buf = out
+
+		return nil
+	})
 }
 
 // finish assembles the result, including the termination reason, which must
