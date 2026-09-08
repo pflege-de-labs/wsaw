@@ -95,7 +95,8 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 	// Which format was chosen is stated rather than left to be inferred: with
 	// auto-detection an operator otherwise has to guess why output looks the
 	// way it does (Story 6.9, AC8).
-	logger.Info("logging configured",
+	logger.Info(
+		"logging configured",
 		"format", string(logFormat),
 		"requested", orAuto(cfg.Logging.Format),
 		"level", orInfo(cfg.Logging.Level),
@@ -109,7 +110,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 
 	a.Targets = targets
 
-	if err := a.openStore(); err != nil {
+	if err := a.openStore(ctx); err != nil {
 		a.closeAfterFailedStart()
 
 		return nil, err
@@ -143,96 +144,111 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 	return a, nil
 }
 
-func (a *App) openStore() error {
-	if a.Config.Store.IsServerStore() {
-		return a.openServerStore()
+// openStore takes the start-up context because opening a store is not always
+// quick: a store written before Story 8.2 moves every document it holds into
+// the artifact bucket on its first open, and a service manager stopping wsaw
+// during that has to be able to interrupt it (Story 8.4, AC3).
+func (a *App) openStore(ctx context.Context) error {
+	opts, err := StoreOptions(a.Config, a.Secrets)
+	if err != nil {
+		return err
 	}
 
-	path := a.Config.Store.Path
-	if path == "" {
-		dir, err := defaultStateDir()
-		if err != nil {
-			return err
-		}
+	opts.OnRetry = a.logStoreRetry
+	// The store reports its own progress through wsaw's logger, because one
+	// thing it does is not instantaneous: upgrading a store written before
+	// Story 8.2 moves every stored document into the artifact bucket, which on
+	// a large store is minutes of work an operator has to be able to watch
+	// (Story 8.4, AC3).
+	opts.Logger = a.Logger
 
-		path = filepath.Join(dir, "wsaw.db")
-	}
-
-	artifacts := a.Config.Store.ArtifactDir
-	if artifacts == "" {
-		artifacts = filepath.Join(filepath.Dir(path), "artifacts")
-	}
-
-	st, err := store.Open(store.Options{
-		Path:         path,
-		ArtifactDir:  artifacts,
-		MaxAttempts:  a.Config.Store.MaxAttempts,
-		RetryBackoff: a.Config.Store.RetryBackoff.Duration(),
-		OnRetry:      a.logStoreRetry,
-	})
+	st, err := store.Open(ctx, opts)
 	if err != nil {
 		return err
 	}
 
 	a.adoptStore(st)
 
-	a.Logger.Info("store opened", "driver", st.Driver(), "path", path, "artifacts", artifacts)
+	a.Logger.Info(
+		"store opened",
+		"driver", st.Driver(),
+		// Both locations are redacted: a DSN carries a password, and a bucket
+		// URL can carry credentials in its userinfo. The endpoint is useful in
+		// a log; what authenticates to it never is.
+		"location", opts.Location(),
+		"artifacts", opts.ArtifactLocation(),
+	)
 
 	return nil
 }
 
-// openServerStore opens a store on PostgreSQL or MySQL (Story 4.7).
+// StoreOptions resolves where the store and its evidence live, from
+// configuration alone.
 //
-// Artifacts still live on disk. Screenshots and stored bodies do not belong
-// in a row, and keeping them out is what leaves the door open to object
-// storage later — so a server-backed deployment still needs somewhere to put
-// them, and says where.
-func (a *App) openServerStore() error {
-	dsn, err := secret.Resolve(a.Config.Store.DSN)
-	if err != nil {
-		return fmt.Errorf("store.dsn: %w", err)
+// It is exported because opening a store is not the only thing that needs the
+// answer: `wsaw store migrate --dry-run` has to report what an upgrade would
+// move without applying it (Story 8.4, AC6), which means knowing which
+// database and which bucket without opening either as a running wsaw would.
+//
+// A DSN is registered with the secret registry when one is given, so it cannot
+// reach a log line or an error message: it carries a password (Story 4.7,
+// AC6). Passing a nil registry is for a caller that has no logger to protect.
+//
+// For SQLite, artifacts sit beside the database file; for a server database
+// they sit in the state directory, since there is no file to sit beside.
+// Screenshots, stored bodies and — since Story 8.2 — result documents do not
+// belong in a row, so a server-backed deployment still needs somewhere to put
+// them and says where.
+func StoreOptions(cfg *config.Config, secrets *secret.Registry) (store.Options, error) {
+	opts := store.Options{
+		ArtifactDir:  cfg.Store.ArtifactDir,
+		MaxAttempts:  cfg.Store.MaxAttempts,
+		RetryBackoff: cfg.Store.RetryBackoff.Duration(),
 	}
 
-	// Registered before it is used, so a DSN cannot reach a log line or an
-	// error message: it carries a password (Story 4.7, AC6).
-	a.Secrets.Add(dsn)
-
-	artifacts := a.Config.Store.ArtifactDir
-	if artifacts == "" {
-		dir, err := defaultStateDir()
+	if cfg.Store.IsServerStore() {
+		dsn, err := secret.Resolve(cfg.Store.DSN)
 		if err != nil {
-			return err
+			return store.Options{}, fmt.Errorf("store.dsn: %w", err)
 		}
 
-		artifacts = filepath.Join(dir, "artifacts")
+		if secrets != nil {
+			secrets.Add(dsn)
+		}
+
+		opts.Driver = cfg.Store.StoreDriver()
+		opts.DSN = dsn
+		opts.MaxOpenConns = cfg.Store.MaxOpenConns
+		opts.MaxIdleConns = cfg.Store.MaxIdleConns
+		opts.ConnMaxLifetime = cfg.Store.ConnMaxLifetime.Duration()
+
+		if opts.ArtifactDir == "" {
+			dir, err := defaultStateDir()
+			if err != nil {
+				return store.Options{}, err
+			}
+
+			opts.ArtifactDir = filepath.Join(dir, "artifacts")
+		}
+
+		return opts, nil
 	}
 
-	st, err := store.Open(store.Options{
-		Driver:          a.Config.Store.StoreDriver(),
-		DSN:             dsn,
-		ArtifactDir:     artifacts,
-		MaxOpenConns:    a.Config.Store.MaxOpenConns,
-		MaxIdleConns:    a.Config.Store.MaxIdleConns,
-		ConnMaxLifetime: a.Config.Store.ConnMaxLifetime.Duration(),
-		MaxAttempts:     a.Config.Store.MaxAttempts,
-		RetryBackoff:    a.Config.Store.RetryBackoff.Duration(),
-		OnRetry:         a.logStoreRetry,
-	})
-	if err != nil {
-		return err
+	opts.Path = cfg.Store.Path
+	if opts.Path == "" {
+		dir, err := defaultStateDir()
+		if err != nil {
+			return store.Options{}, err
+		}
+
+		opts.Path = filepath.Join(dir, "wsaw.db")
 	}
 
-	a.adoptStore(st)
+	if opts.ArtifactDir == "" {
+		opts.ArtifactDir = filepath.Join(filepath.Dir(opts.Path), "artifacts")
+	}
 
-	a.Logger.Info("store opened",
-		"driver", st.Driver(),
-		// The DSN's credentials are stripped: the endpoint is useful in a log,
-		// the password never is.
-		"dsn", secret.RedactURL(dsn.Reveal()),
-		"artifacts", artifacts,
-	)
-
-	return nil
+	return opts, nil
 }
 
 // logStoreRetry makes a retry visible. A database that is flapping while
@@ -364,7 +380,8 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 		},
 	}
 
-	a.Logger.Info("browser runs in a container",
+	a.Logger.Info(
+		"browser runs in a container",
 		"runtime", string(runtime.Kind),
 		"runtime_version", runtime.Version,
 		"image", image,
@@ -686,7 +703,8 @@ func DefaultConfigPaths() []string {
 		paths = append(paths, filepath.Join(dir, "wsaw", "wsaw.yaml"))
 	}
 
-	paths = append(paths,
+	paths = append(
+		paths,
 		"/etc/wsaw/wsaw.yaml",
 		"wsaw.yaml",
 	)

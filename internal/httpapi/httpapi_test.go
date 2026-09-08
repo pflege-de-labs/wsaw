@@ -3,12 +3,15 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/httpapi"
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -32,6 +36,11 @@ type fixture struct {
 	server *httptest.Server
 	store  *store.Store
 	client *http.Client
+
+	// artifactDir is where the store's bucket keeps its evidence, so a test
+	// can delete an object behind the store's back the way a bucket lifecycle
+	// rule would.
+	artifactDir string
 
 	// logged captures what the server wrote, for the assertions about what
 	// must never reach a log — a share token, for one (Story 5.19, AC11).
@@ -90,10 +99,11 @@ func newFixtureLive(
 	t.Helper()
 
 	dir := t.TempDir()
+	artifacts := filepath.Join(dir, "artifacts")
 
-	st, err := store.Open(store.Options{
+	st, err := store.Open(t.Context(), store.Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
-		ArtifactDir: filepath.Join(dir, "artifacts"),
+		ArtifactDir: artifacts,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +150,10 @@ func newFixtureLive(
 		Jar:           nil,
 	}
 
-	return &fixture{t: t, server: ts, store: st, client: client, logged: logged}
+	return &fixture{
+		t: t, server: ts, store: st, client: client,
+		artifactDir: artifacts, logged: logged,
+	}
 }
 
 func (f *fixture) seed(scanID string, mode model.ConsentMode, at time.Time, mutate func(*model.Result)) *model.Result {
@@ -158,12 +171,16 @@ func (f *fixture) seed(scanID string, mode model.ConsentMode, at time.Time, muta
 		Termination:   model.TermIdle,
 		Consent:       model.Consent{Outcome: model.OutcomeApplied},
 		Requests: []model.Request{
-			{URL: "https://example.com/", NormalizedURL: "https://example.com/", Method: "GET",
+			{
+				URL: "https://example.com/", NormalizedURL: "https://example.com/", Method: "GET",
 				ResourceType: "document", Host: "example.com", Domain: "example.com",
-				Party: model.FirstParty, Phase: model.PhasePre, Status: 200},
-			{URL: "https://tracker.test/px", NormalizedURL: "https://tracker.test/px", Method: "GET",
+				Party: model.FirstParty, Phase: model.PhasePre, Status: 200,
+			},
+			{
+				URL: "https://tracker.test/px", NormalizedURL: "https://tracker.test/px", Method: "GET",
 				ResourceType: "image", Host: "tracker.test", Domain: "tracker.test",
-				Party: model.ThirdParty, Phase: model.PhasePre, Status: 200},
+				Party: model.ThirdParty, Phase: model.PhasePre, Status: 200,
+			},
 		},
 	}
 
@@ -359,6 +376,77 @@ func TestResultEndpoints(t *testing.T) {
 		if resp := f.get(path); resp.StatusCode != http.StatusOK {
 			t.Errorf("GET %s = %d", path, resp.StatusCode)
 		}
+	}
+}
+
+// TestAPreviousResultWhoseDocumentIsGoneIsNotSilence is the regression for the
+// worst thing this epic could have shipped (Story 8.2, AC5; Tenet 5).
+//
+// While a document lived in its row, "the previous result is not there" could
+// only mean there was no previous scan. Now the row and the document can part
+// company — a bucket lifecycle rule, a restore without its matching database —
+// and a comparison that treated the two the same would render the page a
+// first-ever scan renders: not comparable, nothing changed, "no baseline to
+// compare against". A tracker added between the two scans would go unreported,
+// and the only trace would be a reason that is untrue.
+func TestAPreviousResultWhoseDocumentIsGoneIsNotSilence(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{}, nil)
+
+	base := time.Now().Add(-time.Hour)
+	older := f.seed("scan-1", model.ConsentReject, base, nil)
+	f.seed("scan-2", model.ConsentReject, base.Add(time.Minute), nil)
+
+	f.removeStoredDocument(older)
+
+	// The diff of the newer scan has to say that its comparison anchor exists
+	// and its evidence does not.
+	var report struct {
+		Comparable bool   `json:"comparable"`
+		Reason     string `json:"reason"`
+	}
+
+	resp := f.get("/api/v1/diff/site/reject/scan-2")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET the diff = %d", resp.StatusCode)
+	}
+
+	if err := json.Unmarshal([]byte(body(t, resp)), &report); err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Comparable {
+		t.Error("a scan was compared against a result whose document is gone")
+	}
+
+	if report.Reason != diff.ReasonEvidenceGone {
+		t.Errorf("the diff reports %q, want it to say the stored evidence is gone rather than that there is nothing to compare", report.Reason)
+	}
+
+	// And reading the older result itself is Gone, not Not Found: the scan is
+	// in the index, so claiming it never happened would be untrue.
+	if resp := f.get("/api/v1/results/site/reject/scan-1"); resp.StatusCode != http.StatusGone {
+		t.Errorf("GET the result whose document is gone = %d, want %d", resp.StatusCode, http.StatusGone)
+	}
+}
+
+// removeStoredDocument deletes a result's document from the bucket without
+// telling the store, which is what a lifecycle rule or a restore of the bucket
+// alone does.
+func (f *fixture) removeStoredDocument(res *model.Result) {
+	f.t.Helper()
+
+	document, err := json.Marshal(res)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+
+	sum := sha256.Sum256(document)
+	path := filepath.Join(f.artifactDir, "result", hex.EncodeToString(sum[:]))
+
+	if err := os.Remove(path); err != nil {
+		f.t.Fatalf("removing the stored document: %v", err)
 	}
 }
 

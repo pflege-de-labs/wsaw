@@ -2,14 +2,11 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -38,58 +35,27 @@ type Baseline struct {
 // The approval and its audit entry are written in one transaction. An
 // approval is what silences future findings, so an audit log that can lose
 // one is not an audit log.
+//
+// The result itself is read before that transaction opens, because reading it
+// now means fetching a document from the bucket, and a bucket call inside a
+// database transaction would hold the transaction — and its locks — open
+// across a network round trip to object storage (Story 8.2, AC7).
+//
+// What that window can cost is worth stating exactly, because the schema does
+// not close it: there is no foreign key from baselines to results in any
+// dialect, so a retention prune that deletes the approved scan's row between
+// the read and the insert leaves a baseline naming a scan the history no longer
+// lists. It costs the approval nothing — a Baseline carries its own copy of the
+// result, deliberately, so that pruning cannot invalidate the definition of
+// "expected" — and it is the same outcome as pruning the row one moment after
+// the approval committed, which was always possible.
 func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*Baseline, error) {
 	ctx, cancel := s.opCtx()
 	defer cancel()
 
-	var b *Baseline
-
-	// The retry encloses the whole transaction: a replayed transaction has to
-	// begin again, not resume.
-	err := s.retry(ctx, "approving a baseline", func(ctx context.Context) error {
-		var err error
-
-		b, err = s.setBaselineTx(ctx, target, mode, scanID, approvedBy, note)
-
-		return err
-	})
+	res, err := s.resultByID(ctx, target, mode, scanID)
 	if err != nil {
 		return nil, err
-	}
-
-	return b, nil
-}
-
-func (s *Store) setBaselineTx(
-	ctx context.Context,
-	target string,
-	mode model.ConsentMode,
-	scanID, approvedBy, note string,
-) (*Baseline, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("approving baseline for %s/%s: %w", target, mode, err)
-	}
-
-	defer func() { _ = tx.Rollback() }()
-
-	var document string
-
-	err = tx.QueryRowContext(ctx,
-		s.q(`select document from results where target = ? and consent_mode = ? and scan_id = ?`),
-		target, string(mode), scanID).Scan(&document)
-
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil, fmt.Errorf("result %s for %s/%s: %w", scanID, target, mode, ErrNotFound)
-	case err != nil:
-		return nil, fmt.Errorf("reading result %s: %w", scanID, err)
-	}
-
-	var res model.Result
-
-	if err := json.Unmarshal([]byte(document), &res); err != nil {
-		return nil, fmt.Errorf("decoding result %s: %w", scanID, err)
 	}
 
 	if !res.OK() {
@@ -99,6 +65,9 @@ func (s *Store) setBaselineTx(
 			scanID, res.Termination)
 	}
 
+	// Built once, outside the retry: a replayed transaction must record the
+	// same approval, at the same moment, in both the baseline and the audit
+	// entry that explains it.
 	b := &Baseline{
 		Target:      target,
 		ConsentMode: mode,
@@ -106,7 +75,7 @@ func (s *Store) setBaselineTx(
 		ApprovedAt:  time.Now().UTC(),
 		ApprovedBy:  approvedBy,
 		Note:        note,
-		Result:      &res,
+		Result:      res,
 	}
 
 	payload, err := json.Marshal(b)
@@ -114,32 +83,53 @@ func (s *Store) setBaselineTx(
 		return nil, fmt.Errorf("encoding baseline: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, s.q(`
-		insert into baselines (target, consent_mode, scan_id, approved_at, document)
-		values (?, ?, ?, ?, ?)`+
-		s.d.upsert(baselineKey, baselineUpdate)),
-		target, string(mode), scanID, b.ApprovedAt.UnixNano(), string(payload))
-	if err != nil {
-		return nil, fmt.Errorf("storing baseline for %s/%s: %w", target, mode, err)
-	}
-
-	if err := s.appendAuditTx(ctx, tx, AuditEntry{
-		At:      b.ApprovedAt,
-		Actor:   approvedBy,
-		Action:  "baseline-approved",
-		Target:  target,
-		Mode:    mode,
-		Subject: scanID,
-		Note:    note,
+	// The retry encloses the whole transaction: a replayed transaction has to
+	// begin again, not resume.
+	if err := s.retry(ctx, "approving a baseline", func(ctx context.Context) error {
+		return s.setBaselineTx(ctx, b, payload)
 	}); err != nil {
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing baseline approval for %s/%s: %w", target, mode, err)
+	return b, nil
+}
+
+func (s *Store) setBaselineTx(ctx context.Context, b *Baseline, payload []byte) error {
+	target, mode := b.Target, b.ConsentMode
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("approving baseline for %s/%s: %w", target, mode, err)
 	}
 
-	return b, nil
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, s.q(`
+		insert into baselines (target, consent_mode, scan_id, approved_at, document)
+		values (?, ?, ?, ?, ?)`+
+		s.d.upsert(baselineKey, baselineUpdate)),
+		target, string(mode), b.ScanID, b.ApprovedAt.UnixNano(), string(payload))
+	if err != nil {
+		return fmt.Errorf("storing baseline for %s/%s: %w", target, mode, err)
+	}
+
+	if err := s.appendAuditTx(ctx, tx, AuditEntry{
+		At:      b.ApprovedAt,
+		Actor:   b.ApprovedBy,
+		Action:  "baseline-approved",
+		Target:  target,
+		Mode:    mode,
+		Subject: b.ScanID,
+		Note:    b.Note,
+	}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing baseline approval for %s/%s: %w", target, mode, err)
+	}
+
+	return nil
 }
 
 // GetBaseline returns the approved baseline for a series.
@@ -418,51 +408,12 @@ func (s *Store) pruneTx(ctx context.Context, now time.Time, r Retention) (PruneS
 // PutArtifact stores an evidence file and returns its reference. Artifacts
 // are content-addressed, so storing the same screenshot twice costs one copy.
 func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
-	if s.artifactDir == "" {
-		return "", errors.New("artifact storage is not configured")
-	}
+	ctx, cancel := s.opCtx()
+	defer cancel()
 
-	sum := sha256.Sum256(data)
-	ref := kind + "/" + hex.EncodeToString(sum[:])
-	path := filepath.Join(s.artifactDir, filepath.FromSlash(ref))
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("creating artifact directory: %w", err)
-	}
-
-	if _, err := os.Stat(path); err == nil {
-		return ref, nil
-	}
-
-	// Written via a temporary file and renamed, so a crash never leaves a
-	// half-written artifact that a reader would treat as evidence.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".wsaw-artifact-*")
+	ref, err := s.bucket.put(ctx, kind, data)
 	if err != nil {
-		return "", fmt.Errorf("creating temporary artifact file: %w", err)
-	}
-
-	defer func() {
-		_ = os.Remove(tmp.Name())
-	}()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-
-		return "", fmt.Errorf("setting artifact permissions: %w", err)
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-
-		return "", fmt.Errorf("writing artifact: %w", err)
-	}
-
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("closing artifact: %w", err)
-	}
-
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return "", fmt.Errorf("finalizing artifact: %w", err)
+		return "", err
 	}
 
 	return ref, nil
@@ -472,66 +423,99 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 //
 // It exists so the interface can tell "this evidence has been pruned" from
 // "this evidence is here" without loading a megabyte of PNG to find out
-// (Story 5.17, AC3).
+// (Story 5.17, AC3) — which matters more against a bucket, where reading it
+// would also cost a request.
 func (s *Store) StatArtifact(ref string) (int64, error) {
-	if s.artifactDir == "" {
-		return 0, errors.New("artifact storage is not configured")
-	}
+	ctx, cancel := s.opCtx()
+	defer cancel()
 
-	path, err := s.artifactPath(ref)
+	size, err := s.bucket.stat(ctx, ref)
 	if err != nil {
-		return 0, err
+		return 0, absentArtifact(err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
-		}
-
-		return 0, fmt.Errorf("reading artifact %s: %w", ref, err)
-	}
-
-	return info.Size(), nil
+	return size, nil
 }
 
-// artifactPath resolves a reference to a path inside the artifact directory.
+// GetArtifact reads a stored artifact.
 //
-// References originate from stored results, which derive from page-controlled
-// data, so they are untrusted: a crafted one must not escape the directory
-// (Tenet 9).
-func (s *Store) artifactPath(ref string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(ref))
-	path := filepath.Join(s.artifactDir, clean)
-
-	rel, err := filepath.Rel(s.artifactDir, path)
-	if err != nil || rel == ".." || len(rel) >= 2 && rel[:2] == ".." {
-		return "", fmt.Errorf("artifact reference %q is outside the artifact directory", ref)
-	}
-
-	return path, nil
-}
-
-// GetArtifact reads a stored artifact. The reference is validated so that a
-// crafted path cannot escape the artifact directory.
+// The reference is validated by the bucket against the shape this store
+// writes, so a crafted one cannot address anything else: references reach here
+// from stored results, which are built from page-controlled data (Tenet 9).
+//
+// It stays for the callers that genuinely need the bytes in hand — a stored
+// body being diffed, a document being decoded. Anything that only forwards
+// them to a client should use OpenArtifact instead (Story 8.1, AC7).
 func (s *Store) GetArtifact(ref string) ([]byte, error) {
-	if s.artifactDir == "" {
-		return nil, errors.New("artifact storage is not configured")
-	}
+	ctx, cancel := s.opCtx()
+	defer cancel()
 
-	path, err := s.artifactPath(ref)
+	data, err := s.bucket.get(ctx, ref)
 	if err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(path) //nolint:gosec // path is confined to artifactDir by artifactPath
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
-		}
-
-		return nil, fmt.Errorf("reading artifact %s: %w", ref, err)
+		return nil, absentArtifact(err)
 	}
 
 	return data, nil
+}
+
+// OpenArtifact opens a stored artifact for streaming and reports its size.
+//
+// It is the shape the HTTP layer serves from: a forty-megabyte document must
+// not have to exist in the daemon's memory before a byte reaches the client,
+// or ten readers of large evidence would cost ten full copies (Story 8.1,
+// AC7). The size comes back with the reader because Content-Length has to be
+// written before the body is.
+//
+// The caller owns the reader and must close it. Closing is also what releases
+// the operation's deadline, so a reader that is dropped rather than closed
+// leaks a timer until it fires — the same contract every io.ReadCloser has,
+// stated because this one carries a context with it.
+func (s *Store) OpenArtifact(ref string) (io.ReadCloser, int64, error) {
+	ctx, cancel := s.opCtx()
+
+	r, size, err := s.bucket.newReader(ctx, ref)
+	if err != nil {
+		cancel()
+
+		return nil, 0, absentArtifact(err)
+	}
+
+	return &artifactReader{ReadCloser: r, cancel: cancel}, size, nil
+}
+
+// artifactReader ties one artifact read's deadline to the reader handed out
+// for it. The bound has to outlive OpenArtifact — the bytes are still being
+// copied when it returns — and releasing it on Close is what keeps every
+// bucket operation bounded (Story 8.1, AC6) without cutting a legitimate
+// transfer short.
+type artifactReader struct {
+	io.ReadCloser
+
+	cancel context.CancelFunc
+}
+
+func (a *artifactReader) Close() error {
+	defer a.cancel()
+
+	if err := a.ReadCloser.Close(); err != nil {
+		return fmt.Errorf("closing an artifact reader: %w", err)
+	}
+
+	return nil
+}
+
+// absentArtifact reports a reference this store never wrote as absent.
+//
+// References reach the readers above from URLs a reader typed or a page
+// influenced, so a malformed one is ordinary hostile input rather than a fault
+// in wsaw: the caller asked for something the store does not have, and the
+// honest answer is that it is not here. The reason stays in the message and the
+// reference stays refused — only the sentinel changes, so a crafted reference
+// produces "not found" rather than a server error and an alert with it.
+func absentArtifact(err error) error {
+	if errors.Is(err, errInvalidRef) {
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
+	}
+
+	return err
 }

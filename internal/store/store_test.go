@@ -2,9 +2,13 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,7 +39,37 @@ import (
 func open(t *testing.T) *store.Store {
 	t.Helper()
 
-	opts := store.Options{ArtifactDir: filepath.Join(t.TempDir(), "artifacts")}
+	s, err := store.Open(t.Context(), storeOptions(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	return s
+}
+
+// storeOptions names an empty store on whichever dialect the suite is being
+// run against.
+//
+// It is separate from open() for the tests that have to reach the database
+// underneath a store as well as the store itself — the migration tests, which
+// write rows in a layout no current wsaw produces (Story 8.4) — and for those
+// that open the same store twice.
+func storeOptions(t *testing.T) store.Options {
+	t.Helper()
+
+	opts := store.Options{
+		ArtifactDir: filepath.Join(t.TempDir(), "artifacts"),
+		// Discarded so that a suite which upgrades a good many stores does not
+		// bury its own failures in migration progress. The one test that
+		// asserts on that progress installs a logger of its own.
+		Logger: slog.New(slog.DiscardHandler),
+	}
 
 	switch driver := os.Getenv("WSAW_TEST_STORE_DRIVER"); driver {
 	case "", store.DriverSQLite:
@@ -49,18 +83,21 @@ func open(t *testing.T) *store.Store {
 		t.Fatalf("WSAW_TEST_STORE_DRIVER=%q is not a driver this suite knows", driver)
 	}
 
-	s, err := store.Open(opts)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
+	return opts
+}
+
+// sqliteOptions is the on-disk store the schema tests need: they reopen it,
+// read its file directly, or assert on what is on disk, none of which the
+// dialect-agnostic open() above offers.
+//
+// The artifact directory is part of it because every store needs one — a scan's
+// result document is written there rather than into a row (Story 8.2).
+func sqliteOptions(dir string) store.Options {
+	return store.Options{
+		Path:        filepath.Join(dir, "wsaw.db"),
+		ArtifactDir: filepath.Join(dir, "artifacts"),
+		Logger:      slog.New(slog.DiscardHandler),
 	}
-
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
-
-	return s
 }
 
 // scratchCounter names each test's database. Tests run in parallel and each
@@ -166,8 +203,10 @@ func result(id string, at time.Time, mode model.ConsentMode) *model.Result {
 		Termination:   model.TermIdle,
 		Consent:       model.Consent{Outcome: model.OutcomeApplied},
 		Requests: []model.Request{
-			{URL: "https://tracker.test/px", NormalizedURL: "https://tracker.test/px",
-				Domain: "tracker.test", Party: model.ThirdParty, Phase: model.PhasePre},
+			{
+				URL: "https://tracker.test/px", NormalizedURL: "https://tracker.test/px",
+				Domain: "tracker.test", Party: model.ThirdParty, Phase: model.PhasePre,
+			},
 		},
 	}
 }
@@ -554,6 +593,35 @@ func TestArtifactRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStatArtifactTellsPrunedFromPresent is Story 5.17, AC3: the interface has
+// to know whether evidence is still there without fetching it, which against a
+// bucket is the difference between a request and a megabyte.
+func TestStatArtifactTellsPrunedFromPresent(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	ref, err := s.PutArtifact("screenshot", []byte("png-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	size, err := s.StatArtifact(ref)
+	if err != nil {
+		t.Fatalf("StatArtifact: %v", err)
+	}
+
+	if size != int64(len("png-bytes")) {
+		t.Errorf("StatArtifact = %d bytes, want %d", size, len("png-bytes"))
+	}
+
+	absent := "screenshot/" + strings.Repeat("00", 32)
+
+	if _, err := s.StatArtifact(absent); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("stat of a pruned artifact = %v, want ErrNotFound", err)
+	}
+}
+
 // TestArtifactPathTraversalIsRefused: references derive from stored results,
 // which derive from page-controlled data, so they are untrusted input.
 func TestArtifactPathTraversalIsRefused(t *testing.T) {
@@ -565,9 +633,21 @@ func TestArtifactPathTraversalIsRefused(t *testing.T) {
 		"../../etc/passwd",
 		"screenshot/../../../../etc/passwd",
 		"/etc/passwd",
+		"screenshot/deadbeef",
 	} {
-		if _, err := s.GetArtifact(ref); err == nil {
+		_, err := s.GetArtifact(ref)
+		if err == nil {
 			t.Errorf("GetArtifact(%q) succeeded; it must not escape the artifact directory", ref)
+
+			continue
+		}
+
+		// A reference this store never wrote names nothing this store has, so
+		// it reads as absent. References arrive from URLs, and answering a
+		// crafted one with a server error would turn hostile input into an
+		// alert (Story 8.1, AC5 and AC9).
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("GetArtifact(%q) = %v, want ErrNotFound", ref, err)
 		}
 	}
 }
@@ -577,10 +657,7 @@ func TestArtifactPermissionsAreRestrictive(t *testing.T) {
 
 	dir := t.TempDir()
 
-	s, err := store.Open(store.Options{
-		Path:        filepath.Join(dir, "wsaw.db"),
-		ArtifactDir: filepath.Join(dir, "artifacts"),
-	})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +685,7 @@ func TestDatabasePermissionsAreRestrictive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,9 +706,8 @@ func TestReopenPreservesData(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +720,7 @@ func TestReopenPreservesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := store.Open(store.Options{Path: path})
+	reopened, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatalf("reopening: %v", err)
 	}
@@ -695,7 +771,7 @@ func TestPragmasAreApplied(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +798,7 @@ func TestSchemaVersionIsRecorded(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,16 +819,125 @@ func TestSchemaVersionIsRecorded(t *testing.T) {
 	}
 }
 
+// TestUpgradingAStoreThatAlreadyHasRows upgrades a store in the shape wsaw
+// shipped before the document moved to the bucket, all the way to the current
+// schema (Stories 8.2, 8.3 and 8.4). An upgrade must add the new columns to a
+// table that already has rows, move each row's document into the bucket, and
+// leave the rows themselves in place: they hold months of evidence, and
+// discarding them would destroy the history the product exists to keep.
+//
+// The version-1 schema is written out here on purpose. It is frozen — a
+// migration that has shipped is never edited — so a test that pins it cannot go
+// stale, and reusing the current one would test nothing.
+func TestUpgradingAStoreThatAlreadyHasRows(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wsaw.db")
+
+	db := sqlDB(t, path)
+
+	for _, stmt := range []string{
+		`create table results (
+			target       text    not null,
+			consent_mode text    not null,
+			scan_id      text    not null,
+			started_at   integer not null,
+			termination  text    not null,
+			document     text    not null,
+			primary key (target, consent_mode, scan_id)
+		) strict`,
+		`create index results_series on results (target, consent_mode, started_at desc, scan_id desc)`,
+		`create table baselines (
+			target       text    not null,
+			consent_mode text    not null,
+			scan_id      text    not null,
+			approved_at  integer not null,
+			document     text    not null,
+			primary key (target, consent_mode)
+		) strict`,
+		`create table audit (
+			id       integer primary key autoincrement,
+			at       integer not null,
+			document text    not null
+		) strict`,
+		`insert into results values ('site', 'reject', 'scan-old', 1700000000000000000, 'idle', '{"scanId":"scan-old"}')`,
+		`pragma user_version = 1`,
+	} {
+		if _, err := db.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatalf("building a version-1 store: %v", err)
+		}
+	}
+
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	if err != nil {
+		t.Fatalf("upgrading a version-1 store: %v", err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	// The old row is still there, and its document has moved into the bucket
+	// byte for byte rather than being rewritten (Story 8.4, AC1).
+	if hasColumn(t, dir, "document") {
+		t.Error("the upgrade left the document column in place")
+	}
+
+	ref, size, digest := resultRow(t, dir, "scan-old")
+
+	stored, err := os.ReadFile(documentPath(t, dir, ref))
+	if err != nil {
+		t.Fatalf("the moved document is not in the bucket: %v", err)
+	}
+
+	if string(stored) != `{"scanId":"scan-old"}` {
+		t.Errorf("the existing document was rewritten: %s", stored)
+	}
+
+	if int64(len(stored)) != size {
+		t.Errorf("the row records %d bytes for a document of %d", size, len(stored))
+	}
+
+	if sum := sha256.Sum256(stored); hex.EncodeToString(sum[:]) != digest {
+		t.Errorf("the row records digest %s for a document that hashes to %x", digest, sum)
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The document names no target and no consent mode, so nothing about the
+	// row's identity may have come from it.
+	if len(got) != 1 || got[0].ScanID != "scan-old" || got[0].Target != "site" {
+		t.Errorf("the upgraded row is listed as %+v, want the row wsaw already had", got)
+	}
+
+	// And its start time is the row's, not a zero recomputed from a document
+	// that does not carry one: a change of storage layout must not reorder
+	// history.
+	if want := time.Unix(0, 1700000000000000000).UTC(); !got[0].StartedAt.Equal(want) {
+		t.Errorf("the upgraded row starts at %s, want the %s the row recorded", got[0].StartedAt, want)
+	}
+
+	// And the upgraded store writes new results the new way.
+	if err := s.PutResult(result("scan-new", time.Now(), model.ConsentReject)); err != nil {
+		t.Fatalf("an upgraded store cannot store a result: %v", err)
+	}
+
+	if _, err := s.GetResult("site", model.ConsentReject, "scan-new"); err != nil {
+		t.Errorf("reading back from an upgraded store: %v", err)
+	}
+}
+
 // TestMigrationIsIdempotent: opening an existing store must not try to apply
 // what is already there.
 func TestMigrationIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wsaw.db")
 
 	for i := range 3 {
-		s, err := store.Open(store.Options{Path: path})
+		s, err := store.Open(t.Context(), sqliteOptions(dir))
 		if err != nil {
 			t.Fatalf("open %d: %v", i+1, err)
 		}
@@ -766,7 +951,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		}
 	}
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,7 +976,7 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -806,7 +991,7 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Open(store.Options{Path: path}); err == nil {
+	if _, err := store.Open(t.Context(), sqliteOptions(dir)); err == nil {
 		t.Fatal("a store written by a newer schema was opened anyway")
 	} else if !strings.Contains(err.Error(), "newer") {
 		t.Errorf("error does not explain the problem: %v", err)
@@ -848,15 +1033,19 @@ func TestBaselineApprovalAndAuditAreAtomic(t *testing.T) {
 	}
 }
 
-// TestCorruptRowIsReportedNotFatal is AC8, and Tenet 5: one unreadable record
-// must neither hide the rest of the history nor vanish silently.
-func TestCorruptRowIsReportedNotFatal(t *testing.T) {
+// TestUnsummarisedRowIsReportedNotFatal is Story 4.6, AC8 and Story 8.2, AC5,
+// and Tenet 5: one row that cannot be summarised must neither hide the rest of
+// the history nor vanish silently.
+//
+// The row this produces is the one an older wsaw wrote, whose document has not
+// been moved into the bucket yet: it has no reference and no derived summary,
+// which is exactly what the migration of Story 8.4 exists to fix.
+func TestUnsummarisedRowIsReportedNotFatal(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,13 +1062,17 @@ func TestCorruptRowIsReportedNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Corrupt the middle one behind the store's back.
-	db := sqlDB(t, path)
-	if _, err := db.ExecContext(t.Context(), `update results set document = '{not json' where scan_id = 'scan-1'`); err != nil {
+	// Put the middle row back into the shape a pre-bucket wsaw left it in.
+	db := sqlDB(t, filepath.Join(dir, "wsaw.db"))
+	if _, err := db.ExecContext(t.Context(), `
+		update results
+		set artifact_ref = '', document_digest = '', document_size = 0, requests = 0,
+		    third_party_domains = 0, pre_consent_domains = 0
+		where scan_id = 'scan-1'`); err != nil {
 		t.Fatal(err)
 	}
 
-	reopened, err := store.Open(store.Options{Path: path})
+	reopened, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,11 +1081,11 @@ func TestCorruptRowIsReportedNotFatal(t *testing.T) {
 
 	got, err := reopened.ListResults("site", model.ConsentReject, 0)
 	if err != nil {
-		t.Fatalf("one corrupt row made the whole history unreadable: %v", err)
+		t.Fatalf("one unsummarised row made the whole history unreadable: %v", err)
 	}
 
 	if len(got) != 3 {
-		t.Fatalf("got %d summaries, want 3: the corrupt row must still be listed", len(got))
+		t.Fatalf("got %d summaries, want 3: the unsummarised row must still be listed", len(got))
 	}
 
 	var reported bool
@@ -904,13 +1097,19 @@ func TestCorruptRowIsReportedNotFatal(t *testing.T) {
 
 		reported = true
 
-		if sm.Termination != model.TermError || sm.Error == "" {
-			t.Errorf("the corrupt row is not reported as a failure: %+v", sm)
+		if sm.Error == "" {
+			t.Errorf("the row without a summary is listed as though it had one: %+v", sm)
 		}
 	}
 
 	if !reported {
-		t.Error("the corrupt row vanished from the listing instead of being reported")
+		t.Error("the unsummarised row vanished from the listing instead of being reported")
+	}
+
+	// Its document is not readable from the bucket, and that reads as absent
+	// rather than as a broken store.
+	if _, err := reopened.GetResult("site", model.ConsentReject, "scan-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("reading the unsummarised result = %v, want ErrNotFound", err)
 	}
 
 	// The readable ones are still readable.
@@ -919,15 +1118,64 @@ func TestCorruptRowIsReportedNotFatal(t *testing.T) {
 	}
 }
 
-// TestResultIsStoredAsItsDocument is AC3: the JSON schema is the interface, so
-// the stored document must be the result itself, not a reassembly of columns.
-func TestResultIsStoredAsItsDocument(t *testing.T) {
+// --- Story 8.2: the document is an artifact, the row is an index -----------
+
+// documentPath is where the bucket keeps a result document, given the store's
+// artifact directory. Reaching into it is the point: these tests assert what is
+// on disk, not what the store says is on disk.
+func documentPath(t *testing.T, dir, ref string) string {
+	t.Helper()
+
+	kind, digest, found := strings.Cut(ref, "/")
+	if !found || kind != "result" {
+		t.Fatalf("artifact reference %q is not a result document", ref)
+	}
+
+	return filepath.Join(dir, "artifacts", kind, digest)
+}
+
+// resultRow reads the columns that replaced the document, for a stored scan.
+func resultRow(t *testing.T, dir, scanID string) (ref string, size int64, digest string) {
+	t.Helper()
+
+	db := sqlDB(t, filepath.Join(dir, "wsaw.db"))
+
+	err := db.QueryRowContext(t.Context(),
+		`select artifact_ref, document_size, document_digest from results where scan_id = ?`,
+		scanID).Scan(&ref, &size, &digest)
+	if err != nil {
+		t.Fatalf("reading the row for %s: %v", scanID, err)
+	}
+
+	return ref, size, digest
+}
+
+// hasColumn reports whether the results table still carries a column, which is
+// how the tests of Story 8.4 assert that a migration dropped one.
+func hasColumn(t *testing.T, dir, column string) bool {
+	t.Helper()
+
+	db := sqlDB(t, filepath.Join(dir, "wsaw.db"))
+
+	var n int
+
+	if err := db.QueryRowContext(t.Context(),
+		`select count(*) from pragma_table_info('results') where name = ?`, column).Scan(&n); err != nil {
+		t.Fatalf("reading the columns of the results table: %v", err)
+	}
+
+	return n > 0
+}
+
+// TestResultDocumentIsStoredInTheBucket is Story 8.2, AC1 and AC2: the row
+// carries where the document is, how big it is and what it hashes to — and not
+// the document, nor a copy of it kept "for now".
+func TestResultDocumentIsStoredInTheBucket(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(store.Options{Path: path})
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -941,26 +1189,382 @@ func TestResultIsStoredAsItsDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db := sqlDB(t, path)
+	ref, size, digest := resultRow(t, dir, "scan-1")
 
-	// Read through SQLite's own JSON functions, which only works if the
-	// column really holds the result document.
-	var schemaVersion, termination string
+	// Not "empty" but gone: two sources of truth for one document is what this
+	// story removes, and Story 8.4 finished the job by dropping the column.
+	if hasColumn(t, dir, "document") {
+		t.Error("the results table still has a document column")
+	}
 
-	err = db.QueryRowContext(t.Context(), `
-		select json_extract(document, '$.schemaVersion'), termination
-		from results where scan_id = 'scan-1'`).Scan(&schemaVersion, &termination)
+	stored, err := os.ReadFile(documentPath(t, dir, ref))
 	if err != nil {
-		t.Fatalf("the stored row is not the result document: %v", err)
+		t.Fatalf("the reference does not name a stored artifact: %v", err)
 	}
 
-	if schemaVersion != model.SchemaVersion {
-		t.Errorf("schemaVersion in the document = %q, want %q", schemaVersion, model.SchemaVersion)
+	if int64(len(stored)) != size {
+		t.Errorf("the artifact holds %d bytes, the row records %d", len(stored), size)
 	}
 
-	// And the indexed column agrees with the document it was extracted from.
-	if termination != string(res.Termination) {
-		t.Errorf("termination column = %q, document says %q", termination, res.Termination)
+	sum := sha256.Sum256(stored)
+	if hex.EncodeToString(sum[:]) != digest {
+		t.Errorf("the artifact hashes to %x, the row records %s", sum, digest)
+	}
+
+	// Content-addressed like every other artifact: the key is the digest.
+	if want := "result/" + digest; ref != want {
+		t.Errorf("artifact reference = %q, want %q", ref, want)
+	}
+
+	// And what is stored is the result document itself, not a reassembly of
+	// columns: the JSON schema is the product's interface (Tenet 16).
+	var decoded map[string]any
+
+	if err := json.Unmarshal(stored, &decoded); err != nil {
+		t.Fatalf("the stored artifact is not the result document: %v", err)
+	}
+
+	if decoded["schemaVersion"] != model.SchemaVersion || decoded["scanId"] != "scan-1" {
+		t.Errorf("the stored artifact is not this scan's document: %v", decoded)
+	}
+}
+
+// TestEveryResultRoundTripsThroughTheBucket is AC3: nothing outside the store
+// learns that the document moved, so every result must come back exactly as it
+// went in.
+func TestEveryResultRoundTripsThroughTheBucket(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	base := time.Now().Add(-time.Hour)
+
+	failed := result("scan-failed", base, model.ConsentReject)
+	failed.Termination = model.TermError
+	failed.Error = "the browser crashed"
+
+	big := result("scan-big", base.Add(time.Minute), model.ConsentReject)
+	for i := range 500 {
+		big.Requests = append(big.Requests, model.Request{
+			RequestID: fmt.Sprintf("req-%d", i),
+			URL:       fmt.Sprintf("https://third-party-%04d.example/asset/%d.js", i, i),
+			Domain:    fmt.Sprintf("third-party-%04d.example", i),
+			Party:     model.ThirdParty,
+			Phase:     model.PhasePost,
+		})
+	}
+
+	unicode := result("scan-unicode", base.Add(2*time.Minute), model.ConsentAccept)
+	unicode.URL = "https://example.com/pfad/über-uns?emoji=🍪"
+
+	labelled := result("scan-labelled", base.Add(3*time.Minute), model.ConsentNone)
+	labelled.Labels = map[string]string{"team": "web", "tier": "1"}
+	labelled.Warnings = []string{"a body could not be captured"}
+	labelled.Screenshots = []model.Artifact{{Kind: "screenshot-before-consent", Ref: "screenshot-before-consent/" + strings.Repeat("ab", 32)}}
+
+	for _, res := range []*model.Result{failed, big, unicode, labelled} {
+		if err := s.PutResult(res); err != nil {
+			t.Fatalf("PutResult %s: %v", res.ScanID, err)
+		}
+	}
+
+	for _, res := range []*model.Result{failed, big, unicode, labelled} {
+		got, err := s.GetResult(res.Target, res.ConsentMode, res.ScanID)
+		if err != nil {
+			t.Fatalf("GetResult %s: %v", res.ScanID, err)
+		}
+
+		want, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		back, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if string(back) != string(want) {
+			t.Errorf("%s did not round trip:\n stored %s\n   read %s", res.ScanID, want, back)
+		}
+	}
+}
+
+// TestDigestMismatchIsCorruptionNotEvidence is AC6. Once the payload is outside
+// the database it is outside the database's guarantees, so a document that no
+// longer matches what was written must be refused rather than returned.
+func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
+		t.Fatal(err)
+	}
+
+	ref, _, _ := resultRow(t, dir, "scan-1")
+	path := documentPath(t, dir, ref)
+
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The same number of bytes, so only the digest can catch it — a size check
+	// alone would hand back a document that says something else.
+	tampered := []byte(strings.Replace(string(stored),
+		"https://tracker.test/px", "https://tracker.evil/px", 1))
+
+	if len(tampered) != len(stored) {
+		t.Fatalf("the tampered document is %d bytes, the original %d", len(tampered), len(stored))
+	}
+
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.GetResult("site", model.ConsentReject, "scan-1")
+
+	if !errors.Is(err, store.ErrCorrupt) {
+		t.Errorf("reading a tampered document = %v, want ErrCorrupt", err)
+	}
+
+	if errors.Is(err, store.ErrNotFound) {
+		t.Error("corruption was reported as absence: evidence that is present and wrong is not evidence that was pruned")
+	}
+}
+
+// TestTruncatedDocumentIsCorruption covers the other half of the same check:
+// an upload that stopped half way is still the wrong document.
+func TestTruncatedDocumentIsCorruption(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
+		t.Fatal(err)
+	}
+
+	ref, _, _ := resultRow(t, dir, "scan-1")
+	path := documentPath(t, dir, ref)
+
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, stored[:len(stored)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.GetResult("site", model.ConsentReject, "scan-1"); !errors.Is(err, store.ErrCorrupt) {
+		t.Errorf("reading a truncated document = %v, want ErrCorrupt", err)
+	}
+}
+
+// TestAMissingDocumentLeavesTheRestReadable is AC5: one lost document must not
+// make a target's whole history unreadable.
+func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	base := time.Now().Add(-time.Hour)
+
+	for i := range 3 {
+		if err := s.PutResult(result(fmt.Sprintf("scan-%d", i), base.Add(time.Duration(i)*time.Minute), model.ConsentReject)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Deleted behind the store's back, as a lifecycle rule or a stray operator
+	// would delete it.
+	ref, _, _ := resultRow(t, dir, "scan-1")
+	if err := os.Remove(documentPath(t, dir, ref)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatalf("a missing document broke the listing: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Errorf("got %d summaries, want 3: a missing document must not remove a result from the history", len(got))
+	}
+
+	// ErrEvidenceGone, and deliberately not ErrNotFound. The row is still in
+	// the index, so "there is no such scan" would be untrue — and every caller
+	// that skips a result which does not exist would skip lost evidence just as
+	// quietly (Story 8.2, AC5).
+	_, err = s.GetResult("site", model.ConsentReject, "scan-1")
+	if !errors.Is(err, store.ErrEvidenceGone) {
+		t.Errorf("reading the missing document = %v, want ErrEvidenceGone: absence is recorded, not inferred", err)
+	}
+
+	if errors.Is(err, store.ErrNotFound) {
+		t.Errorf("reading the missing document also reports ErrNotFound (%v), "+
+			"which is how a caller comes to treat deleted evidence as a scan that never happened", err)
+	}
+
+	for _, scanID := range []string{"scan-0", "scan-2"} {
+		if _, err := s.GetResult("site", model.ConsentReject, scanID); err != nil {
+			t.Errorf("%s became unreadable because another result's document is gone: %v", scanID, err)
+		}
+	}
+}
+
+// --- Story 8.3: listing without fetching a document ------------------------
+
+// TestListingNeedsNoDocumentAtAll is AC2 from the outside: with every document
+// removed from the bucket, a listing must still be complete and correct,
+// because it never reads one. (The bucket-operation count itself is asserted in
+// the white-box test, which can see the bucket.)
+func TestListingNeedsNoDocumentAtAll(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	base := time.Now().Add(-time.Hour)
+
+	for i := range 3 {
+		if err := s.PutResult(result(fmt.Sprintf("scan-%d", i), base.Add(time.Duration(i)*time.Minute), model.ConsentReject)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "artifacts", "result")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatalf("listing read the documents it must not read: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("got %d summaries, want 3", len(got))
+	}
+
+	for _, sm := range got {
+		if sm.Requests != 1 || sm.ThirdPartyDomains != 1 || sm.PreConsentDomains != 1 {
+			t.Errorf("%s: summary is not the one that was written: %+v", sm.ScanID, sm)
+		}
+
+		if sm.Error != "" {
+			t.Errorf("%s: a stored summary was reported as underived: %q", sm.ScanID, sm.Error)
+		}
+	}
+
+	// The two other read paths that must not need a document either.
+	if ok, err := s.HasResult("site", model.ConsentReject, "scan-1"); err != nil || !ok {
+		t.Errorf("HasResult = %v, %v: it is a row lookup", ok, err)
+	}
+
+	if series, err := s.Series(); err != nil || len(series) != 1 {
+		t.Errorf("Series = %v, %v", series, err)
+	}
+}
+
+// TestSummaryColumnsAreWhatSummarizeProduced is AC4: the columns are written by
+// the same derivation the interface renders, so a listing and the document it
+// points at cannot disagree.
+func TestSummaryColumnsAreWhatSummarizeProduced(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	at := time.Now().Add(-time.Hour)
+
+	res := result("scan-1", at, model.ConsentReject)
+	res.Duration = 1500 * time.Millisecond
+	res.Termination = model.TermRequestCap
+	res.Error = "hit the request cap"
+	res.Consent = model.Consent{Outcome: model.OutcomeUnverified, CMP: "cookiebot"}
+	res.Requests = append(res.Requests, []model.Request{
+		{
+			URL: "https://tracker.test/second.js", Domain: "tracker.test",
+			Party: model.ThirdParty, Phase: model.PhasePost,
+		},
+		{
+			URL: "https://analytics.test/a.js", Domain: "analytics.test",
+			Party: model.ThirdParty, Phase: model.PhasePost,
+		},
+		{
+			URL: "https://example.com/app.js", Domain: "example.com",
+			Party: model.FirstParty, Phase: model.PhasePre,
+		},
+	}...)
+
+	if err := s.PutResult(res); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("got %d summaries, want 1", len(got))
+	}
+
+	sm := got[0]
+
+	for _, tc := range []struct {
+		field string
+		got   any
+		want  any
+	}{
+		{"ScanID", sm.ScanID, "scan-1"},
+		{"Target", sm.Target, "site"},
+		{"ConsentMode", sm.ConsentMode, model.ConsentReject},
+		{"Duration", sm.Duration, res.Duration},
+		{"Termination", sm.Termination, model.TermRequestCap},
+		{"Error", sm.Error, "hit the request cap"},
+		{"ConsentOutcome", sm.ConsentOutcome, model.OutcomeUnverified},
+		{"ConsentCMP", sm.ConsentCMP, "cookiebot"},
+		{"Requests", sm.Requests, len(res.Requests)},
+		{"ThirdPartyDomains", sm.ThirdPartyDomains, 2},
+		{"PreConsentDomains", sm.PreConsentDomains, 1},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("summary %s = %v, want %v", tc.field, tc.got, tc.want)
+		}
+	}
+
+	// The instant survives even though the offset is not stored: the ordering
+	// every listing depends on is the instant.
+	if !sm.StartedAt.Equal(at) {
+		t.Errorf("StartedAt = %s, want %s", sm.StartedAt, at)
 	}
 }
 
@@ -976,7 +1580,7 @@ func TestOpenFailsActionablyOnAnUnusablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := store.Open(store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
+	_, err := store.Open(t.Context(), store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
 	if err == nil {
 		t.Fatal("Open succeeded against an unusable path")
 	}

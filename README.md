@@ -102,6 +102,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw debug <url>` | One scan, verbose, for authoring consent rules |
 | `wsaw rules list` / `rules test <url>` | Inspect consent rules, or test them against a live page |
 | `wsaw config` | Print the *resolved* configuration, or `--check` to validate |
+| `wsaw store migrate` | Bring the store's schema up to date; `--dry-run` reports what would move |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
@@ -506,7 +507,7 @@ time() - max by (target, consent_mode) (wsaw_last_successful_scan_timestamp_seco
 
 ### Where results are stored
 
-Results live in a SQL database reached through `database/sql`. Each result is stored as its JSON document plus the columns needed to index it, which keeps the published schema the single source of truth and makes the store queryable with ordinary SQL. Three drivers ship, all pure Go, so the binary still cross-compiles to four platforms without CGo.
+Results live in a SQL database reached through `database/sql`. Each result is a row that indexes the scan — target, consent mode, scan ID, start time, and the handful of counts a listing shows — and references the scan's JSON document, which is stored in the artifact bucket beside the screenshots and response bodies from the same scan. That keeps the published schema the single source of truth for what a result *is*, and keeps a multi-megabyte payload out of every backup and every replication stream. Three drivers ship, all pure Go, so the binary still cross-compiles to four platforms without CGo.
 
 **SQLite** is the default and needs no server — one binary, one file:
 
@@ -535,9 +536,29 @@ store:
   artifactDir: /var/lib/wsaw/artifacts
 ```
 
-The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots and stored bodies stay on disk whichever driver is used: they do not belong in a row.
+The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots, stored bodies and result documents all live in the artifact bucket whichever driver is used: they are evidence, and evidence does not belong in a row.
 
 The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread.
+
+#### The artifact bucket
+
+`store.artifactDir` names where evidence goes. A plain path is a directory on local disk, which is the default and needs no configuration:
+
+```yaml
+store:
+  artifactDir: /var/lib/wsaw/artifacts
+```
+
+It also accepts a bucket URL, and the same key layout is used either way (`kind/sha256hex`), so an existing artifact directory is readable by the new code with nothing moved:
+
+```yaml
+store:
+  artifactDir: "s3://wsaw-evidence?region=eu-central-1"
+```
+
+**`s3://`, `gs://` and `azblob://` resolve only in a build made with `-tags cloudblob`.** The three cloud SDKs cost more than the rest of wsaw put together — the default binary measures about 37 MB, the `cloudblob` one about 77 MB — so which providers are compiled in is a deliberate decision rather than a default (Story 8.8). The stock binary links the local file driver alone, opens no cloud SDK and resolves no credential chain; pointed at an unsupported scheme it fails at startup, names the URL, and lists what it does support. Credentials come from the provider's own environment (the AWS, Google and Azure chains); any that do appear in the URL are redacted wherever wsaw prints it.
+
+Retention currently deletes rows and leaves the objects they referenced in the bucket. Pruning does not yet reclaim storage — the sweep that collects unreferenced artifacts is Story 8.5 — so a bucket that now holds every scan's document grows until then.
 
 A server database is reached over a network, so a transient failure — a restart, a failover, a deadlock — is retried:
 
@@ -552,6 +573,28 @@ A permanent failure, such as a constraint violation, is never retried: that woul
 Two things a server database does **not** do. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and would duplicate every scheduled scan. And it makes the store a network dependency, so readiness fails when the database is unreachable — a wsaw that cannot record what it observed is not ready, however healthy its browser is.
 
 State lives in the platform's directory by default (`$XDG_STATE_HOME/wsaw` on Linux, `~/Library/Application Support/wsaw` on macOS) and is created `0700`.
+
+#### Upgrading a store that predates the bucket
+
+Earlier versions of wsaw kept each result's JSON document in a column. The first start of this version moves them: every stored document is written to the artifact bucket, referenced from its own row, and summarised into the columns a listing reads, and only then is the column dropped. Nothing is discarded — a store holds months of evidence, baselines pinned to particular scans, and share links pointing at results, so discarding it would destroy the history the tool exists to keep.
+
+Look before you leap:
+
+```
+wsaw store migrate --dry-run    # how many documents, how many bytes, and to where
+wsaw store migrate              # do it, and report what was done
+```
+
+The dry run moves no document and touches no row. It reaches the database and the bucket — that is how it learns anything at all, and opening a local artifact bucket creates its directory — but it applies no schema change, not even the one it reports on. It exists so that the size of the move and the destination are known before a maintenance window is chosen; against object storage those numbers are also what the first month's bill is made of.
+
+What to expect from the migration itself:
+
+- It runs in bounded batches and logs its progress, so a store with a hundred thousand results advances visibly rather than appearing to hang. It never holds one transaction open across the whole table.
+- It needs a writable bucket, and checks that first. An unreachable or read-only bucket fails the start with a message naming it, before a single row has been touched.
+- It can be interrupted. Each row is moved and recorded in one statement, so starting again continues where the last run stopped; documents are content-addressed, so a document written twice is still one object.
+- A row that will not move — a document that is not valid JSON, or a bucket that keeps refusing the write — is reported with its scan ID and left exactly as it is. The column is not dropped while any such row remains, so nothing is lost by fixing the cause and starting again. A document that moves but does not decode keeps its bytes in the bucket, and its row says that its summary could not be derived rather than showing zeros.
+
+**The upgrade is one-way.** An older wsaw cannot read a migrated store: it would look for a column that is no longer there. There is no downgrade migration, and there will not be one — the supported rollback is a database backup taken before the upgrade, restored alongside the older binary. Take that backup. The artifacts the migration writes are harmless to an older wsaw and can be left where they are.
 
 ## Being a good citizen
 

@@ -226,7 +226,8 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		s.recordFailure(target.Name, mode, string(res.Termination))
 	}
 
-	log.Info("scan finished",
+	log.Info(
+		"scan finished",
 		"termination", string(res.Termination),
 		"requests", len(res.Requests),
 		"third_party_domains", len(res.ThirdPartyDomains("")),
@@ -447,16 +448,35 @@ func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.L
 	}
 
 	baseline, err := s.baselineFor(target, res)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+
+	// Evidence that has gone missing is called by its name. Without this the
+	// report would be the one a first-ever scan produces — not comparable,
+	// nothing changed, "no baseline to compare against" — and a tracker added
+	// between the two scans would go unreported with nothing in the record
+	// saying why (Story 8.2, AC5; Tenet 5).
+	gone := errors.Is(err, store.ErrEvidenceGone)
+
+	switch {
+	case gone:
+		log.Error("the result this scan should be compared against names evidence the artifact bucket no longer holds",
+			"error", err)
+
+	case err != nil && !errors.Is(err, store.ErrNotFound):
 		log.Warn("reading baseline failed", "error", err)
 	}
 
-	return diff.Compare(baseline, res, diff.Options{
+	rep := diff.Compare(baseline, res, diff.Options{
 		Allow:                target.Allow,
 		Deny:                 target.Deny,
 		Severity:             target.Severity,
 		DegradedFailureRatio: s.opts.DegradedFailureRatio,
 	})
+
+	if gone && rep != nil {
+		rep.Reason = diff.ReasonEvidenceGone
+	}
+
+	return rep
 }
 
 func (s *Scanner) baselineFor(target config.Resolved, res *model.Result) (*model.Result, error) {
@@ -554,7 +574,8 @@ func (s *Scanner) unreachableFromContainer(target config.Resolved) (string, bool
 		"%s resolves to this machine's loopback address, which a browser running in a %s container cannot reach: "+
 			"the container has its own network namespace. Scan it by its routable address, "+
 			"or set browser.runtime to \"local\" for this deployment",
-		host, s.opts.BrowserRuntime), false
+		host, s.opts.BrowserRuntime,
+	), false
 }
 
 // isLoopbackHost reports whether a host names the local machine.

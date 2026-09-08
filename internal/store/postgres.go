@@ -83,7 +83,50 @@ func (postgresDialect) migrations() [][]string {
 				document text   not null
 			)`,
 		},
+
+		// Version 2: the document reference and the summary columns. The
+		// sqlite dialect carries the reasoning; this is the same schema in
+		// PostgreSQL's spelling, in one statement because PostgreSQL can add
+		// every column at once and `if not exists` makes a rerun a no-op.
+		{
+			`alter table results
+				add column if not exists artifact_ref        text   not null default '',
+				add column if not exists document_size       bigint not null default 0,
+				add column if not exists document_digest     text   not null default '',
+				add column if not exists duration_ns         bigint not null default 0,
+				add column if not exists scan_error          text   not null default '',
+				add column if not exists consent_outcome     text   not null default '',
+				add column if not exists consent_cmp         text   not null default '',
+				add column if not exists requests            integer not null default 0,
+				add column if not exists third_party_domains integer not null default 0,
+				add column if not exists pre_consent_domains integer not null default 0`,
+		},
+
+		// Version 3 (Story 8.4): the document column goes, once every payload
+		// it held is in the bucket. The sqlite dialect carries the reasoning;
+		// `if exists` is what makes a rerun after a lost version record a
+		// no-op here.
+		{
+			`alter table results drop column if exists document`,
+		},
 	}
+}
+
+// alreadyApplied is always false: PostgreSQL says `if exists` in the statement
+// itself, and its DDL rolls back with the transaction that records the version.
+func (postgresDialect) alreadyApplied(error) bool { return false }
+
+func (postgresDialect) hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	return countColumn(ctx, db, `
+		select count(*) from information_schema.columns
+		where table_schema = current_schema() and table_name = $1 and column_name = $2`,
+		table, column)
+}
+
+// documentByteLength counts bytes rather than characters: PostgreSQL's
+// length() counts characters.
+func (postgresDialect) documentByteLength() string {
+	return "octet_length(" + documentColumn + ")"
 }
 
 // schemaVersionTable is where a server database records the applied schema

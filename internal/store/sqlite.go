@@ -105,7 +105,83 @@ func (sqliteDialect) migrations() [][]string {
 				document text    not null
 			) strict`,
 		},
+
+		// Version 2 (Stories 8.2 and 8.3): the document moves to the artifact
+		// bucket, and the summary a listing needs becomes columns.
+		//
+		// A row now carries where the document is, how big it is and what it
+		// must hash to, so a reader can tell a pruned document from a corrupt
+		// one without trusting the bucket (Story 8.2, AC2 and AC6). It also
+		// carries the summary, because a listing that had to fetch fifty
+		// documents to render fifty lines would be fifty round trips to object
+		// storage (Story 8.3, AC2).
+		//
+		// The document column is deliberately left in place and left NOT NULL.
+		// Rows written from here on put the empty string in it — never a
+		// second copy of the payload, which is the failure Story 8.2 exists to
+		// avoid — and the rows an older wsaw wrote keep theirs, because that is
+		// what the data migration reads when it moves them into the bucket and
+		// then drops the column (Story 8.4, AC1). Relaxing the column to NULL
+		// instead would cost SQLite a full table rebuild here, which is exactly
+		// the bulk data movement that story owns.
+		//
+		// Every column has a default so that it can be added to a table that
+		// already has rows. Nothing this build writes relies on the default:
+		// a row wsaw writes sets all of them, and an artifact_ref that is still
+		// empty marks a row whose document has not been moved yet, which the
+		// read paths report as such rather than presenting a summary of zeroes.
+		{
+			`alter table results add column artifact_ref        text    not null default ''`,
+			`alter table results add column document_size       integer not null default 0`,
+			`alter table results add column document_digest     text    not null default ''`,
+			`alter table results add column duration_ns         integer not null default 0`,
+			`alter table results add column scan_error          text    not null default ''`,
+			`alter table results add column consent_outcome     text    not null default ''`,
+			`alter table results add column consent_cmp         text    not null default ''`,
+			`alter table results add column requests            integer not null default 0`,
+			`alter table results add column third_party_domains integer not null default 0`,
+			`alter table results add column pre_consent_domains integer not null default 0`,
+		},
+
+		// Version 3 (Story 8.4): the document column goes, once every payload
+		// it held is in the bucket.
+		//
+		// The move itself is not a statement, because it is not something SQL
+		// can express: it is a bucket write and a row update per row, in
+		// bounded batches, and it happens in prepareMigration before this runs
+		// (Story 8.4, AC1 and AC3). By the time the column is dropped, every
+		// document it held has been written to the bucket and referenced from
+		// its own row — and if any row could not be moved, the migration stops
+		// before this statement rather than dropping evidence it failed to
+		// copy (AC4).
+		//
+		// SQLite rewrites the table for a dropped column, which is the one
+		// expensive part of this upgrade and the reason a backup taken
+		// beforehand is the documented rollback: forward is the only direction
+		// (AC8).
+		{
+			`alter table results drop column document`,
+		},
 	}
+}
+
+// alreadyApplied is always false: SQLite's DDL is transactional here, so a
+// statement either applied with its version record or did neither.
+func (sqliteDialect) alreadyApplied(error) bool { return false }
+
+// hasColumn reads SQLite's own table description. pragma_table_info is the
+// table-valued form of the pragma, so the table name is a parameter rather
+// than something interpolated into a statement.
+func (sqliteDialect) hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	return countColumn(ctx, db,
+		`select count(*) from pragma_table_info(?) where name = ?`, table, column)
+}
+
+// documentByteLength casts to a blob first: SQLite's length() counts
+// characters for text, and a document of multi-byte characters would be
+// reported smaller than the bucket will have to hold.
+func (sqliteDialect) documentByteLength() string {
+	return "length(cast(" + documentColumn + " as blob))"
 }
 
 // schemaVersion reads SQLite's own per-database counter. Existing stores

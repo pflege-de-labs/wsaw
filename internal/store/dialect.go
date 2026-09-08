@@ -69,6 +69,22 @@ type dialect interface {
 	// ddlIsTransactional reports whether schema changes roll back with a
 	// transaction. MySQL commits implicitly on DDL, so they do not.
 	ddlIsTransactional() bool
+	// alreadyApplied reports whether a schema statement failed because what
+	// it asks for is already true. It exists for the dialect that cannot say
+	// so in SQL: SQLite and PostgreSQL write `if exists`, MySQL has no such
+	// form for dropping a column, and a migration it has already applied must
+	// not become an error the next start cannot get past.
+	alreadyApplied(err error) bool
+	// hasColumn reports whether a table still carries a column. The document
+	// migration asks before reading the column it is about to drop, because a
+	// dialect whose DDL commits outside the transaction can have dropped it
+	// and lost the version record (Story 8.4, AC2).
+	hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error)
+	// documentByteLength is the SQL expression for a stored document's size in
+	// bytes. length() counts characters in SQLite and PostgreSQL and bytes in
+	// MySQL, and a dry run that reported a number an operator cannot size a
+	// bucket with would be worse than reporting none (Story 8.4, AC6).
+	documentByteLength() string
 	// upsert builds the tail of an insert that overwrites an existing row.
 	upsert(conflict, update []string) string
 	// pruneByCount deletes all but the newest keep results per series.
@@ -93,7 +109,8 @@ func dialectFor(name string) (dialect, error) {
 	default:
 		return nil, fmt.Errorf(
 			"store: unknown driver %q; supported drivers are %s",
-			name, strings.Join(Drivers(), ", "))
+			name, strings.Join(Drivers(), ", "),
+		)
 	}
 }
 
@@ -192,12 +209,59 @@ func upsertExcluded(conflict, update []string) string {
 
 // The columns the two upserts in this package overwrite. They are named here
 // so the insert and its conflict clause cannot fall out of step.
+//
+// resultUpdate is also what the insert itself is built from (resultInsert), so
+// a column added here is written, overwritten, and bound in one place rather
+// than in three that can disagree.
+//
+// It is split in two because the document migration writes one half and not
+// the other (Story 8.4). resultScanned is what the scan itself recorded and
+// what every listing has been ordered by since; resultDerived is everything
+// that can be recomputed from the document, which is exactly what a migration
+// deriving a summary from a moved document is entitled to overwrite.
+// resultsTable and documentColumn are named rather than written inline
+// because the document migration asks the database about them — whether the
+// column is still there — as well as writing SQL that mentions them.
+const (
+	resultsTable   = "results"
+	documentColumn = "document"
+)
+
 var (
-	resultKey      = []string{"target", "consent_mode", "scan_id"}
-	resultUpdate   = []string{"started_at", "termination", "document"}
+	resultKey = []string{"target", "consent_mode", "scan_id"}
+
+	// resultScanned belongs to the row rather than to the document: the
+	// instant the scan started and how it ended.
+	resultScanned = []string{"started_at", "termination"}
+
+	// resultDerived is everything a row carries that comes out of the
+	// document: where the document is and what it must hash to (Story 8.2,
+	// AC2), and the summary, materialised so that a listing needs no document
+	// at all (Story 8.3, AC1).
+	resultDerived = []string{
+		"artifact_ref", "document_size", "document_digest",
+		"duration_ns", "scan_error", "consent_outcome", "consent_cmp",
+		"requests", "third_party_domains", "pre_consent_domains",
+	}
+
+	resultUpdate = append(append([]string{}, resultScanned...), resultDerived...)
+
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{"scan_id", "approved_at", "document"}
 )
+
+// countColumn runs a catalogue query that answers "is this column there?" as
+// a count, which every dialect can express and none of them can get subtly
+// wrong the way a row-or-no-row scan can.
+func countColumn(ctx context.Context, db *sql.DB, query string, args ...any) (bool, error) {
+	var n int
+
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return false, err
+	}
+
+	return n > 0, nil
+}
 
 // pruneByCountPortable deletes all but the newest keep results per series,
 // identified by primary key rather than by any physical row identifier.

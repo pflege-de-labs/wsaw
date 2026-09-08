@@ -49,10 +49,31 @@ func (c *configFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.outputDir, "output-dir", "", "write results and reports into this directory")
 }
 
-// load builds the configuration from a file, ad-hoc URLs, or both, then
-// applies flag overrides. Flags override the file, which is what makes
-// container and systemd operation possible without editing a file (Tenet 15).
+// load builds the configuration and insists on having something to scan.
+// Every command that scans, serves or reads a target's history needs that;
+// the one that maintains the store does not (loadWithoutTargets).
 func (c *configFlags) load() (*config.Config, error) {
+	cfg, err := c.loadWithoutTargets()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cfg.Targets) == 0 {
+		return nil, errors.New("no targets are configured; add them to the configuration file or pass --url")
+	}
+
+	return cfg, nil
+}
+
+// loadWithoutTargets builds the configuration from a file, ad-hoc URLs, or
+// both, then applies flag overrides. Flags override the file, which is what
+// makes container and systemd operation possible without editing a file
+// (Tenet 15).
+//
+// It stops short of requiring a target, because store maintenance is about the
+// store: an operator upgrading one should not have to have a target list
+// configured to be allowed to do it (Story 8.4).
+func (c *configFlags) loadWithoutTargets() (*config.Config, error) {
 	var (
 		cfg *config.Config
 		err error
@@ -84,10 +105,6 @@ func (c *configFlags) load() (*config.Config, error) {
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
-	}
-
-	if len(cfg.Targets) == 0 {
-		return nil, errors.New("no targets are configured; add them to the configuration file or pass --url")
 	}
 
 	return cfg, nil
