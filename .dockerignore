@@ -1,0 +1,14 @@
+# What the image build must not carry into its context.
+#
+# The builder copies the whole context with `COPY . .`, so anything listed here
+# is a file the build would read, hash and then discard. dist/ is the reason
+# this file exists: a full release is eight binaries across two variants and
+# some 300 MB (Story 8.8), all of it rebuilt inside the image anyway.
+dist/
+coverage.out
+
+# The build takes its version, commit and date from build arguments, so it
+# never reads the repository's history.
+.git/
+.github/
+.claude/
