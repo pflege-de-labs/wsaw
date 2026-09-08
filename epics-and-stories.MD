@@ -32,6 +32,7 @@ Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 - [Epic 5 — Reporting, Export & Alerting](#epic-5--reporting-export--alerting)
 - [Epic 6 — Operations, Packaging & Distribution](#epic-6--operations-packaging--distribution)
 - [Epic 7 — Containerised End-to-End Testing](#epic-7--containerised-end-to-end-testing)
+- [Epic 8 — Result Documents in Object Storage](#epic-8--result-documents-in-object-storage)
 - [Technical Decisions](#technical-decisions-proposed-for-review)
 - [Open Questions](#open-questions-for-the-product-owner)
 
@@ -843,6 +844,139 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 
 ---
 
+# Epic 8 — Result Documents in Object Storage
+
+Move the scan result's JSON document out of the database and into artifact storage, reached through `gocloud.dev/blob`, so the database holds an index and a reference rather than the payload.
+
+Story 4.6 put the result document in a column and kept screenshots and stored bodies as content-addressed files beside it, on the record that artifacts do not belong in a row and that keeping them out "leaves the door open to object storage later" (Story 4.6, AC9). That door is what this epic walks through, and it takes the document with it. A scan of a busy site is a multi-megabyte JSON document; a row that carries it makes every backup, every replication stream, and every query for a summary pay for evidence nobody asked for. The document is the product's interface (Tenet 16), not a queryable structure — nothing in wsaw filters on its contents, so nothing is lost by storing it where large immutable blobs belong.
+
+The second half is that "where artifacts live" stops being "a directory". One seam — a bucket — serves the local directory that is the default today, and an S3, GCS or Azure bucket for a deployment that already has one. That is the argument Story 4.7 made for the database, applied to evidence: an organisation's existing operational machinery should be usable, without wsaw growing a second implementation of everything.
+
+**Goal:** every scan's JSON document is written to the artifact bucket and referenced by a row; the default deployment still writes to the `artifacts` directory on local disk and needs no configuration; an operator who wants object storage changes one URL.
+
+**Scope:** a bucket abstraction over `gocloud.dev/blob`, the document-as-artifact write and read path, the index columns that make listing possible without fetching documents, a forward-only migration of existing stores, retention that deletes what it stops referencing, bucket configuration and credentials, serving artifacts from a bucket over the HTTP API and share links, and the dependency budget this costs.
+
+**Out of scope:** storing baselines, audit entries or change events outside the database — they are small, they are queried, and they stay rows. Multi-node operation (Story 4.7, AC8 still holds). Encryption of artifacts at rest beyond what the bucket itself provides.
+
+### Story 8.1 — Reach artifacts through a bucket, not a directory (not implemented)
+
+*As a Developer, I want artifact access to go through one bucket abstraction so that where evidence lives becomes a URL rather than a set of filesystem calls spread through the store.*
+
+Today `PutArtifact`, `GetArtifact` and `StatArtifact` call `os.MkdirAll`, `os.CreateTemp`, `os.Rename`, `os.ReadFile` and `os.Stat` directly, and defend against traversal with `filepath.Rel`. Those are the right calls for a directory and the wrong shape for anything else. `gocloud.dev/blob` is the seam that makes the directory one implementation instead of the only one — chosen over hand-rolled per-provider clients because the provider list, the retry behaviour, and the credential chains are exactly the part nobody wants to maintain three times.
+
+- AC1: All artifact reads, writes, existence checks and deletions go through a single bucket type backed by `gocloud.dev/blob`. No filesystem call for artifacts survives outside it, and no provider-specific type appears outside the store package — the rule Story 4.6, AC1 set for the database driver, applied to storage.
+- AC2: The default is a local file bucket rooted at the artifact directory, with the **same key layout as today** (`kind/sha256hex`). An existing installation's artifact directory is readable by the new code without moving a single file, and an operator who configures nothing sees no change.
+- AC3: Artifacts stay content-addressed. Writing the same screenshot twice still costs one copy, and writing a key that already exists is a no-op rather than a rewrite — captured evidence is immutable (Tenet 4).
+- AC4: A write is atomic from a reader's point of view. A crash, a cancelled context, or a failed upload never leaves a key a reader would treat as complete evidence; where the provider has no rename, the write completes in one operation or not at all.
+- AC5: Keys are validated before use. References originate from stored results, which derive from page-controlled data, so a crafted reference must not escape the bucket's prefix or address anything outside it — the traversal defence `artifactPath` provides today has to survive the move (Tenet 9).
+- AC6: Every operation takes a `context.Context` and is bounded by the store's configured timeout. A bucket is a network dependency for every provider but the local one, and an unbounded read is how a daemon stalls (Tenet 8).
+- AC7: Reads and writes stream. A multi-megabyte document must not have to exist in memory in full on both sides of the call; the `[]byte` shape of `GetArtifact` is replaced or complemented by a reader, and the HTTP API serves from it (Story 8.7).
+- AC8: Transient bucket failures are retried on the same policy as the database — `maxAttempts` and `retryBackoff` — and permanent ones (missing key, access denied) are not. Retries are logged and counted, as store retries already are.
+- AC9: A missing artifact is still `ErrNotFound`, so every caller that distinguishes "pruned" from "broken" today keeps that distinction (Story 5.17, AC3).
+
+### Story 8.2 — Store the result document as an artifact, reference it in the database (not implemented)
+
+*As an Operator, I want scan documents kept in the bucket and referenced from the database so that my database holds an index rather than gigabytes of evidence.*
+
+- AC1: `PutResult` writes the JSON document to the bucket under its own artifact kind (`result/`), content-addressed like every other artifact, and inserts a row carrying the reference plus the columns that index it.
+- AC2: The `document` column is gone. A row carries the artifact reference, the document's byte size, and its digest — not the payload, and not a copy of it "for now". Two sources of truth for one document is the failure this story exists to avoid.
+- AC3: The read paths — `GetResult`, `LatestResult`, `PreviousResult` — resolve the reference and return the same `*model.Result` they return today. Nothing outside the store learns that the document moved.
+- AC4: The write order is bucket first, row second. An interrupted write leaves an unreferenced artifact, which is garbage the sweep collects (Story 8.5); the reverse order leaves a row pointing at nothing, which reads as a corrupt result.
+- AC5: A row whose artifact is missing or undecodable is reported and skipped, not fatal. One lost document must not make a target's whole history unreadable (Story 4.6, AC8).
+- AC6: The document's digest is verified on read, and a mismatch is reported as corruption rather than returned as evidence. Once the payload leaves the database's consistency guarantees, its integrity is checked where it is used.
+- AC7: The transactional guarantees that exist today survive. Approving a baseline and writing its audit entry remain one transaction (Story 4.6, AC7), and a bucket write is never inside a database transaction, because it cannot roll back.
+- AC8: The JSONL, HAR and Markdown outputs written to the output directory are unchanged. They are derived views of the same document (Tenet 16) and are not what this epic moves.
+
+### Story 8.3 — List and summarise without fetching a single document (not implemented)
+
+*As a Site Owner, I want the results list to stay fast so that browsing history does not become one object-storage request per row.*
+
+`ListResults` reads every document and summarises it in Go — acceptable when the document is a column on a row already read, ruinous when each one is a separate network fetch. Listing fifty scans would become fifty round trips before the page renders. The summary is small, fixed, and already computed at write time.
+
+- AC1: The fields a summary needs are materialised as columns on write: duration, termination, error, consent outcome and CMP, request count, third-party domain count, pre-consent domain count — alongside the existing target, consent mode, scan ID and start time.
+- AC2: `ListResults` is answered entirely from the database. Listing N results performs zero bucket reads, asserted by a test that fails if the count is not zero.
+- AC3: `HasResult` stays a row lookup and never touches the bucket, as it avoids reading the document today.
+- AC4: The summary columns are produced by the same code that renders a summary now, so the two cannot disagree. Adding or changing a summary field later is a migration that recomputes, not a second definition.
+- AC5: Recomputing every summary from the stored documents is available as an explicit operation, so a bad derivation is repairable without rescanning. Derived data is disposable; the document is not (Tenet 4).
+
+### Story 8.4 — Migrate stores that keep documents in rows (not implemented)
+
+*As an Operator, I want my existing history preserved across the upgrade so that a change of storage layout is not a change of dataset.*
+
+Story 4.6 could discard existing stores because bbolt held little that mattered yet. That is no longer true: a store holds months of evidence, baselines pinned to specific scans, and share links pointing at results. Discarding it would destroy exactly the compliance history the product exists to keep.
+
+- AC1: A schema migration moves every document in the database to the bucket, writes back the reference, populates the summary columns from the document, and drops the column — forward-only, through the same numbered-migration mechanism every dialect already uses (Story 4.7, AC4).
+- AC2: The migration is resumable and idempotent. Interrupting it and starting again finishes the job without duplicating artifacts (content addressing makes a repeated write free) and without skipping rows.
+- AC3: It runs in bounded batches with progress logged, and does not hold one transaction open across the whole table. A store with a hundred thousand results must migrate without exhausting memory or blocking the database for minutes.
+- AC4: A row that will not migrate — undecodable JSON, a bucket write that keeps failing — is reported with its scan ID and left in place rather than silently dropped, and the migration states how many such rows there are.
+- AC5: Migrating needs a writable bucket, and an unreachable or read-only one fails at startup with an actionable message naming the URL, before any row is touched.
+- AC6: A dry run reports what would move, how many objects and bytes, and to where, so an operator can size the bucket and the maintenance window before committing.
+- AC7: The migration is verified for every dialect — SQLite, Postgres, MySQL — by a test that writes results in the old layout, migrates, and reads every result back byte-identically.
+- AC8: The upgrade is documented in the README, with the one-way nature stated plainly: an older wsaw cannot read a migrated store, and the supported rollback is a database backup taken before the upgrade.
+
+### Story 8.5 — Retention deletes what it stops referencing (not implemented)
+
+*As an Operator, I want pruning to reclaim storage so that a bucket that now holds every document does not grow without bound.*
+
+Retention deletes rows today and leaves artifacts behind — a tolerable leak while artifacts were opt-in screenshots and bodies, and not tolerable once every document is out there. The bucket becomes the largest thing wsaw owns, and nothing currently removes anything from it.
+
+- AC1: Pruning a result deletes the artifacts that result alone referenced — its document, its screenshots, its stored bodies — and keeps those another result still references. Content addressing means two scans can share one artifact, so deletion is decided by reference, never by the age of a key.
+- AC2: The reference check is a query. Which artifacts a result names is derivable from what the database holds, without reading documents back out of the bucket to find out.
+- AC3: A sweep collects unreferenced artifacts left by interrupted writes (Story 8.2, AC4) and by failed deletions. It is safe to run while scans are running: an artifact written moments ago and not yet referenced is protected by a grace period rather than collected as garbage.
+- AC4: A deletion failure does not fail the prune. A bucket that refuses a delete leaves the key for the next sweep, logged and counted, rather than aborting retention.
+- AC5: Pruning reports what it removed — rows, artifacts, bytes — in its existing statistics, and the counts are exposed as metrics.
+- AC6: A dry run lists what would be deleted. Deleting evidence is irreversible, and an operator changing retention should see the consequence before it happens.
+- AC7: Retention configuration is unchanged (`maxAge`, `maxPerSeries`). This story changes what pruning removes, not how it is asked for.
+
+### Story 8.6 — Configure the bucket, and document it (not implemented)
+
+*As an Operator, I want the bucket configured by URL, with examples I can copy, so that pointing wsaw at my object storage is a one-line change.*
+
+- AC1: One setting names the bucket as a URL (`store.artifactURL`), and with nothing configured the default is the local artifacts directory beside the store, exactly as today. The single-binary deployment that needs no external service stays the default deployment (Tenet 14).
+- AC2: The existing `store.artifactDir` keeps working and is interpreted as a local file bucket. An upgrade does not require a configuration edit; setting both fails validation rather than silently picking one.
+- AC3: Credentials come from the provider's own environment — the AWS, Google and Azure credential chains — and any credential that does appear in configuration is a secret reference, redacted everywhere a DSN or a webhook token is redacted (Story 4.7, AC6).
+- AC4: The URL is validated at load with a line-referencing error for an unknown or malformed scheme, and the bucket is opened and probed at startup: a bucket wsaw cannot write to fails then, naming the URL, rather than on the first scan (Tenet 15).
+- AC5: Bucket reachability is part of readiness, on the same argument as the database: a wsaw that cannot record what it observed is not ready, however healthy its browser is.
+- AC6: The README documents the storage model — index in the database, documents and evidence in the bucket — and carries working configuration examples for the local directory (the default), S3, GCS, Azure Blob Storage, and an S3-compatible endpoint such as MinIO, each with the credentials it expects and the permissions the bucket needs to grant.
+- AC7: The README states the operational consequences honestly: object storage is remote, so a write can fail for reasons a local disk would not; requests cost money and latency; and a lifecycle rule configured on the bucket will delete evidence behind wsaw's back if it is set to.
+- AC8: `wsaw.example.yaml` carries the same examples, commented, so the shipped configuration and the README cannot drift apart.
+
+### Story 8.7 — Serve artifacts that live in a bucket (not implemented)
+
+*As a Compliance Officer, I want screenshots and downloads to work in the web interface whether the evidence sits on disk or in a bucket, so that where it is stored is not my problem.*
+
+- AC1: The API and share-link routes serve artifacts from the bucket, streaming rather than buffering the whole object, with the headers each kind gets today unchanged — a response body stays an opaque attachment, a screenshot stays an image and nothing else (Story 5.17, AC5).
+- AC2: A share token still reaches only the artifacts its own result names (Story 5.19, AC10). Content addressing plus a shared bucket makes that check the only thing between a link to a harmless scan and every stored artifact, so it is asserted directly against the bucket-backed path.
+- AC3: Where a provider supports signed URLs and the operator opts in, wsaw may redirect instead of proxying. The signed URL's lifetime is short, configurable, and never longer than the share link that produced it. It is off by default: a redirect moves access control from wsaw to the bucket, which is a decision, not an optimisation.
+- AC4: Content length and conditional requests still work, so the interface can show sizes and a browser can cache a screenshot instead of re-fetching megabytes (Story 5.17, AC4 and AC6).
+- AC5: A missing artifact renders as evidence that is no longer stored, not as an error page. Retention removing evidence is expected, and absence is recorded rather than inferred (Tenet 5).
+- AC6: Bucket latency stays confined to the request that caused it: an artifact fetch is bounded by a timeout, and its failure does not degrade the rest of the interface.
+
+### Story 8.8 — Keep the single-binary promise, on the record (not implemented)
+
+*As a Developer, I want the cost of this dependency stated and bounded, so that a convenience library does not quietly end cross-compilation or double the binary.*
+
+`gocloud.dev/blob` with the S3, GCS and Azure drivers pulls in three cloud SDKs. That is a large dependency tree for a tool whose selling point is detecting supply-chain changes (Tenet 18), and it is justified only because the alternative — three hand-written clients with three credential chains — is worse. What is not negotiable is CGo and cross-compilation (Tenet 14).
+
+- AC1: The build stays pure Go and CGo-free, and cross-compilation to linux/darwin × amd64/arm64 is verified in CI as part of this epic.
+- AC2: The binary size change from adding the blob drivers is measured and recorded in the release notes. A number, not an assurance.
+- AC3: Which providers are compiled in is a deliberate, documented decision. If the cloud drivers go behind a build tag to keep a lean default build, both builds are produced, tested and named in the release; if they do not, the reason is written down.
+- AC4: The default build with nothing configured opens no cloud SDK, resolves no credential chain, and makes no network call at startup. A local deployment must not acquire cloud behaviour merely by being linked against it.
+- AC5: The SBOM published per release (Story 6.1, AC3) covers the new dependency tree, and the added modules are reviewed once, explicitly, rather than arriving as transitive noise.
+
+### Story 8.9 — Test both paths, and one real object store (not implemented)
+
+*As a Developer, I want the bucket path covered by the same tests as the directory path, so that a provider difference surfaces in CI rather than in production.*
+
+- AC1: The store's test suite runs unchanged against the file bucket and against an in-memory bucket, on the argument Story 4.7, AC5 made for dialects: the tests are the specification of what a store does.
+- AC2: An S3-compatible service (MinIO) joins the containerised end-to-end stack (Epic 7), and the suite runs a full scan → store → prune → read-back cycle against it, skipping with a clear reason where no container runtime is present.
+- AC3: The failure modes are tested, not assumed: a bucket that rejects a write mid-scan, a key deleted behind wsaw's back, a truncated object, and a digest mismatch. Each produces the recorded, non-fatal behaviour Story 8.2 requires.
+- AC4: The migration is tested from a store populated in the old layout, for every dialect, including an interrupted-and-resumed run (Story 8.4, AC2).
+- AC5: A test asserts that listing results performs no bucket operations (Story 8.3, AC2). That regression is invisible until it arrives as a production latency complaint.
+- AC6: The soak test reports bucket operations and bytes transferred alongside its existing figures, so the storage cost of a long run is a measured number rather than a surprise on an invoice.
+
+---
+
 ## Technical Decisions (proposed, for review)
 
 1. **CDP library:** drive Chrome via `chromedp`/`cdproto` rather than WebDriver — network-domain fidelity and initiator chains are the core product, and WebDriver does not expose them well. Playwright-Go is rejected as it requires a Node-based driver process.
@@ -851,6 +985,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 4. **Config:** YAML file plus flags/env overrides. A target list is inherently file-shaped, so config-file-less operation is supported only for one-shot CLI runs.
 5. **Consent rules ship as data, not code** (embedded YAML rule pack), so rules can be updated by users and by releases without recompilation.
 6. **v1 is single-node.** Distributed scheduling, sharding, and a web UI are explicitly deferred.
+7. **Evidence storage:** scan documents, screenshots and stored bodies live in a bucket reached through `gocloud.dev/blob`, with the database holding an index and a reference (Epic 8). The default bucket is the local artifacts directory, so the no-external-service deployment is unchanged; S3, GCS and Azure are configuration. The library is preferred over per-provider clients because the credential chains and retry behaviour are the expensive part, and the cost it adds to the binary is measured rather than assumed (Story 8.8).
 
 ---
 
