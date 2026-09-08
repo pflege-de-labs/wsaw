@@ -19,6 +19,8 @@ Roles used:
 
 Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 
+**Implementation status.** A story heading with no note is built and covered by tests. A heading marked *not implemented* has no code behind it; one marked *partly implemented* names the acceptance criteria that are still open. The notes were written by auditing the tree at commit `8bc0ce3` (8 September 2026) and go stale the moment the gap is closed — close the gap, drop the note.
+
 ---
 
 ## Table of Contents
@@ -45,7 +47,7 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 
 **Out of scope:** consent handling (Epic 2), scheduling (Epic 3), persistence (Epic 4).
 
-### Story 1.1 — Launch and control headless Chrome
+### Story 1.1 — Launch and control headless Chrome (partly implemented: no test asserts that Chrome processes return to baseline, AC5)
 
 *As an Operator, I want wsaw to drive a headless Chrome instance so that pages are rendered exactly as a real browser renders them.*
 
@@ -107,7 +109,7 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 - AC2: The user agent defaults to the one shipped by the launched Chrome build; overrides are explicit and recorded.
 - AC3: All applied overrides are echoed into the scan result for reproducibility.
 
-### Story 1.8 — Run Chrome in a container
+### Story 1.8 — Run Chrome in a container (partly implemented: Chrome's own sandbox is disabled inside the container and no seccomp profile is shipped, AC5)
 
 *As an Operator, I want wsaw to run headless Chrome inside a container when a container runtime is available, so that hostile pages are rendered behind a boundary the operating system enforces rather than one the browser enforces on itself.*
 
@@ -223,7 +225,7 @@ Run as a long-lived service that scans a list of targets on a schedule.
 - AC5: Missed schedules during downtime are not backfilled by default; catch-up is opt-in.
 - AC6: **A restart continues each target's schedule rather than starting it over.** The scheduler's own record of when a target last ran is in memory, so it is seeded from the store at startup: a daily target scanned an hour before a restart is due in twenty-three hours, not immediately. Without this, AC3's minimum interval has nothing to measure from and AC5 is vacuous — every target looks as though it had never been scanned, and a daemon that restarts on each deploy scans everything on each deploy. Only a genuinely overdue target runs at startup, and then jittered.
 
-### Story 3.3 — Concurrency and browser pooling
+### Story 3.3 — Concurrency and browser pooling (partly implemented: no memory-threshold recycling, AC3)
 
 *As an Operator, I want bounded resource use so that the daemon is a good citizen on shared hosts.*
 
@@ -232,7 +234,7 @@ Run as a long-lived service that scans a list of targets on a schedule.
 - AC3: Pool members are recycled after a configurable number of scans or on memory threshold breach.
 - AC4: Backpressure: when the pool is saturated, scans queue rather than spawning unbounded browsers.
 
-### Story 3.4 — Config hot reload
+### Story 3.4 — Config hot reload (partly implemented: SIGHUP only, no file-watch, AC1)
 
 *As an Operator, I want to change the target list without a restart so that operations stay uninterrupted.*
 
@@ -323,7 +325,7 @@ Persist scan results and turn a stream of scans into meaningful change events.
 - AC3: Diffing against "previous scan" is supported as an alternative to a pinned baseline.
 - AC4: Diff output is deterministically ordered.
 
-### Story 4.4 — Allow and deny lists
+### Story 4.4 — Allow and deny lists (partly implemented: no shipped starter deny list, AC3)
 
 *As a Compliance Officer, I want expected third parties declared so that alerts focus on the unexpected.*
 
@@ -412,7 +414,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC1: A Markdown (and plain-text) report per scan: target, consent mode and outcome, counts by resource type, third-party host table with request counts, pre-consent findings, and the diff versus baseline.
 - AC2: A CSV export of the host/asset table for spreadsheet use.
 
-### Story 5.4 — HTTP API
+### Story 5.4 — HTTP API (partly implemented: ad-hoc scans are not rate-limited, AC3)
 
 *As a Developer, I want an API so that other systems can query and trigger wsaw.*
 
@@ -449,7 +451,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC5: The web interface can be disabled entirely by configuration; the API remains usable without it.
 - AC6: Usable without JavaScript for the core read paths (target list, result view, diff view), degrading to plain server-rendered pages.
 
-### Story 5.8 — Dashboard and target overview
+### Story 5.8 — Dashboard and target overview (partly implemented: no open-findings column and no filter or sort, AC1 and AC4)
 
 *As an Operator, I want a single screen showing the state of every target so that I can see at a glance whether wsaw is healthy and whether anything changed.*
 
@@ -459,7 +461,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC4: Filter and sort by label, severity, and staleness.
 - AC5: Empty and error states are explicit ("never scanned", "scan failed", "consent unverified") and never render as a clean zero.
 
-### Story 5.9 — Result and diff browser
+### Story 5.9 — Result and diff browser (partly implemented: the asset table is not sortable and has no status filter, AC2)
 
 *As a Compliance Officer, I want to drill into a single scan so that I can see exactly which third parties were contacted and in which consent state.*
 
@@ -472,7 +474,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC7: Every view offers download of the underlying data (JSON, CSV, HAR where available) so the UI never becomes the only way to reach a result.
 - AC8: Result history per target and consent mode is browsable over time.
 
-### Story 5.10 — Baseline review and approval workflow
+### Story 5.10 — Baseline review and approval workflow (partly implemented: no allow-list write-back from a finding, AC2 and AC3)
 
 *As a Compliance Officer, I want to approve a scan as the new baseline from the UI so that reviewing changes does not require the command line.*
 
@@ -645,7 +647,7 @@ Make wsaw installable, operable, and debuggable on the target platforms.
 
 **Out of scope:** package-manager distribution (brew/apt) beyond a stretch goal.
 
-### Story 6.1 — Single-binary distribution
+### Story 6.1 — Single-binary distribution (partly implemented: release artifacts are not signed and notarization is undocumented, AC3 and AC4)
 
 *As an Operator, I want one binary per platform so that installation is trivial.*
 
@@ -662,7 +664,7 @@ Make wsaw installable, operable, and debuggable on the target platforms.
 - AC2: A launchd plist is shipped for macOS.
 - AC3: Documented directory layout for config, state, and output on both platforms (XDG on Linux, `~/Library/Application Support` on macOS).
 
-### Story 6.3 — Container image
+### Story 6.3 — Container image (partly implemented: deploy/chromium-seccomp.json is referenced by the Dockerfile but not shipped, AC2)
 
 *As an Operator, I want a container image with Chrome included so that I avoid host dependencies.*
 
@@ -703,7 +705,7 @@ Make wsaw installable, operable, and debuggable on the target platforms.
 - AC1: `wsaw debug <url>` runs one scan with verbose CDP logging, optional headful mode, screenshots, and a dump of the DOM at consent-interaction time.
 - AC2: A `wsaw rules test` command validates a consent rule against a live URL and reports which selectors matched.
 
-### Story 6.8 — Soak testing
+### Story 6.8 — Soak testing (partly implemented: no file-descriptor or child-process assertions, AC2)
 
 *As an Operator, I want long-run stability proven so that I can trust a 30-day deployment.*
 
@@ -726,7 +728,7 @@ Structured JSON (Story 6.4) is right for an aggregator and hostile to a person r
 - AC7: Multi-line values, such as an error containing a newline, are rendered so that one record stays visually one record and cannot be mistaken for several.
 - AC8: The chosen format is decided once at startup and recorded in the daemon's own startup line, so an operator can see which mode is active.
 
-### Story 6.10 — Run wsaw in Kubernetes
+### Story 6.10 — Run wsaw in Kubernetes (not implemented)
 
 *As an Operator, I want to run wsaw on the cluster my other services already run on, without discovering its single-node assumptions the hard way.*
 
@@ -779,7 +781,7 @@ Prove that wsaw works as a deployed system — its own container, a server datab
 - AC5: The fixture can be changed by the test between scans in a controlled way — one extra third-party host, one changed script body — so the diff engine and the severity rules are exercised on real captures rather than on hand-built results.
 - AC6: The image is built from source in the repository, and its build is part of the stack rather than a step someone has to remember.
 
-### Story 7.2 — A Docker Compose stack
+### Story 7.2 — A Docker Compose stack (not implemented)
 
 *As a Developer, I want `docker compose up` to bring up the whole system so that reproducing a deployment problem takes a minute rather than an afternoon.*
 
@@ -792,7 +794,7 @@ Prove that wsaw works as a deployed system — its own container, a server datab
 - AC7: The stack runs unprivileged and holds no real credentials. The passwords in it are obviously fixtures, and the file says so, so that nobody copies it into production and inherits them.
 - AC8: Bringing the stack down removes its volumes, so a stale database from an earlier run cannot make a test pass or fail for reasons that are not in the code.
 
-### Story 7.3 — A Podman pod
+### Story 7.3 — A Podman pod (not implemented)
 
 *As an Operator, I want the same stack as a Podman pod so that the rootless runtime we prefer is a first-class path and not an afterthought.*
 
@@ -804,7 +806,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC4: The same assertions run against the pod as against Compose. Two stacks that are tested differently are two systems.
 - AC5: If `podman kube play` is used, the manifest is close enough to Story 6.10's Kubernetes manifests to be worth comparing, and the documentation says where they differ and why.
 
-### Story 7.4 — End-to-end test against Postgres
+### Story 7.4 — End-to-end test against Postgres (not implemented)
 
 *As a Compliance Officer, I want proof that a wsaw deployment backed by Postgres records what it observed, so that the evidence chain holds outside a developer's laptop.*
 
@@ -817,7 +819,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC7: Baseline approval and its audit entry are asserted to be atomic under Postgres, not merely assumed to have carried over from SQLite.
 - AC8: The test cleans up after itself — containers, volumes, networks — whether it passes or fails, and reports the container logs of every service on failure. A red end-to-end test that says only "assertion failed" costs more time than it saves.
 
-### Story 7.5 — End-to-end test against MySQL
+### Story 7.5 — End-to-end test against MySQL (not implemented)
 
 *As an Operator running MySQL rather than Postgres, I want the same guarantees, so that the choice of database is a deployment decision and not a support tier.*
 
@@ -828,7 +830,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC5: Timestamps survive a round trip at the precision wsaw relies on for ordering. MySQL's default `DATETIME` drops fractional seconds, and "the scan before this one" is decided by that ordering.
 - AC6: Where MySQL cannot do something the same way, the difference is recorded in the dialect documentation rather than worked around silently in the test.
 
-### Story 7.6 — Run the stack in CI, and keep it out of the fast suite
+### Story 7.6 — Run the stack in CI, and keep it out of the fast suite (not implemented)
 
 *As a Developer, I want the end-to-end tests to run automatically without slowing down the loop I work in.*
 
