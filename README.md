@@ -106,6 +106,32 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
 
+It reloads the **target list** and nothing else, and that is a promise it keeps
+out loud. Every other section became a browser pool, a normalizer, an HTTP
+server, a store handle or a scheduler when the process started, and a running
+daemon cannot swap those out from under in-flight scans. So a `SIGHUP` whose
+file also moved one of those settings is **refused**, naming what moved:
+
+```
+reload rejected, keeping the running configuration
+  error="detection.degradedFailureRatio, normalize.bodyIdentity cannot change
+  without a restart; the running configuration is unchanged. Restart wsaw to
+  apply them"
+```
+
+The refusal is the point. Adopting the half a reload can apply and logging
+"configuration reloaded" would leave you believing the rest had taken effect
+too — the same shape of defect as a broken scan that reads as a clean site.
+Reverting the offending line and signalling again reloads normally; nothing is
+sticky.
+
+What a reload does apply: `targets`, `defaults`, per-target overrides,
+`detection.severity`, `detection.allowHosts`, `detection.denyHosts`, and the
+schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`).
+Everything else needs a restart. A setting added to wsaw later is
+non-reloadable until someone deliberately says otherwise, so the failure mode
+for new configuration is a loud refusal rather than a silent no-op.
+
 ## Consent handling
 
 wsaw prefers documented interfaces over guessing, and always records which mechanism it used so a reviewer can weigh the evidence:
