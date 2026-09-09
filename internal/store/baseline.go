@@ -12,6 +12,18 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
+// The two actions a store records about a baseline on its own account.
+//
+// They are constants shared by every kind of store rather than literals spelled
+// where each one writes, because an audit log whose action names depended on
+// which store wrote them would be an audit log nobody could filter: the entries
+// are read back by action, and the bucket index and the SQL stores must produce
+// the same word for the same decision.
+const (
+	auditBaselineApproved = "baseline-approved"
+	auditBaselineDeleted  = "baseline-deleted"
+)
+
 // Baseline is an approved result that later scans are compared against.
 type Baseline struct {
 	Target      string            `json:"target"`
@@ -49,8 +61,8 @@ type Baseline struct {
 // result, deliberately, so that pruning cannot invalidate the definition of
 // "expected" — and it is the same outcome as pruning the row one moment after
 // the approval committed, which was always possible.
-func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*Baseline, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*Baseline, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	res, err := s.resultByID(ctx, target, mode, scanID)
@@ -94,7 +106,7 @@ func (s *Store) SetBaseline(target string, mode model.ConsentMode, scanID, appro
 	return b, nil
 }
 
-func (s *Store) setBaselineTx(ctx context.Context, b *Baseline, payload []byte) error {
+func (s *SQL) setBaselineTx(ctx context.Context, b *Baseline, payload []byte) error {
 	target, mode := b.Target, b.ConsentMode
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -116,7 +128,7 @@ func (s *Store) setBaselineTx(ctx context.Context, b *Baseline, payload []byte) 
 	if err := s.appendAuditTx(ctx, tx, AuditEntry{
 		At:      b.ApprovedAt,
 		Actor:   b.ApprovedBy,
-		Action:  "baseline-approved",
+		Action:  auditBaselineApproved,
 		Target:  target,
 		Mode:    mode,
 		Subject: b.ScanID,
@@ -133,8 +145,8 @@ func (s *Store) setBaselineTx(ctx context.Context, b *Baseline, payload []byte) 
 }
 
 // GetBaseline returns the approved baseline for a series.
-func (s *Store) GetBaseline(target string, mode model.ConsentMode) (*Baseline, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) GetBaseline(target string, mode model.ConsentMode) (*Baseline, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	var document string
@@ -161,9 +173,58 @@ func (s *Store) GetBaseline(target string, mode model.ConsentMode) (*Baseline, e
 	return &b, nil
 }
 
+// HasBaseline reports whether a series has an approved baseline, without
+// reading it.
+//
+// It exists because that is the only question the targets page asks: once per
+// series, on every render, to decide whether to show the badge. Answering it
+// with GetBaseline means fetching the whole approved result — a copy of an
+// entire scan document — and throwing it away. Against a database that is a
+// wasted read; against a store whose baselines are objects it is a
+// multi-megabyte GET per series per page load, which is the difference between
+// a dashboard that renders and one that does not (Story 8.10).
+//
+// It is a narrowing of an existing question rather than a second way to ask
+// it: a store where HasBaseline and GetBaseline could disagree would be a
+// broken store, and both read the same row here.
+func (s *SQL) HasBaseline(target string, mode model.ConsentMode) (bool, error) {
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	const q = `select 1 from baselines where target = ? and consent_mode = ?`
+
+	var found bool
+
+	err := s.retry(ctx, "checking for a baseline", func(ctx context.Context) error {
+		// Reset per attempt: a retry must not inherit what a half-finished
+		// earlier attempt decided.
+		found = false
+
+		var one int
+
+		err := s.db.QueryRowContext(ctx, s.q(q), target, string(mode)).Scan(&one)
+
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+
+		found = true
+
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking for a baseline for %s/%s: %w", target, mode, err)
+	}
+
+	return found, nil
+}
+
 // DeleteBaseline removes an approval, recording that it happened.
-func (s *Store) DeleteBaseline(target string, mode model.ConsentMode, actor string) error {
-	ctx, cancel := s.opCtx()
+func (s *SQL) DeleteBaseline(target string, mode model.ConsentMode, actor string) error {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	return s.retry(ctx, "deleting a baseline", func(ctx context.Context) error {
@@ -171,7 +232,7 @@ func (s *Store) DeleteBaseline(target string, mode model.ConsentMode, actor stri
 	})
 }
 
-func (s *Store) deleteBaselineTx(ctx context.Context, target string, mode model.ConsentMode, actor string) error {
+func (s *SQL) deleteBaselineTx(ctx context.Context, target string, mode model.ConsentMode, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("deleting baseline for %s/%s: %w", target, mode, err)
@@ -188,7 +249,7 @@ func (s *Store) deleteBaselineTx(ctx context.Context, target string, mode model.
 	if err := s.appendAuditTx(ctx, tx, AuditEntry{
 		At:     time.Now().UTC(),
 		Actor:  actor,
-		Action: "baseline-deleted",
+		Action: auditBaselineDeleted,
 		Target: target,
 		Mode:   mode,
 	}); err != nil {
@@ -216,7 +277,7 @@ type AuditEntry struct {
 
 // appendAuditTx writes an audit entry inside a caller's transaction, so an
 // action and its record commit together.
-func (s *Store) appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
+func (s *SQL) appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
 	payload, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding audit entry: %w", err)
@@ -232,11 +293,32 @@ func (s *Store) appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) err
 }
 
 // Audit returns the most recent audit entries, newest first.
-func (s *Store) Audit(limit int) ([]AuditEntry, error) {
-	ctx, cancel := s.opCtx()
+//
+// Newest is decided by when the action happened, not by when the row was
+// inserted. The two usually agree, but they are not the same fact and the
+// caller is asking about the first: an entry may be recorded with an At that
+// is not now — a backfill, an action taken while the store was unreachable
+// and written when it came back, or an operator recording a decision made
+// earlier — and ordering such an entry by its row identity would put it at
+// the top of a log where it does not belong. It is also the ordering the
+// stores that keep no rows can honour: an index folded out of a listing has
+// nothing corresponding to an autoincrementing id, and an audit log whose
+// order changed with the store kind would not be an audit log.
+//
+// The row identity breaks the tie, because two entries can share a timestamp
+// — an approval and its note, or two decisions inside one transaction — and a
+// listing that reordered them between two reads would look like tampering.
+// It is a monotonic insertion order in every dialect, so the tie-break is
+// stable and, among entries recorded at the same instant, still newest first.
+func (s *SQL) Audit(limit int) ([]AuditEntry, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
-	q := `select document from audit order by id desc`
+	// Expressible unchanged in all three dialects: `at` is a not-null integer
+	// of nanoseconds and `id` an autoincrementing integer in each of the
+	// sqlite, postgres and mysql schemas, so neither column needs a cast or a
+	// dialect spelling here.
+	q := `select document from audit order by at desc, id desc`
 
 	var args []any
 
@@ -286,12 +368,12 @@ func (s *Store) Audit(limit int) ([]AuditEntry, error) {
 
 // RecordAudit appends an entry for actions taken outside the store, such as an
 // allow-list addition written back to a config file.
-func (s *Store) RecordAudit(e AuditEntry) error {
+func (s *SQL) RecordAudit(e AuditEntry) error {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
 
-	ctx, cancel := s.opCtx()
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	return s.retry(ctx, "recording an audit entry", func(ctx context.Context) error {
@@ -299,7 +381,7 @@ func (s *Store) RecordAudit(e AuditEntry) error {
 	})
 }
 
-func (s *Store) recordAuditTx(ctx context.Context, e AuditEntry) error {
+func (s *SQL) recordAuditTx(ctx context.Context, e AuditEntry) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("recording audit entry: %w", err)
@@ -327,8 +409,8 @@ func (s *Store) recordAuditTx(ctx context.Context, e AuditEntry) error {
 // an unchanged asset content-addresses to a key that is already in the bucket,
 // so there is no fresh object for a sweep to date, and the claim is the only
 // record that a running scan depends on it (Story 8.5, AC3; see claims.go).
-func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) PutArtifact(kind string, data []byte) (string, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	ref, err := s.bucket.put(ctx, kind, data)
@@ -382,16 +464,8 @@ type ArtifactInfo struct {
 // The caller's context bounds the call, so a request that has been abandoned
 // stops waiting on a bucket that is not answering (Story 8.7, AC6); the
 // store's own deadline still applies on top of it.
-func (s *Store) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error) {
-	ctx, cancel := opCtxFrom(ctx)
-	defer cancel()
-
-	obj, err := s.bucket.stat(ctx, ref)
-	if err != nil {
-		return ArtifactInfo{}, absentArtifact(err)
-	}
-
-	return ArtifactInfo{Size: obj.size, Digest: artifactDigest(ref), ModTime: obj.modTime}, nil
+func (s *SQL) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error) {
+	return s.bucket.artifactInfo(ctx, ref)
 }
 
 // GetArtifact reads a stored artifact.
@@ -403,16 +477,8 @@ func (s *Store) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, err
 // It stays for the callers that genuinely need the bytes in hand — a stored
 // body being diffed, a document being decoded. Anything that only forwards
 // them to a client should use OpenArtifact instead (Story 8.1, AC7).
-func (s *Store) GetArtifact(ref string) ([]byte, error) {
-	ctx, cancel := s.opCtx()
-	defer cancel()
-
-	data, err := s.bucket.get(ctx, ref)
-	if err != nil {
-		return nil, absentArtifact(err)
-	}
-
-	return data, nil
+func (s *SQL) GetArtifact(ref string) ([]byte, error) {
+	return s.bucket.artifactBytes(ref)
 }
 
 // OpenArtifact opens a stored artifact for streaming.
@@ -424,50 +490,15 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 // Content-Length, an entity tag and a modification date all have to be written
 // before the body is (Story 8.7, AC1 and AC4).
 //
-// What is bounded is progress, not the transfer. The bucket has opTimeout to
-// open the object and opTimeout to produce each further piece of it, and a
-// read that stops producing bytes for that long is abandoned — but a transfer
-// that keeps flowing runs as long as it takes. A fixed deadline on the whole
-// read would be a size and bandwidth limit dressed as a timeout: a
-// forty-megabyte document to a client on a slow link takes longer than any
-// per-operation deadline, and cutting it off would abort the response after
-// Content-Length had been declared and the status sent, with nothing left to
-// tell the reader. The reader who has actually gone away is caught by their
-// own request's context, which is this call's parent (Story 8.7, AC6).
+// What is bounded is progress, not the transfer, for the reason the bucket's
+// own artifactReader gives.
 //
 // The caller owns the reader and must close it. Closing is also what releases
 // the deadline and its timer, so a reader that is dropped rather than closed
 // holds both until the idle bound fires — the same contract every
 // io.ReadCloser has, stated because this one carries a context with it.
-func (s *Store) OpenArtifact(ctx context.Context, ref string) (*ArtifactReader, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	// Armed before the open, so the open is bounded by it too, and re-armed by
-	// every piece of the body that arrives.
-	idle := time.AfterFunc(opTimeout, cancel)
-
-	release := func() {
-		idle.Stop()
-		cancel()
-	}
-
-	stream, err := s.bucket.newReader(ctx, ref)
-	if err != nil {
-		release()
-
-		return nil, absentArtifact(err)
-	}
-
-	return &ArtifactReader{
-		ReadCloser: stream,
-		ArtifactInfo: ArtifactInfo{
-			Size:    stream.size,
-			Digest:  artifactDigest(ref),
-			ModTime: stream.modTime,
-		},
-		idle:    idle,
-		release: release,
-	}, nil
+func (s *SQL) OpenArtifact(ctx context.Context, ref string) (*ArtifactReader, error) {
+	return s.bucket.artifactReader(ctx, ref)
 }
 
 // ArtifactReader is a stored artifact opened for reading: the bytes, still in
@@ -529,16 +560,8 @@ func (a *ArtifactReader) Close() error {
 // A provider that cannot sign at all reports ErrSigningUnsupported, which is
 // an invitation to fall back rather than a failure: the caller serves the
 // bytes itself, as it did before anyone asked for redirects.
-func (s *Store) SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error) {
-	ctx, cancel := opCtxFrom(ctx)
-	defer cancel()
-
-	signed, err := s.bucket.signedURL(ctx, ref, ttl)
-	if err != nil {
-		return "", absentArtifact(err)
-	}
-
-	return signed, nil
+func (s *SQL) SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error) {
+	return s.bucket.artifactURL(ctx, ref, ttl)
 }
 
 // absentArtifact reports a reference this store never wrote as absent.

@@ -51,7 +51,7 @@ const claimedAtColumn = "claimed_at"
 // result as well. Reporting the storage of evidence as having succeeded when
 // the record that protects it did not is the failure Tenet 5 exists to
 // prevent.
-func (s *Store) claimArtifact(ctx context.Context, ref string, at time.Time) error {
+func (s *SQL) claimArtifact(ctx context.Context, ref string, at time.Time) error {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -84,7 +84,7 @@ func (s *Store) claimArtifact(ctx context.Context, ref string, at time.Time) err
 // claim here, and is protected from then on by the reference this result just
 // recorded: the object is named by a stored result, which is the strongest
 // claim there is.
-func (s *Store) releaseClaimsTx(ctx context.Context, tx *sql.Tx, refs []string) error {
+func (s *SQL) releaseClaimsTx(ctx context.Context, tx *sql.Tx, refs []string) error {
 	for chunk := range slices.Chunk(refs, artifactRefInsertChunk) {
 		args := make([]any, 0, len(chunk))
 		for _, ref := range chunk {
@@ -114,7 +114,7 @@ func (s *Store) releaseClaimsTx(ctx context.Context, tx *sql.Tx, refs []string) 
 // second connection would be a reader waiting on that transaction's own write
 // lock, which on SQLite is a prune plan blocking until its busy timeout
 // expires.
-func (s *Store) claimedSince(
+func (s *SQL) claimedSince(
 	ctx context.Context, h querier, refs []string, since time.Time,
 ) (map[string]struct{}, error) {
 	ctx, cancel := opCtxFrom(ctx)
@@ -172,7 +172,7 @@ func (s *Store) claimedSince(
 // table by one row per interrupted artifact write for the life of the store.
 // It is a single statement against a table that only ever holds what is in
 // flight, so the prune it rides along with pays almost nothing for it.
-func (s *Store) forgetStaleClaims(ctx context.Context, before time.Time) error {
+func (s *SQL) forgetStaleClaims(ctx context.Context, before time.Time) error {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 

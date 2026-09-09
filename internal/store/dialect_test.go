@@ -17,6 +17,62 @@ import (
 // These are white-box tests of the seam itself (Story 4.7). They need no
 // database, so they run in the fast suite whatever it is configured for.
 
+// sqlDrivers are the drivers that have a dialect.
+//
+// Drivers() has listed a fourth since Story 8.10, and blob is not a database:
+// it keeps its index as objects in the artifact bucket, so it has no schema, no
+// placeholders and no upsert, and dialectFor refuses it by name. The parity
+// checks below are about the schema three databases have to agree on, so they
+// iterate this rather than Drivers(); the tests about what a driver name means
+// to configuration still iterate all four.
+func sqlDrivers() []string {
+	out := make([]string, 0, len(Drivers()))
+
+	for _, name := range Drivers() {
+		if name == DriverBlob {
+			continue
+		}
+
+		out = append(out, name)
+	}
+
+	return out
+}
+
+// TestTheBucketIndexIsNotASQLDialect pins both halves of that: blob is a
+// driver an operator can configure, and it is not one this file's seam
+// answers for.
+//
+// The refusal is by name rather than by falling through to "unknown driver"
+// because the two are different mistakes. An unknown driver is a typo; blob is
+// a store that exists, and the reason it has no dialect — no rows, so no schema
+// to migrate — is what its message has to say to the operator who typed
+// "wsaw store migrate" against it (Story 8.10, AC16).
+func TestTheBucketIndexIsNotASQLDialect(t *testing.T) {
+	t.Parallel()
+
+	if len(sqlDrivers())+1 != len(Drivers()) {
+		t.Fatalf("Drivers() = %v, which is not the three SQL drivers plus blob", Drivers())
+	}
+
+	for _, name := range sqlDrivers() {
+		if _, err := dialectFor(name); err != nil {
+			t.Errorf("%s is listed as a SQL driver and has no dialect: %v", name, err)
+		}
+	}
+
+	_, err := dialectFor(DriverBlob)
+	if err == nil {
+		t.Fatal("the blob driver was given a SQL dialect")
+	}
+
+	for _, want := range []string{DriverBlob, "bucket", "migrate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
 // TestEveryDialectHasTheSameMigrations is AC4. The schema version is an index
 // into this list, so a dialect with a different number of migrations would
 // mean version 2 described two different schemas depending on the database —
@@ -30,7 +86,7 @@ func TestEveryDialectHasTheSameMigrations(t *testing.T) {
 		t.Fatal("the sqlite dialect has no migrations")
 	}
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -48,7 +104,7 @@ func TestEveryDialectHasTheSameMigrations(t *testing.T) {
 func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -101,7 +157,7 @@ func TestTheClaimTableIsTheLatestMigration(t *testing.T) {
 func TestEveryDialectDeclaresTheResultColumns(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -135,7 +191,7 @@ func TestOnlyMySQLTreatsADropAsAlreadyApplied(t *testing.T) {
 		{Number: errDupFieldName, Message: "Duplicate column name 'artifact_ref'"},
 	}
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -168,7 +224,7 @@ func TestOnlyMySQLTreatsADropAsAlreadyApplied(t *testing.T) {
 func TestEveryDialectCountsDocumentBytes(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -323,7 +379,7 @@ func TestPruneByCountIsDialectSpecificOnlyWhereItMustBe(t *testing.T) {
 
 	// Neither form may fall back to a physical row identifier: rowid and ctid
 	// are not the same concept and MySQL has neither.
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, _ := dialectFor(name)
 
 		q := strings.ToLower(d.pruneByCount())
@@ -385,7 +441,7 @@ func TestRetryClassification(t *testing.T) {
 		errors.New("syntax error at or near \"slect\""),
 	}
 
-	for _, name := range Drivers() {
+	for _, name := range sqlDrivers() {
 		d, err := dialectFor(name)
 		if err != nil {
 			t.Fatal(err)
@@ -465,10 +521,13 @@ func TestSQLiteRetriesLockContentionOnly(t *testing.T) {
 func TestRetryStopsAtTheConfiguredLimit(t *testing.T) {
 	t.Parallel()
 
-	s := &Store{
-		d:        sqliteDialect{},
-		attempts: 4,
-		backoff:  time.Millisecond,
+	// The policy itself is not SQL's: it lives in shared.go so that every kind
+	// of store retries the same way. What is the dialect's is which failures
+	// it calls transient, so the predicate under test is SQLite's.
+	r := retrier{
+		attempts:  4,
+		backoff:   time.Millisecond,
+		transient: sqliteDialect{}.isTransient,
 	}
 
 	var (
@@ -476,11 +535,11 @@ func TestRetryStopsAtTheConfiguredLimit(t *testing.T) {
 		seen     []int
 	)
 
-	s.onRetry = func(_ string, attempt int, _ error) { seen = append(seen, attempt) }
+	r.onRetry = func(_ string, attempt int, _ error) { seen = append(seen, attempt) }
 
 	locked := errors.New("database is locked")
 
-	err := s.retry(context.Background(), "test", func(context.Context) error {
+	err := r.run(context.Background(), "test", func(context.Context) error {
 		attempts++
 
 		return locked
@@ -506,7 +565,7 @@ func TestRetryStopsAtTheConfiguredLimit(t *testing.T) {
 	attempts = 0
 	permanent := errors.New("UNIQUE constraint failed")
 
-	if err := s.retry(context.Background(), "test", func(context.Context) error {
+	if err := r.run(context.Background(), "test", func(context.Context) error {
 		attempts++
 
 		return permanent
@@ -521,7 +580,7 @@ func TestRetryStopsAtTheConfiguredLimit(t *testing.T) {
 	// Success on a later attempt is a success, not a failure.
 	attempts = 0
 
-	if err := s.retry(context.Background(), "test", func(context.Context) error {
+	if err := r.run(context.Background(), "test", func(context.Context) error {
 		attempts++
 
 		if attempts < 3 {
@@ -539,13 +598,13 @@ func TestRetryStopsAtTheConfiguredLimit(t *testing.T) {
 func TestRetryDoesNotOutliveItsContext(t *testing.T) {
 	t.Parallel()
 
-	s := &Store{d: sqliteDialect{}, attempts: 100, backoff: time.Second}
+	r := retrier{attempts: 100, backoff: time.Second, transient: sqliteDialect{}.isTransient}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	attempts := 0
 
-	err := s.retry(ctx, "test", func(context.Context) error {
+	err := r.run(ctx, "test", func(context.Context) error {
 		attempts++
 		cancel()
 
@@ -566,11 +625,11 @@ func TestRetryDoesNotOutliveItsContext(t *testing.T) {
 func TestOneAttemptMeansNoRetry(t *testing.T) {
 	t.Parallel()
 
-	s := &Store{d: sqliteDialect{}, attempts: 1, backoff: time.Millisecond}
+	r := retrier{attempts: 1, backoff: time.Millisecond, transient: sqliteDialect{}.isTransient}
 
 	attempts := 0
 
-	if err := s.retry(context.Background(), "test", func(context.Context) error {
+	if err := r.run(context.Background(), "test", func(context.Context) error {
 		attempts++
 
 		return errors.New("database is locked")

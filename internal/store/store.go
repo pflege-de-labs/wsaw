@@ -1,12 +1,14 @@
 // Package store persists scan results, baselines, and evidence artifacts.
 //
-// Persistence goes through database/sql, which makes the driver the seam
-// rather than requiring a second implementation of everything (Tenet 12).
-// SQLite is the default, through a CGo-free driver so the single static
-// binary still cross-compiles to every supported platform (Tenet 14);
-// PostgreSQL and MySQL are options for a deployment that already runs one
-// (Story 4.7). What differs between them is confined to dialect.go — the
-// queries, the transactions and the decoding are one implementation.
+// What wsaw asks of a store is an interface, Store, declared in api.go
+// (Tenet 12); how a store keeps its index is its own business. SQL is that
+// interface implemented over database/sql, which makes the dialect the seam
+// between databases rather than three implementations of everything: SQLite is
+// the default, through a CGo-free driver so the single static binary still
+// cross-compiles to every supported platform (Tenet 14), and PostgreSQL and
+// MySQL are options for a deployment that already runs one (Story 4.7). What
+// differs between the three is confined to dialect.go — the queries, the
+// transactions and the decoding are one implementation.
 //
 // A result is stored as its JSON document in the artifact bucket, plus a row
 // that references it and carries the few fields needed to index and list it
@@ -19,9 +21,7 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,17 +66,40 @@ var ErrCorrupt = errors.New("stored evidence is corrupt")
 // ErrNotFound) that matched it would restore the silence.
 var ErrEvidenceGone = errors.New("the stored evidence this result names is no longer in the artifact bucket")
 
-// Store is the result database. It is safe for concurrent use.
-type Store struct {
+// ErrIndexIncomplete marks a read the index could not finish answering: an
+// object the index itself listed and then could not produce, or a fold that ran
+// out of budget part way through.
+//
+// It exists for the store whose index is objects in a bucket, where "the
+// history does not contain this" and "I could not see all of the history" are
+// different facts that a single listing can produce either of (Story 8.10,
+// AC6). The SQL stores cannot reach it: a query either answers or fails.
+//
+// It wraps neither ErrNotFound nor ErrEvidenceGone, so no caller reads it as
+// "there is no previous scan" and none reads it as an evidence loss. What it
+// buys today is a log line at Warn and a truthful HTTP status. It does not yet
+// change the comparison a scanner produces — scanner.compare treats every error
+// but ErrEvidenceGone the same way, and giving it a third answer is a change in
+// internal/scanner and internal/diff that belongs with them.
+var ErrIndexIncomplete = errors.New("the index could not be read completely")
+
+// SQL is a result store whose index is rows in a database — SQLite,
+// PostgreSQL or MySQL, behind one set of queries (dialect.go). It is safe
+// for concurrent use.
+//
+// It is named for how it keeps its index rather than for being "the store",
+// because what a store has to do and how it records what it has done are
+// different questions: the evidence itself has lived in a bucket since Story
+// 8.2, and only the index is SQL.
+type SQL struct {
 	db *sql.DB
 	d  dialect
 
-	// Retry policy. A server database is reachable over a network, so a
-	// dropped connection is an ordinary event rather than a catastrophe
-	// (Story 4.7, AC7).
-	attempts int
-	backoff  time.Duration
-	onRetry  func(op string, attempt int, err error)
+	// retrier is the store's retry policy. A server database is reachable over
+	// a network, so a dropped connection is an ordinary event rather than a
+	// catastrophe (Story 4.7, AC7). Which failures are worth another attempt is
+	// the dialect's judgement, so the policy is handed its predicate.
+	retrier retrier
 
 	// bucket holds the evidence: screenshots, stored bodies, and since Story
 	// 8.2 the result documents themselves. It is the store's only route to
@@ -149,69 +172,40 @@ type Options struct {
 	// rather than guess whether it has hung (Story 8.4, AC3). Empty takes
 	// slog.Default().
 	Logger *slog.Logger
-}
 
-func (o *Options) logger() *slog.Logger {
-	if o.Logger != nil {
-		return o.Logger
-	}
+	// Version identifies the build, for the one object a store writes that
+	// records who created it: the layout marker of the bucket index (Story
+	// 8.10). It is provenance rather than behaviour — nothing reads it back —
+	// and it exists because an operator looking at a bucket with no database
+	// beside it has nothing else to tell them which wsaw laid it out. Empty
+	// records that the build did not say.
+	Version string
 
-	return slog.Default()
-}
+	// Now is the clock the store reads. It exists for the store whose index is
+	// in the bucket, where a timestamp is not decoration: it orders every key
+	// and it decides every grace period, so a test of ordering or of retention
+	// that could not move the clock would have to wait for one (AGENTS §5).
+	// Nil takes time.Now.
+	//
+	// The SQL stores ignore it. Their ordering is a column the database sorts
+	// and their retention takes its "now" as an argument.
+	Now func() time.Time
 
-func (o *Options) timeout() time.Duration {
-	if o.Timeout > 0 {
-		return o.Timeout
-	}
-
-	return 5 * time.Second
-}
-
-func (o *Options) maxOpenConns() int {
-	if o.MaxOpenConns > 0 {
-		return o.MaxOpenConns
-	}
-
-	// Enough for the browser pool's scans plus the web interface, small
-	// enough that several wsaw instances on one shared database do not
-	// exhaust its connection limit between them.
-	return 8
-}
-
-func (o *Options) maxIdleConns() int {
-	if o.MaxIdleConns > 0 {
-		return o.MaxIdleConns
-	}
-
-	return min(2, o.maxOpenConns())
-}
-
-func (o *Options) connMaxLifetime() time.Duration {
-	if o.ConnMaxLifetime > 0 {
-		return o.ConnMaxLifetime
-	}
-
-	// Shorter than a typical server-side idle timeout, so wsaw retires a
-	// connection before the server drops it under a scan.
-	return 30 * time.Minute
-}
-
-func (o *Options) maxAttempts() int {
-	if o.MaxAttempts > 0 {
-		return o.MaxAttempts
-	}
-
-	// Three attempts covers a failover or a restart without turning a
-	// genuinely broken database into a long wait.
-	return 3
-}
-
-func (o *Options) retryBackoff() time.Duration {
-	if o.RetryBackoff > 0 {
-		return o.RetryBackoff
-	}
-
-	return 200 * time.Millisecond
+	// CheckpointGrace is how long a compaction checkpoint must have been
+	// visible in the bucket before the loose index entries it covers may be
+	// deleted (Story 8.10). It is here rather than in configuration for the
+	// reason every other constant of that design is a constant — an operator
+	// has no basis on which to tune it — and it is here at all because a test
+	// of the rule cannot otherwise reach the far side of a day without
+	// sleeping through one. Zero takes the default.
+	//
+	// **Nothing reads it yet.** The rule it feeds belongs to compaction, which
+	// is the step of Story 8.10 that follows the index itself, so setting this
+	// today changes no behaviour. It is declared with the store it belongs to
+	// rather than with its consumer so that the option set an operator and a
+	// test see does not change shape when compaction lands; the deviation is
+	// recorded in the design's §7.6.
+	CheckpointGrace time.Duration
 }
 
 // Location names the store the way a log line or a command's output should:
@@ -239,6 +233,15 @@ func (o *Options) describe() string {
 		return o.Path
 	}
 
+	if o.Driver == DriverBlob {
+		// There is no second location to name: the index is objects in the
+		// same bucket as the evidence, so the bucket is the store. The driver
+		// is kept in front of it so a log line still says which kind of store
+		// this is rather than printing the artifact location twice with no
+		// explanation.
+		return DriverBlob + " " + o.ArtifactLocation()
+	}
+
 	if o.DSN.IsSet() {
 		return o.Driver + " " + secret.RedactURL(o.DSN.Reveal())
 	}
@@ -246,7 +249,7 @@ func (o *Options) describe() string {
 	return o.Driver
 }
 
-// Open creates or opens a store, bringing its schema up to date.
+// OpenSQL creates or opens a SQL store, bringing its schema up to date.
 //
 // The schema work is deliberately the second half: connect() has already
 // reached the database and the artifact bucket by then, so a migration that
@@ -260,7 +263,7 @@ func (o *Options) describe() string {
 // but a deadline is not a cancellation, and an operator pressing Ctrl-C, or a
 // service manager sending SIGTERM during a slow start, has to be able to stop
 // the run rather than watch it go on uploading (Story 8.4, AC3).
-func Open(ctx context.Context, opts Options) (*Store, error) {
+func OpenSQL(ctx context.Context, opts Options) (*SQL, error) {
 	s, err := connect(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -297,7 +300,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 //
 // For SQLite, parent directories are created with restrictive permissions,
 // since results can contain personal data (NFR §4).
-func connect(ctx context.Context, opts Options) (*Store, error) {
+func connect(ctx context.Context, opts Options) (*SQL, error) {
 	d, err := dialectFor(opts.Driver)
 	if err != nil {
 		return nil, err
@@ -349,16 +352,19 @@ func connect(ctx context.Context, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("opening store %s: %w", opts.describe(), err)
 	}
 
-	s := &Store{
-		db:       db,
-		d:        d,
-		attempts: opts.maxAttempts(),
-		backoff:  opts.retryBackoff(),
-		onRetry:  opts.OnRetry,
-		log:      opts.logger(),
+	s := &SQL{
+		db: db,
+		d:  d,
+		retrier: retrier{
+			attempts:  opts.maxAttempts(),
+			backoff:   opts.retryBackoff(),
+			onRetry:   opts.OnRetry,
+			transient: d.isTransient,
+		},
+		log: opts.logger(),
 	}
 
-	// Opened before the schema is touched, for the reason Open gives.
+	// Opened before the schema is touched, for the reason OpenSQL gives.
 	b, err := openBucket(ctx, opts.ArtifactDir)
 	if err != nil {
 		_ = db.Close()
@@ -375,99 +381,38 @@ func connect(ctx context.Context, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// closeAfterFailedOpen releases what Open has already acquired. The close
+// closeAfterFailedOpen releases what OpenSQL has already acquired. The close
 // errors are dropped on purpose: the caller is about to be told why the store
 // could not be opened, and a failure to tidy up would only obscure it.
-func (s *Store) closeAfterFailedOpen() {
+func (s *SQL) closeAfterFailedOpen() {
 	_ = s.bucket.close()
 	_ = s.db.Close()
 }
 
 // Driver reports which database this store is using, for logs and for the
 // tests that must run against every dialect.
-func (s *Store) Driver() string { return s.d.name() }
+func (s *SQL) Driver() string { return s.d.name() }
 
-// retry runs one store operation, trying again while the failure is
-// transient. It exists because a server database is reached over a network:
-// a restart, a failover, or a deadlock is an ordinary event, and failing a
-// scan's result on the first dropped packet would lose an observation for no
-// good reason.
-//
-// A permanent failure — a constraint violation, a malformed statement, a
-// missing table — is returned on the first attempt. Retrying one only makes
-// the failure slower and hides its cause.
-//
-// The operations retried here are idempotent by construction: the writes are
-// upserts keyed by identity and deletes by identity. The exception is an
-// audit entry, which is an append: if a connection drops after the server
-// committed but before wsaw heard so, a retry can write it twice. A
-// duplicated audit line is visible and harmless; a lost approval record is
-// neither, so this is the right way round.
-func (s *Store) retry(ctx context.Context, op string, fn func(context.Context) error) error {
-	var lastErr error
-
-	for attempt := 1; attempt <= s.attempts; attempt++ {
-		if attempt > 1 {
-			if err := s.wait(ctx, attempt); err != nil {
-				return err
-			}
-		}
-
-		err := fn(ctx)
-		if err == nil {
-			return nil
-		}
-
-		// A cancelled caller is not a broken database, and retrying its work
-		// would only delay the shutdown it asked for.
-		if ctx.Err() != nil {
-			return err
-		}
-
-		if !s.d.isTransient(err) {
-			return err
-		}
-
-		lastErr = err
-
-		// Reported only when another attempt actually follows: a "retrying"
-		// line after the last attempt would overstate what happened.
-		if s.onRetry != nil && attempt < s.attempts {
-			s.onRetry(op, attempt, err)
-		}
-	}
-
-	return fmt.Errorf("%s failed after %d attempts: %w", op, s.attempts, lastErr)
-}
-
-// wait sleeps before an attempt, with exponential backoff, and gives up as
-// soon as the context does.
-func (s *Store) wait(ctx context.Context, attempt int) error {
-	delay := s.backoff * (1 << (attempt - 2))
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+// retry runs one database operation under this store's policy, and is also
+// what the artifact bucket borrows, so evidence and rows are retried by the
+// same rules (Story 8.1, AC8). The policy itself is in shared.go: it is not a
+// property of SQL.
+func (s *SQL) retry(ctx context.Context, op string, fn func(context.Context) error) error {
+	return s.retrier.run(ctx, op, fn)
 }
 
 // q rewrites a query written with ? placeholders into the dialect's form.
 // Every query in this package is written once, with ?, and passed through
 // here — so a query cannot be correct for one database and malformed for
 // another.
-func (s *Store) q(query string) string { return s.d.rebind(query) }
+func (s *SQL) q(query string) string { return s.d.rebind(query) }
 
 // migrate brings the schema up to date, and refuses to run against a newer
 // one. A binary that does not understand the schema must not write to it.
 //
 // The mechanism is identical for every dialect: the same numbered migrations,
 // applied in the same order, recorded wherever that dialect records them.
-func (s *Store) migrate(ctx context.Context) error {
+func (s *SQL) migrate(ctx context.Context) error {
 	migrations := s.d.migrations()
 
 	current, err := s.d.schemaVersion(ctx, s.db)
@@ -514,7 +459,7 @@ func (s *Store) migrate(ctx context.Context) error {
 // before the DDL runs — and it cannot run inside the DDL's transaction, which
 // would hold a schema lock open across a round trip to object storage and
 // could not roll the objects back anyway (Story 8.4, AC1 and AC3).
-func (s *Store) prepareMigration(ctx context.Context, version int) error {
+func (s *SQL) prepareMigration(ctx context.Context, version int) error {
 	if version != schemaDocumentsInBucket {
 		return nil
 	}
@@ -531,7 +476,7 @@ func (s *Store) prepareMigration(ctx context.Context, version int) error {
 // rather than trips over what already exists. Pretending otherwise, by
 // wrapping MySQL in a transaction that cannot roll back, would be worse than
 // saying so.
-func (s *Store) applyMigration(ctx context.Context, statements []string, version int) error {
+func (s *SQL) applyMigration(ctx context.Context, statements []string, version int) error {
 	if !s.d.ddlIsTransactional() {
 		for _, stmt := range statements {
 			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -599,7 +544,7 @@ func (s *Store) applyMigration(ctx context.Context, statements []string, version
 // configured, so what goes in the response body has to be a reason class while
 // the detail — which names the bucket, or the directory an unmounted volume
 // used to be — goes to the log (Tenet 19).
-func (s *Store) Ping(ctx context.Context) error {
+func (s *SQL) Ping(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("%w: the %s store: %w", ErrDatabaseUnreachable, s.d.name(), err)
 	}
@@ -638,7 +583,7 @@ var (
 //
 // The write costs one request and one delete per start, which is the price of
 // finding out now rather than after a scan has been run and cannot be stored.
-func (s *Store) ProbeArtifactBucket(ctx context.Context) error {
+func (s *SQL) ProbeArtifactBucket(ctx context.Context) error {
 	return s.bucket.probeWritable(ctx)
 }
 
@@ -647,7 +592,7 @@ func (s *Store) ProbeArtifactBucket(ctx context.Context) error {
 // Both are released even when the first fails: leaving the bucket open because
 // the database would not close leaks exactly the handles this method exists to
 // give back.
-func (s *Store) Close() error {
+func (s *SQL) Close() error {
 	bucketErr := s.bucket.close()
 
 	if err := s.db.Close(); err != nil {
@@ -670,14 +615,6 @@ const artifactKindResult = "result"
 // (Story 8.4, AC2).
 const documentMovedToBucket = ""
 
-// resultRef is what a row carries in place of the document: where the bytes
-// are, how many of them there should be, and what they must hash to.
-type resultRef struct {
-	ref    string
-	size   int64
-	digest string
-}
-
 // refColumns are the columns a resultRef is read from, in scan order.
 const refColumns = `artifact_ref, document_size, document_digest`
 
@@ -696,7 +633,7 @@ const refColumns = `artifact_ref, document_size, document_digest`
 // A transaction that spans it would hold a database lock open across a network
 // round trip to object storage, and it could not roll the object back anyway:
 // what is written to a bucket stays written.
-func (s *Store) PutResult(res *model.Result) error {
+func (s *SQL) PutResult(res *model.Result) error {
 	if res.Target == "" {
 		return errors.New("store: result has no target")
 	}
@@ -710,7 +647,7 @@ func (s *Store) PutResult(res *model.Result) error {
 		return fmt.Errorf("encoding result %s: %w", res.ScanID, err)
 	}
 
-	ctx, cancel := s.opCtx()
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	ref, err := s.putDocument(ctx, document)
@@ -745,7 +682,7 @@ func (s *Store) PutResult(res *model.Result) error {
 // returns. They agree today, because artifacts are content-addressed, but the
 // key layout is the bucket's business: the row records what the document must
 // hash to, independently of how it is addressed.
-func (s *Store) putDocument(ctx context.Context, document []byte) (resultRef, error) {
+func (s *SQL) putDocument(ctx context.Context, document []byte) (resultRef, error) {
 	digest := documentDigest(document)
 
 	ref, err := s.bucket.put(ctx, artifactKindResult, document)
@@ -758,14 +695,6 @@ func (s *Store) putDocument(ctx context.Context, document []byte) (resultRef, er
 		size:   int64(len(document)),
 		digest: digest,
 	}, nil
-}
-
-// documentDigest is what a row records for its document, and what a document
-// read back out of the bucket is checked against.
-func documentDigest(document []byte) string {
-	sum := sha256.Sum256(document)
-
-	return hex.EncodeToString(sum[:])
 }
 
 // resultInsert builds the insert from the same column lists the upsert
@@ -831,8 +760,8 @@ type Series struct {
 }
 
 // Series lists every stored series, sorted for deterministic output.
-func (s *Store) Series() ([]Series, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) Series() ([]Series, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	var out []Series
@@ -942,8 +871,8 @@ const underivedSummary = "this result names no stored document, so its summary c
 // that operation is Story 8.11's rebuild, which is not built yet. Until it is,
 // changing summarize() leaves rows written before the change carrying the old
 // definition.
-func (s *Store) ListResults(target string, mode model.ConsentMode, limit int) ([]Summary, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]Summary, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	q := `select ` + summaryColumns + ` from results
@@ -1032,8 +961,8 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 // record to find out that it can offer an anchor to it. It stays a row lookup
 // now that the document is in the bucket, where reading it would also cost a
 // request (Story 8.3, AC3).
-func (s *Store) HasResult(target string, mode model.ConsentMode, scanID string) (bool, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) HasResult(target string, mode model.ConsentMode, scanID string) (bool, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	const q = `select 1 from results where target = ? and consent_mode = ? and scan_id = ?`
@@ -1066,8 +995,8 @@ func (s *Store) HasResult(target string, mode model.ConsentMode, scanID string) 
 }
 
 // GetResult returns one result by scan ID.
-func (s *Store) GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	return s.resultByID(ctx, target, mode, scanID)
@@ -1076,7 +1005,7 @@ func (s *Store) GetResult(target string, mode model.ConsentMode, scanID string) 
 // resultByID reads one result within a caller's context, so the operations
 // that need a result before doing something else — approving a baseline — do
 // not each rebuild the query and its errors.
-func (s *Store) resultByID(
+func (s *SQL) resultByID(
 	ctx context.Context,
 	target string,
 	mode model.ConsentMode,
@@ -1097,8 +1026,8 @@ func (s *Store) resultByID(
 }
 
 // LatestResult returns the most recent result in a series.
-func (s *Store) LatestResult(target string, mode model.ConsentMode) (*model.Result, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) LatestResult(target string, mode model.ConsentMode) (*model.Result, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	q := `select ` + refColumns + ` from results
@@ -1127,8 +1056,8 @@ func (s *Store) LatestResult(target string, mode model.ConsentMode) (*model.Resu
 // whole site as new or as gone. That matters most for a retried scan: without
 // this, a successful retry would be compared against the failure it replaced
 // and manufacture a finding out of its own recovery (Story 3.8, AC6).
-func (s *Store) PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
-	ctx, cancel := s.opCtx()
+func (s *SQL) PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error) {
+	ctx, cancel := opCtx()
 	defer cancel()
 
 	// A row-value comparison against the anchor scan, so results sharing a
@@ -1160,7 +1089,7 @@ func (s *Store) PreviousResult(target string, mode model.ConsentMode, scanID str
 
 // queryResult runs a query returning one row of refColumns and reads the
 // document it references, or returns nil when there is no such row.
-func (s *Store) queryResult(ctx context.Context, query string, args ...any) (*model.Result, error) {
+func (s *SQL) queryResult(ctx context.Context, query string, args ...any) (*model.Result, error) {
 	var ref resultRef
 
 	err := s.retry(ctx, "reading a result", func(ctx context.Context) error {
@@ -1178,97 +1107,18 @@ func (s *Store) queryResult(ctx context.Context, query string, args ...any) (*mo
 	return s.readDocument(ctx, ref)
 }
 
-// readDocument fetches a result document from the bucket and checks it against
-// what the row says it should be.
+// readDocument reads the document one row references.
 //
-// The check is the point. Once the payload is outside the database it is
-// outside the database's consistency guarantees too: a truncated upload, a
-// lifecycle rule that replaced an object, or a key rewritten by something else
-// would otherwise be returned as the scan (Story 8.2, AC6). A mismatch is
-// corruption, and corruption is reported, never served as evidence.
-//
-// The two ways a reference can fail are told apart rather than merged into the
-// bucket's own answer. A key that is gone while its row is still here is lost
-// evidence (ErrEvidenceGone), not a scan that never happened; a reference that
-// is not the shape this store writes came out of wsaw's own row, so it is a
-// corrupt index entry (ErrCorrupt), not an absent artifact.
-func (s *Store) readDocument(ctx context.Context, ref resultRef) (*model.Result, error) {
+// What it is answerable for is the one case only a SQL index has: a row an
+// older wsaw wrote, whose document is still in the column and has not been
+// moved into the bucket yet (Story 8.4). There is nothing there to read, and
+// that is absence rather than corruption. Everything after that — the digest
+// and size check, and telling lost evidence from a corrupt reference — is the
+// same judgement for every kind of index and is made once, on the bucket.
+func (s *SQL) readDocument(ctx context.Context, ref resultRef) (*model.Result, error) {
 	if ref.ref == "" {
-		// A row an older wsaw wrote, whose document is still in the column and
-		// has not been moved into the bucket yet (Story 8.4). There is nothing
-		// here to read, and that is absence rather than corruption.
 		return nil, fmt.Errorf("this result's document has not been moved to the artifact bucket: %w", ErrNotFound)
 	}
 
-	document, err := s.bucket.get(ctx, ref.ref)
-
-	switch {
-	case errors.Is(err, errInvalidRef):
-		return nil, fmt.Errorf("this result names artifact %q, which is not a reference this store wrote: %w: %w",
-			truncateForMessage(ref.ref), ErrCorrupt, err)
-
-	case errors.Is(err, ErrNotFound):
-		// The row survived and the object did not — a lifecycle rule on the
-		// bucket, a restore without its matching database, a sweep that
-		// collected too much. Reported as its own fault so that a caller which
-		// skips a result that does not exist cannot skip this one just as
-		// quietly (Story 8.2, AC5). The bucket's own ErrNotFound is deliberately
-		// not carried through: a caller testing for it would go on treating
-		// deleted evidence as a scan that never happened.
-		return nil, fmt.Errorf("artifact %s: %w", ref.ref, ErrEvidenceGone)
-
-	case err != nil:
-		return nil, err
-	}
-
-	if err := verifyDocument(ref, document); err != nil {
-		return nil, err
-	}
-
-	var res model.Result
-
-	if err := json.Unmarshal(document, &res); err != nil {
-		// The bytes are the ones that were written — the digest says so — and
-		// they still do not decode, which leaves the stored evidence unusable
-		// rather than absent.
-		return nil, fmt.Errorf("decoding artifact %s: %w: %w", ref.ref, ErrCorrupt, err)
-	}
-
-	return &res, nil
-}
-
-// verifyDocument compares an artifact against the size and digest the row
-// recorded when it was written. Size first, because it is free and catches the
-// truncation that is the likeliest of the two.
-func verifyDocument(ref resultRef, document []byte) error {
-	if int64(len(document)) != ref.size {
-		return fmt.Errorf("artifact %s holds %d bytes where the store recorded %d: %w",
-			ref.ref, len(document), ref.size, ErrCorrupt)
-	}
-
-	if digest := documentDigest(document); digest != ref.digest {
-		return fmt.Errorf("artifact %s hashes to %s where the store recorded %s: %w",
-			ref.ref, digest, ref.digest, ErrCorrupt)
-	}
-
-	return nil
-}
-
-// opTimeout bounds one store operation, database or bucket. Every call has a
-// deadline, for the same reason every browser interaction does: nothing waits
-// for ever.
-const opTimeout = 30 * time.Second
-
-// opCtx bounds a single store operation started from outside any caller's
-// context — which is every exported method, none of which takes one.
-func (s *Store) opCtx() (context.Context, context.CancelFunc) {
-	return opCtxFrom(context.Background())
-}
-
-// opCtxFrom bounds one operation inside a longer-running one. The document
-// migration is the only such caller: it may run for minutes in total, and each
-// statement and bucket call within it still gets the same deadline every other
-// store operation has.
-func opCtxFrom(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, opTimeout)
+	return s.bucket.resultDocument(ctx, ref)
 }

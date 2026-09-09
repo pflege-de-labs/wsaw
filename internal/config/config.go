@@ -389,7 +389,28 @@ func (s Store) StoreDriver() string {
 
 // IsServerStore reports whether the store is a database with a server, which
 // is what decides whether a DSN is required and a path is meaningless.
-func (s Store) IsServerStore() bool { return s.StoreDriver() != store.DriverSQLite }
+//
+// It names the two drivers rather than everything that is not SQLite, which is
+// what it used to do. Since Story 8.10 there is a driver that is neither: blob
+// keeps no rows anywhere, so it needs no DSN and would have been asked for one.
+func (s Store) IsServerStore() bool {
+	switch s.StoreDriver() {
+	case store.DriverPostgres, store.DriverMySQL:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsBucketStore reports whether the store keeps its index in the artifact
+// bucket rather than in rows (Story 8.10).
+//
+// It is the question that decides two things nothing else decides: that an
+// artifact location is required rather than derived, because the bucket is the
+// store and not somewhere its evidence goes, and that every setting describing
+// a database — a DSN, a file path, a connection pool — means nothing here and
+// is refused rather than ignored.
+func (s Store) IsBucketStore() bool { return s.StoreDriver() == store.DriverBlob }
 
 // Scheduler configures the daemon loop.
 type Scheduler struct {

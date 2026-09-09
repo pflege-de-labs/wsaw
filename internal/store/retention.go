@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -107,6 +108,19 @@ type PruneStats struct {
 	// leaking them (AC4).
 	ArtifactsFailed int `json:"artifactsFailed"`
 
+	// IndexKeysFailed counts index keys a prune could not remove, which is a
+	// state only a store whose index is objects in the bucket can be in: a
+	// SQL prune deletes its rows in one transaction that either commits or
+	// does not.
+	//
+	// It is its own number rather than part of ArtifactsFailed because the two
+	// mean different things to an operator. ArtifactsFailed says some bytes
+	// were not reclaimed; this says a result retention has removed from every
+	// listing is still fetchable by its scan ID, so a share link to it still
+	// resolves. It is normally zero, and a sweep collects what it counts
+	// (Story 8.10, §7.3).
+	IndexKeysFailed int `json:"indexKeysFailed,omitempty"`
+
 	// ArtifactsProtected counts artifacts left alone on purpose: too recently
 	// written to be sure they are garbage, or of a kind that cannot be
 	// declared unreferenced while some result's references are unknown.
@@ -143,7 +157,7 @@ type PruneStats struct {
 // It needs the bucket to be there, and says so rather than working around it:
 // a prune against a bucket that has gone away would delete rows and report
 // every artifact as already collected.
-func (s *Store) Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
+func (s *SQL) Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
 	return s.prune(ctx, now, r, false)
 }
 
@@ -155,11 +169,11 @@ func (s *Store) Prune(ctx context.Context, now time.Time, r Retention) (PruneSta
 // question from the prune it is describing is worse than no dry run. Nothing
 // is written and no artifact is touched — the bucket is only asked how large
 // the objects are, and only after the transaction has been rolled back.
-func (s *Store) PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
+func (s *SQL) PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
 	return s.prune(ctx, now, r, true)
 }
 
-func (s *Store) prune(ctx context.Context, now time.Time, r Retention, plan bool) (PruneStats, error) {
+func (s *SQL) prune(ctx context.Context, now time.Time, r Retention, plan bool) (PruneStats, error) {
 	var stats PruneStats
 
 	if r.MaxAge <= 0 && r.MaxPerSeries <= 0 {
@@ -224,7 +238,7 @@ func (s *Store) prune(ctx context.Context, now time.Time, r Retention, plan bool
 
 // planPrune answers what a prune would do, from inside a transaction it throws
 // away.
-func (s *Store) planPrune(ctx context.Context, now time.Time, r Retention, stats PruneStats) (PruneStats, error) {
+func (s *SQL) planPrune(ctx context.Context, now time.Time, r Retention, stats PruneStats) (PruneStats, error) {
 	// The transaction takes the caller's context, not a bounded one: it spans
 	// as many statements as the plan has pages, the way the document migration
 	// spans as many as it has rows. Each statement inside it still gets the
@@ -290,7 +304,7 @@ func boundedStep(ctx context.Context, fn func(context.Context) error) error {
 
 // deleteExpiredTx deletes the results retention no longer keeps, in one
 // transaction so that a series is never left half pruned.
-func (s *Store) deleteExpiredTx(ctx context.Context, now time.Time, r Retention) (int, error) {
+func (s *SQL) deleteExpiredTx(ctx context.Context, now time.Time, r Retention) (int, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -319,7 +333,7 @@ func (s *Store) deleteExpiredTx(ctx context.Context, now time.Time, r Retention)
 // what the collection step reads to work out which artifacts have just lost
 // their last owner, and leaving them means an interrupted prune resumes rather
 // than forgetting what it was about to delete (AC3, AC4).
-func (s *Store) deleteExpired(ctx context.Context, h querier, now time.Time, r Retention) (int, error) {
+func (s *SQL) deleteExpired(ctx context.Context, h querier, now time.Time, r Retention) (int, error) {
 	var deleted int
 
 	if r.MaxAge > 0 {
@@ -358,7 +372,7 @@ func (s *Store) deleteExpired(ctx context.Context, h querier, now time.Time, r R
 // dry run names and what a prune removes cannot describe different sets. A
 // result can match both limits, so the two lists are merged on the row's
 // identity rather than concatenated.
-func (s *Store) expiredResults(ctx context.Context, h querier, now time.Time, r Retention) ([]PrunedResult, error) {
+func (s *SQL) expiredResults(ctx context.Context, h querier, now time.Time, r Retention) ([]PrunedResult, error) {
 	seen := make(map[resultRowKey]struct{})
 
 	var out []PrunedResult
@@ -419,7 +433,7 @@ func (s *Store) expiredResults(ctx context.Context, h querier, now time.Time, r 
 // A prune reaches it having just deleted rows; a sweep reaches it to finish
 // whatever an earlier prune could not (AC3), which is why the same walk serves
 // both and why a failed delete simply waits here for the next run.
-func (s *Store) collectDangling(ctx context.Context, h querier, now time.Time, stats *PruneStats) error {
+func (s *SQL) collectDangling(ctx context.Context, h querier, now time.Time, stats *PruneStats) error {
 	after := ""
 
 	for {
@@ -466,7 +480,7 @@ func danglingRefKeys(page []danglingRef) []string {
 
 // collectOne decides the fate of one artifact whose references have outlived
 // their scans.
-func (s *Store) collectOne(
+func (s *SQL) collectOne(
 	ctx context.Context, h querier, d danglingRef, claimed map[string]struct{}, stats *PruneStats,
 ) error {
 	if d.stillNamed {
@@ -520,24 +534,38 @@ func (s *Store) collectOne(
 //
 // A key that is already gone counts as done rather than failed: something else
 // collected it, which is the outcome this method wanted.
-func (s *Store) removeArtifact(ctx context.Context, ref string) (bytes int64, deleted bool) {
+func (s *SQL) removeArtifact(ctx context.Context, ref string) (bytes int64, deleted bool) {
+	return reclaimArtifact(ctx, s.bucket, s.log, ref)
+}
+
+// reclaimArtifact is removeArtifact for whichever kind of store is pruning.
+//
+// It is a function of the bucket and a logger rather than a method, because
+// both stores reach this point with the same question and must answer it the
+// same way: the bucket-index store's prune decides which artifacts have lost
+// their last owner from index objects instead of from rows, and everything
+// after that decision — measure, delete, count the bytes, treat an absent key
+// as done — is the policy of Story 8.5 and not of a store kind. Two copies
+// would be two policies, and the one that drifted would be the one nobody was
+// reading.
+func reclaimArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref string) (bytes int64, deleted bool) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	obj, err := s.bucket.stat(ctx, ref)
+	obj, err := b.stat(ctx, ref)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return 0, true
 
 	case err != nil:
-		s.log.Warn("an unreferenced artifact could not be measured, so it was left for the next sweep",
-			"artifact", ref, "bucket", s.bucket.String(), "error", err)
+		log.Warn("an unreferenced artifact could not be measured, so it was left for the next sweep",
+			"artifact", ref, "bucket", b.String(), "error", err)
 
 		return 0, false
 	}
 
-	if !s.deleteArtifact(ctx, ref) {
+	if !dropArtifact(ctx, b, log, ref) {
 		return 0, false
 	}
 
@@ -555,17 +583,23 @@ func (s *Store) removeArtifact(ctx context.Context, ref string) (bytes int64, de
 // must not abort retention: the rows are already gone, the rest of the
 // artifacts are still worth reclaiming, and the key stays referenced so the
 // next sweep meets it again (AC4).
-func (s *Store) deleteArtifact(ctx context.Context, ref string) bool {
+func (s *SQL) deleteArtifact(ctx context.Context, ref string) bool {
+	return dropArtifact(ctx, s.bucket, s.log, ref)
+}
+
+// dropArtifact is deleteArtifact for whichever kind of store is collecting; see
+// reclaimArtifact for why it is shared.
+func dropArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref string) bool {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	switch err := s.bucket.remove(ctx, ref); {
+	switch err := b.remove(ctx, ref); {
 	case err == nil, errors.Is(err, ErrNotFound):
 		return true
 
 	default:
-		s.log.Warn("an unreferenced artifact could not be deleted and was left for the next sweep",
-			"artifact", ref, "bucket", s.bucket.String(), "error", err)
+		log.Warn("an unreferenced artifact could not be deleted and was left for the next sweep",
+			"artifact", ref, "bucket", b.String(), "error", err)
 
 		return false
 	}
@@ -573,7 +607,7 @@ func (s *Store) deleteArtifact(ctx context.Context, ref string) bool {
 
 // orphanedRefs lists the artifacts a plan would delete, without touching the
 // bucket, and reports how many were protected instead.
-func (s *Store) orphanedRefs(
+func (s *SQL) orphanedRefs(
 	ctx context.Context, h querier, now time.Time, unknownRefs int,
 ) (refs []string, protected int, err error) {
 	after := ""
@@ -623,7 +657,7 @@ func (s *Store) orphanedRefs(
 // list of keys is complete by the time this runs, so returning the bytes
 // measured so far would print a reclaim figure an order of magnitude below the
 // listing beside it — a half-measured plan presented as a plan.
-func (s *Store) measureArtifacts(ctx context.Context, refs []string) (count int, bytes int64, err error) {
+func (s *SQL) measureArtifacts(ctx context.Context, refs []string) (count int, bytes int64, err error) {
 	for _, ref := range refs {
 		if err := ctx.Err(); err != nil {
 			return count, bytes, fmt.Errorf("measuring what a prune would reclaim: %w", err)
@@ -643,11 +677,17 @@ func (s *Store) measureArtifacts(ctx context.Context, refs []string) (count int,
 }
 
 // statArtifact reads one artifact's size under its own deadline.
-func (s *Store) statArtifact(ctx context.Context, ref string) (int64, error) {
+func (s *SQL) statArtifact(ctx context.Context, ref string) (int64, error) {
+	return measureArtifact(ctx, s.bucket, ref)
+}
+
+// measureArtifact reads one artifact's size under its own deadline, for
+// whichever kind of store is planning a deletion.
+func measureArtifact(ctx context.Context, b *bucket, ref string) (int64, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	obj, err := s.bucket.stat(ctx, ref)
+	obj, err := b.stat(ctx, ref)
 
 	return obj.size, err
 }
@@ -705,6 +745,34 @@ type SweepStats struct {
 	ArtifactsFailed   int `json:"artifactsFailed"`
 	UnknownReferences int `json:"unknownReferences"`
 
+	// ResultsWithoutEntry counts result documents the bucket holds that no
+	// index entry points at.
+	//
+	// They are left in place rather than collected, and they are counted
+	// rather than passed over in silence, because a result document is
+	// self-describing: it decodes to the scan it records, so it is a
+	// candidate for a rebuild of the index (Story 8.11) and not garbage. A
+	// non-zero value means an interrupted write or an index that is behind
+	// the bucket, which is Story 8.10, AC6's "a document visible without its
+	// index entry is not silently lost". Screenshots and stored bodies are
+	// not self-describing and keep the ordinary grace-based collection.
+	ResultsWithoutEntry int `json:"resultsWithoutEntry,omitempty"`
+
+	// RebuildInProgress counts the markers a rebuild of the index leaves while
+	// it runs, and is non-zero only for a store whose index is objects in the
+	// bucket (Story 8.10, §7.4).
+	//
+	// It is its own number rather than part of UnknownReferences, which is
+	// where an earlier version of the blob sweep put it. The two say opposite
+	// things about the evidence: UnknownReferences says a stored result's
+	// document is missing or no longer decodes, which is an integrity problem
+	// an operator has to go and look at, while this says the index is half
+	// built and the sweep therefore judged nothing — everything is where it
+	// was, and the answer is to let the rebuild finish. Reporting the second
+	// as the first tells an operator their evidence is damaged when nothing at
+	// all is wrong.
+	RebuildInProgress int `json:"rebuildInProgress,omitempty"`
+
 	// Artifacts names what a plan would delete. A sweep that is deleting
 	// leaves it empty.
 	Artifacts []string `json:"artifacts,omitempty"`
@@ -749,12 +817,12 @@ type SweepOptions struct {
 // It is not on a timer. Walking a bucket is a listing of every key wsaw owns,
 // which against object storage is a request per page and a line on an invoice,
 // so it is something an operator asks for.
-func (s *Store) Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
+func (s *SQL) Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
 	return s.sweep(ctx, now, opts, false)
 }
 
 // PlanSweep reports what Sweep would collect, and collects nothing (AC6).
-func (s *Store) PlanSweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
+func (s *SQL) PlanSweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
 	return s.sweep(ctx, now, opts, true)
 }
 
@@ -769,7 +837,7 @@ var ErrEmptyIndex = errors.New(
 	"this store's index holds nothing at all, so every artifact in the bucket looks unreferenced",
 )
 
-func (s *Store) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan bool) (SweepStats, error) {
+func (s *SQL) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan bool) (SweepStats, error) {
 	var stats SweepStats
 
 	// The same reason the prune establishes it: the collection path reads a
@@ -816,7 +884,7 @@ func (s *Store) sweep(ctx context.Context, now time.Time, opts SweepOptions, pla
 // — but an index that holds nothing holds no such rows either, so refusing the
 // whole sweep costs nothing and refusing it before any collection happens is
 // what makes the answer stable.
-func (s *Store) indexCanJudgeTheBucket(ctx context.Context, opts SweepOptions) error {
+func (s *SQL) indexCanJudgeTheBucket(ctx context.Context, opts SweepOptions) error {
 	if opts.AllowEmptyIndex {
 		return nil
 	}
@@ -846,7 +914,7 @@ func (s *Store) indexCanJudgeTheBucket(ctx context.Context, opts SweepOptions) e
 // store where all four are empty knows nothing — and that is the state a
 // restored database, a wrong bucket or a fresh store opened against somebody
 // else's evidence is in.
-func (s *Store) indexIsEmpty(ctx context.Context) (bool, error) {
+func (s *SQL) indexIsEmpty(ctx context.Context) (bool, error) {
 	for _, table := range []string{resultsTable, "baselines", resultArtifactsTable, artifactClaimsTable} {
 		present, err := s.hasRows(ctx, table)
 		if err != nil {
@@ -864,7 +932,7 @@ func (s *Store) indexIsEmpty(ctx context.Context) (bool, error) {
 // hasRows reports whether a table holds anything, without counting it. A
 // count(*) over a year of history is a scan on some databases, and the
 // question here is only whether the table is empty.
-func (s *Store) hasRows(ctx context.Context, table string) (bool, error) {
+func (s *SQL) hasRows(ctx context.Context, table string) (bool, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -884,7 +952,7 @@ func (s *Store) hasRows(ctx context.Context, table string) (bool, error) {
 
 // sweepDangling runs the reference-side half of a sweep and folds its counts
 // into the sweep's own.
-func (s *Store) sweepDangling(ctx context.Context, now time.Time, stats *SweepStats, plan bool) error {
+func (s *SQL) sweepDangling(ctx context.Context, now time.Time, stats *SweepStats, plan bool) error {
 	prune := PruneStats{UnknownReferences: stats.UnknownReferences}
 
 	if plan {
@@ -930,7 +998,7 @@ func (s *Store) sweepDangling(ctx context.Context, now time.Time, stats *SweepSt
 // this store — a leftover from another tool, a provider's placeholder, another
 // deployment's layout — and is counted apart and left alone: a sweep may only
 // collect what wsaw wrote (AC3, AC4).
-func (s *Store) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats, plan bool) error {
+func (s *SQL) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats, plan bool) error {
 	cutoff := now.Add(-unreferencedArtifactGrace)
 	page := make([]artifactObject, 0, artifactRefPageSize)
 
@@ -989,7 +1057,7 @@ func (s *Store) sweepBucket(ctx context.Context, now time.Time, stats *SweepStat
 
 // collectUnreferenced deletes the objects in one page that no stored result
 // names.
-func (s *Store) collectUnreferenced(
+func (s *SQL) collectUnreferenced(
 	ctx context.Context, now time.Time, page []artifactObject, stats *SweepStats, plan bool,
 ) error {
 	refs := make([]string, 0, len(page))

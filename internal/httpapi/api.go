@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -196,6 +197,8 @@ func (s *Server) targetViews() []TargetView {
 	now := time.Now()
 	live := s.running()
 
+	var failed storeReadFailures
+
 	for _, t := range s.deps.Targets() {
 		view := TargetView{
 			Name:         t.Name,
@@ -207,12 +210,25 @@ func (s *Server) targetViews() []TargetView {
 		for _, mode := range t.ConsentModes {
 			sv := SeriesView{Mode: mode}
 
-			if summaries, err := s.deps.Store.ListResults(t.Name, mode, 1); err == nil && len(summaries) > 0 {
+			summaries, err := s.deps.Store.ListResults(t.Name, mode, 1)
+
+			switch {
+			case err != nil:
+				failed.note("last scan", t.Name, mode, err)
+			case len(summaries) > 0:
 				sv.LastScan = &summaries[0]
 			}
 
-			if _, err := s.deps.Store.GetBaseline(t.Name, mode); err == nil {
-				sv.HasBaseline = true
+			// Whether one exists, not what it is: this runs once per series
+			// on every render of the page, and reading the baseline itself
+			// would fetch a whole approved result to answer yes or no
+			// (Story 8.10). A store that cannot answer leaves the badge off,
+			// exactly as a failed read did before — but it says so now, see
+			// storeReadFailures for why that is not the same as ignoring it.
+			if has, err := s.deps.Store.HasBaseline(t.Name, mode); err != nil {
+				failed.note("baseline", t.Name, mode, err)
+			} else {
+				sv.HasBaseline = has
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -224,7 +240,50 @@ func (s *Server) targetViews() []TargetView {
 		out = append(out, view)
 	}
 
+	failed.log(s.deps.Logger)
+
 	return out
+}
+
+// storeReadFailures collects the reads of the targets page that the store could
+// not answer, so that the page reports them once rather than per series.
+//
+// The page is built from one small read per series, and a store that cannot
+// answer them renders a target list on which nothing has ever been scanned and
+// nothing has ever been approved — which is what a deployment that has genuinely
+// approved nothing looks like (Tenet 5). Against a SQL store those reads are
+// local rows and a failure is close to unthinkable; against the bucket index
+// they are listings, and a refused credential, a throttled bucket or an
+// incomplete index is an ordinary Tuesday. Reporting nothing would leave an
+// operator comparing a screenshot against the truth with no line in the log to
+// explain the difference.
+//
+// One line per render and not one per series, for the reason noSigning and
+// signingWarned exist: a bucket that is failing fails every series of every
+// target, and a hundred identical Warn lines per page view buries the rest of
+// the log. The count is what says how wide the failure is, and the first error
+// is what says what it was.
+type storeReadFailures struct {
+	count int
+	what  string
+	first error
+}
+
+func (f *storeReadFailures) note(what, target string, mode model.ConsentMode, err error) {
+	f.count++
+
+	if f.first == nil {
+		f.first, f.what = err, what+" of "+target+"/"+string(mode)
+	}
+}
+
+func (f *storeReadFailures) log(logger *slog.Logger) {
+	if f.count == 0 {
+		return
+	}
+
+	logger.Warn("the store could not answer what the targets page shows, so some series are rendered as never scanned and never approved",
+		"reads", f.count, "first", f.what, "error", f.first)
 }
 
 // staleness decides whether a series should be flagged. Never-scanned and

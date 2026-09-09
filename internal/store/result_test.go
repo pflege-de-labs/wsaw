@@ -25,7 +25,7 @@ import (
 // its operations goes through it — a read, a write, an existence check and a
 // listing alike. Counting there rather than per method means a method added
 // later is counted without anyone remembering to.
-func countedBucketOps(t *testing.T, s *Store) *atomic.Int64 {
+func countedBucketOps(t *testing.T, s *SQL) *atomic.Int64 {
 	t.Helper()
 
 	var ops atomic.Int64
@@ -39,17 +39,17 @@ func countedBucketOps(t *testing.T, s *Store) *atomic.Int64 {
 	return &ops
 }
 
-func openCounted(t *testing.T) (*Store, *atomic.Int64) {
+func openCounted(t *testing.T) (*SQL, *atomic.Int64) {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	s, err := Open(t.Context(), Options{
+	s, err := OpenSQL(t.Context(), Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
 		ArtifactDir: filepath.Join(dir, "artifacts"),
 	})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("OpenSQL: %v", err)
 	}
 
 	t.Cleanup(func() {

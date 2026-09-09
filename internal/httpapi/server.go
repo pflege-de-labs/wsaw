@@ -91,9 +91,40 @@ type Options struct {
 	Version string
 }
 
+// Store is what the HTTP layer needs from the result store (AGENTS §4).
+//
+// It reads results, artifacts and the audit log, and it approves and withdraws
+// baselines — which is an operator's decision made through the interface, so
+// it belongs here. What is deliberately missing is PutResult and PutArtifact:
+// this server triggers scans, it does not record them. A handler that could
+// write a result could write one no scan produced.
+type Store interface {
+	Ping(ctx context.Context) error
+
+	ListResults(target string, mode model.ConsentMode, limit int) ([]store.Summary, error)
+	HasResult(target string, mode model.ConsentMode, scanID string) (bool, error)
+	GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	LatestResult(target string, mode model.ConsentMode) (*model.Result, error)
+	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+
+	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
+	HasBaseline(target string, mode model.ConsentMode) (bool, error)
+	SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*store.Baseline, error)
+	DeleteBaseline(target string, mode model.ConsentMode, actor string) error
+	Audit(limit int) ([]store.AuditEntry, error)
+
+	GetArtifact(ref string) ([]byte, error)
+	OpenArtifact(ctx context.Context, ref string) (*store.ArtifactReader, error)
+	StatArtifact(ctx context.Context, ref string) (store.ArtifactInfo, error)
+	SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error)
+}
+
 // Deps are the collaborators the server reads from.
 type Deps struct {
-	Store   *store.Store
+	// Store is required: New refuses a nil one. A non-nil interface holding a
+	// nil pointer would pass that check and panic on the first request, so a
+	// caller hands over a store that opened or nothing at all.
+	Store   Store
 	Metrics *metrics.Registry
 	Daemon  *daemon.Daemon
 	Trigger ScanTrigger

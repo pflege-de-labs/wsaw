@@ -179,8 +179,14 @@ func storeMigrateDryRun(ctx context.Context, opts store.Options) error {
 
 // storeMigrateApply opens the store, which is what applies the migrations, and
 // reports what the one that moves documents did.
+//
+// It opens a SQL store by name rather than through store.Open, because what it
+// reports — DocumentMigration — is a fact about a schema, and a schema is what
+// a store keeping its index in rows has. A store of another kind has nothing
+// here to migrate and is not silently handed a command that would say nothing
+// about it.
 func storeMigrateApply(ctx context.Context, opts store.Options) error {
-	s, err := store.Open(ctx, opts)
+	s, err := store.OpenSQL(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -235,10 +241,28 @@ func plural(n int, noun string) string {
 // evidence that does not come back (Story 8.5, AC6).
 const maxListedArtifacts = 20
 
+// retentionStore is the part of a store a maintenance command is allowed to
+// reach: retention, and the dry run of it.
+//
+// It is declared here rather than the whole store.Store being passed in for the
+// reason scanner.ResultStore is declared in the scanner — the seam is where the
+// authority a caller has is stated, rather than in a rule somebody has to
+// remember. A prune and a sweep given store.Store could store a result, approve
+// a baseline or withdraw one, and neither command has any business doing any of
+// those; four methods is the whole of what `wsaw store prune` and `wsaw store
+// sweep` do. Closing the store is not on it because the store is closed through
+// the closure openForMaintenance builds, which holds the concrete handle.
+type retentionStore interface {
+	Prune(ctx context.Context, now time.Time, r store.Retention) (store.PruneStats, error)
+	PlanPrune(ctx context.Context, now time.Time, r store.Retention) (store.PruneStats, error)
+	Sweep(ctx context.Context, now time.Time, opts store.SweepOptions) (store.SweepStats, error)
+	PlanSweep(ctx context.Context, now time.Time, opts store.SweepOptions) (store.SweepStats, error)
+}
+
 // maintenance is one opened store plus what the subcommand that opened it needs
 // to talk about it.
 type maintenance struct {
-	store  *store.Store
+	store  retentionStore
 	opts   store.Options
 	cfg    *config.Config
 	dryRun bool
@@ -405,6 +429,16 @@ func reportPrune(stats store.PruneStats, dryRun bool, limit int) {
 
 	reportKept(stats.ArtifactsFailed, stats.ArtifactsProtected, stats.UnknownReferences)
 
+	if stats.IndexKeysFailed > 0 {
+		// Named apart from the refused artifacts because it calls for something
+		// different: these results are out of every listing and still fetchable
+		// by scan ID, so a share link to one still resolves until a sweep
+		// collects the key.
+		fmt.Printf("reachable: %s could not be removed from the index and are still fetchable by scan ID;\n",
+			plural(stats.IndexKeysFailed, "pruned result"))
+		fmt.Println("           run \"wsaw store sweep\" to collect them")
+	}
+
 	if !dryRun {
 		return
 	}
@@ -547,6 +581,25 @@ func reportSweep(stats store.SweepStats, dryRun bool, limit int) {
 	}
 
 	reportKept(stats.ArtifactsFailed, stats.ArtifactsProtected, stats.UnknownReferences)
+
+	if stats.RebuildInProgress > 0 {
+		// Printed before anything else about what was kept, because it is why
+		// nothing was judged at all: the sweep found a rebuild of the index
+		// half done and refused rather than deleting the evidence of the part
+		// that is not indexed yet (Story 8.10). Not an integrity problem, so
+		// it must not read like one.
+		fmt.Printf("rebuild:   %s found, so nothing in the bucket was examined or collected\n",
+			plural(stats.RebuildInProgress, "index rebuild marker"))
+		fmt.Println("           let the rebuild finish, or clear its marker, and sweep again")
+	}
+
+	if stats.ResultsWithoutEntry > 0 {
+		// Not garbage and not a failure: a result document the index does not
+		// point at decodes to the scan it records, so it is something a rebuild
+		// can restore. A sweep never collects one, and says how many it saw.
+		fmt.Printf("orphaned:  %s in the bucket that the index does not point at were left in place\n",
+			plural(stats.ResultsWithoutEntry, "result document"))
+	}
 
 	if !dryRun {
 		return

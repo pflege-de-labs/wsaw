@@ -535,6 +535,12 @@ func validateStoreDriver(st Store, add addFunc) {
 		add(0, "store.retryBackoff", "must not be negative")
 	}
 
+	if st.IsBucketStore() {
+		validateBucketStore(st, add)
+
+		return
+	}
+
 	if st.IsServerStore() {
 		if st.DSN == "" {
 			add(0, "store.dsn", "the %s driver needs a connection string", st.StoreDriver())
@@ -557,6 +563,66 @@ func validateStoreDriver(st Store, add addFunc) {
 		add(0, "store.maxOpenConns",
 			"connection-pool settings apply to a server database; sqlite is deliberately serialised")
 	}
+}
+
+// validateBucketStore refuses a bucket-index store that cannot work.
+//
+// It requires the one setting that store has no default for, and refuses the
+// four that describe a database. Refused rather than ignored, because an
+// operator who left a dsn or a path behind after switching driver has one idea
+// about where their history is kept and wsaw has another; a setting that sits
+// there looking effective is exactly what load-time validation exists to catch
+// (Story 8.10, AC1, Tenet 15).
+func validateBucketStore(st Store, add addFunc) {
+	if st.ArtifactLocation() == "" {
+		// There is nowhere to derive it from. A SQLite store can put its
+		// evidence beside its database file and a server store can put it in
+		// the state directory; here the bucket is not where the evidence goes,
+		// it is the store, and guessing one would start a history somewhere the
+		// operator never named.
+		add(st.Line("driver"), "store.artifactURL",
+			"the %s driver keeps its index in the artifact bucket, so a location is required and there is "+
+				"no default; set store.artifactURL for a bucket, or store.artifactDir for a directory on local disk",
+			st.StoreDriver())
+	}
+
+	if st.DSN != "" {
+		add(st.Line("dsn"), "store.dsn",
+			"dsn is the connection string for a database server, and the %s driver has no database; "+
+				"remove it, or set a driver that uses one",
+			st.StoreDriver())
+	}
+
+	if st.Path != "" {
+		add(st.Line("path"), "store.path",
+			"path is the database file for the sqlite driver, and the %s driver keeps its index in the bucket; "+
+				"remove it, or set driver: sqlite",
+			st.StoreDriver())
+	}
+
+	if st.MaxOpenConns != 0 || st.MaxIdleConns != 0 || st.ConnMaxLifetime != 0 {
+		field, line := poolSetting(st)
+
+		add(line, field,
+			"connection-pool settings apply to a database server, and the %s driver opens no connections",
+			st.StoreDriver())
+	}
+}
+
+// poolSetting names whichever connection-pool setting was actually written, so
+// the message points at a line the operator can go and delete rather than at
+// the first of the three names.
+func poolSetting(st Store) (field string, line int) {
+	for _, key := range []string{"maxOpenConns", "maxIdleConns", "connMaxLifetime"} {
+		if at := st.Line(key); at > 0 {
+			return "store." + key, at
+		}
+	}
+
+	// Reached when the configuration did not come from a file, which is the
+	// case Store.Line's own comment covers: the message still reads correctly
+	// without a line.
+	return "store.maxOpenConns", 0
 }
 
 // validateArtifacts settles where evidence goes, at load time.

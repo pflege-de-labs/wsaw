@@ -19,11 +19,19 @@ const (
 	DriverPostgres = "postgres"
 	// DriverMySQL stores results in MySQL.
 	DriverMySQL = "mysql"
+	// DriverBlob keeps the index as objects in the same bucket as the
+	// evidence, so a deployment needs no database at all (Story 8.10). It is
+	// the one driver in this list that is not a SQL dialect, which is why
+	// dialectFor refuses it by name.
+	DriverBlob = "blob"
 )
 
 // Drivers lists the supported drivers, for configuration validation and
 // error messages.
-func Drivers() []string { return []string{DriverSQLite, DriverPostgres, DriverMySQL} }
+//
+// SQLite is first because it is the default, and blob is last because it is
+// the one that gives up a database rather than choosing a different one.
+func Drivers() []string { return []string{DriverSQLite, DriverPostgres, DriverMySQL, DriverBlob} }
 
 // execer is the part of *sql.DB and *sql.Tx that schema work needs, so a
 // migration can run inside a transaction or outside one without two code
@@ -106,6 +114,27 @@ func dialectFor(name string) (dialect, error) {
 		return postgresDialect{}, nil
 	case DriverMySQL:
 		return mysqlDialect{}, nil
+	case DriverBlob:
+		// Refused by name rather than falling through to "unknown driver",
+		// because blob is a configured driver and the reason it has no dialect
+		// is worth stating: it keeps no schema, so the commands that ask a
+		// store about one — the document migration and its dry run — have
+		// nothing here to report.
+		//
+		// The second sentence is in the message and not only in this comment
+		// because of who reads it: an operator moving a deployment from
+		// Postgres to the bucket runs the migration command first, and being
+		// told there is no schema without being told what to do instead leaves
+		// them at a dead end (AC16). It names no command, because the one that
+		// does the work is Story 8.11's and a message that names a command
+		// this binary does not have would be worse than a message that names
+		// none.
+		return nil, fmt.Errorf(
+			"store: the %s driver keeps its index as objects in the artifact bucket rather than as rows, "+
+				"so it has no SQL schema to migrate; moving a history between a database store and this "+
+				"one is not a migration in either direction, because the documents are already in the "+
+				"same bucket layout and the index is rebuilt from them rather than converted", DriverBlob,
+		)
 	default:
 		return nil, fmt.Errorf(
 			"store: unknown driver %q; supported drivers are %s",

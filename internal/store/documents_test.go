@@ -64,13 +64,14 @@ var summaryColumnsAddedByMigration2 = []string{
 // would.
 func oldLayoutStore(t *testing.T) *oldLayout {
 	t.Helper()
+	skipUnlessSQL(t)
 
 	o := &oldLayout{opts: storeOptions(t), driver: os.Getenv("WSAW_TEST_STORE_DRIVER")}
 	if o.driver == "" {
 		o.driver = store.DriverSQLite
 	}
 
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("creating the store to take back: %v", err)
 	}
@@ -378,7 +379,7 @@ func TestMigratingDocumentsFromRowsToTheBucket(t *testing.T) {
 		documents[res.ScanID] = o.insert(t, res)
 	}
 
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("migrating a store in the old layout: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestMigratingDocumentsFromRowsToTheBucket(t *testing.T) {
 // assertMigratedSummaries checks the columns the migration derived, which is
 // the other half of AC1: a migrated row must be what a freshly written one
 // would be.
-func assertMigratedSummaries(t *testing.T, s *store.Store) {
+func assertMigratedSummaries(t *testing.T, s *store.SQL) {
 	t.Helper()
 
 	summaries, err := s.ListResults("site", model.ConsentReject, 0)
@@ -517,7 +518,7 @@ func TestADryRunReportsWhatWouldMoveAndMovesNothing(t *testing.T) {
 	}
 
 	// And what it promised is what the migration then does.
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("migrating after the dry run: %v", err)
 	}
@@ -567,7 +568,7 @@ func TestAnInterruptedMigrationResumes(t *testing.T) {
 
 	o.refuseUpdatesTo(t, "scan-2")
 
-	if _, err := store.Open(t.Context(), o.opts); err == nil {
+	if _, err := store.OpenSQL(t.Context(), o.opts); err == nil {
 		t.Fatal("a migration that could not record a moved document reported success")
 	} else if !strings.Contains(err.Error(), "scan-2") {
 		t.Errorf("the failure does not name the scan it stopped on: %v", err)
@@ -595,7 +596,7 @@ func TestAnInterruptedMigrationResumes(t *testing.T) {
 
 	o.allowUpdates(t)
 
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("resuming the migration: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestADocumentThatWillNotDecodeIsMovedAndReported(t *testing.T) {
 	o.insert(t, result("scan-good", time.Now(), model.ConsentReject))
 	o.insertRaw(t, "scan-broken", "{this was never JSON")
 
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("one undecodable document stopped the whole migration: %v", err)
 	}
@@ -717,7 +718,7 @@ func TestAMigrationThatLostItsVersionRecordFinishes(t *testing.T) {
 			o := oldLayoutStore(t)
 			o.insert(t, result("scan-1", time.Now(), model.ConsentReject))
 
-			first, err := store.Open(t.Context(), o.opts)
+			first, err := store.OpenSQL(t.Context(), o.opts)
 			if err != nil {
 				t.Fatalf("migrating: %v", err)
 			}
@@ -729,7 +730,7 @@ func TestAMigrationThatLostItsVersionRecordFinishes(t *testing.T) {
 			// The schema is complete; pretend the version record never landed.
 			o.setVersion(t, tc.rewound)
 
-			s, err := store.Open(t.Context(), o.opts)
+			s, err := store.OpenSQL(t.Context(), o.opts)
 			if err != nil {
 				t.Fatalf("reopening a store whose version record was lost at %d: %v", tc.rewound, err)
 			}
@@ -782,7 +783,7 @@ func TestAnUnwritableBucketFailsBeforeAnyRowIsTouched(t *testing.T) {
 	// Restored so the test's own directory can be cleaned up.
 	t.Cleanup(func() { _ = os.Chmod(o.opts.ArtifactDir, 0o700) })
 
-	_, err := store.Open(t.Context(), o.opts)
+	_, err := store.OpenSQL(t.Context(), o.opts)
 	if err == nil {
 		t.Fatal("a store with a read-only artifact bucket opened anyway")
 	}

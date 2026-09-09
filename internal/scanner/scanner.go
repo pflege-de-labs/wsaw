@@ -39,11 +39,29 @@ type Metrics struct {
 	BrowserRestart func(target, reason string)
 }
 
+// ResultStore is what a scan needs from the store, and no more (AGENTS §4).
+//
+// Four methods: write the evidence, write the result, and read the two things
+// a comparison is made against. A scanner given the whole store could approve
+// a baseline or prune history, and a scan has no such authority — the seam is
+// where that is stated, rather than in a rule somebody has to remember.
+type ResultStore interface {
+	PutArtifact(kind string, data []byte) (string, error)
+	PutResult(res *model.Result) error
+	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
+	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+}
+
 // Deps are the collaborators a Scanner needs. They are interfaces at the
 // seams that plausibly get a second implementation (Tenet 12).
 type Deps struct {
-	Pool    *browser.Pool
-	Store   *store.Store
+	Pool *browser.Pool
+	// Store records what a scan produced. Nil is allowed and means nothing is
+	// recorded — a scan still runs, and each call site below says what it
+	// does instead. A nil pointer wrapped in this interface is not the same
+	// thing: it passes those checks and panics on the first call, so a caller
+	// hands over a store that opened or nothing at all.
+	Store   ResultStore
 	Robots  *robots.Checker
 	Rules   *consent.RuleSet
 	Secrets *secret.Registry

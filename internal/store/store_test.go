@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,20 +27,49 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
-// open returns a store on whichever dialect the suite is being run against.
+// open returns a store of whichever kind the suite is being run against.
 //
 // Every test below uses it, so one set of test bodies exercises SQLite,
-// PostgreSQL and MySQL (Story 4.7, AC5). The tests are the specification of
-// what a store does; a dialect that needed its own tests would be a dialect
-// that had changed the behaviour.
+// PostgreSQL, MySQL (Story 4.7, AC5) and — since Story 8.10 — the store that
+// keeps its index in the artifact bucket instead of in rows (AC15). The tests
+// are the specification of what a store does; a store that needed its own
+// tests would be a store that had changed the behaviour.
+//
+// It returns the interface rather than a concrete store, which is what makes
+// the last of those possible: the bucket-index store is not a *store.SQL and
+// has no dialect, and every test body here asks only what the seam promises.
 //
 //	go test ./internal/store
+//	WSAW_TEST_STORE_DRIVER=blob                                 go test ./internal/store
 //	WSAW_TEST_STORE_DRIVER=postgres WSAW_TEST_POSTGRES_DSN=... go test ./internal/store
 //	WSAW_TEST_STORE_DRIVER=mysql    WSAW_TEST_MYSQL_DSN=...    go test ./internal/store
-func open(t *testing.T) *store.Store {
+func open(t *testing.T) store.Store {
 	t.Helper()
 
 	s, err := store.Open(t.Context(), storeOptions(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	return s
+}
+
+// openAt opens a store on options the caller already holds, closing it when the
+// test ends.
+//
+// It is open(t) for the tests that also have to reach the artifact directory
+// the store was given, because what they assert is what is beside the index on
+// disk rather than what the store says about it.
+func openAt(t *testing.T, opts store.Options) store.Store {
+	t.Helper()
+
+	s, err := store.Open(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -75,6 +105,14 @@ func storeOptions(t *testing.T) store.Options {
 	case "", store.DriverSQLite:
 		opts.Path = filepath.Join(t.TempDir(), "wsaw.db")
 
+	case store.DriverBlob:
+		// Nothing else to name: ArtifactDir above is the bucket, and for this
+		// store the bucket is the whole store. There is no scratch database to
+		// create and no container to skip on, which is why this one runs in
+		// the default suite rather than behind an environment variable naming
+		// a server.
+		opts.Driver = driver
+
 	case store.DriverPostgres, store.DriverMySQL:
 		opts.Driver = driver
 		opts.DSN = secret.Literal(scratchDatabase(t, driver))
@@ -84,6 +122,91 @@ func storeOptions(t *testing.T) store.Options {
 	}
 
 	return opts
+}
+
+// skipUnlessSQL skips a test that is about an index kept in rows, when the
+// suite is being run against the index kept in the bucket.
+//
+// The tests that call it are about a schema: the row layout that came before
+// the bucket, the migration that moved documents out of a column, the backfill
+// that derives references an upgrade could not. A store with no schema has
+// nothing for them to hold it to — and refusing to open one for them is not a
+// gap in its coverage, because what a store promises is asserted through the
+// interface by the tests that use open(t), which every store runs (AC15).
+//
+// It reads the environment rather than the driver of an already-open store,
+// because the point is not to open one.
+func skipUnlessSQL(t *testing.T) {
+	t.Helper()
+
+	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
+		t.Skip("this test is about a store that keeps its index in rows; the blob store keeps no schema")
+	}
+}
+
+// assertTheHistorySurvivedALostBucket checks what each kind of store can still
+// promise once its artifact bucket has gone away.
+//
+// For a store with a database the promise is the strong one the test around it
+// is named for: a prune that could not reclaim must not remove the rows that
+// say what there was to reclaim, so the history is read back and has to be
+// intact.
+//
+// The bucket-index store cannot promise that and must not pretend to. Its
+// index is objects in the same bucket, so an unmounted volume takes the history
+// with it — there is no second place for it to have survived in. What it can
+// promise is the half that matters: it says the store is unreachable rather
+// than reporting an empty history as though the target had never been scanned,
+// which is the inference Tenet 5 forbids and the one this test exists to
+// prevent. The prune's own refusal, asserted above this call, is the same
+// promise from the other end.
+func assertTheHistorySurvivedALostBucket(t *testing.T, s store.Store) {
+	t.Helper()
+
+	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
+		if err := s.Ping(t.Context()); err == nil {
+			t.Error("a store whose bucket has gone away reported itself reachable")
+		}
+
+		return
+	}
+
+	rows, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rows) != 1 {
+		t.Errorf("the store holds %d results after a prune that could not reach the bucket, want 1", len(rows))
+	}
+}
+
+// foreignToThisStore is how many of the objects a sweep test plants are foreign
+// to the store under test.
+//
+// Two of them are a bucket-index layout, which Story 8.10, AC16 explicitly
+// permits a SQL deployment to meet in a bucket whose index once lived beside
+// the evidence: to a SQL store all four are objects it did not write.
+//
+// The bucket-index store sees one of those two and not the other, and the
+// count is one lower for that reason rather than because it judges the missing
+// one safe. Its sweep walks the evidence plus the two index prefixes it needs
+// work lists for — the pins under ref/ and the scan keys under byid/ — and
+// never lists audit/ at all (the index tree is skipped whole; see the blob
+// sweep's kinds()). So the planted audit entry is out of the sweep's reach,
+// while the planted pin — a directory whose last segment is no owner that
+// grammar spells — is inside it and is counted as a stray. Both stores leave
+// all four exactly where they are, which is what the loop after this call
+// asserts and what the criterion is actually about.
+//
+// A sweep that later grew a pass over audit/ would have to judge that key, and
+// this comment is where to start.
+func foreignToThisStore(planted int) int {
+	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
+		return planted - 1
+	}
+
+	return planted
 }
 
 // sqliteOptions is the on-disk store the schema tests need: they reopen it,
@@ -425,6 +548,57 @@ func TestBaselineRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHasBaselineAnswersTheSameQuestionAsGetBaseline: the targets page asks
+// whether a series has a baseline once per series on every render, and asks it
+// with HasBaseline so that a yes/no does not cost a whole approved result
+// (Story 8.10). A cheaper question that could disagree with the expensive one
+// would be worth far less than the reads it saves, so both are asked here.
+func TestHasBaselineAnswersTheSameQuestionAsGetBaseline(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	assertBaseline := func(what string, mode model.ConsentMode, want bool) {
+		t.Helper()
+
+		has, err := s.HasBaseline("site", mode)
+		if err != nil {
+			t.Fatalf("HasBaseline %s: %v", what, err)
+		}
+
+		if has != want {
+			t.Errorf("HasBaseline %s = %v, want %v", what, has, want)
+		}
+
+		_, err = s.GetBaseline("site", mode)
+		if got := err == nil; got != want {
+			t.Errorf("GetBaseline %s found a baseline = %v, want %v (err %v)", what, got, want, err)
+		}
+	}
+
+	assertBaseline("before any approval", model.ConsentReject, false)
+
+	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SetBaseline("site", model.ConsentReject, "scan-1", "martin", ""); err != nil {
+		t.Fatalf("SetBaseline: %v", err)
+	}
+
+	assertBaseline("after approval", model.ConsentReject, true)
+
+	// The same target under a different consent mode is a different series,
+	// and one approval must not make the other look approved.
+	assertBaseline("for the other consent mode", model.ConsentAccept, false)
+
+	if err := s.DeleteBaseline("site", model.ConsentReject, "martin"); err != nil {
+		t.Fatalf("DeleteBaseline: %v", err)
+	}
+
+	assertBaseline("after the approval was withdrawn", model.ConsentReject, false)
+}
+
 // TestBaselineRejectsFailedScan: approving a broken scan would pin a broken
 // observation as the definition of correct.
 func TestBaselineRejectsFailedScan(t *testing.T) {
@@ -563,6 +737,66 @@ func TestAuditLogRecordsApprovals(t *testing.T) {
 	}
 }
 
+// TestAuditLogIsOrderedByWhenTheActionHappened pins the log to its timestamps
+// rather than to its insertion order.
+//
+// The two only agree while every entry is recorded at the moment it happens,
+// and RecordAudit exists precisely for the entries that are not: an action
+// taken outside the store, written back afterwards. An entry that arrives
+// late belongs where its At puts it — an audit log that showed a decision
+// from last week above one from today because it was written down second
+// would misdescribe the sequence of events it exists to record.
+//
+// The same-instant pair is the tie-break: two entries that share a timestamp
+// must come back in one fixed order, because a listing that shuffled them
+// between two reads would be indistinguishable from the log being edited.
+func TestAuditLogIsOrderedByWhenTheActionHappened(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	now := time.Now().UTC()
+	// Written in an order that disagrees with the timestamps, so ordering by
+	// the row identity and ordering by the recorded time cannot both pass.
+	// The last two share an instant, which is what the tie-break answers.
+	written := []struct {
+		subject string
+		at      time.Time
+	}{
+		{"today", now},
+		{"last-week", now.Add(-7 * 24 * time.Hour)},
+		{"yesterday", now.Add(-24 * time.Hour)},
+		{"same-instant-first", now.Add(-time.Hour)},
+		{"same-instant-second", now.Add(-time.Hour)},
+	}
+
+	for _, w := range written {
+		if err := s.RecordAudit(store.AuditEntry{
+			At:      w.at,
+			Actor:   "martin",
+			Action:  "allow-list-added",
+			Subject: w.subject,
+		}); err != nil {
+			t.Fatalf("RecordAudit(%s): %v", w.subject, err)
+		}
+	}
+
+	entries, err := s.Audit(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Subject)
+	}
+
+	want := []string{"today", "same-instant-second", "same-instant-first", "yesterday", "last-week"}
+	if !slices.Equal(got, want) {
+		t.Errorf("audit order = %v, want %v", got, want)
+	}
+}
+
 func TestArtifactRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -667,7 +901,7 @@ func TestArtifactPermissionsAreRestrictive(t *testing.T) {
 
 	dir := t.TempDir()
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +929,7 @@ func TestDatabasePermissionsAreRestrictive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "wsaw.db")
 
-	s, err := store.Open(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
+	s, err := store.OpenSQL(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +951,7 @@ func TestReopenPreservesData(t *testing.T) {
 
 	dir := t.TempDir()
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +964,7 @@ func TestReopenPreservesData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := store.Open(t.Context(), sqliteOptions(dir))
+	reopened, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatalf("reopening: %v", err)
 	}
@@ -781,7 +1015,7 @@ func TestPragmasAreApplied(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,7 +1042,7 @@ func TestSchemaVersionIsRecorded(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,7 +1113,7 @@ func TestUpgradingAStoreThatAlreadyHasRows(t *testing.T) {
 		}
 	}
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatalf("upgrading a version-1 store: %v", err)
 	}
@@ -947,7 +1181,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 
 	for i := range 3 {
-		s, err := store.Open(t.Context(), sqliteOptions(dir))
+		s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 		if err != nil {
 			t.Fatalf("open %d: %v", i+1, err)
 		}
@@ -961,7 +1195,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		}
 	}
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -986,7 +1220,7 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1001,7 +1235,7 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Open(t.Context(), sqliteOptions(dir)); err == nil {
+	if _, err := store.OpenSQL(t.Context(), sqliteOptions(dir)); err == nil {
 		t.Fatal("a store written by a newer schema was opened anyway")
 	} else if !strings.Contains(err.Error(), "newer") {
 		t.Errorf("error does not explain the problem: %v", err)
@@ -1055,7 +1289,7 @@ func TestUnsummarisedRowIsReportedNotFatal(t *testing.T) {
 
 	dir := t.TempDir()
 
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
+	s, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1316,7 @@ func TestUnsummarisedRowIsReportedNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := store.Open(t.Context(), sqliteOptions(dir))
+	reopened, err := store.OpenSQL(t.Context(), sqliteOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1130,18 +1364,78 @@ func TestUnsummarisedRowIsReportedNotFatal(t *testing.T) {
 
 // --- Story 8.2: the document is an artifact, the row is an index -----------
 
-// documentPath is where the bucket keeps a result document, given the store's
-// artifact directory. Reaching into it is the point: these tests assert what is
-// on disk, not what the store says is on disk.
+// documentPath is where the bucket keeps a result document, given the directory
+// a sqliteOptions store was built in. Reaching into it is the point: these tests
+// assert what is on disk, not what the store says is on disk.
 func documentPath(t *testing.T, dir, ref string) string {
 	t.Helper()
 
+	return artifactFile(t, filepath.Join(dir, "artifacts"), ref)
+}
+
+// artifactFile is where the bucket keeps one artifact, given the artifact
+// directory itself.
+//
+// It is the same layout for every kind of store — the bucket is the bucket, and
+// only the index differs (Story 8.1, AC2) — which is what lets the tests below
+// assert on a stored document without knowing which store wrote it.
+func artifactFile(t *testing.T, artifactDir, ref string) string {
+	t.Helper()
+
 	kind, digest, found := strings.Cut(ref, "/")
-	if !found || kind != "result" {
-		t.Fatalf("artifact reference %q is not a result document", ref)
+	if !found || kind == "" || digest == "" {
+		t.Fatalf("artifact reference %q is not one this store wrote", ref)
 	}
 
-	return filepath.Join(dir, "artifacts", kind, digest)
+	return filepath.Join(artifactDir, kind, digest)
+}
+
+// documentRefFor finds the stored document of one scan by reading the artifact
+// directory, so a test can assert on it without knowing whether the store keeps
+// its index in rows or in objects.
+//
+// It returns what resultRow's three columns hold — where the document is, how
+// big it is, and what it hashes to — computed from the object itself rather than
+// from whatever the index recorded, which is what makes it usable in the tests
+// that go on to prove the index and the object disagree.
+func documentRefFor(t *testing.T, artifactDir, scanID string) (ref string, size int64, digest string) {
+	t.Helper()
+
+	dir := filepath.Join(artifactDir, "result")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the stored documents: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+
+		stored, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading the stored document %s: %v", path, err)
+		}
+
+		var decoded struct {
+			ScanID string `json:"scanId"`
+		}
+
+		if err := json.Unmarshal(stored, &decoded); err != nil || decoded.ScanID != scanID {
+			continue
+		}
+
+		sum := sha256.Sum256(stored)
+
+		return "result/" + entry.Name(), int64(len(stored)), hex.EncodeToString(sum[:])
+	}
+
+	t.Fatalf("no stored document in %s names scan %s", dir, scanID)
+
+	return "", 0, ""
 }
 
 // resultRow reads the columns that replaced the document, for a stored scan.
@@ -1177,48 +1471,39 @@ func hasColumn(t *testing.T, dir, column string) bool {
 	return n > 0
 }
 
-// TestResultDocumentIsStoredInTheBucket is Story 8.2, AC1 and AC2: the row
+// TestResultDocumentIsStoredInTheBucket is Story 8.2, AC1 and AC2: the index
 // carries where the document is, how big it is and what it hashes to — and not
 // the document, nor a copy of it kept "for now".
+//
+// It runs against every store, because "the document is in the bucket" is a
+// promise the interface makes and not a property of a schema. That the SQL
+// stores no longer keep a document column is asserted where the column was
+// dropped, in TestUpgradingAStoreThatAlreadyHasRows.
 func TestResultDocumentIsStoredInTheBucket(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
+	opts := storeOptions(t)
+	s := openAt(t, opts)
 
 	res := result("scan-1", time.Now(), model.ConsentReject)
 	if err := s.PutResult(res); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
+	ref, size, digest := documentRefFor(t, opts.ArtifactDir, "scan-1")
 
-	ref, size, digest := resultRow(t, dir, "scan-1")
-
-	// Not "empty" but gone: two sources of truth for one document is what this
-	// story removes, and Story 8.4 finished the job by dropping the column.
-	if hasColumn(t, dir, "document") {
-		t.Error("the results table still has a document column")
-	}
-
-	stored, err := os.ReadFile(documentPath(t, dir, ref))
+	stored, err := os.ReadFile(artifactFile(t, opts.ArtifactDir, ref))
 	if err != nil {
 		t.Fatalf("the reference does not name a stored artifact: %v", err)
 	}
 
 	if int64(len(stored)) != size {
-		t.Errorf("the artifact holds %d bytes, the row records %d", len(stored), size)
+		t.Errorf("the artifact holds %d bytes, the index records %d", len(stored), size)
 	}
 
 	sum := sha256.Sum256(stored)
 	if hex.EncodeToString(sum[:]) != digest {
-		t.Errorf("the artifact hashes to %x, the row records %s", sum, digest)
+		t.Errorf("the artifact hashes to %x, the index records %s", sum, digest)
 	}
 
 	// Content-addressed like every other artifact: the key is the digest.
@@ -1306,21 +1591,15 @@ func TestEveryResultRoundTripsThroughTheBucket(t *testing.T) {
 func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = s.Close() }()
+	opts := storeOptions(t)
+	s := openAt(t, opts)
 
 	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
 		t.Fatal(err)
 	}
 
-	ref, _, _ := resultRow(t, dir, "scan-1")
-	path := documentPath(t, dir, ref)
+	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
+	path := artifactFile(t, opts.ArtifactDir, ref)
 
 	stored, err := os.ReadFile(path)
 	if err != nil {
@@ -1356,21 +1635,15 @@ func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 func TestTruncatedDocumentIsCorruption(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = s.Close() }()
+	opts := storeOptions(t)
+	s := openAt(t, opts)
 
 	if err := s.PutResult(result("scan-1", time.Now(), model.ConsentReject)); err != nil {
 		t.Fatal(err)
 	}
 
-	ref, _, _ := resultRow(t, dir, "scan-1")
-	path := documentPath(t, dir, ref)
+	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
+	path := artifactFile(t, opts.ArtifactDir, ref)
 
 	stored, err := os.ReadFile(path)
 	if err != nil {
@@ -1391,14 +1664,8 @@ func TestTruncatedDocumentIsCorruption(t *testing.T) {
 func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = s.Close() }()
+	opts := storeOptions(t)
+	s := openAt(t, opts)
 
 	base := time.Now().Add(-time.Hour)
 
@@ -1410,8 +1677,8 @@ func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 
 	// Deleted behind the store's back, as a lifecycle rule or a stray operator
 	// would delete it.
-	ref, _, _ := resultRow(t, dir, "scan-1")
-	if err := os.Remove(documentPath(t, dir, ref)); err != nil {
+	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
+	if err := os.Remove(artifactFile(t, opts.ArtifactDir, ref)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1451,17 +1718,17 @@ func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 // removed from the bucket, a listing must still be complete and correct,
 // because it never reads one. (The bucket-operation count itself is asserted in
 // the white-box test, which can see the bucket.)
+//
+// It runs against the bucket-index store too, and it is the criterion that
+// survives being carried there. "A listing performs zero bucket reads" cannot
+// hold where the index is the bucket; what has to hold, and what this asserts,
+// is that a listing never fetches the megabytes a scan's document runs to
+// (Story 8.10, §6.4).
 func TestListingNeedsNoDocumentAtAll(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-
-	s, err := store.Open(t.Context(), sqliteOptions(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = s.Close() }()
+	opts := storeOptions(t)
+	s := openAt(t, opts)
 
 	base := time.Now().Add(-time.Hour)
 
@@ -1471,7 +1738,7 @@ func TestListingNeedsNoDocumentAtAll(t *testing.T) {
 		}
 	}
 
-	if err := os.RemoveAll(filepath.Join(dir, "artifacts", "result")); err != nil {
+	if err := os.RemoveAll(filepath.Join(opts.ArtifactDir, "result")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1590,9 +1857,9 @@ func TestOpenFailsActionablyOnAnUnusablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := store.Open(t.Context(), store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
+	_, err := store.OpenSQL(t.Context(), store.Options{Path: filepath.Join(blocker, "nested", "wsaw.db")})
 	if err == nil {
-		t.Fatal("Open succeeded against an unusable path")
+		t.Fatal("OpenSQL succeeded against an unusable path")
 	}
 }
 
@@ -1760,6 +2027,70 @@ func TestOrderingSurvivesSubMillisecondStarts(t *testing.T) {
 
 	if prev.ScanID != "scan-1" {
 		t.Errorf("the scan before scan-2 is %s, want scan-1", prev.ScanID)
+	}
+}
+
+// TestScansThatShareAnInstantAreStillOrderedDeterministically is the tie-break
+// every store owes the rest of wsaw.
+//
+// Two scans of one target can start in the same nanosecond — a coarse timer, a
+// clock that was stepped, or two hosts that disagree — and the history still has
+// to have one order, the same one on every read and the same one for every kind
+// of store. It is the scan ID, descending, which is what makes AC5's promise
+// hold: a wrong clock may put an entry in an unexpected position and can never
+// make one scan hide or overwrite another.
+func TestScansThatShareAnInstantAreStillOrderedDeterministically(t *testing.T) {
+	t.Parallel()
+
+	s := open(t)
+
+	at := time.Now().Add(-time.Hour)
+
+	// Stored out of order, so that nothing about the answer can come from the
+	// order they were written in.
+	for _, id := range []string{"scan-b", "scan-a", "scan-c"} {
+		if err := s.PutResult(result(id, at, model.ConsentReject)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	for _, sm := range got {
+		order = append(order, sm.ScanID)
+	}
+
+	want := []string{"scan-c", "scan-b", "scan-a"}
+	if !slices.Equal(order, want) {
+		t.Errorf("the history reads %v, want %v", order, want)
+	}
+
+	latest, err := s.LatestResult("site", model.ConsentReject)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if latest.ScanID != "scan-c" {
+		t.Errorf("LatestResult = %s, want scan-c", latest.ScanID)
+	}
+
+	// And the same rule read the other way round: the scan before one of a tied
+	// run is the next one down, not the whole run skipped and not itself.
+	prev, err := s.PreviousResult("site", model.ConsentReject, "scan-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if prev.ScanID != "scan-b" {
+		t.Errorf("the scan before scan-c is %s, want scan-b", prev.ScanID)
+	}
+
+	if _, err := s.PreviousResult("site", model.ConsentReject, "scan-a"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("PreviousResult before the lowest of a tied run = %v, want ErrNotFound", err)
 	}
 }
 

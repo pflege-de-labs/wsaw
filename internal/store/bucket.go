@@ -133,7 +133,7 @@ type bucket struct {
 	dir string
 }
 
-// retryFunc has the shape of Store.retry on purpose.
+// retryFunc has the shape of retrier.run on purpose.
 //
 // A bucket is a network dependency for every provider but the local one, so a
 // dropped connection is an ordinary event — the same argument Story 4.7 made
@@ -151,7 +151,7 @@ func retryOnce(ctx context.Context, _ string, fn func(context.Context) error) er
 	return fn(ctx)
 }
 
-// setRetry lends the bucket a retry policy, normally Store.retry.
+// setRetry lends the bucket a retry policy, normally the store's own.
 func (b *bucket) setRetry(fn retryFunc) {
 	if fn != nil {
 		b.retry = fn
@@ -163,7 +163,7 @@ func (b *bucket) setRetry(fn retryFunc) {
 // It satisfies net.Error because that is the shape the store's existing
 // classifier recognises as worth retrying: every dialect falls back to
 // isTransientMessage, which treats a net.Error as transient. Presenting a
-// retryable bucket failure in that shape is what lets Store.retry drive
+// retryable bucket failure in that shape is what lets the store's retrier drive
 // bucket operations without a bucket-specific branch inside it, and without
 // this package holding two ideas of what "try again" means.
 //
@@ -964,6 +964,81 @@ func (b *bucket) list(ctx context.Context, prefix string, fn func(obj artifactOb
 			}
 
 			if err := fn(artifactObject{ref: obj.Key, size: obj.Size, modTime: obj.ModTime}); err != nil {
+				return err
+			}
+		}
+
+		token = next
+	}
+
+	return nil
+}
+
+// bucketEntry is one thing a raw listing reported: an object, or — when the
+// listing asked for a delimiter — the common prefix standing for everything
+// below one path segment.
+//
+// It is a separate type from artifactObject because a raw listing has not
+// judged what it found. An artifactObject is a key this store wrote, in the
+// shape validateRef admits; this is whatever is in the bucket, including the
+// index tree, another tool's files and a directory that is not a kind at all.
+// Keeping them apart is what stops an unjudged key from reaching a function
+// that deletes.
+type bucketEntry struct {
+	key     string
+	size    int64
+	modTime time.Time
+
+	// dir marks a common prefix rather than an object. It appears only when
+	// the listing asked for a delimiter.
+	dir bool
+}
+
+// walk lists what the bucket holds under prefix, without judging the prefix.
+//
+// It is the one listing in this file that does not put its prefix through
+// validatePrefix, and the reason is that its callers are looking for exactly
+// what that check excludes: the retention sweep of Story 8.10 has to be able
+// to see the objects it must not touch in order to report them and leave them
+// alone (Story 8.5, AC4), and it cannot ask "what is in the bucket that wsaw
+// did not write" through a door that only admits what wsaw wrote. It is
+// read-only, and every prefix it is given comes either from this package's own
+// constants or from a name this same bucket reported — never from a stored
+// document, so none of Tenet 9's untrusted input reaches it.
+//
+// A delimiter of "/" collapses everything below one path segment into a single
+// dir entry, which is how the kinds present in a bucket are discovered without
+// listing every object under them. The empty delimiter walks the whole subtree,
+// as list does.
+func (b *bucket) walk(ctx context.Context, prefix, delimiter string, fn func(entry bucketEntry) error) error {
+	token := blob.FirstPageToken
+
+	for len(token) > 0 {
+		var (
+			page []*blob.ListObject
+			next []byte
+		)
+
+		if err := b.do(ctx, "listing bucket objects", func(ctx context.Context) error {
+			// Assigned only on success, so a failed page leaves the token
+			// pointing at the page still to be fetched rather than at nothing.
+			objects, nextToken, err := b.b.ListPage(ctx, token, artifactListPageSize,
+				&blob.ListOptions{Prefix: prefix, Delimiter: delimiter})
+			if err != nil {
+				return err
+			}
+
+			page, next = objects, nextToken
+
+			return nil
+		}); err != nil {
+			return fmt.Errorf("listing %q in bucket %s: %w", truncateForMessage(prefix), b, err)
+		}
+
+		for _, obj := range page {
+			entry := bucketEntry{key: obj.Key, size: obj.Size, modTime: obj.ModTime, dir: obj.IsDir}
+
+			if err := fn(entry); err != nil {
 				return err
 			}
 		}

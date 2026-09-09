@@ -85,10 +85,10 @@ func artifactRefsOf(res *model.Result, documentRef string) []string {
 // transaction spanning it would hold database locks across a network round
 // trip to object storage.
 //
-// The whole thing is idempotent, which is what lets Store.retry replay it: the
+// The whole thing is idempotent, which is what lets the retry policy replay it: the
 // row is an upsert and the references are replaced wholesale, so storing the
 // same result twice leaves exactly one row and one set of references.
-func (s *Store) putResultTx(ctx context.Context, key resultRowKey, args []any, refs []string) error {
+func (s *SQL) putResultTx(ctx context.Context, key resultRowKey, args []any, refs []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storing a result: %w", err)
@@ -135,7 +135,7 @@ const artifactRefInsertChunk = 64
 // name fewer artifacts than it did before — a retried scan that captured no
 // screenshot, say — and references left behind would keep an object alive that
 // nothing names any more.
-func (s *Store) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultRowKey, refs []string) error {
+func (s *SQL) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultRowKey, refs []string) error {
 	if _, err := tx.ExecContext(ctx, s.q(`delete from `+resultArtifactsTable+
 		` where target = ? and consent_mode = ? and scan_id = ?`), key.args()...); err != nil {
 		return fmt.Errorf("clearing the artifact references of scan %s: %w", key.scanID, err)
@@ -248,7 +248,7 @@ type danglingRef struct {
 // step over the rows that shifted underneath it. Advancing past the last
 // reference seen also guarantees progress when an artifact cannot be deleted,
 // so a bucket that refuses one key cannot turn a sweep into a loop.
-func (s *Store) danglingRefs(ctx context.Context, h querier, after string, batch int) ([]danglingRef, error) {
+func (s *SQL) danglingRefs(ctx context.Context, h querier, after string, batch int) ([]danglingRef, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -294,7 +294,7 @@ func (s *Store) danglingRefs(ctx context.Context, h querier, after string, batch
 // place and the next sweep meets the same key again (AC4). The rows are the
 // work list, and a work list that is cleared before the work is done is how a
 // failed deletion becomes a permanent leak.
-func (s *Store) forgetRef(ctx context.Context, h querier, ref string) error {
+func (s *SQL) forgetRef(ctx context.Context, h querier, ref string) error {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -317,7 +317,7 @@ func (s *Store) forgetRef(ctx context.Context, h querier, ref string) error {
 // database has to fit in memory. One statement per page, rather than one per
 // key: a bucket holding a hundred thousand objects would otherwise be a hundred
 // thousand queries.
-func (s *Store) referencedRefs(ctx context.Context, refs []string) (map[string]struct{}, error) {
+func (s *SQL) referencedRefs(ctx context.Context, refs []string) (map[string]struct{}, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -365,7 +365,7 @@ func (s *Store) referencedRefs(ctx context.Context, refs []string) (map[string]s
 }
 
 // placeholders builds "?, ?, …" for an IN list. Every query in this package is
-// written with ? and rewritten per dialect by Store.q, so this one is too.
+// written with ? and rewritten per dialect by SQL.q, so this one is too.
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
@@ -385,7 +385,7 @@ func placeholders(n int) string {
 // the artifact_ref column even for a row whose document it could not read. The
 // documents are also the bulk of what the bucket holds, so one unreadable scan
 // does not stop retention from reclaiming anything at all.
-func (s *Store) resultsWithUnknownRefs(ctx context.Context) (int, error) {
+func (s *SQL) resultsWithUnknownRefs(ctx context.Context) (int, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
