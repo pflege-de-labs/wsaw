@@ -218,7 +218,7 @@ bug.
 | `internal/httpapi/server.go` | `+ Store` declaration, `Deps.Store` retyped, the nil-check comment — ~22 lines |
 | `internal/httpapi/api.go` | one call site: the targets-page existence check moves from `GetBaseline` to `HasBaseline` — 3 lines. The other 27 store call sites are unchanged |
 | `internal/httpapi/{ui,sharing}.go` | **0 lines** |
-| `cmd/wsaw/store.go` | `maintenance.store` becomes `store.Store` (1 line); `storeMigrateApply` and `PlanDocumentMigration` use `OpenSQL` and refuse `blob` with a message pointing at `wsaw store rebuild-index` — ~15 lines |
+| `cmd/wsaw/store.go` | `maintenance.store` becomes a four-method `retentionStore` declared beside it, **not** `store.Store` as this row said — a prune and a sweep have no business being able to store a result or approve a baseline, which is the same argument `scanner.ResultStore` makes, and two of three consumers narrowing while the third took the whole store would have made the rule look optional; `storeMigrateApply` and `PlanDocumentMigration` use `OpenSQL` and refuse `blob` (the message names no command — see §7.6 #11) — ~30 lines |
 | `cmd/wsaw/{run,scan,share,config}.go` | **0 lines** |
 | `internal/config/config.go` | `IsServerStore()` narrowed to postgres/mysql; `IsBucketStore()` added — ~12 lines |
 | `internal/config/validate.go` | a `blob` branch: no `dsn`, no `path`, no pool settings; an artifact location required — ~25 lines |
@@ -392,7 +392,12 @@ _wsaw/index/v1/rebuild/<id>                                   (written by Story 
   the wrong history, which is the same argument that made `tk` 128 bits, and
   the layout has ~700 bytes of headroom.
 * `<owner>` = `r.<tk>.<mk>.<sk>` for a result, `d.<did>` for a baseline
-  decision.
+  decision, `t.<inv>` for a **take** — the record that `PutArtifact` stored
+  these bytes for a scan whose result is not in the index yet, which is this
+  store's answer to `claims.go`'s row and is added by §7.6 #1. The tags sort
+  `d` < `r` < `t`, so the pins that answer "does anything reference this" come
+  before every take. A take is not a reference: it expires, and a pin written
+  after it releases it.
 
 **Everything a series fold needs is in one directory.** `d` < `k` < `r`, so a
 single listing of `series/<tk>/<mk>/` returns the tombstones first, then the
@@ -776,6 +781,15 @@ suite is the specification of what a store does, the two must agree.
 
 ### 6.6 The overlay and the cache
 
+**Neither of these was built.** §7.6 #6 records the decision and its
+consequences — every read of the store is a fold over what the bucket currently
+shows, AC7's determinism is global rather than process-local, read-your-writes
+is not promised to the writing process either, and §8.3 test 1 and §10's README
+bullet were both rewritten because of it. The section is kept as designed
+because the argument below is what a later step would have to answer to add
+either mechanism, and because the deletion-recording requirement is the part
+that would be easiest to get wrong.
+
 Two mechanisms, both safe by construction under I1.
 
 **The recent-write overlay** is a bounded map from index key to
@@ -848,6 +862,16 @@ honest description to put in its doc comment.
 | full walk of a 10,000-scan series | 1–2 | 12 checkpoints + 200 loose | | |
 | `Prune`, per series | 1 (+1 GET per checkpoint) | only for clamped entries | 1 tombstone per pruned result | 2 + refs + artifacts per pruned result |
 | `Sweep` (A artifacts, R ref markers) | ⌈A/1000⌉ + ⌈R/1000⌉ | 0 | 0 | per collected |
+
+**Read this table with §7.6 beside it.** Eight of its rows are wrong against
+the implementation, and every one of them is corrected in §7.6 rather than
+here, so that what was designed and what was built stay distinguishable:
+`PutResult` and the take marker `PutArtifact` now writes (§7.6 #1), `Prune`
+and `Sweep`, which gained a delete per stale take (#1) and, for the sweep, an
+attribute read per pinned artifact (#5), `RecordAudit` and `Audit(n)` (#7),
+`PreviousResult` (#8), and `SetBaseline`/`DeleteBaseline` (#7 and #9).
+**Where the two disagree, §7.6 is what the code does and what step 12's
+request-count assertions (AC11) must be written against.**
 
 Two consequences worth stating plainly.
 
@@ -1072,6 +1096,214 @@ holding thousands of files is single-digit milliseconds on ext4 `dir_index`
 and APFS — it is the whole-filesystem accounting that fails. **At this scale
 on local disk, SQLite is the right store.** That sentence goes in the README.
 
+### 7.6 Amendments made while implementing §6 and §7 (step 11)
+
+Eleven things in §6 and §7.1 to §7.5 above are wrong against the tree they were
+written for, and the implementation deviates from them deliberately. They are
+recorded here because §8 and step 12 are written against §6 and §7: an
+assertion written from the sections above and not from this one will fail
+against the code, and weakening it to match would be the worst available
+outcome for AC11.
+
+1. **The prune needs a take record, and §7.3's `ModTime` grace cannot stand in
+   for one.** §7.3 step 5 deletes an artifact when its pin prefix is empty and
+   *the artifact's own* `ModTime` is past the grace. That fails the shared suite
+   in both directions at once, and no combination of the two facts can pass it:
+   `TestPruningDeletesTheArtifactsItStopsReferencing` requires a screenshot
+   written seconds ago to be collected when the result naming it expires, while
+   `TestRetentionKeepsAnArtifactARunningScanHasJustTaken` requires an identical
+   screenshot to be kept because a second scan re-captured the same bytes — and
+   a re-capture of unchanged bytes writes **nothing at all** to the bucket, so
+   the two states are indistinguishable from outside. The SQL stores tell them
+   apart with the claim row of `claims.go`, and
+   `TestSweepCollectsAnUnreferencedArtifactOnlyAfterTheGracePeriod` needs the
+   same record for a third reason: without it a store that has stored one
+   artifact and no result has an *empty index* and the sweep refuses.
+
+   So `PutArtifact` writes one zero-byte **take marker**,
+   `ref/<kind>/<digest>/t.<inv>`, and retention honours it: a take protects the
+   artifact while it is younger than `unreferencedArtifactGrace` **and newer
+   than every pin on that artifact**. The second half is the release SQL
+   performs by deleting the claim row, expressed without a delete on an ordinary
+   write path (AC3): a pin written after a take is the result the take was
+   waiting for. Both times come from the bucket's own clock. A document is not
+   taken — it is written by `putDocument`, named by exactly one result, and no
+   other scan can content-address to it — which is also what SQL does. The
+   owner tag is `"t"` so that takes sort after `d.` and `r.`. Stale takes are
+   reaped by prune and sweep, as `forgetStaleClaims` is.
+
+   **Cost:** `PutArtifact` gains one PUT (§7.1 listed none), and the prune and
+   sweep gain one DELETE per stale take. A SQL store pays one row upsert for the
+   same fact.
+
+2. **A pin is deleted after the artifact, not before (§7.3 steps 4 and 5 swap).**
+   The pins are the work list, exactly as the reference rows are in SQL: a pin
+   removed before an artifact the bucket then refuses to delete leaves that
+   object with nothing pointing at it, and the next sweep finds it young and
+   unreferenced and protects it by age — a refused delete turned into a leak.
+   `TestADeletionFailureDoesNotFailThePrune` requires the next sweep to collect
+   it. Consequently the pin listing of step 5 is also taken **before** any pin
+   is deleted, which is what lets the take-release comparison see the pin times
+   this prune is removing; that is safe because a scan writes its take before
+   the pin that will release it, so anything that could add a pin after the
+   listing is already in it as a take.
+
+3. **The sweep's grace applies only to an artifact no pin has ever covered.**
+   §7.4 gives the dangling-owner pass a grace of its own; SQL's `collectDangling`
+   has none, and `TestADeletionFailureDoesNotFailThePrune` fails with one. A pin
+   — live or dangling — is proof that a stored result named these bytes, so the
+   object's age says nothing; an object with no pin at all is what an
+   interrupted write looks like, and that is where the grace belongs. The
+   interrupted-`PutResult` case §7.4 was protecting is covered by the take
+   instead, which is written before the pin.
+
+4. **`result/` objects are protected unless `AllowEmptyIndex` is set.** §7.4 #3
+   says never, unconditionally.
+   `TestASweepRefusesAnIndexThatKnowsNothing` requires the override to collect an
+   orphaned document, and it must: the rule rests on the premise that there is an
+   index to rebuild from, and the override is the operator stating there is not.
+   Counted as `SweepStats.ResultsWithoutEntry` either way.
+
+5. **The sweep costs one attribute read per artifact that carries a pin**, not
+   the zero GETs §7.1 and §7.5 claim. §7.4 #1 requires each owner to be checked
+   and there is no listing that answers it: pins arrive ordered by artifact
+   digest and `byid/` by series, so the two cannot be joined. The check is lazy —
+   `fate` stops at the first pin that survives — so the healthy case is one read
+   per artifact. Decision pins cost nothing: every visible decision digest is
+   read once per run, because `d.<did>` is not a key. Corrected figures for the
+   reference deployment: about 47,000 LIST (the artifact side pages at
+   `artifactListPageSize` = 256, not 1,000) and about 6 M attribute reads, so
+   roughly **$2.60 rather than $0.11** for a whole-store sweep. It stays an
+   operator-invoked command and not a timer.
+
+6. **§6.6's recent-write overlay and immutable-object cache are not built**,
+   and their absence is the design decision rather than an omission. Without an
+   overlay, every read of this store is a fold over what the bucket currently
+   shows: the answer is a function of one visible key set and of nothing
+   process-local. Three consequences, all of them recorded in `blob.go`'s
+   package prose as well.
+
+   * **AC7's determinism becomes global rather than per process.** Two handles
+     on one bucket give the same answer, which is a stronger property than the
+     one §6.6 offered and a simpler one to test — there is no "in-process view"
+     for a test to have to reach around.
+   * **The hazard §6.6 spends most of its own argument on disappears.** A
+     remembered write cannot resurrect a key a prune has since deleted, because
+     nothing is remembered.
+   * **What it costs is read-your-writes.** Against a provider whose listings
+     lag, a `PutResult` followed by a `ListResults` in the *same* process can
+     omit the scan just written. It is reported as "not there yet" and never as
+     deleted (§6.7). §10's README bullet is corrected accordingly: the claim
+     that "the process that wrote it always sees it" is **struck**, because the
+     store does not provide it.
+
+   **§8.3 test 1 must therefore be rewritten** before step 12 implements it. It
+   is specified as "in-process the overlay returns it; through a second `Blob`
+   handle on the same bucket `ListResults` returns the older results", and there
+   is no such asymmetry to observe. What it should assert instead is tolerance:
+   a write whose key the listing hides is absent from the fold, absent
+   identically through either handle, never reported as an evidence loss on any
+   path, still readable by scan ID through `byid`, and present in every later
+   read once the key becomes visible — which is AC6's actual promise. A body cache can be added later without a
+   layout change, because no key is ever rewritten.
+
+7. **§7.1's audit and baseline rows are wrong about their listings.**
+
+   * **`RecordAudit` is 1+ LIST + 1 PUT**, not 0 LIST. `freeAuditInstant`
+     probes for a free nanosecond, one `listIndex` of the ordering field's own
+     prefix per probe, up to `auditInstantProbes` = 64 — one listing in the
+     ordinary case, more only when entries genuinely share a nanosecond. The
+     reason is in that function's doc comment and it is not optional: the shared
+     suite requires two entries recorded at one instant to come back in
+     recording order, and a bucket offers nothing but the key to get an order
+     from.
+   * **`Audit(n)` is 1 LIST + n GET, plus a second LIST whenever the loose keys
+     do not fill the answer** — which is every call against a log shorter than
+     the limit, i.e. every call in a small deployment. The second listing is
+     `noAuditCheckpoints`, and it is what turns "the log has nothing more" into
+     `ErrIndexIncomplete` when what it actually has is a compaction this build
+     cannot read (§6.7, #10 below).
+   * **`SetBaseline` and `DeleteBaseline` pay up to `auditHealProbes` = 8
+     attribute reads** beyond the GETs the table shows, for the self-heal of #9.
+     The count is bounded by that constant and not by the size of the series;
+     the healthy case pays eight `statIndex` calls that all find the pointer
+     present.
+
+8. **`PreviousResult`'s confirmation re-folds the whole prefix**, where §6.4
+   re-lists only the key range between the candidate and the anchor. The cost
+   is 2⌈k/1000⌉ listings for an anchor k scans deep, not ⌈k/1000⌉ + 1, and a
+   third fold on disagreement. It is deliberate, and `previousOf`'s doc comment
+   carries the argument: the narrow form can only see a scan that appeared
+   *between* the candidate and the anchor, while the case that matters is a
+   stale listing view omitting a scan **newer** than the candidate — the entry
+   that would have been the answer. Only a fold from the same starting key
+   produces two answers that are comparable at all. Strictly safer than the
+   specified form and strictly more expensive; the figure above is what step 12
+   asserts.
+
+9. **The audit pointer heals on the next decision of its series, not on the
+   next read**, which is a deviation from AC9's wording and not from its
+   substance. The decision object holds the approval *and* its audit entry in
+   one body under one key, so a partial write leaves neither and the record
+   itself is never at risk; what a process that died between the two objects
+   leaves behind is a derived pointer under `audit/` that `Audit()` reads.
+   `healAuditPointers` repairs it from the listing the next decision of that
+   series has already made, bounded to the newest `auditHealProbes` = 8
+   decisions, because that is where the gap can be — a pointer is missing only
+   when a process died at the head of the series.
+
+   `Audit()` does **not** heal and does not report the gap, and the alternative
+   was rejected on cost: healing on read means listing every series' baseline
+   prefix on every read of the log, which is the one read path that has no
+   series to scope it. So a series that takes no further decision keeps its gap,
+   and finding it is Story 8.11's `--verify`. **The exposure, stated plainly so
+   that it is a decision on the record: an approval whose pointer was lost is in
+   force and correct and readable through `GetBaseline`, and is missing from
+   `Audit()` until either another decision of that target is taken or a verify
+   pass runs.**
+
+10. **`Options.CheckpointGrace` is declared and nothing reads it.** The rule it
+    feeds is I3's deletion rule, whose only deleter is compaction — step 13 —
+    so in this build setting it changes no behaviour. It is declared with the
+    store it belongs to rather than with its consumer so that the option set an
+    operator and a test see does not change shape when compaction lands, and
+    both declarations say in prose that the rule is not in force. A reader must
+    not take the field's presence for the rule's presence, and a step-13 author
+    must not take the assignment in `OpenBlob` for a wired grace.
+
+    The same is true of two constructors: `auditCheckpointAt` (step 13 writes
+    audit checkpoints; this build only detects that one exists and refuses the
+    read) and `rebuildKey` (Story 8.11 writes rebuild markers; this build only
+    honours them by collecting nothing while one is visible). Both say so on
+    their doc comments.
+
+11. **`dialectFor`'s refusal of the blob driver names no command**, where §2.3
+    asked for "a message pointing at `wsaw store rebuild-index`". That command
+    is Story 8.11's and this binary does not have it, and a message naming a
+    command an operator cannot run is worse than one naming none. The message
+    carries the direction instead — the documents are already in the same bucket
+    layout in all four stores, so moving a history between a database store and
+    this one is not a migration in either direction and the index is rebuilt
+    from the documents rather than converted — which is the half of AC16 an
+    operator at a dead end actually needs.
+
+Two shared tests also had to become driver-aware, and both are recorded beside
+the assertion. `TestRetentionRefusesToRunWithoutTheArtifactBucket` asserts that
+the history outlives the bucket, which a store whose index *is* the bucket
+cannot promise; it asserts instead that the store reports itself unreachable
+rather than reporting an empty history. `TestASweepLeavesWhatWsawDidNotWrite`
+plants four foreign objects, two of which are shaped like a bucket index, and the
+bucket-index store counts one fewer stray than the SQL stores do. **Not because
+it judges the fourth object safe** — an earlier draft of both this paragraph and
+the test's own comment said that, and it was never true. The blob sweep walks the
+evidence plus exactly the two index prefixes it needs work lists for, `ref/` and
+`byid/`, and never lists `audit/` at all, so the planted audit entry is out of
+its reach rather than inside it and cleared; the planted pin is inside its reach
+and is counted as a stray, because "owner" is no owner the key grammar spells.
+Same number, and the reason matters to whoever later grows the sweep a pass over
+`audit/`. Both stores leave all four objects exactly where they are, which is
+what the criterion is about.
+
 ---
 
 ## 8. Test plan
@@ -1169,12 +1401,18 @@ compaction timing. **No test sleeps** (AGENTS §5).
 
 ### 8.3 The blob-only tests
 
-1. **Delayed listing omits a just-written key.** In-process the overlay
-   returns it; through a second `Blob` handle on the same bucket
-   `ListResults` returns the older results with no error and never reports the
-   scan as removed, while `GetResult` still succeeds because it reads `byid`
-   and not a listing. After the delay it appears. Assert the error in the
-   missing case is not `ErrNotFound` anywhere it would be read as "deleted".
+1. **Delayed listing omits a just-written key.** *Rewritten by §7.6 #6: the
+   overlay this was drafted against does not exist, so there is no in-process
+   view to contrast with a second handle's, and the original wording cannot
+   pass.* What to assert instead is tolerance. With the entry key hidden from
+   listings, `ListResults` returns the older results with no error and never
+   reports the scan as removed; the answer is byte-identical through the
+   writing handle and through a second `Blob` handle on the same bucket, which
+   is the stronger property the missing overlay buys; `GetResult` still
+   succeeds, because it reads `byid` and not a listing; and once the key
+   becomes visible the scan is in every fold. Assert that the error in the
+   missing case is not `ErrNotFound` anywhere a caller would read it as
+   "deleted".
 2. **Stale listing view.** Two reads over one pinned snapshot return
    byte-identical answers, the same `LatestResult` and the same
    `PreviousResult` (AC7).
@@ -1210,7 +1448,11 @@ compaction timing. **No test sleeps** (AGENTS §5).
     leaves every fold.
 11. **Prune does not delete a freshly re-written artifact.** Prune scan-OLD
     while a concurrent scan re-writes the same content-addressed screenshot;
-    the artifact survives because of the `ModTime` grace.
+    the artifact survives because of the **take marker** of §7.6 #1 and its
+    grace, not because of the artifact's own `ModTime` — a re-capture of
+    unchanged bytes writes no artifact object at all, so the object's age
+    cannot be the reason. Include the release direction as well: a pin written
+    after the take ends the protection.
 12. **Prune does not delete a baseline's evidence** under a stale ref listing,
     and **does** delete it after the baseline is revoked. Approve → revoke →
     prune → the approved scan's screenshot **is** collected.
@@ -1224,9 +1466,18 @@ compaction timing. **No test sleeps** (AGENTS §5).
     the sweep.
 16. **A listed checkpoint whose object is missing** is `ErrIndexIncomplete`,
     not `ErrNotFound`, on every read path.
-17. **Request counts per read path**, asserted against the §7.1 table,
-    including that `LatestResult` reads no checkpoint, `ListResults` reads no
-    result document, `HasBaseline` reads no object, and `Sweep` issues no GET.
+17. **Request counts per read path**, asserted against the §7.1 table **as
+    corrected by §7.6** — eight of its rows are wrong and #7 and #8 are the two
+    that bite this test: `RecordAudit` issues a listing before its PUT,
+    `Audit(n)` issues a second listing whenever the loose keys do not fill the
+    answer, `SetBaseline` pays up to eight attribute reads for the audit-pointer
+    heal, and `PreviousResult` folds the whole prefix twice. Assert the
+    corrected numbers; do not soften an assertion to whatever the code happens
+    to do, which is the one failure mode an AC11 request-count test has. Still
+    true and still worth asserting: `LatestResult` reads no checkpoint,
+    `ListResults` reads no result document, `HasBaseline` reads no object, and
+    `Sweep` issues no GET of a body — though §7.6 #5 makes it one *attribute*
+    read per pinned artifact, which is not the zero the table claims.
 18. **Backwards clock and two hosts disagreeing.** Both scans present, both
     reachable by ID, `Series` unchanged, deterministic order, a `Warn` naming
     the non-monotonic insert, and prune-by-age using the recorded `StartedAt`.
@@ -1268,8 +1519,20 @@ is later served by a SQLite deployment. **Fix in both implementations:**
 `sweepBucket` skips keys that are not valid artifact references, counts them
 separately, and says so. A few lines, and it is the difference between "the
 sweep ignores what it does not own" and "the sweep tries to delete the index
-every night". The README gains a line telling an operator what the delete
-failures a previous version already logged were.
+every night".
+
+**Recorded while implementing step 4: this defect was already fixed before this
+branch began.** `sweepBucket` carries the `isArtifactRef` guard and
+`SweepStats.ForeignObjects` as of `eee6414` (Stories 8.5–8.7), so step 4 of §11
+had nothing to change in `retention.go`; what it actually contributed is the
+extension of `TestASweepLeavesWhatWsawDidNotWrite` with two objects shaped like
+a bucket index, which is the case AC16 permits and which the original test did
+not cover. Two consequences. A reviewer looking for the fix as a commit on this
+branch will not find one, and should not conclude the step was skipped. And the
+README line promised above has no premise: no released version of wsaw ever
+logged those delete failures, because the sweep and the guard shipped in the same
+epic — so **step 14 does not owe that line**, and writing it would tell operators
+about a failure mode they have never seen.
 
 ---
 
@@ -1305,14 +1568,18 @@ failures a previous version already logged were.
 >   every scheduled scan, and between one approving a baseline and the other
 >   seeing it they will disagree about what is expected. This store removes the
 >   database, not the constraint in Story 4.7, AC8.
-> - **A just-written result may not appear in another process's listing
->   immediately.** Object storage does not promise that. wsaw reports it as
->   "not there yet", never as "deleted", and the process that wrote it always
->   sees it. The consequence worth knowing: if a scan is written by `wsaw scan`
->   while the daemon is running, the daemon's next comparison for that target
->   may be against the scan *before* it rather than against it, for as long as
->   the provider takes to converge. wsaw logs when it detects this. It is one
->   more reason Story 4.7's single-node constraint stands.
+> - **A just-written result may not appear in a listing immediately — not even
+>   to the process that wrote it.** Object storage does not promise that, and
+>   wsaw does not paper over it: every read is a listing of what the bucket
+>   currently shows, with no remembered writes on the side. A result in that
+>   window is reported as "not there yet" and never as "deleted", and it is
+>   reported that way identically to every process, so two wsaw instances never
+>   disagree about a history because one of them wrote part of it. The
+>   consequence worth knowing: if a scan is written by `wsaw scan` while the
+>   daemon is running, the daemon's next comparison for that target may be
+>   against the scan *before* it rather than against it, for as long as the
+>   provider takes to converge. wsaw logs when it detects this. It is one more
+>   reason Story 4.7's single-node constraint stands.
 > - **Two operators approving different baselines at the same moment both
 >   succeed.** The later recorded timestamp wins, deterministically, and the
 >   other approval stays visible in the audit log rather than vanishing.
@@ -1323,6 +1590,15 @@ failures a previous version already logged were.
 > - **A bucket lifecycle rule will delete evidence behind wsaw's back.** Index
 >   objects are small and old; a rule that expires or tiers by age will destroy
 >   history. Exclude the `_wsaw/` prefix from any lifecycle policy.
+> - **`wsaw store sweep --allow-empty-index` removes the one protection that
+>   stands between an orphaned scan document and deletion.** Ordinarily a sweep
+>   never collects a result document, even when no index entry points at it: a
+>   document decodes to the scan it records, so it is something an index rebuild
+>   can recover from rather than garbage. The override says "there is no index
+>   to rebuild from", and with it those documents are collected. A listing that
+>   is merely lagging looks exactly like an index that is genuinely absent from
+>   out here, so use the flag only after a rebuild has been attempted, and never
+>   as a way to make a refused sweep run.
 > - **A local directory is the wrong home for it at scale.** The local file
 >   bucket writes two files per index object. A store with millions of results
 >   will exhaust inodes and waste block space long before it fills the disk. On
@@ -1343,6 +1619,20 @@ failures a previous version already logged were.
 A matching one-liner goes in the SQLite section pointing the other way, so
 AC17's "an operator should be able to choose from that paragraph" works in
 both directions.
+
+**Two lines of the text above must not ship ahead of the code they describe**
+(step 14 writes the README; steps 12 and 13 are what make these true).
+
+* The compaction bullet — "a history gets slower as it grows unless compaction
+  is left on", and the sentence about checkpoints being removed 24 hours later
+  — describes step 13. This build reads and unions every checkpoint it can see
+  and writes none, so until step 13 lands there is nothing to leave on and
+  nothing to turn off. Either step 13 lands first or the bullet says that a
+  history simply gets slower as it grows.
+* The read-your-writes bullet as **corrected above**, not as originally
+  drafted: §7.6 #6 struck the promise that the writing process always sees its
+  own write, because §6.6's overlay was not built and that guarantee is not one
+  this store makes.
 
 **Configuration.** `store.driver: blob`, with no `path` and no `dsn`; an
 artifact location (`store.artifactURL` or `store.artifactDir`) is required —
@@ -1392,7 +1682,9 @@ Each step leaves the tree compiling and the suite green.
    that `internal/store`, `internal/config` and `internal/httpapi` are being
    edited concurrently. Land them after that work.
 4. **`fix(store): the sweep ignores keys it does not own`** — §9 defect 2,
-   with its test, for both kinds.
+   with its test, for both kinds. **Already done before this branch**: the
+   guard and its counter shipped with Stories 8.5–8.7, so this step is the test
+   extension only. See the note in §9.
 5. **`fix(store): order the audit log by when it happened`** — SQL's `Audit`
    becomes `order by at desc, id desc`, with a test that a back-dated
    `RecordAudit` lands where its timestamp says.
@@ -1418,7 +1710,16 @@ Each step leaves the tree compiling and the suite green.
     `blobcompact.go` plus its interrupted-compaction, concurrent-compactor
     and grace-period tests.
 14. **`docs: the bucket-index store, what it is for and what it costs
-    (Story 8.10)`** — README, `wsaw.example.yaml`, the Makefile and CI target.
+    (Story 8.10)`** — README and `wsaw.example.yaml`. **The Makefile target and
+    the CI step moved up into step 11**, deliberately: `make test-store-blob`
+    and the CI step that runs it are what make the 191 shared assertions of
+    AC15 a gate rather than something that happens to pass when somebody
+    remembers to set `WSAW_TEST_STORE_DRIVER`. Leaving them until last would
+    have left every gate in the repository green while the blob store went
+    unexercised, which is the one deferred item whose absence creates a false
+    green now instead of later. The step needs no container, unlike the
+    Postgres and MySQL ones. Step 14 keeps the prose, and §10 says which two of
+    its bullets must not ship ahead of steps 12 and 13.
 
 ---
 

@@ -28,7 +28,7 @@ import (
 // The artifacts go in first, exactly as a scan writes them: the bucket is
 // written before the row that references it (Story 8.2, AC4), and it is that
 // order the sweep's grace period exists to survive.
-func withEvidence(t *testing.T, s *store.Store, id string, at time.Time, screenshot, body []byte) (screenshotRef, bodyRef string) {
+func withEvidence(t *testing.T, s store.Store, id string, at time.Time, screenshot, body []byte) (screenshotRef, bodyRef string) {
 	t.Helper()
 
 	screenshotRef, err := s.PutArtifact("screenshot-before-consent", screenshot)
@@ -78,7 +78,7 @@ func writeArtifact(t *testing.T, dir, kind string, data []byte) string {
 	return kind + "/" + digest
 }
 
-func assertStored(t *testing.T, s *store.Store, ref, what string) {
+func assertStored(t *testing.T, s store.Store, ref, what string) {
 	t.Helper()
 
 	if _, err := s.StatArtifact(t.Context(), ref); err != nil {
@@ -86,7 +86,7 @@ func assertStored(t *testing.T, s *store.Store, ref, what string) {
 	}
 }
 
-func assertGone(t *testing.T, s *store.Store, ref, what string) {
+func assertGone(t *testing.T, s store.Store, ref, what string) {
 	t.Helper()
 
 	switch _, err := s.StatArtifact(t.Context(), ref); {
@@ -541,7 +541,7 @@ func TestAMigratedStoreCanPrune(t *testing.T) {
 
 	o.insert(t, res)
 
-	s, err := store.Open(t.Context(), o.opts)
+	s, err := store.OpenSQL(t.Context(), o.opts)
 	if err != nil {
 		t.Fatalf("migrating the store: %v", err)
 	}

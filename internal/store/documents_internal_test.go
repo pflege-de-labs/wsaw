@@ -25,18 +25,18 @@ import (
 // Putting the column back rather than building the old schema by hand keeps
 // this test about the mover: the migration mechanism itself is covered against
 // every dialect in documents_test.go.
-func documentStore(t *testing.T, log *slog.Logger, documents map[string]string) *Store {
+func documentStore(t *testing.T, log *slog.Logger, documents map[string]string) *SQL {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	s, err := Open(t.Context(), Options{
+	s, err := OpenSQL(t.Context(), Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
 		ArtifactDir: filepath.Join(dir, "artifacts"),
 		Logger:      log,
 	})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("OpenSQL: %v", err)
 	}
 
 	t.Cleanup(func() {

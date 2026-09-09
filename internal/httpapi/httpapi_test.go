@@ -34,7 +34,7 @@ import (
 type fixture struct {
 	t      *testing.T
 	server *httptest.Server
-	store  *store.Store
+	store  store.Store
 	client *http.Client
 
 	// artifactDir is where the store's bucket keeps its evidence, so a test
@@ -340,6 +340,61 @@ func TestTargetsIncludeStalenessForNeverScanned(t *testing.T) {
 		if s.StaleReason == "" {
 			t.Errorf("series %s has no stale reason", s.Mode)
 		}
+	}
+}
+
+// TestTargetsReportWhichSeriesHaveABaseline covers the one question the
+// targets page asks about baselines. It is asked with HasBaseline rather than
+// by reading the approved result (Story 8.10), so the answer it gives is
+// asserted here rather than assumed from the store's own tests.
+func TestTargetsReportWhichSeriesHaveABaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{}, nil)
+
+	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
+
+	hasBaseline := func(mode model.ConsentMode) bool {
+		t.Helper()
+
+		var payload struct {
+			Targets []httpapi.TargetView `json:"targets"`
+		}
+
+		if err := json.Unmarshal([]byte(body(t, f.get("/api/v1/targets"))), &payload); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(payload.Targets) != 1 {
+			t.Fatalf("got %d targets", len(payload.Targets))
+		}
+
+		for _, s := range payload.Targets[0].Series {
+			if s.Mode == mode {
+				return s.HasBaseline
+			}
+		}
+
+		t.Fatalf("no series for consent mode %s", mode)
+
+		return false
+	}
+
+	if hasBaseline(model.ConsentReject) {
+		t.Error("a series with no approval is reported as having a baseline")
+	}
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, "scan-1", "martin", ""); err != nil {
+		t.Fatalf("SetBaseline: %v", err)
+	}
+
+	if !hasBaseline(model.ConsentReject) {
+		t.Error("an approved series is not reported as having a baseline")
+	}
+
+	// The approval belongs to one series, not to the target.
+	if hasBaseline(model.ConsentAccept) {
+		t.Error("approving one consent mode reported a baseline for the other")
 	}
 }
 

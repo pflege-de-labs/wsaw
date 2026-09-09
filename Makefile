@@ -398,7 +398,20 @@ PG_PORT            ?= 55432
 MYSQL_PORT         ?= 53306
 
 .PHONY: test-store-all
-test-store-all: test test-store-postgres test-store-mysql
+test-store-all: test test-store-blob test-store-postgres test-store-mysql
+
+# test-store-blob runs the same shared suite against the store whose index is
+# objects in the artifact bucket (Story 8.10, AC15). It needs no container and
+# no service of any kind — a temporary directory is the bucket — so unlike the
+# two targets below it belongs in the default CI job.
+#
+# Without it the store suite proves nothing about that driver: `go test
+# ./internal/store/` runs every shared assertion against SQLite only, so an
+# edit that broke ListResults, PreviousResult or the prune under the bucket
+# index would leave every gate in this repository green.
+.PHONY: test-store-blob
+test-store-blob:
+	WSAW_TEST_STORE_DRIVER=blob go test -count=1 ./internal/store/
 
 .PHONY: test-store-postgres
 test-store-postgres:

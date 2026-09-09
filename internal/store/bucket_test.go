@@ -792,7 +792,7 @@ func TestWorthRetryingReadsProviderCodes(t *testing.T) {
 
 // TestBucketUsesTheStoresRetryPolicy is AC8's second half, and the reason
 // transientBucketError exists: a retryable bucket failure has to be
-// recognised by the classifier Store.retry already consults, so that one
+// recognised by the classifier the store's retrier already consults, so that one
 // policy — maxAttempts and retryBackoff — governs both the database and the
 // bucket.
 func TestBucketUsesTheStoresRetryPolicy(t *testing.T) {
@@ -821,7 +821,7 @@ func TestBucketUsesTheStoresRetryPolicy(t *testing.T) {
 
 			var attempts int
 
-			// The same loop Store.retry runs, down to the dialect's own
+			// The same loop the store's retrier runs, down to the dialect's own
 			// classifier. If the bucket's errors did not fit that classifier
 			// this test would fail, which is the point of it.
 			b.setRetry(func(ctx context.Context, _ string, fn func(context.Context) error) error {

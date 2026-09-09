@@ -117,7 +117,7 @@ func (m *DocumentMigration) note(scanID string) {
 // bucket, or nil where there was nothing to move. It is how the command an
 // operator runs an upgrade from prints the outcome rather than asking them to
 // read the log.
-func (s *Store) DocumentMigration() *DocumentMigration { return s.documents }
+func (s *SQL) DocumentMigration() *DocumentMigration { return s.documents }
 
 // PlanDocumentMigration reports what upgrading this store would move, without
 // moving it (AC6).
@@ -157,7 +157,7 @@ func PlanDocumentMigration(ctx context.Context, opts Options) (*DocumentMigratio
 // process's, and the migration holds one that deliberately spans minutes. A
 // count against a database that has stopped answering must still fail rather
 // than hang the start (Story 8.1, AC6).
-func (s *Store) planDocuments(ctx context.Context) (*DocumentMigration, error) {
+func (s *SQL) planDocuments(ctx context.Context) (*DocumentMigration, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -187,7 +187,7 @@ func (s *Store) planDocuments(ctx context.Context) (*DocumentMigration, error) {
 }
 
 // moveDocumentsToBucket is the half of migration 3 that SQL cannot express.
-func (s *Store) moveDocumentsToBucket(ctx context.Context) error {
+func (s *SQL) moveDocumentsToBucket(ctx context.Context) error {
 	return s.moveDocuments(ctx, documentBatchSize)
 }
 
@@ -198,7 +198,7 @@ func (s *Store) moveDocumentsToBucket(ctx context.Context) error {
 // itself is testable: crossing a boundary is where a paged migration skips or
 // repeats a row, and a test that needs a store of 257 results to reach that
 // boundary is a test nobody runs.
-func (s *Store) moveDocuments(ctx context.Context, batch int) error {
+func (s *SQL) moveDocuments(ctx context.Context, batch int) error {
 	m, err := s.planDocuments(ctx)
 	if err != nil {
 		return err
@@ -267,7 +267,7 @@ func (s *Store) moveDocuments(ctx context.Context, batch int) error {
 // spend the store's whole retry policy per row, turning a dead bucket into
 // hours of work, a log line per scan, and a failure count the size of the
 // store (AC3, AC4).
-func (s *Store) moveEveryBatch(ctx context.Context, m *DocumentMigration, batch int) error {
+func (s *SQL) moveEveryBatch(ctx context.Context, m *DocumentMigration, batch int) error {
 	var (
 		after     *resultRowKey
 		inARow    int
@@ -333,7 +333,7 @@ type resultRowKey struct {
 func (k resultRowKey) args() []any { return []any{k.target, k.mode, k.scanID} }
 
 // documentKeys reads the next page of rows that still hold a document.
-func (s *Store) documentKeys(ctx context.Context, after *resultRowKey, batch int) ([]resultRowKey, error) {
+func (s *SQL) documentKeys(ctx context.Context, after *resultRowKey, batch int) ([]resultRowKey, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -395,7 +395,7 @@ func (s *Store) documentKeys(ctx context.Context, after *resultRowKey, batch int
 // A bucket write that failed comes back as the first return value rather than
 // as an error, because it is the caller's business how many of them in a row
 // mean the bucket itself has gone: one is a bad row, five is a dead bucket.
-func (s *Store) moveDocument(
+func (s *SQL) moveDocument(
 	ctx context.Context,
 	key resultRowKey,
 	m *DocumentMigration,
@@ -449,7 +449,7 @@ func (s *Store) moveDocument(
 }
 
 // readStoredDocument reads one row's document, and nothing else on the row.
-func (s *Store) readStoredDocument(ctx context.Context, key resultRowKey) (string, error) {
+func (s *SQL) readStoredDocument(ctx context.Context, key resultRowKey) (string, error) {
 	q := `select ` + documentColumn + ` from ` + resultsTable +
 		` where target = ? and consent_mode = ? and scan_id = ?`
 
@@ -497,7 +497,7 @@ func summaryFromDocument(document []byte) (Summary, bool) {
 // ordered by since, and a migration that recomputed them from a document that
 // disagreed would silently reorder a target's history. Moving evidence must
 // not change the dataset.
-func (s *Store) recordMovedDocument(ctx context.Context, key resultRowKey, sum Summary, ref resultRef) error {
+func (s *SQL) recordMovedDocument(ctx context.Context, key resultRowKey, sum Summary, ref resultRef) error {
 	args := append(resultDerivedArgs(sum, ref), documentMovedToBucket)
 	args = append(args, key.args()...)
 
@@ -550,7 +550,7 @@ const schemaArtifactReferences = 4
 // have to refuse to delete rather than delete evidence it could not account
 // for. That is why it is retried on every start until it is done.
 //
-// No row can fail an Open. A row whose document is missing or undecodable is
+// No row can fail an open. A row whose document is missing or undecodable is
 // marked as one whose references cannot be derived — recording the document's
 // own reference, which the row knows regardless — and a store that stops
 // answering part way through leaves the rest for the next start. Refusing to
@@ -558,11 +558,11 @@ const schemaArtifactReferences = 4
 // history offline over one row, which is the opposite of what Story 8.2, AC5
 // asks for.
 //
-// The one thing here that can fail an Open is the count below, and that is
+// The one thing here that can fail an open is the count below, and that is
 // deliberate rather than an oversight in the paragraph above: a database that
 // will not answer a single count is not a store to open and start scanning
 // into, and it is the same query every other start depends on.
-func (s *Store) indexArtifactReferences(ctx context.Context) error {
+func (s *SQL) indexArtifactReferences(ctx context.Context) error {
 	pending, err := s.countUnindexedResults(ctx)
 	if err != nil {
 		return err
@@ -590,7 +590,7 @@ func (s *Store) indexArtifactReferences(ctx context.Context) error {
 // countUnindexedResults counts the rows whose references are still to be
 // derived. It is one count on a column with a default, so a store with nothing
 // to do pays a single query for the check.
-func (s *Store) countUnindexedResults(ctx context.Context) (int, error) {
+func (s *SQL) countUnindexedResults(ctx context.Context) (int, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -615,7 +615,7 @@ func (s *Store) countUnindexedResults(ctx context.Context) (int, error) {
 // does: a store that has refused several rows in a row has stopped answering
 // rather than met several bad rows, and grinding through the rest of the table
 // against it would spend the whole retry policy per row.
-func (s *Store) indexEveryBatch(ctx context.Context, batch int) (indexed, underivable int) {
+func (s *SQL) indexEveryBatch(ctx context.Context, batch int) (indexed, underivable int) {
 	var (
 		after  *resultRowKey
 		inARow int
@@ -678,7 +678,7 @@ type unindexedResult struct {
 
 // unindexedResults reads the next page of rows whose references are still to be
 // derived.
-func (s *Store) unindexedResults(ctx context.Context, after *resultRowKey, batch int) ([]unindexedResult, error) {
+func (s *SQL) unindexedResults(ctx context.Context, after *resultRowKey, batch int) ([]unindexedResult, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -739,7 +739,7 @@ func (s *Store) unindexedResults(ctx context.Context, after *resultRowKey, batch
 // are unknown, which is what stops a sweep from concluding that a screenshot
 // belonging to it is garbage (Tenet 5). Marking it also stops the next start
 // from reading the same broken object again.
-func (s *Store) indexOneResult(ctx context.Context, row unindexedResult) (derived bool, err error) {
+func (s *SQL) indexOneResult(ctx context.Context, row unindexedResult) (derived bool, err error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
@@ -759,7 +759,7 @@ func (s *Store) indexOneResult(ctx context.Context, row unindexedResult) (derive
 
 // refsForRow reads a row's document and lists what it names, falling back to
 // the document's own reference when the document cannot be read.
-func (s *Store) refsForRow(ctx context.Context, row unindexedResult) (refs []string, derived bool) {
+func (s *SQL) refsForRow(ctx context.Context, row unindexedResult) (refs []string, derived bool) {
 	if row.ref.ref == "" {
 		// A row that names no document at all. Migration 3 refuses to finish
 		// while one exists, so this is a row edited outside wsaw: there is
@@ -781,7 +781,7 @@ func (s *Store) refsForRow(ctx context.Context, row unindexedResult) (refs []str
 
 // recordResultRefs writes one row's references and marks the row accordingly,
 // in one transaction so that a row can never claim references it does not have.
-func (s *Store) recordResultRefs(ctx context.Context, key resultRowKey, refs []string, state int) error {
+func (s *SQL) recordResultRefs(ctx context.Context, key resultRowKey, refs []string, state int) error {
 	err := s.retry(ctx, "recording a result's artifact references", func(ctx context.Context) error {
 		return s.recordResultRefsTx(ctx, key, refs, state)
 	})
@@ -792,7 +792,7 @@ func (s *Store) recordResultRefs(ctx context.Context, key resultRowKey, refs []s
 	return nil
 }
 
-func (s *Store) recordResultRefsTx(ctx context.Context, key resultRowKey, refs []string, state int) error {
+func (s *SQL) recordResultRefsTx(ctx context.Context, key resultRowKey, refs []string, state int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

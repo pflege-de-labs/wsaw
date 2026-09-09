@@ -110,10 +110,11 @@ func rewindSchemaVersion(t *testing.T, db *sql.DB, opts store.Options, version i
 // SQL, so the exemption for that kind is sound.
 func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 	t.Parallel()
+	skipUnlessSQL(t)
 
 	opts := storeOptions(t)
 
-	s, err := store.Open(t.Context(), opts)
+	s, err := store.OpenSQL(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 	orphanDocument := writeArtifact(t, opts.ArtifactDir, "result", []byte(`{"scanId":"nobody"}`))
 
 	// Reopened, which is what runs the backfill and marks the row.
-	s, err = store.Open(t.Context(), opts)
+	s, err = store.OpenSQL(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,17 +220,18 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 // exemption above would otherwise be.
 //
 // The reference backfill is best-effort by design: it reads a document per row
-// and gives up rather than failing an Open. A row it has not reached has no
+// and gives up rather than failing the open. A row it has not reached has no
 // reference row of its own, so a sweep asking "does any result name this
 // document" would get no for the document of a perfectly live result — and
 // delete the evidence. The schema records every row's own document reference
 // in one statement, before any document is read, and this is that guarantee.
 func TestTheDocumentOfALiveResultSurvivesAnUnfinishedBackfill(t *testing.T) {
 	t.Parallel()
+	skipUnlessSQL(t)
 
 	opts := storeOptions(t)
 
-	s, err := store.Open(t.Context(), opts)
+	s, err := store.OpenSQL(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +254,7 @@ func TestTheDocumentOfALiveResultSurvivesAnUnfinishedBackfill(t *testing.T) {
 	// runs again on the next open, as it does for a store upgrading now.
 	rewindSchemaVersion(t, rawDB(t, opts), opts, 4)
 
-	s, err = store.Open(t.Context(), opts)
+	s, err = store.OpenSQL(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,18 +445,7 @@ func TestRetentionRefusesToRunWithoutTheArtifactBucket(t *testing.T) {
 		t.Errorf("ArtifactsDeleted = %d against a bucket that is gone, want 0", stats.ArtifactsDeleted)
 	}
 
-	// The history is still there: a prune that could not reclaim must not
-	// remove the rows that say what there was to reclaim. The row is what is
-	// asserted rather than the result, because reading a result now means
-	// reading a document out of a bucket that is gone.
-	rows, err := s.ListResults("site", model.ConsentReject, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(rows) != 1 {
-		t.Errorf("the store holds %d results after a prune that could not reach the bucket, want 1", len(rows))
-	}
+	assertTheHistorySurvivedALostBucket(t, s)
 
 	if _, err := s.Sweep(t.Context(), time.Now(), store.SweepOptions{}); err == nil {
 		t.Error("a sweep against a bucket that is gone reported success")
@@ -535,11 +526,27 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Two shapes of foreign object: one with no kind at all, and one under a
-	// prefix that is not a kind wsaw writes but has the right shape otherwise.
+	// Four shapes of foreign object. The first has no kind at all; the second
+	// sits under a prefix that is not a kind wsaw writes but has the right
+	// shape otherwise.
+	//
+	// The last two are a bucket-index layout (Story 8.10), which AC16
+	// explicitly permits this store to meet: a bucket whose index once lived
+	// in it beside the evidence, later served by a SQL deployment that has no
+	// idea those keys exist. They are the sharpest case, because the ref
+	// marker ends in a kind and a digest that on their own would pass the
+	// shape test — the whole key is what is judged, and it begins with a
+	// prefix that is not a kind. A sweep that took them for garbage would ask
+	// the bucket seam to delete a key it refuses to name, which is a logged
+	// failure on every sweep for ever and never a byte reclaimed.
 	foreign := map[string][]byte{
 		"a-leftover-staging-file": []byte("not ours"),
 		"vendor-export/0000000000000000000000000000000000000000000000000000000000000000": []byte("also not ours"),
+		"_wsaw/index/v1/audit/7434507724731319018.20260908T104512Z." +
+			"ec77eeb0cd4a92113b8f2a6d40915cc7": []byte("{}"),
+		"_wsaw/index/v1/ref/screenshot-after-consent/" +
+			"1111111111111111111111111111111111111111111111111111111111111111/" +
+			"owner": {},
 	}
 
 	for key, data := range foreign {
@@ -559,8 +566,8 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if stats.ForeignObjects != len(foreign) {
-		t.Errorf("ForeignObjects = %d, want %d", stats.ForeignObjects, len(foreign))
+	if want := foreignToThisStore(len(foreign)); stats.ForeignObjects != want {
+		t.Errorf("ForeignObjects = %d, want %d", stats.ForeignObjects, want)
 	}
 
 	if stats.ArtifactsFailed != 0 {

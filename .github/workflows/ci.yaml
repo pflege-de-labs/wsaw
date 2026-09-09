@@ -81,6 +81,22 @@ jobs:
       - name: Test
         run: go test -race -timeout 15m ./...
 
+      # The store test suite is the specification of what a store does, and the
+      # step above runs it against SQLite only: `open(t)` picks its driver from
+      # WSAW_TEST_STORE_DRIVER, which nothing sets. Without this step an edit
+      # that broke ListResults, PreviousResult or retention under the store
+      # whose index is objects in the bucket (Story 8.10, AC15) would leave
+      # every gate in this repository green.
+      #
+      # On both runners rather than Linux only, unlike the cloudblob step
+      # below. It costs a few seconds — a temporary directory is the bucket, so
+      # there is no service to start — and the local file bucket is exactly
+      # where a case-insensitive filesystem could collapse two index keys the
+      # grammar keeps apart, which is a macOS-specific failure the Linux run
+      # cannot see.
+      - name: Test the store suite against the bucket index
+        run: make test-store-blob
+
       # The cloud drivers are behind a build tag (Story 8.8, AC3), and a file
       # whose build constraint is off is invisible to go build, go vet and the
       # linter alike. Without this step the second released variant would be
