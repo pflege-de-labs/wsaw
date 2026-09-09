@@ -121,11 +121,25 @@ something specific to reject mode.
 
 Corroboration: `_gcl_au` (Google Ads first-party linker, 90-day, **not**
 `Secure`) is written in exactly those 3 scans and in none of the other 81.
-Across all targets and modes the counts line up exactly:
-`consent.php?id=0` count == ads-fired count == `_gcl_au` count.
 
-So: **`consent.php?id=0` predicts a Google Ads leak with no false positives
-and no false negatives in 519 stored scans.**
+Checked against the whole store — 852 scans, 281 `none` / 287 `reject` /
+284 `accept`, across all five targets:
+
+| mode | scans | ads fired | `consent.php?id=0` | `_gcl_au` set |
+|------|------:|----------:|-------------------:|--------------:|
+| none | 281 | 0 | 0 | 0 |
+| reject | 287 | 3 | 3 | 3 |
+| accept | 284 | 258 | 2 | 258 |
+
+In the 568 `none` and `reject` scans the two events co-occur three times and
+never separately: no scan sent ad traffic without `id=0`, and no scan with
+`id=0` failed to send it. `_gcl_au` tracks ads-fired exactly in all 852,
+accept mode included — which is what makes it usable as the alerting signal
+even where the CMP endpoint is not visible.
+
+So: **`consent.php?id=0` predicts a Google Ads leak under reject with no
+false positives and no false negatives in the whole store.** In accept mode
+it predicts nothing, because there the ad tags are supposed to fire.
 
 Two consequences:
 
