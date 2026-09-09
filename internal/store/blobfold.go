@@ -331,6 +331,11 @@ type indexedResult struct {
 	document resultRef
 	refs     []string
 	body     []byte
+
+	// summary is what the body carries, kept alongside it so that a caller
+	// which has to compare this derivation against one already in the index
+	// does not have to decode the bytes it just encoded (Story 8.11).
+	summary Summary
 }
 
 // describeResult derives every key and the one body a stored result needs.
@@ -380,12 +385,40 @@ func (s *Blob) describeResult(res *model.Result, ref resultRef) (indexedResult, 
 		document: ref,
 		refs:     refs,
 		body:     body,
+		summary:  sum,
 	}, nil
 }
 
 // indexResult writes the index objects that make one stored document findable,
-// in the order PutResult's comment argues for.
+// in the order PutResult's comment argues for, and schedules the housekeeping
+// that keeps a series' directory from growing without bound.
 func (s *Blob) indexResult(ctx context.Context, r indexedResult) error {
+	if err := s.writeIndexObjects(ctx, r); err != nil {
+		return err
+	}
+
+	// Housekeeping, and deliberately last. The scan is recorded and durable
+	// above this line, so a compaction that cannot finish is a compaction that
+	// will be attempted again rather than a stored result reported as unstored
+	// (see considerCompaction, which also answers why deletion happens inside
+	// a call that stored a result).
+	s.considerCompaction(ctx, r.series)
+
+	return nil
+}
+
+// writeIndexObjects is indexResult without the compaction it schedules.
+//
+// It is split out for the rebuild, which promises in three places — its own
+// documentation, the command's usage text and the README — that it adds and
+// never removes. Compaction deletes loose entry keys, so a rebuild that ran it
+// would be deleting keys on the strength of that promise, over a directory that
+// is half rebuilt and whose entries arrived in content-hash order rather than
+// in time order. The deletions are grace-guarded and would lose nothing, but
+// "this command removes nothing" has to be true rather than nearly true
+// (Story 8.11, AC4). A rebuild leaves the series exactly as compactable as it
+// found it, and the next stored scan compacts it.
+func (s *Blob) writeIndexObjects(ctx context.Context, r indexedResult) error {
 	if err := s.pinArtifacts(ctx, r); err != nil {
 		return err
 	}
@@ -408,18 +441,7 @@ func (s *Blob) indexResult(ctx context.Context, r indexedResult) error {
 		return err
 	}
 
-	if err := s.recordSeries(ctx, r.series); err != nil {
-		return err
-	}
-
-	// Housekeeping, and deliberately last. The scan is recorded and durable
-	// above this line, so a compaction that cannot finish is a compaction that
-	// will be attempted again rather than a stored result reported as unstored
-	// (see considerCompaction, which also answers why deletion happens inside
-	// a call that stored a result).
-	s.considerCompaction(ctx, r.series)
-
-	return nil
+	return s.recordSeries(ctx, r.series)
 }
 
 // pinArtifacts writes the reverse index this result's evidence is kept alive by.

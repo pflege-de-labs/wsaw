@@ -206,9 +206,11 @@ type ContainerBrowser struct {
 
 // Store configures persistence.
 type Store struct {
-	// Driver is sqlite (the default), postgres, or mysql. SQLite needs no
-	// server and is what the single-binary deployment assumes; the others
-	// exist for a deployment that already runs one (Story 4.7).
+	// Driver is sqlite (the default), postgres, mysql, or blob. SQLite needs
+	// no server and is what the single-binary deployment assumes; the two
+	// server databases exist for a deployment that already runs one
+	// (Story 4.7); blob keeps the index as objects in the artifact bucket, so
+	// there is no database at all (Story 8.10).
 	Driver string `yaml:"driver,omitempty"`
 	// DSN is the connection string for a server database. It may be a secret
 	// reference, and should be: a DSN carries a password.

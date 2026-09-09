@@ -51,7 +51,7 @@ wsaw scan --url https://example.com/ --browser-runtime local
 ```sh
 make build            # ./dist/wsaw
 make build-cloudblob  # ./dist/wsaw_cloudblob, with the S3, GCS and Azure drivers
-make release          # all four platforms, with checksums
+make release          # both variants, all four platforms, with checksums and sizes
 ```
 
 Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: take the default one unless you intend to keep evidence in object storage, in which case see [the artifact bucket](#the-artifact-bucket).
@@ -108,6 +108,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw store migrate` | Bring the store's schema up to date; `--dry-run` reports what would move |
 | `wsaw store prune` | Apply retention and reclaim the artifacts it orphans; `--dry-run` lists them |
 | `wsaw store sweep` | Delete artifacts nothing references any more; `--dry-run` lists them |
+| `wsaw store rebuild-index` | Rebuild the index from the documents in the bucket; `--verify` checks it and exits non-zero on drift |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
@@ -526,7 +527,7 @@ store:
   path: /var/lib/wsaw/wsaw.db      # empty uses the platform state directory
 ```
 
-It is the fastest of the four to read, and the only one you can point a SQL tool at. If what you want is not one file but *no* local state and no database process anywhere, read [the store with no database](#the-store-with-no-database-the-index-in-the-bucket) below before choosing.
+It is the fastest of the four to read, and the file opens in any SQL tool.
 
 **PostgreSQL:**
 
@@ -557,7 +558,9 @@ store:
 
 What it buys and what it costs are both worth reading before choosing it: [the store with no database](#the-store-with-no-database-the-index-in-the-bucket), below.
 
-The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots, stored bodies and result documents all live in the artifact bucket whichever store is used: they are evidence, and evidence does not belong in an index.
+**Choosing between the four.** SQLite if you want one file, the fastest reads, and the ability to open your history with any SQL tool. A server database if you would rather back up and replicate results the way you do everything else. `blob` if you would rather have no local state and no database process anywhere, and can pay per-request latency for it.
+
+The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings.
 
 The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread. `blob` has no schema; it records its index layout as an object in the bucket, and refuses a layout written by a newer wsaw on exactly the same principle.
 
@@ -642,7 +645,7 @@ store:
 
 Credentials are still the AWS ones: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` hold MinIO's access key and secret key. `region` is required by the SDK even where the service ignores it. The bucket needs the same four permissions as S3; MinIO's built-in `readwrite` policy scoped to the one bucket is enough. For a service on plain HTTP inside a private network, add `&disable_https=true` — and know that the evidence then crosses that network unencrypted.
 
-**`s3://`, `gs://` and `azblob://` resolve only in a build made with `-tags cloudblob`.** The three cloud SDKs cost more than the rest of wsaw put together — the default binary measures about 37 MB, the `cloudblob` one about 77 MB — so which providers are compiled in is a deliberate decision rather than a default (Story 8.8). The default binary speaks `file://` and plain directory paths and nothing else: it opens no cloud SDK and resolves no credential chain, so a local deployment does not acquire cloud behaviour by being linked against it. Pointed at a scheme it cannot open, either build fails at startup, names the URL, says which build it is, and lists what that build does support. Both builds are released; the tagged one is named as such.
+**`s3://`, `gs://` and `azblob://` resolve only in a build made with `-tags cloudblob`.** The three cloud SDKs cost more than the rest of wsaw put together — the released `linux/amd64` binary is about 26 MB by default and about 56 MB with them, and `dist/SIZES` carries the figure for every platform of every release — so which providers are compiled in is a deliberate decision rather than a default (Story 8.8). The default binary speaks `file://` and plain directory paths and nothing else: it opens no cloud SDK and resolves no credential chain, so a local deployment does not acquire cloud behaviour by being linked against it. Pointed at a scheme it cannot open, either build fails at startup, names the URL, says which build it is, and lists what that build does support. Both builds are released; the tagged one is named as such.
 
 wsaw writes to the bucket while it is starting, and removes what it wrote. A bucket that is unreachable, that does not exist, or that refuses writes — a read-only policy, a credential with read scope, an expired SAS token — fails the start with a message naming the bucket, rather than turning tonight's first scan into evidence nobody can store. Reachability then stays part of readiness: `/api/v1/ready` reports not-ready when the bucket has stopped answering, on the same argument the store is checked on, because a wsaw that cannot record what it observed is not ready however healthy its browser is.
 
@@ -689,15 +692,13 @@ Nothing in that index is ever overwritten. Every write goes to a key nobody else
 - **It is still single-node, and the disagreement lasts longer here.** That no store makes wsaw multi-node is said above and is not changed by this one; what differs is what happens on either side of that line. Two instances against one bucket cannot corrupt the index — nothing is ever overwritten, so two writers produce two keys rather than a lost update, which is more than a shared database gives you. But the gap between one instance recording an approval and the other's listing showing it is as long as the provider takes to converge, rather than as long as a transaction, so the window in which they disagree about a baseline is wider and has no upper bound wsaw can state. This store removes the database, not the constraint.
 - **A just-written result may not appear in a listing immediately — not even to the process that wrote it.** Object storage does not promise that it will, and wsaw does not paper over it by remembering its own writes: every read is a fold over what the bucket currently shows, so every reader gets the same answer at the same moment. A scan inside that window is reported as one that is not there yet and never as one that was deleted, and it is readable by scan ID throughout — it is the listing that lags, not the store. The consequence worth knowing: a scan written by `wsaw scan` while the daemon is running may not be what the daemon's next comparison for that target is made against; it will compare against the scan before it instead, and nothing detects that, because from outside the bucket the newer scan simply is not there yet. What *is* detected is an index that is visibly incomplete rather than merely behind — a key a listing showed and a read then could not find — and that fails the read and says so rather than quietly returning a history one scan short.
 - **Two operators approving different baselines in the same moment both succeed.** Each approval is its own object, the fold picks the later one deterministically, and the other stays in the audit log rather than vanishing. A baseline is a compliance decision, so last-writer-wins on a mutated object — where the loser leaves no trace — is not an acceptable failure mode. Withdrawing one is not symmetrical with approving it, and deliberately so: an approval that loses that race leaves the previous state standing and silences nothing, while a withdrawal that loses would leave findings silenced against a baseline you were told was gone. So a withdrawal reads the log back after writing, and reports `the withdrawal … did not take effect` rather than reporting success — retry it, and the second attempt takes.
-- **An interrupted approval can leave the audit log one entry behind, and it catches up on the next decision rather than on the next read.** The approval itself is never at risk: the decision and the audit entry it explains are one object under one key, so there is no interruption that records one without the other. What can be missing is the copy filed under `audit/` that the log view is read through, and it is re-created by the next approval or withdrawal of that same target. If a target takes no further baseline decision, the gap stays until `wsaw store rebuild-index --verify` (not built yet) finds it. Healing it on every read of the log would mean listing every target's decisions on every render, to repair something that never endangers the record.
+- **An interrupted approval can leave the audit log one entry behind, and it catches up on the next decision rather than on the next read.** The approval itself is never at risk: the decision and the audit entry it explains are one object under one key, so there is no interruption that records one without the other. What can be missing is the copy filed under `audit/` that the log view is read through, and it is re-created by the next approval or withdrawal of that same target. If a target takes no further baseline decision, the gap stays until [`wsaw store rebuild-index --verify`](#rebuilding-an-index-from-the-bucket) finds it, which is one of the things that command is for. Healing it on every read of the log would mean listing every target's decisions on every render, to repair something that never endangers the record.
 - **The `_wsaw/` prefix is the one thing you still have to back up.** A scan document decodes to the scan it records, so the result index can be rebuilt from the evidence. Baselines, their approvals and the audit log cannot be rebuilt from anything, because they are decisions rather than properties of a scan. Turn on bucket versioning, or back that prefix up. (Share links need no backup — they are signed by `api.share.key`, not stored.)
-- **A local directory is the wrong home for it at scale.** The local file bucket writes two files per object, so an index of a few million results becomes tens of millions of files: you exhaust inodes long before you fill the disk, and a 450-byte object rounded up to two blocks wastes most of the space it occupies. On local disk, SQLite is the right store. The bucket index is for object storage — or for a small deployment that values one binary above everything else.
+- **A local directory is the wrong home for it at scale.** The local file bucket is a file per object, and this store writes several small objects per scan, so a few million results become several million files: you exhaust inodes long before you fill the disk, and a 450-byte index object rounded up to a filesystem block wastes most of the space it occupies. On local disk, SQLite is the right store. The bucket index is for object storage — or for a small deployment that values one binary above everything else.
 
-**Moving between store kinds.** There is no migration between the SQL stores and this one, in either direction, and there will not be one. All four keep their documents in the same bucket layout, so what does not port is the index — and an index is derived. The way across is to point the new store at the same bucket and rebuild its index from the documents, which is also the recovery procedure for an index that was lost rather than moved. **That command — `wsaw store rebuild-index` — is not built yet.** Until it is, a history cannot be moved between store kinds; `wsaw store migrate` against `blob` says exactly that rather than pretending to convert anything.
+**Moving between store kinds.** There is no migration between the SQL stores and this one, in either direction, and there will not be one. All four keep their documents in the same bucket layout, so what does not port is the index — and an index is derived. The way across is to point the new store at the same bucket and run [`wsaw store rebuild-index`](#rebuilding-an-index-from-the-bucket), which is also the recovery procedure for an index that was lost rather than moved. `wsaw store migrate` against `blob` says so rather than pretending to convert anything: there is no schema here to migrate.
 
 One thing survives a switch away from `blob` and is worth knowing about rather than discovering: the `_wsaw/` objects stay in the bucket, and a SQLite or Postgres deployment pointed at it afterwards will never remove them. A sweep deletes only keys shaped like an artifact, so it counts the whole index as something it does not own and leaves it — `foreign: N objects in the bucket were not written by wsaw and were left alone`. Read that line as "not an artifact" rather than "not ours"; the objects are wsaw's own, from the store that used to run here. That is the safe behaviour and the deliberate one, since a bucket that still holds a readable index is a bucket you can point `blob` back at. Deleting the prefix is therefore a decision for a person, not for a sweep — and it is the last copy of every baseline and every audit entry, which nothing else can rebuild.
-
-**Choosing.** SQLite if you want one file, the fastest reads, and the ability to open your history with any SQL tool. A server database if you would rather back up and replicate results the way you do everything else. `blob` if you would rather have no local state and no database process anywhere, and can pay per-request latency for it.
 
 #### Retention reclaims what it stops referencing
 
@@ -720,9 +721,9 @@ A dry run prints the first 20 entries with an exact count; `--limit=N` prints N 
 
 Both are safe to run while wsaw is scanning. An unreferenced object is left alone if it was written in the last 24 hours, and also if a scan running now has *taken* it: artifacts are content-addressed, so a scan that captures an unchanged asset writes nothing at all — the key is already there, dated by whichever scan first stored those bytes — and wsaw records the take so that neither a prune nor a sweep can collect an object the scan in progress is about to reference. Objects in the bucket that wsaw did not write are counted separately and never deleted.
 
-A result document is never collected, even when no index entry points at it, and is counted and reported instead. A document decodes to the scan it records, so it is something an index rebuild can recover from rather than garbage; an interrupted write, or an index that is behind the bucket, is what a run of them looks like.
+A result document is never collected, even when no index entry points at it, and is counted and reported instead. A document decodes to the scan it records, so it is something [an index rebuild](#rebuilding-an-index-from-the-bucket) can recover from rather than garbage; an interrupted write, or an index that is behind the bucket, is what a run of them looks like. A sweep also stands down entirely while a rebuild is running — the rebuild leaves a marker object in the bucket, and until it is cleared nothing is collected, because half a rebuilt index makes the other half's evidence look unreferenced.
 
-A sweep refuses to walk the bucket at all if the store's index holds nothing — no results, no baselines, no references, no takes. An index that knows nothing cannot tell garbage from a year of evidence, and that is what a database restored without its bucket, or a fresh store pointed at an existing one, looks like from inside a sweep. `--allow-empty-index` says the empty history is real and sweeps anyway, and it is the one thing that lifts the protection above: with it, orphaned result documents are collected too. A listing that is merely lagging looks exactly like an index that is genuinely absent from out here, so use the flag only when you know which of the two you have — never as a way to make a refused sweep run. There is no undo, and the rebuild that would put the index back is not built yet.
+A sweep refuses to walk the bucket at all if the store's index holds nothing — no results, no baselines, no references, no takes. An index that knows nothing cannot tell garbage from a year of evidence, and that is what a database restored without its bucket, or a fresh store pointed at an existing one, looks like from inside a sweep. `--allow-empty-index` says the empty history is real and sweeps anyway, and it is the one thing that lifts the protection above: with it, orphaned result documents are collected too. A listing that is merely lagging looks exactly like an index that is genuinely absent from out here, so use the flag only when you know which of the two you have — never as a way to make a refused sweep run. There is no undo: `wsaw store rebuild-index` can put a result index back from the documents, and with `--allow-empty-index` the documents are exactly what the sweep will have deleted.
 
 Neither command runs at all if the bucket is unreachable. A deletion against a bucket that has gone away — an unmounted volume, an expired credential — answers "already gone" for every key, which would be reported as a successful reclaim and would clear the very records that say those objects still need collecting.
 
@@ -731,6 +732,58 @@ A bucket that refuses a delete does not fail the prune. The key is counted as `w
 One case holds artifact collection back on purpose. If a stored result's document has gone missing from the bucket or no longer decodes, wsaw cannot know which screenshots and bodies that result named — so it will not declare any screenshot or body unreferenced while such a result exists, and says so in the prune's output ("unknown: N results do not say which artifacts they reference"). Result documents are still collected, because the index records where its own document went regardless. Absence of a reference is not evidence of an unreferenced artifact.
 
 That state is sticky, and worth knowing about: it lasts as long as the affected results do, so a bucket lifecycle rule that removed one result document stops screenshot and body reclamation for the whole store until they are gone. Deleting them — tightening `store.maxAge` so they expire, or removing them from the store — is the remedy available today.
+
+#### Rebuilding an index from the bucket
+
+The bucket holds the record. The index — a pointer per scan plus the handful of counts a listing shows — is derived from it, and `wsaw store rebuild-index` re-derives it: every object under the `result/` prefix is read, decoded, and turned into the same index entry and the same summary the scan that stored it wrote, by the same code.
+
+```
+wsaw store rebuild-index --dry-run    # what it would add, and what it would cost
+wsaw store rebuild-index              # do it
+wsaw store rebuild-index --verify     # change nothing, report every disagreement, exit non-zero on any
+```
+
+It works for all four stores. Which one you are running is the only thing that differs.
+
+**When to run it.** A database dropped, restored from a backup older than its bucket, or restored without one. A result you can see in the bucket and not in the interface — the state an interrupted scan leaves, where the document landed and the index entry never did. A summary column that a wsaw upgrade computes differently from the one that wrote it — for a SQL index; see the note below for what the `blob` store can and cannot do about that. And moving between store kinds, which is not a migration but this: point the new store at the same bucket and rebuild.
+
+**Re-deriving a summary is a SQL-store capability.** Where the index is rows, a rebuild re-derives every summary column from the document and the change is applied to the whole history by running the command. Where the index is objects it cannot be: an entry's key is a function of the scan it records, the key is already written, and no index object in this store is ever rewritten — that rule is what makes concurrent writes safe and torn reads impossible, and a recovery command is the last place to make an exception to it. So a `blob` deployment's summaries are fixed at write time. A rebuild reports the disagreement (`stale: N carry a summary the document no longer produces`) and changes nothing, and `--verify` reports it too. The documents are intact and every read of a *result* is derived from them afresh, so what is affected is the listing's columns and nothing else; putting a new derivation into the listing means re-storing those scans.
+
+**What it restores.** Every scan the bucket still holds a document for and the index has no record of having removed: the listing, the ordering, the summaries, the artifact references, and the reverse index retention decides deletions from. Documents are content-addressed and are read back byte-identically, so a rebuilt result is the result — not a reconstruction of one.
+
+**What it does not put back is history retention deleted.** Pruning removes a result and keeps the artifacts something else still names, so a scan a baseline was approved from leaves its document in the bucket for ever after the result itself has expired. A rebuild that treated "there is a document" as "there should be an entry" would undo a deletion made to satisfy a retention policy — quietly, and reported as work done. It does not: the index records the removal (a tombstone in the series directory for `blob`, the artifact references a pruned result leaves behind for the SQL stores), and those documents are counted and named in a category of their own, `pruned:`, rather than folded into what the run would add. `--verify` does not call them drift either, so a correctly pruned store stays green. The documents are still in the bucket; nothing was lost, and nothing came back. Where the index itself is genuinely gone — a dropped database, a deleted `_wsaw/` prefix — nothing records what was pruned and a rebuild recovers the whole bucket, which is the recovery the command is for.
+
+**What it cannot restore — read this before you rely on it.** Baselines and their approvals, the audit log, and change-event history are decisions and observations *about* scans, not properties of them, and no stored document contains one. A rebuild preserves them where they still exist and reports exactly what it found where they do not, prominently and at the top of its output, rather than handing you a store that looks intact and quietly reports every target as never having been approved. If your index is gone, they are gone with it: restore them from a backup of the index, or approve them again. This is why [the `blob` store's own section](#the-store-with-no-database-the-index-in-the-bucket) tells you to version or back up the `_wsaw/` prefix — it is the only copy. Share links need no restoring; they are signed with `api.share.key` and are not stored anywhere.
+
+**It adds and never removes.** There is no swap and no "clear, then rebuild": the run merges into whatever index is there, so an abort at any point leaves a store you can read, and running it again finishes the job without repeating a single write. It does not run the `blob` store's compaction either, which is the one thing in this store that deletes index objects — a rebuild leaves a series exactly as compactable as it found it, and the next stored scan compacts it. An entry it cannot find a document for is reported and **left where it is** — a bucket that lost an object and a listing that has not caught up look identical from out here, and only one of them is a reason to delete a record of a scan. Deciding that is a person's job, and `--verify` is how they see it.
+
+**A missing screenshot is recorded, not tidied away.** A rebuilt result whose screenshots or stored bodies are gone from the bucket keeps its references and reads as evidence that is no longer stored. Dropping the reference would turn a scan whose evidence was deleted into a scan that captured none, which is the one inference this tool must never make. The run says how many it found.
+
+**A damaged object is named and skipped.** An object under `result/` that does not hash to the key it is stored under, or that will not decode, is reported by key, counted, and passed over. One unreadable object out of a hundred thousand does not stop the other ninety-nine thousand from being indexed, and it does not go missing from the summary either. A rebuild carries on and exits zero; `--verify` exits non-zero, because a truncated or tampered document is evidence this store can no longer produce and a scheduled check must not be green over it.
+
+**A document a newer wsaw wrote is refused rather than re-derived.** A result document carries the schema version of the build that wrote it. An older binary decoding one drops every field it does not know, and the summary it would derive is short by exactly those fields — so a rebuild by the old binary would rewrite the history downwards and print it as a repair. It refuses instead: the documents are counted, named with their schema version, left entirely alone, and `--verify` exits non-zero over them. Upgrade wsaw and run it again. This is the same rule a store applies to a newer database schema and the `blob` store to a newer index layout.
+
+**It also tells you what is in the bucket.** A rebuild is the one operation that sees every key, so it reports what wsaw wrote, what no result references, and what wsaw did not write, in objects and bytes — the cheapest place to learn whether `wsaw store sweep` has anything to do.
+
+**`--verify` is the scheduled one.** It writes nothing and compares the two in both directions: index entries naming documents that are gone, documents with no index entry, summaries that no longer match their document, and — for the `blob` store — a baseline decision whose copy in the audit log never landed, which is the one gap [described above](#the-store-with-no-database-the-index-in-the-bucket) that nothing else looks for. It exits non-zero on any of them, and on any object it could not read or could not understand, so it belongs in a cron entry or a CI job rather than in the recollection of whoever handled the last incident.
+
+Two things it deliberately does *not* exit non-zero over, because a cron job that is permanently red is a cron job nobody reads. Evidence a lifecycle rule expired — a screenshot or a stored body the result still names and the bucket no longer holds — is the recorded outcome the rest of this section describes, and is reported by count and by key without changing the exit code. And a scan retention removed is not a disagreement: see "what it does not put back" above.
+
+`--verify` and `--dry-run` also do not migrate the store's schema on the way in. If the schema is behind this build they refuse and name `wsaw store migrate`, rather than performing the one-way upgrade in the middle of a command that promised to change nothing.
+
+**Running it while wsaw is running is safe, and it does not lock anything out.** A rebuild only ever creates records a scan would have created itself, at keys derived from the scan, so a result stored while it runs is either seen by the walk and written identically or not seen and already written by the scan — never lost, and a later run picks up whatever the first did not see. What it does take out is `wsaw store sweep`: the rebuild leaves a marker object in the bucket, and while that marker is there every store's sweep collects nothing and says so, because half a rebuilt index makes the other half's evidence look like garbage. The marker is cleared when the run ends, including when it is interrupted. A process that is killed outright cannot clear it, so a marker is also ignored once it is more than a day old — a rebuild that started yesterday is not running — and the sweep logs loudly when it steps over one. Until then the sweep names the key, and deleting that object clears it immediately.
+
+**What it costs.** A rebuild reads every stored document, so its cost is proportional to the whole history rather than to what is wrong with the index:
+
+- one GET per stored document, and the bytes of the entire history transferred;
+- one small index read per scan already recorded, and for the `blob` store one listing of each series' directory plus a read of each of its checkpoints — per series, not per scan, so that a long history is not charged for the same directory thousands of times;
+- one existence check per screenshot and stored body the results name (nothing extra when body and screenshot storage are off, which is the default);
+- for each scan it adds, one row for a SQL index, or three small objects plus one per artifact named for the `blob` index;
+- listings: one request per 256 keys of the bucket and per 1,000 index keys, twice over — once for the documents and once for the closing survey of the bucket.
+
+An interrupted run costs that again. It writes nothing twice — every record is keyed by the scan it describes, so the second run finds what the first wrote and skips it — but it re-lists and re-reads the whole bucket to find out, because the documents are the source of truth and a run that trusted the index about which of them it had already seen would be deriving from the thing it is repairing. Cheap in writes, full price in requests and egress.
+
+For a history of 100,000 scans averaging 500 KB, that is roughly 100,000 GETs, a comparable number of small reads, a few hundred listings, and 50 GB transferred. The requests are cents; the 50 GB is the number to look at, and it is egress if the machine running the command is not in the same region as the bucket. `--dry-run` prints the same figures without writing anything, and every run prints exactly what it used. `--read-concurrency` (default 8) is how many documents are read at once — raise it against a fast link, lower it if your provider starts rate-limiting. Index writes stay serial whatever it is set to.
 
 #### Upgrading a store that predates the bucket
 
@@ -774,10 +827,49 @@ Captured data can itself be personal data, so:
 ## Development
 
 ```sh
-make check        # fmt, vet, lint, test -race
+make check        # fmt, vet, lint, licences, test -race, and the cloudblob compile
 make test-fast    # skip browser tests
 make soak         # long-run stability test (Story 6.8)
 ```
+
+The soak reports what the artifact bucket cost the run — requests and bytes,
+in total and per scan — beside its memory and goroutine figures.
+`WSAW_SOAK_STORE=blob make soak` measures the same thing for the store that
+keeps its index in the bucket, whose per-scan request count is several times
+the SQL store's because every read and write of the index is a request too.
+
+### Testing the store
+
+The store's test suite is the specification of what a store does, so it is run
+against every combination that ships rather than against the default one. Two
+environment variables select the combination, and they are independent: one
+says where the **index** is kept, the other where the **evidence** goes.
+
+```sh
+make test-store-blob      # index in the bucket instead of in rows
+make test-store-memory    # evidence in a bucket that has no files
+make test-store-postgres  # index in PostgreSQL, in a container
+make test-store-mysql     # index in MySQL, in a container
+make test-store-minio     # evidence in MinIO — a real S3-compatible service
+make test-store-all       # the fast suite and then all of the above
+```
+
+```sh
+WSAW_TEST_STORE_DRIVER=sqlite|postgres|mysql|blob   # where the index is
+WSAW_TEST_ARTIFACT_BUCKET=file|memory|<bucket URL>  # where the evidence is
+```
+
+The first two need nothing at all. The other three start what they need and
+take it down again, so they want a container runtime — podman, or docker with
+`STORE_TEST_RUNTIME=docker` — and fail rather than skip without one. What skips
+with a reason is the test package itself, run on its own:
+`go test -tags cloudblob,objectstore ./test/e2e/objectstore/` starts a MinIO if
+it can and says why it did not if it cannot.
+
+`test-store-minio` is worth its twenty seconds: it is the only run that meets an
+object store nobody here wrote, and a bucket is not a directory. Listing order,
+pagination, modification-time granularity, delete semantics and error codes all
+differ, and the differences are asserted in `test/e2e/objectstore/`.
 
 The fast suite runs **without Chrome installed** — browser tests skip themselves and say why. Integration tests use local fixture servers, including a synthetic consent banner and a synthetic third-party host; they never touch a live third-party website, so CI does not depend on someone else's site staying unchanged.
 
@@ -787,7 +879,7 @@ Contributors and coding agents: read [`AGENTS.md`](AGENTS.md), [`architecture-te
 
 Deliberate non-goals for this version:
 
-- **No distributed operation.** One process, one host, local storage.
+- **No distributed operation.** One process, one host. Evidence may live in a bucket, and the index may live in a server database or in that same bucket, but two instances against one of them still duplicate every scheduled scan.
 - **No multi-user accounts or roles.** One shared token, plus a read-only mode.
 - **No target editing through the web interface.** Configuration stays a versionable file; the UI writes baselines and says where it put them.
 - **No authenticated crawling flows** beyond HTTP basic auth and injected headers.

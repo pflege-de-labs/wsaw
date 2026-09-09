@@ -197,7 +197,10 @@ store:
   # There is no migration between this store and the SQL ones in either
   # direction. All four keep their documents in the same bucket layout, so
   # what does not port is the index, and rebuilding it from the documents is
-  # the way across — a command that is not built yet.
+  # the way across: point the new store at the same bucket and run
+  # "wsaw store rebuild-index". Baselines and the audit log do not come across
+  # that way — they are decisions, not properties of a scan — so the command
+  # reports them as lost rather than pretending otherwise.
 
   # A store reached over a network — a server database, or a bucket — retries
   # a transient failure rather than failing the scan's result: a restart, a
@@ -423,6 +426,10 @@ api:
   # The key is a credential and must not be the API token: sharing should not
   # be derivable from admin access, and withdrawing a link should not mean
   # rotating the credential you use.
+  # The settings below are commented out rather than merely left at their
+  # defaults: a share setting written while enabled is false is a
+  # configuration error naming the line, on the same principle as a dsn left
+  # behind after a switch of store driver. Uncomment them with enabled: true.
   share:
     # Settings alongside enabled: false are refused, because a file that
     # carries them reads as though sharing were on. Uncomment them together.

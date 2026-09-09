@@ -26,12 +26,13 @@ import (
 // filesystem call for an artifact belongs outside these two files.
 //
 // Which providers a binary can reach is a build-time decision, taken because
-// the three cloud SDKs cost more than the rest of wsaw put together: the
-// default build links fileblob alone and measures about 6 MB above the
-// baseline, while adding S3, GCS and Azure takes it past 77 MB. The cloud
+// the three cloud SDKs cost more than the rest of wsaw put together: the whole
+// epic, fileblob included, costs about 5 MB over the pre-epic binary, while
+// adding S3, GCS and Azure costs a further 28 MB on top of that. The cloud
 // drivers therefore live behind the "cloudblob" build tag (Story 8.8, AC3),
 // and the default binary opens no cloud SDK and resolves no credential chain
-// (Story 8.8, AC4).
+// (Story 8.8, AC4). The figures are per release in dist/SIZES and per platform
+// in docs/dependency-review-gocloud.md; these two are the round numbers.
 //
 // The in-memory driver is registered by bucket_test.go and by nothing else. A
 // bucket that forgets everything at shutdown is the right thing for a test and
@@ -127,11 +128,29 @@ type bucket struct {
 	location string
 	retry    retryFunc
 
+	// meter is who is counting, or nil. See meterFunc.
+	meter meterFunc
+
 	// dir is the directory a local bucket is rooted at, and empty for every
 	// other provider. It exists for one question — is this bucket still there
 	// — which the local driver cannot be asked any other way; see reachable.
 	dir string
 }
+
+// meterFunc is told about every request the bucket makes, and how many bytes
+// of object body that request moved.
+//
+// It exists because the cost of an artifact bucket is requests and bytes, and
+// neither is visible from anywhere else: a directory's cost is invisible
+// because it is free, and a provider's arrives a month later on an invoice.
+// The soak test totals them over a long run so that the storage cost of one is
+// a measured number (Story 8.9, AC6), and it is the same shape as OnRetry
+// because it is the same kind of thing — an observation hook on Options, off by
+// default, that costs a nil check when nobody is watching.
+//
+// op is the prose the retry policy uses for the same request, so the two
+// vocabularies match. It may be called from several goroutines at once.
+type meterFunc func(op string, bytes int64)
 
 // retryFunc has the shape of retrier.run on purpose.
 //
@@ -155,6 +174,21 @@ func retryOnce(ctx context.Context, _ string, fn func(context.Context) error) er
 func (b *bucket) setRetry(fn retryFunc) {
 	if fn != nil {
 		b.retry = fn
+	}
+}
+
+// setMeter lends the bucket someone to report its requests to.
+func (b *bucket) setMeter(fn meterFunc) {
+	if fn != nil {
+		b.meter = fn
+	}
+}
+
+// observe reports one request, and is where the nil check lives so that no
+// caller has to make it.
+func (b *bucket) observe(op string, bytes int64) {
+	if b.meter != nil {
+		b.meter(op, bytes)
 	}
 }
 
@@ -484,13 +518,27 @@ func (b *bucket) close() error {
 // here, where the provider's error codes are understood, and communicated to
 // the policy in the shape it already recognises.
 func (b *bucket) do(ctx context.Context, op string, fn func(context.Context) error) error {
+	return b.doN(ctx, op, func(ctx context.Context) (int64, error) { return 0, fn(ctx) })
+}
+
+// doN is do for a request that moves object bytes, which it reports to the
+// meter along with the request itself.
+//
+// Every request goes through here, counted whether it succeeded or not: a
+// refused request is still a request, and a count that dropped the failures
+// would understate exactly the run an operator is investigating. Each attempt
+// counts once, because each attempt is a round trip that was paid for.
+func (b *bucket) doN(ctx context.Context, op string, fn func(context.Context) (int64, error)) error {
 	retry := b.retry
 	if retry == nil {
 		retry = retryOnce
 	}
 
 	return retry(ctx, op, func(ctx context.Context) error {
-		err := fn(ctx)
+		moved, err := fn(ctx)
+
+		b.observe(op, moved)
+
 		if err == nil {
 			return nil
 		}
@@ -532,8 +580,8 @@ func (b *bucket) put(ctx context.Context, kind string, data []byte) (string, err
 		return ref, nil
 	}
 
-	if err := b.do(ctx, "storing an artifact", func(ctx context.Context) error {
-		return b.write(ctx, ref, data)
+	if err := b.doN(ctx, "storing an artifact", func(ctx context.Context) (int64, error) {
+		return int64(len(data)), b.write(ctx, ref, data)
 	}); err != nil {
 		return "", artifactError("storing", ref, err)
 	}
@@ -733,15 +781,15 @@ func (b *bucket) get(ctx context.Context, ref string) ([]byte, error) {
 
 	var data []byte
 
-	if err := b.do(ctx, "reading an artifact", func(ctx context.Context) error {
+	if err := b.doN(ctx, "reading an artifact", func(ctx context.Context) (int64, error) {
 		read, err := b.b.ReadAll(ctx, ref)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		data = read
 
-		return nil
+		return int64(len(data)), nil
 	}); err != nil {
 		return nil, artifactError("reading", ref, err)
 	}
@@ -762,6 +810,41 @@ type artifactStream struct {
 
 	size    int64
 	modTime time.Time
+
+	// meter and read are what the bytes of a streamed artifact are counted
+	// with. They are counted here rather than at the open, because the open
+	// knows only what the object promises: a reader that gives up half way
+	// through a hundred-megabyte document transferred half of it, and a meter
+	// that said otherwise would be reporting the catalogue rather than the
+	// bill.
+	meter meterFunc
+	read  int64
+}
+
+// Read passes the bytes through and remembers how many there were.
+//
+// The error is returned unwrapped: io.EOF is the loop condition every reader is
+// written against, and a wrapped one would not be recognised by the code doing
+// the reading.
+func (s *artifactStream) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	s.read += int64(n)
+
+	return n, err
+}
+
+// Close reports what was actually transferred, once, and closes the reader.
+func (s *artifactStream) Close() error {
+	if s.meter != nil && s.read > 0 {
+		s.meter("streaming an artifact", s.read)
+		s.read = 0
+	}
+
+	if err := s.ReadCloser.Close(); err != nil {
+		return fmt.Errorf("closing an artifact stream: %w", err)
+	}
+
+	return nil
 }
 
 // newReader opens an artifact for streaming.
@@ -793,7 +876,7 @@ func (b *bucket) newReader(ctx context.Context, ref string) (*artifactStream, er
 		return nil, artifactError("reading", ref, err)
 	}
 
-	return &artifactStream{ReadCloser: r, size: r.Size(), modTime: r.ModTime()}, nil
+	return &artifactStream{ReadCloser: r, size: r.Size(), modTime: r.ModTime(), meter: b.meter}, nil
 }
 
 // signedURL asks the provider for a URL that grants one GET of one artifact

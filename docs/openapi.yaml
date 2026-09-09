@@ -52,7 +52,14 @@ paths:
     get:
       tags: [health]
       summary: Readiness
-      description: Reports whether Chrome is usable and configuration is loaded, plus any targets whose last successful scan is stale.
+      description: >
+        Reports whether wsaw could actually scan and record the result: the
+        result index answers, the artifact bucket answers, Chrome is usable and
+        configuration is loaded. The body also lists any targets whose last
+        successful scan is stale. A wsaw that cannot record what it observed is
+        not ready however healthy its browser is, so an unreachable database or
+        an unreachable bucket is a 503; the reason says which of the two it was,
+        and the detail goes to the log rather than to an unauthenticated caller.
       security: []
       responses:
         "200":
@@ -156,6 +163,7 @@ paths:
               schema:
                 $ref: "./result.schema.json"
         "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/artifacts/{ref}:
     get:
@@ -236,8 +244,16 @@ paths:
             Last-Modified: {schema: {type: string}}
             Cache-Control: {schema: {type: string}}
         "400": {$ref: "#/components/responses/BadRequest"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "410": {$ref: "#/components/responses/EvidenceGone"}
+        "404":
+          description: >
+            No such object. This route addresses an object rather than a
+            record, so evidence that retention or a lifecycle rule removed is a
+            404 here; it is the endpoints that return a *result* which answer
+            410, because there the record survives and only the evidence it
+            names is gone.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
 
   /api/v1/results/{target}/{mode}/{scan}/har:
     get:
@@ -253,6 +269,8 @@ paths:
           description: HAR document.
           content:
             application/json: {}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/results/{target}/{mode}/{scan}/csv:
     get:
@@ -267,6 +285,8 @@ paths:
           description: CSV.
           content:
             text/csv: {}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/results/{target}/{mode}/{scan}/report:
     get:
@@ -282,6 +302,8 @@ paths:
           description: Markdown report.
           content:
             text/plain: {}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/diff/{target}/{mode}/{scan}:
     get:
@@ -297,6 +319,8 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/DiffReport"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
 
   /api/v1/baseline/{target}/{mode}:
     get:

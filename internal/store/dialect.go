@@ -125,15 +125,16 @@ func dialectFor(name string) (dialect, error) {
 		// because of who reads it: an operator moving a deployment from
 		// Postgres to the bucket runs the migration command first, and being
 		// told there is no schema without being told what to do instead leaves
-		// them at a dead end (AC16). It names no command, because the one that
-		// does the work is Story 8.11's and a message that names a command
-		// this binary does not have would be worse than a message that names
-		// none.
+		// them at a dead end (AC16). It names the command that does do the
+		// work, which Story 8.11 added — before it existed the message ended
+		// at "rebuilt", because naming a command this binary does not have
+		// would have been worse than naming none.
 		return nil, fmt.Errorf(
 			"store: the %s driver keeps its index as objects in the artifact bucket rather than as rows, "+
 				"so it has no SQL schema to migrate; moving a history between a database store and this "+
 				"one is not a migration in either direction, because the documents are already in the "+
-				"same bucket layout and the index is rebuilt from them rather than converted", DriverBlob,
+				"same bucket layout and the index is rebuilt from them rather than converted: point the "+
+				"new store at the same bucket and run \"wsaw store rebuild-index\"", DriverBlob,
 		)
 	default:
 		return nil, fmt.Errorf(

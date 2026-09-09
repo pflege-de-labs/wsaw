@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"gocloud.dev/blob"
-
 	// The "mem" scheme, registered here and nowhere else on purpose. A bucket
 	// that discards everything on exit is exactly what these tests want and
 	// exactly what a deployment must never be able to configure by mistake: an
@@ -718,41 +716,10 @@ func TestBucketRejectsUnusableLocations(t *testing.T) {
 	})
 }
 
-// TestCloudSchemesFollowTheBuildTag records the dependency decision as a
-// test: the default build reaches the local disk and nothing else, and the
-// cloudblob build reaches the three providers (Story 8.8, AC3 and AC4).
-func TestCloudSchemesFollowTheBuildTag(t *testing.T) {
-	t.Parallel()
-
-	// The schemes are checked against the registry rather than by opening
-	// them. Opening an s3:// URL would set an AWS credential chain going, and
-	// a credential chain reaches for the instance metadata service — a
-	// network call, which a test never makes (AGENTS.md §3).
-	linked := cloudBuildHint() == ""
-
-	for _, scheme := range []string{"s3", "gs", "azblob"} {
-		if got := blob.DefaultURLMux().ValidBucketScheme(scheme); got != linked {
-			t.Errorf("the %q scheme is registered = %v, want %v for this build", scheme, got, linked)
-		}
-	}
-
-	if linked {
-		return
-	}
-
-	// Without the drivers, the refusal has to tell an operator how to get
-	// them rather than leaving them to read the source.
-	_, err := openBucket(t.Context(), "s3://bucket/prefix")
-	if err == nil {
-		t.Fatal("openBucket accepted an s3:// location in a build without the cloud drivers")
-	}
-
-	for _, want := range []string{"s3", "cloudblob"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the error %q does not mention %q", err, want)
-		}
-	}
-}
+// Which schemes the build tag decides, and what each build does with the
+// three cloud ones, is asserted in cloudschemes_test.go and the two files
+// beside it — one per side of the constraint, so neither direction can be the
+// one nobody ran (Story 8.8, AC3 and AC4).
 
 // TestWorthRetryingReadsProviderCodes is AC8's first half: what is worth
 // another attempt is decided from the provider's error code, not its wording.

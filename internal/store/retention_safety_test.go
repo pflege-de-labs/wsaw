@@ -130,16 +130,14 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 
 	// The document goes the way a bucket lifecycle rule takes it: the object
 	// is deleted and the row still names it.
-	if err := os.Remove(filepath.Join(opts.ArtifactDir, document)); err != nil {
-		t.Fatalf("removing the document behind the store's back: %v", err)
-	}
+	evidence(t, opts).Remove(document)
 
 	forgetWhatEveryResultReferences(t, opts)
 
 	// An artifact nothing has ever referenced, of the one kind that stays
 	// collectable. Written directly, so it carries no claim from a running
 	// scan either.
-	orphanDocument := writeArtifact(t, opts.ArtifactDir, "result", []byte(`{"scanId":"nobody"}`))
+	orphanDocument := writeArtifact(t, evidence(t, opts), "result", []byte(`{"scanId":"nobody"}`))
 
 	// Reopened, which is what runs the backfill and marks the row.
 	s, err = store.OpenSQL(t.Context(), opts)
@@ -345,6 +343,13 @@ func TestRetentionKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 func TestASweepKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 	t.Parallel()
 
+	// An object's age is the bucket's own, and only a filesystem lets a test
+	// set it: no provider offers "pretend this object is two days old", and
+	// waiting out a grace period is not a test (AGENTS §5). The claim this is
+	// really about is index state, not bucket state, and it is asserted for
+	// every store by the tests around this one.
+	skipUnlessLocalBucket(t, "the orphan is backdated with os.Chtimes")
+
 	opts := storeOptions(t)
 
 	s, err := store.Open(t.Context(), opts)
@@ -363,7 +368,7 @@ func TestASweepKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 
 	// Written directly and dated two days ago: an object from a scan that died
 	// before committing its row, which no reference and no claim covers.
-	orphan := writeArtifact(t, opts.ArtifactDir, "body", shared)
+	orphan := writeArtifact(t, evidence(t, opts), "body", shared)
 	twoDaysAgo := time.Now().Add(-48 * time.Hour)
 
 	if err := os.Chtimes(filepath.Join(opts.ArtifactDir, orphan), twoDaysAgo, twoDaysAgo); err != nil {
@@ -417,6 +422,12 @@ func TestASweepKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 func TestRetentionRefusesToRunWithoutTheArtifactBucket(t *testing.T) {
 	t.Parallel()
 
+	// The unmounted volume is a directory that is not there. Its analogue on a
+	// provider is a bucket that answers every request with a failure, which is
+	// what TestAPruneSurvivesABucketThatRefusesToDelete drives with a scheduled
+	// fault instead.
+	skipUnlessLocalBucket(t, "the bucket goes away by removing its directory")
+
 	opts := storeOptions(t)
 
 	s, err := store.Open(t.Context(), opts)
@@ -468,8 +479,8 @@ func TestASweepRefusesAnIndexThatKnowsNothing(t *testing.T) {
 
 	// The bucket of a wsaw that has been running for a year, and a database
 	// that knows nothing about it.
-	document := writeArtifact(t, opts.ArtifactDir, "result", []byte(`{"scanId":"scan-1"}`))
-	shot := writeArtifact(t, opts.ArtifactDir, "screenshot-before-consent", []byte("a year of evidence"))
+	document := writeArtifact(t, evidence(t, opts), "result", []byte(`{"scanId":"scan-1"}`))
+	shot := writeArtifact(t, evidence(t, opts), "screenshot-before-consent", []byte("a year of evidence"))
 
 	s, err := store.Open(t.Context(), opts)
 	if err != nil {
@@ -549,16 +560,10 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 			"owner": {},
 	}
 
+	bucket := evidence(t, opts)
+
 	for key, data := range foreign {
-		path := filepath.Join(opts.ArtifactDir, filepath.FromSlash(key))
-
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		bucket.Write(key, data)
 	}
 
 	stats, err := s.Sweep(t.Context(), time.Now().Add(365*24*time.Hour), store.SweepOptions{})
@@ -580,8 +585,8 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 	}
 
 	for key := range foreign {
-		if _, err := os.Stat(filepath.Join(opts.ArtifactDir, filepath.FromSlash(key))); err != nil {
-			t.Errorf("the sweep removed %s, which wsaw did not write: %v", key, err)
+		if !bucket.Has(key) {
+			t.Errorf("the sweep removed %s, which wsaw did not write", key)
 		}
 	}
 }

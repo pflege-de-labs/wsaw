@@ -332,6 +332,15 @@ type resultRowKey struct {
 
 func (k resultRowKey) args() []any { return []any{k.target, k.mode, k.scanID} }
 
+// orderByResultKey is the tail of every query that pages through the results
+// table by its key.
+//
+// It is one constant because the three that use it must agree: a keyset page
+// only makes progress if the ordering matches the row-value comparison that
+// selects the next page, and two of them spelling the order differently would
+// be a paging loop that skips rows or never ends.
+const orderByResultKey = ` order by target, consent_mode, scan_id limit ?`
+
 // documentKeys reads the next page of rows that still hold a document.
 func (s *SQL) documentKeys(ctx context.Context, after *resultRowKey, batch int) ([]resultRowKey, error) {
 	ctx, cancel := opCtxFrom(ctx)
@@ -349,7 +358,7 @@ func (s *SQL) documentKeys(ctx context.Context, after *resultRowKey, batch int) 
 		args = append(args, after.args()...)
 	}
 
-	q += ` order by target, consent_mode, scan_id limit ?`
+	q += orderByResultKey
 	args = append(args, batch)
 
 	var keys []resultRowKey
@@ -695,7 +704,7 @@ func (s *SQL) unindexedResults(ctx context.Context, after *resultRowKey, batch i
 		args = append(args, after.args()...)
 	}
 
-	q += ` order by target, consent_mode, scan_id limit ?`
+	q += orderByResultKey
 	args = append(args, batch)
 
 	var out []unindexedResult

@@ -151,6 +151,8 @@ func OpenBlob(ctx context.Context, opts Options) (*Blob, error) {
 		transient: isMarkedTransient,
 	}.run)
 
+	b.setMeter(opts.OnBucketOp)
+
 	probeCtx, cancel := opCtxFrom(ctx)
 	defer cancel()
 

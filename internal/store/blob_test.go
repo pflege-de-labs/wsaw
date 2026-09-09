@@ -1858,7 +1858,7 @@ func TestASweepLeavesAResultDocumentTheIndexHasLostSightOf(t *testing.T) {
 		t.Fatalf("PutResult: %v", err)
 	}
 
-	orphan := writeArtifact(t, dir, "result", []byte(`{"scanId":"scan-2","target":"site"}`))
+	orphan := writeArtifact(t, store.OpenTestBucket(t, dir), "result", []byte(`{"scanId":"scan-2","target":"site"}`))
 
 	// Long past any grace period, so nothing but the rule is keeping it.
 	later := time.Now().Add(365 * 24 * time.Hour)
@@ -1911,7 +1911,7 @@ func TestASweepCollectsNothingWhileARebuildIsRunning(t *testing.T) {
 
 	// Genuinely unreferenced: exactly what a sweep exists to collect, and what
 	// it must not collect now.
-	orphan := writeArtifact(t, dir, "body", []byte("evidence a rebuild has not reached"))
+	orphan := writeArtifact(t, store.OpenTestBucket(t, dir), "body", []byte("evidence a rebuild has not reached"))
 	writeIndexObject(t, dir, "_wsaw/index/v1/rebuild/scan-2", nil)
 
 	stats, err := s.Sweep(t.Context(), time.Now().Add(365*24*time.Hour), store.SweepOptions{})
