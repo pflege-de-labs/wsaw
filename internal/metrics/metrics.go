@@ -63,7 +63,12 @@ type labels struct {
 // New creates a Registry.
 func New(version string) *Registry {
 	return &Registry{
-		startedAt:       time.Now(),
+		// Rounded to drop the monotonic reading, so uptime is measured on
+		// the wall clock. The monotonic clock stops while the host is
+		// suspended, which made this gauge under-report by the length of
+		// every sleep and turned "how long has this been running" into a
+		// number that quietly disagreed with the process start time.
+		startedAt:       time.Now().Round(0),
 		version:         version,
 		scansStarted:    make(map[labels]int64),
 		scansSucceeded:  make(map[labels]int64),
