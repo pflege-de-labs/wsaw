@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -198,14 +199,17 @@ func newDecision(series blobSeries, op baselineOp, e AuditEntry, b *Baseline, re
 //  5. write the decision object. **This is the commit point**: the approval and
 //     its audit entry are now recorded, together, in one object.
 //  6. write the derived audit pointer, and re-issue any pointer missing for the
-//     decisions step 2 showed.
+//     decisions step 2 showed. Neither can fail the call: the approval is
+//     already committed, and reporting a derived write as a failed approval is
+//     how one human decision becomes two (see putAuditPointer).
 //
-// Both this and DeleteBaseline fail safe, and in the same direction, which is
-// why there is no ordering asymmetry to remember. An approval that did not land
-// leaves the previous state standing and silences nothing. A revocation that
-// did land is the effective state the moment its object is visible, so findings
-// cannot stay silenced against a withdrawn approval; only the derived pointer
-// can lag, and it heals.
+// The two directions do not fail symmetrically, and only one of them needs
+// watching. An approval that did not land — or that landed and lost the fold to
+// a concurrent one — leaves the previous state standing and silences nothing,
+// which is why nothing here reads the log back. A withdrawal that landed and
+// lost the fold leaves findings silenced against a baseline the operator was
+// told was gone, so DeleteBaseline does read it back; verifyDecision is that
+// check and argues it.
 func (s *Blob) SetBaseline(
 	target string, mode model.ConsentMode, scanID, approvedBy, note string,
 ) (*Baseline, error) {
@@ -272,6 +276,12 @@ func (s *Blob) SetBaseline(
 // record the action whether or not a row was deleted, and an audit log that
 // dropped the withdrawals that turned out to be redundant would be a log that
 // edits itself.
+//
+// It reports a withdrawal that was recorded and did not take effect, which a
+// lagging listing and a clock a second behind can produce between them; see
+// verifyDecision. The error is the one thing that separates this from the
+// failure it is guarding against — the withdrawal is in the log either way, and
+// what a caller may not be told is that the baseline is gone when it is not.
 func (s *Blob) DeleteBaseline(target string, mode model.ConsentMode, actor string) error {
 	ctx, cancel := s.opBudget()
 	defer cancel()
@@ -328,14 +338,27 @@ func (s *Blob) DeleteBaseline(target string, mode model.ConsentMode, actor strin
 // against each other; nothing about them says anything about another target's,
 // and a global monotonic clock would let one busy series push another's
 // approvals into the future.
+// It bumps against the *ordering field* and not against the two instants,
+// which is not the same comparison past the edges of the range. clampNano pins
+// every instant beyond indexHorizon to one field, so on a host reading year
+// 2300 a withdrawal is later than the approval it answers in wall-clock terms
+// and lands at the identical position in the log — and comparing the times
+// would skip the bump and file the two on top of each other with nothing said.
+// Comparing the fields makes the bump fire wherever the fold would see a tie,
+// and where the grammar has genuinely run out it says so.
+//
+// It cannot make a decision the fold could not see: the bump is against what
+// one listing showed. currentDecision's tie-break is what covers the rest, and
+// verifyDecision is what covers a withdrawal that lost anyway.
 func (s *Blob) decisionInstant(series blobSeries, prior []decisionKey) time.Time {
 	at := s.now().UTC()
 
 	if len(prior) > 0 {
 		// prior is newest first and the ordering field is inverted, so the
-		// first key is the newest instant this series has recorded.
-		if newest := instantAt(prior[0].inv); !newest.Before(at) {
-			at = newest.Add(time.Nanosecond)
+		// first key is the newest instant this series has recorded, and a field
+		// that is not strictly smaller than it is not strictly newer.
+		if inv(at) >= prior[0].inv {
+			at = instantAt(prior[0].inv).Add(time.Nanosecond)
 		}
 	}
 
@@ -347,11 +370,31 @@ func (s *Blob) decisionInstant(series blobSeries, prior []decisionKey) time.Time
 			"target", series.target, "consent_mode", string(series.mode), "at", at)
 	}
 
+	if len(prior) > 0 && inv(at) == prior[0].inv {
+		// The bump ran out: the field is at an edge of the range and there is
+		// no position after it. Reported at Warn because the total order this
+		// series' decisions are read in has degraded to currentDecision's
+		// tie-break, which is safe and is not an order.
+		s.log.Warn("a baseline decision could not be ordered after the one before it, "+
+			"because the clock that took it is outside the range the bucket index can order",
+			"target", series.target, "consent_mode", string(series.mode), "at", at)
+	}
+
 	return at
 }
 
 // appendDecision writes the objects one decision produces, in the order
 // SetBaseline's comment argues for.
+//
+// Only the first two steps can fail the call, and that is the whole point of
+// the order. The pins have to be there before the decision that names them is
+// visible; the decision object is the commit point, and after it the approval
+// or the withdrawal is recorded whatever else happens. Everything below it is
+// derived — a pointer at a fact the store already holds in full — so a failure
+// there is a warning about the log being briefly behind and never a report that
+// the decision did not happen. See putAuditPointer for what turning it into an
+// error costs: an operator who retries a committed approval records the same
+// human decision twice.
 func (s *Blob) appendDecision(ctx context.Context, d decision, prior []decisionKey) error {
 	if err := s.pinDecisionEvidence(ctx, d); err != nil {
 		return err
@@ -363,12 +406,71 @@ func (s *Blob) appendDecision(ctx context.Context, d decision, prior []decisionK
 	}
 
 	if err := s.putAuditPointer(ctx, d.key, d.audit); err != nil {
-		return err
+		s.log.Warn("a baseline decision is recorded and its audit entry is not, "+
+			"and will be re-created by the next decision of this series or by a rebuild",
+			"key", d.key.String(), "target", d.series.target,
+			"consent_mode", string(d.series.mode), "error", err)
 	}
 
 	s.healAuditPointers(ctx, d.series, prior)
 
-	return nil
+	return s.verifyDecision(ctx, d)
+}
+
+// verifyDecision reads the log back and reports a withdrawal that did not take
+// effect.
+//
+// The bump in decisionInstant orders a new decision past the newest one the
+// caller could *see*, and against a provider whose listings lag that is not
+// necessarily the newest one there is. When the pre-write listing missed an
+// approval and the host taking the withdrawal has a clock behind the host that
+// took it, the withdrawal is filed *before* the approval it answers and loses
+// the fold.
+//
+// Which direction that fails in is what decides whether it is reported. An
+// approval that lost is the previous state standing: nothing is silenced, the
+// decision is in the log, and a later approval superseding it is ordinary
+// concurrency rather than a failure — so SetBaseline does not pay for this.
+// A withdrawal that lost leaves findings silenced against a baseline the
+// operator was told was gone, with nothing anywhere saying so, which is the
+// failure AC8 names as unacceptable.
+//
+// One listing, after the commit, and the decision just written is folded in
+// rather than looked for: a post-write listing need not show our own key any
+// more than the pre-write one showed theirs, and treating an invisible own
+// write as a loss would report a failure on every lagging provider.
+//
+// It is a report and not a repair. The withdrawal stays exactly where it is —
+// nothing here deletes a decision — and the caller retries, which against a
+// listing that has by then caught up bumps past the approval and takes effect.
+// What it cannot promise is that the post-write listing is fresh either: an
+// approval neither listing showed is still lost, and that residue is the price
+// of a store with no transaction. It is a strict improvement on being told the
+// withdrawal succeeded.
+func (s *Blob) verifyDecision(ctx context.Context, d decision) error {
+	if d.key.op != opRevoke {
+		return nil
+	}
+
+	after, err := s.readDecisions(ctx, d.series)
+	if err != nil {
+		return err
+	}
+
+	// Newest first, and our own key belongs wherever the fold would put it.
+	after = append(after, d.key)
+	slices.SortFunc(after, func(a, b decisionKey) int { return strings.Compare(a.inv, b.inv) })
+
+	current, ok := currentDecision(after)
+	if !ok || current == d.key {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the withdrawal %s is recorded and did not take effect, because %s is ordered after it "+
+			"and was not visible when it was taken; retrying withdraws the baseline: %w",
+		d.key, current, ErrIndexIncomplete,
+	)
 }
 
 // pinDecisionEvidence writes the reverse index that keeps an approved scan's
@@ -402,12 +504,15 @@ func (s *Blob) pinDecisionEvidence(ctx context.Context, d decision) error {
 
 // putAuditPointer files one decision's audit entry where the log is read from.
 //
-// A failure here is reported rather than swallowed, and the message says what
-// state the store is in: the decision is committed and stands, and its entry
-// will appear in the log the next time a decision of this series heals it. The
-// record itself is not at risk — it is inside the decision object — so what the
-// caller is being told is that the log is briefly behind, not that the approval
-// was lost.
+// A failure here is returned and the message says what state the store is in:
+// the decision is committed and stands, and its entry will appear in the log
+// the next time a decision of this series heals it. **It is never the call's
+// failure**, and appendDecision logs it rather than passing it on, because the
+// two are not distinguishable to a caller and the difference matters: an
+// operator told an approval failed approves again, readDecisions now shows the
+// first one, and one human decision becomes two approvals in a compliance log —
+// while the first was in force the whole time. What went wrong is that the log
+// is briefly behind, and the log heals itself (healAuditPointers).
 func (s *Blob) putAuditPointer(ctx context.Context, key decisionKey, e AuditEntry) error {
 	body, err := json.Marshal(e)
 	if err != nil {
@@ -569,13 +674,34 @@ func (s *Blob) observeDecisions(series blobSeries, out []decisionKey, page index
 // (AC8).
 //
 // Newest wins, and newest is the smallest ordering field because the field is
-// inverted — so the listing has already put it first. A tie at one instant goes
-// to the smallest body digest, which is host-independent, has nothing to do
-// with which writer was quicker, and gives the same answer to every reader that
-// sees the same keys (AC7). It is deliberately not the key order at that point:
-// the field after the ordering pair is the operation, so first-in-the-listing
-// would resolve every simultaneous approve-and-revoke in favour of the
-// approval, which is the direction a compliance store must not lean.
+// inverted — so the listing has already put it first.
+//
+// **A tie at one instant goes to the withdrawal.** Two decisions of one series
+// can share an ordering field by two mechanisms the bump in decisionInstant
+// cannot close: a listing that had not caught up with the earlier decision, so
+// there was nothing to bump against; and a host past indexHorizon, where every
+// instant clamps to one field and the bump has nowhere left to go. Both are
+// rare and both are reachable, and when one happens the fold has to choose
+// between "approved" and "withdrawn" from two keys that say the same about
+// when.
+//
+// The earlier draft chose the smaller body digest on the grounds that it is
+// host-independent and gives every reader the same answer. It is both of those
+// and it is still wrong here: a digest is a coin flip, so it leaves an approval
+// the operator has withdrawn standing about half the time, and findings stay
+// silenced against it. First-in-the-listing is worse again — the field after
+// the ordering pair is the operation, and "approve" sorts before "revoke", so
+// it would favour the approval every time.
+//
+// Revoke-wins is host-independent, deterministic, and causally the right
+// answer: a withdrawal can only be issued against an approval that already
+// existed, so at a tie the withdrawal is the later of the two whatever the
+// clocks said. It is also the only direction a store that silences findings may
+// lean (AC8, Tenet 5).
+//
+// Two decisions sharing an instant *and* an operation still fall through to the
+// digest, where the choice is between two facts of the same kind and either
+// answer is safe.
 //
 // Every decision, the winner and the losers, stays visible in the audit log.
 func currentDecision(keys []decisionKey) (decisionKey, bool) {
@@ -590,12 +716,22 @@ func currentDecision(keys []decisionKey) (decisionKey, bool) {
 			break
 		}
 
-		if key.did < best.did {
+		if beatsAtOneInstant(key, best) {
 			best = key
 		}
 	}
 
 	return best, true
+}
+
+// beatsAtOneInstant is the tie-break currentDecision argues for, applied to two
+// decisions already known to share an ordering field.
+func beatsAtOneInstant(key, best decisionKey) bool {
+	if key.op != best.op {
+		return key.op == opRevoke
+	}
+
+	return key.did < best.did
 }
 
 // GetBaseline reads the approved baseline for one target and consent mode.
@@ -969,6 +1105,19 @@ func auditNonce() ([]byte, error) {
 // nanosecond is not a sequence of actions, and the only thing left to get wrong
 // at that point is their order among themselves — where losing the record
 // entirely would be the worse answer by far (Tenet 5).
+//
+// **What it can promise is bounded by the listing it asks**, and that is worth
+// saying plainly because it is the one place in this store that leans on a
+// listing being fresh. Two entries recorded at one instant come back in
+// recording order only when the probe for the second one sees the first, which
+// no provider promises and which two processes writing at once can defeat
+// outright. When it does not, both are filed at that instant and their order is
+// the byte order of their digests — over the entry *and* a random nonce, so it
+// is arbitrary rather than merely surprising. Nothing is lost when that
+// happens: both entries are in the log, with the instants their callers gave.
+// What is lost is the sequence between two of them, and the only mechanism that
+// would not lean on a listing is a caller that hands RecordAudit distinct
+// instants, which every caller inside this package already does.
 func (s *Blob) freeAuditInstant(ctx context.Context, at time.Time) (time.Time, error) {
 	for shift := range auditInstantProbes {
 		candidate := at.Add(time.Duration(shift) * time.Nanosecond)

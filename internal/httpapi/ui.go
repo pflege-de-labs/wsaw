@@ -831,7 +831,10 @@ func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
 		"target", target, "consent_mode", string(mode), "scan_id", scanID, "actor", actor)
 
 	s.uiRedirectOK(w, r, "/targets/"+target+"/"+string(mode),
-		"Baseline approved. It is stored in wsaw's database and recorded in the audit log.")
+		// "store" and not "database": a deployment on the bucket-index driver
+		// has no database, and this was the one message outside the store
+		// package that told an operator otherwise (Story 8.10, AC2).
+		"Baseline approved. It is recorded in wsaw's store and in the audit log.")
 }
 
 func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {

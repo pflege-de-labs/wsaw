@@ -74,6 +74,19 @@ const (
 	// by a newer layout rather than misreading it (AC14).
 	indexLayoutVersion = 1
 
+	// layoutProbeAhead is how many layouts past this build's own checkLayout
+	// looks for before concluding the bucket has none.
+	//
+	// It has to be more than one. A layout object is written once, by the build
+	// that lays the index out, so a bucket first written by a wsaw two layouts
+	// ahead holds *only* that object — and a probe bounded at
+	// indexLayoutVersion+1 would find nothing, write its own, and read a newer
+	// index as if it were its own, which is the exact refusal AC14 asks for
+	// defeated. Any fixed bound can be outrun by a build far enough ahead; four
+	// is a window no upgrade path this project would ship skips, and the cost
+	// is four extra GETs once per process at open.
+	layoutProbeAhead = 4
+
 	// indexLayoutPrefix holds the single object that records which layout
 	// wrote this index. It sits outside the versioned tree on purpose — the
 	// version is what a reader has to learn before it knows which tree to
@@ -590,6 +603,18 @@ func parseTargetMarkerKey(key string) (seriesID, error) {
 // key set rather than of three listings taken at three moments.
 func (s seriesID) dirPrefix() string {
 	return indexSeriesPrefix + string(s.target) + refSeparator + string(s.mode) + refSeparator
+}
+
+// tombstoneDirPrefix is the prunes of one series and nothing else.
+//
+// The tag is the first field of the leaf, so narrowing the directory by it is a
+// listing of the tombstones alone. It exists for the one reader that wants
+// "which of this series' scans did a prune remove" and nothing else about the
+// history — the sweep deciding whether a pin with no owner is a write in flight
+// or a leftover — where the whole directory would be ten thousand keys to find
+// a handful.
+func (s seriesID) tombstoneDirPrefix() string {
+	return s.dirPrefix() + seriesTombstoneTag + fieldSeparator
 }
 
 // byIDDirPrefix holds one object per scan, addressed by its ID.

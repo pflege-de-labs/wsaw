@@ -408,7 +408,18 @@ func (s *Blob) indexResult(ctx context.Context, r indexedResult) error {
 		return err
 	}
 
-	return s.recordSeries(ctx, r.series)
+	if err := s.recordSeries(ctx, r.series); err != nil {
+		return err
+	}
+
+	// Housekeeping, and deliberately last. The scan is recorded and durable
+	// above this line, so a compaction that cannot finish is a compaction that
+	// will be attempted again rather than a stored result reported as unstored
+	// (see considerCompaction, which also answers why deletion happens inside
+	// a call that stored a result).
+	s.considerCompaction(ctx, r.series)
+
+	return nil
 }
 
 // pinArtifacts writes the reverse index this result's evidence is kept alive by.
@@ -631,9 +642,7 @@ func (f *seriesFold) admits(rec seriesRecord) bool {
 // its scan is visible, so a loose entry can never be suppressed by a checkpoint
 // alone.
 func (f *seriesFold) answer() []foldEntry {
-	slices.SortFunc(f.selected, func(a, b foldEntry) int {
-		return compareEntries(a.record, b.record)
-	})
+	slices.SortFunc(f.selected, compareFoldEntries)
 
 	out := make([]foldEntry, 0, min(len(f.selected), f.want))
 	seen := make(map[encodedScan]struct{}, len(f.selected))
@@ -646,7 +655,9 @@ func (f *seriesFold) answer() []foldEntry {
 		// A scan can appear twice: once as a loose entry and once inside a
 		// checkpoint that covers it but whose deletes have not run yet. Both
 		// carry the same key, because both were derived from the same body, so
-		// keeping the first is keeping the one the sort put first.
+		// what the duplicate decides is not which scan is in the answer but
+		// where its body comes from — and compareFoldEntries has put the copy
+		// that already has one first.
 		if _, duplicate := seen[entry.record.scan]; duplicate {
 			continue
 		}
@@ -660,6 +671,38 @@ func (f *seriesFold) answer() []foldEntry {
 	}
 
 	return out
+}
+
+// compareFoldEntries is compareEntries with the one tie-break that is about the
+// entry rather than about the scan: two copies of one scan, and which of them
+// the answer keeps.
+//
+// A scan is selected twice for the whole of Options.CheckpointGrace — once as a
+// loose key, once out of the checkpoint that already carries its body — because
+// a compaction's write half and its delete half are deliberately never the same
+// run. compareEntries returns 0 for that pair, and the copy the dedupe then
+// keeps was, until this tie-break, whatever the sort's internals had put first.
+//
+// **The copy that already has a body wins**, for two reasons that point the same
+// way. It costs no request, where going back to the key spends one hydrate GET
+// per covered entry on a path AC11 measures. And the key it would go back to is
+// one a concurrent compaction may legally have deleted by then — it is covered,
+// which is the whole precondition for deleting it — so the fold would read a
+// key that is gone, map it to no body, and drop from the answer a scan whose
+// bytes it was already holding.
+func compareFoldEntries(a, b foldEntry) int {
+	if order := compareEntries(a.record, b.record); order != 0 {
+		return order
+	}
+
+	switch {
+	case a.body != nil && b.body == nil:
+		return -1
+	case a.body == nil && b.body != nil:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // compareEntries is the order the answer is returned in: newest first, and a
@@ -741,19 +784,30 @@ func (s *Blob) foldKeys(
 	return fold.answer(), nil
 }
 
+// seriesRecordOf parses one object of a series listing, reporting a key this
+// grammar does not produce rather than failing on it.
+//
+// Reported and stepped over, and by every walk of a series directory rather
+// than by the fold alone: something else has written into the index tree, and
+// refusing to show a target's history — or refusing to compact it — because of
+// one stray object would turn one stray object into an outage.
+func (s *Blob) seriesRecordOf(series blobSeries, object indexObject) (seriesRecord, bool) {
+	record, err := parseSeriesRecord(object.key)
+	if err != nil {
+		s.log.Warn("an object in the index is not a key this store writes, and was ignored",
+			"key", object.key, "target", series.target, "consent_mode", string(series.mode))
+
+		return seriesRecord{}, false
+	}
+
+	return record, true
+}
+
 // observePage folds one page of a series listing into the walk.
 func (s *Blob) observePage(series blobSeries, fold *seriesFold, page indexPage) error {
 	for _, object := range page.objects {
-		record, err := parseSeriesRecord(object.key)
-		if err != nil {
-			// A key inside this store's own tree that this grammar does not
-			// produce. It is reported and stepped over rather than failing the
-			// read: something else has written into the index, and refusing to
-			// show a target's history because of it would turn one stray object
-			// into an outage.
-			s.log.Warn("an object in the index is not a key this store writes, and was ignored",
-				"key", object.key, "target", series.target, "consent_mode", string(series.mode))
-
+		record, ok := s.seriesRecordOf(series, object)
+		if !ok {
 			continue
 		}
 
@@ -786,19 +840,9 @@ func (s *Blob) unionCheckpoints(ctx context.Context, series blobSeries, fold *se
 	for _, record := range fold.checkpoints {
 		key := record.String()
 
-		raw, err := s.getIndex(ctx, key)
+		checkpoint, err := s.readCheckpoint(ctx, key)
 		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("checkpoint %s is listed and its object is gone: %w", key, ErrIndexIncomplete)
-			}
-
 			return err
-		}
-
-		var checkpoint checkpointBody
-
-		if err := json.Unmarshal(raw, &checkpoint); err != nil {
-			return fmt.Errorf("checkpoint %s does not decode: %w: %w", key, ErrCorrupt, err)
 		}
 
 		for _, scan := range checkpoint.Tombstoned {
@@ -1404,50 +1448,100 @@ func (s *Blob) seriesList(ctx context.Context) ([]Series, error) {
 }
 
 // readSeriesPage reads the markers one page of the target listing named.
+//
+// Through eachBounded and not one at a time, for the reason that pool exists:
+// the markers are tiny, immutable and independent, so reading them serially
+// makes a dashboard render one round trip per target — eighteen seconds on
+// §7.5's six-hundred-series deployment, and past a few thousand series a whole
+// blobOpBudget spent before Series() can answer at all. Every other multi-read
+// path in this store already goes through it, and this was the one that did
+// not.
+//
+// The slice is filled positionally so the answer does not depend on which
+// worker finished first; seriesList sorts what comes back regardless, but a
+// listing whose contents varied run to run would fail AC7 before the sort ever
+// saw it.
 func (s *Blob) readSeriesPage(ctx context.Context, page indexPage) ([]Series, error) {
-	out := make([]Series, 0, len(page.objects))
+	found := make([]*Series, len(page.objects))
 
-	for _, object := range page.objects {
-		id, err := parseTargetMarkerKey(object.key)
+	err := eachBounded(ctx, len(page.objects), blobHydrateConcurrency, func(ctx context.Context, i int) error {
+		one, ok, err := s.readSeriesMarker(ctx, page.objects[i].key)
 		if err != nil {
-			s.log.Warn("an object among the series markers is not a key this store writes, and was ignored",
-				"key", object.key)
+			return err
+		}
 
+		if ok {
+			found[i] = &one
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Series, 0, len(found))
+
+	for _, one := range found {
+		if one == nil {
 			continue
 		}
 
-		raw, err := s.getIndex(ctx, object.key)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				// Deleted between the listing and the read, which is what a
-				// prune does to a series whose whole history has expired.
-				s.log.Debug("a series marker was deleted while the series were being listed", "key", object.key)
-
-				continue
-			}
-
-			return nil, err
-		}
-
-		var marker seriesMarker
-
-		if err := json.Unmarshal(raw, &marker); err != nil {
-			// Reported rather than skipped, and this is the one listing in the
-			// store where that is the right way round: the target a marker
-			// names is not recoverable from its key, which is a hash, so a
-			// marker that cannot be read is a whole target that would silently
-			// disappear from every dashboard rather than one row that would look
-			// odd on one.
-			return nil, fmt.Errorf("the series marker %s does not decode: %w: %w", object.key, ErrCorrupt, err)
-		}
-
-		if seriesFor(marker.Target, marker.Mode) != id {
-			return nil, fmt.Errorf("the series marker %s names %q, which is not the series its key spells: %w",
-				object.key, truncateForMessage(marker.Target), ErrCorrupt)
-		}
-
-		out = append(out, Series{Target: marker.Target, Mode: marker.Mode})
+		out = append(out, *one)
 	}
 
 	return out, nil
+}
+
+// targetOfMarkerKey is the series a target marker's key names, reporting a key
+// this grammar does not produce as a fact rather than as a failure: something
+// else has written into the index tree, and refusing to list the targets
+// because of it would turn one stray object into an empty dashboard.
+func targetOfMarkerKey(key string) (seriesID, bool) {
+	id, err := parseTargetMarkerKey(key)
+
+	return id, err == nil
+}
+
+// readSeriesMarker reads one target marker, reporting separately that there was
+// nothing there to read.
+func (s *Blob) readSeriesMarker(ctx context.Context, key string) (Series, bool, error) {
+	id, ok := targetOfMarkerKey(key)
+	if !ok {
+		s.log.Warn("an object among the series markers is not a key this store writes, and was ignored",
+			"key", key)
+
+		return Series{}, false, nil
+	}
+
+	raw, err := s.getIndex(ctx, key)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Deleted between the listing and the read, which is what a prune
+			// does to a series whose whole history has expired.
+			s.log.Debug("a series marker was deleted while the series were being listed", "key", key)
+
+			return Series{}, false, nil
+		}
+
+		return Series{}, false, err
+	}
+
+	var marker seriesMarker
+
+	if err := json.Unmarshal(raw, &marker); err != nil {
+		// Reported rather than skipped, and this is the one listing in the
+		// store where that is the right way round: the target a marker names is
+		// not recoverable from its key, which is a hash, so a marker that
+		// cannot be read is a whole target that would silently disappear from
+		// every dashboard rather than one row that would look odd on one.
+		return Series{}, false, fmt.Errorf("the series marker %s does not decode: %w: %w", key, ErrCorrupt, err)
+	}
+
+	if seriesFor(marker.Target, marker.Mode) != id {
+		return Series{}, false, fmt.Errorf("the series marker %s names %q, which is not the series its key spells: %w",
+			key, truncateForMessage(marker.Target), ErrCorrupt)
+	}
+
+	return Series{Target: marker.Target, Mode: marker.Mode}, true, nil
 }

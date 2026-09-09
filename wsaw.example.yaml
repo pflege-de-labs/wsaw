@@ -135,16 +135,19 @@ browser:
   noSandbox: false
 
 store:
-  # sqlite (the default), postgres, or mysql.
+  # sqlite (the default), postgres, mysql, or blob.
   #
-  # SQLite needs no server and is what the single-binary deployment assumes:
-  # one binary, one file. The other two exist for an organisation that would
-  # rather back up and replicate results the way it does everything else.
-  # Both drivers are pure Go, so the binary still cross-compiles without CGo.
+  # The evidence always goes in a bucket; the only choice here is where the
+  # index goes. SQLite needs no server and is what the single-binary
+  # deployment assumes: one binary, one file. The two server databases exist
+  # for an organisation that would rather back up and replicate results the
+  # way it does everything else. All four are pure Go, so the binary still
+  # cross-compiles without CGo.
   #
-  # A server database removes the file and its lock. It does *not* make wsaw
-  # multi-node: two instances sharing one database would still disagree about
-  # baselines and would duplicate every scheduled scan.
+  # None of them makes wsaw multi-node. Moving the index off the local disk
+  # removes the file and its lock, not the constraint: two instances sharing
+  # one database, or one bucket, still duplicate every scheduled scan and can
+  # still disagree about a baseline.
   driver: sqlite
 
   # Defaults to the platform state directory when empty. sqlite only.
@@ -165,22 +168,58 @@ store:
   # maxIdleConns: 2
   # connMaxLifetime: 30m
 
-  # A server database is reached over a network, so a restart, a failover or a
-  # deadlock is retried rather than failing the scan's result. A permanent
-  # failure — a constraint violation — is never retried: that would only make
-  # it slower. Every retry is logged and counted.
+  # No database at all: the index becomes objects in the same bucket as the
+  # evidence, under a "_wsaw/" prefix. One binary, one bucket, nothing to run,
+  # patch or fail over — which is what a deployment in Kubernetes against
+  # object storage usually wants instead of a database kept alive to hold a
+  # few thousand small records.
+  #
+  #   driver: blob
+  #   artifactURL: "${env:WSAW_ARTIFACT_URL}"
+  #
+  # It takes no path, no dsn and no pool settings, and refuses them by name
+  # rather than ignoring them. The bucket is not merely where the evidence
+  # goes, it *is* the store, so artifactURL (or artifactDir) is required and
+  # there is no default.
+  #
+  # What it costs, before you choose it: no SQL and no ad-hoc queries, since
+  # the key layout answers the handful of questions wsaw asks and nothing
+  # else; a request and its latency on every read path, so a page that renders
+  # instantly against SQLite takes a couple of hundred milliseconds; and a
+  # listing that lags, so a just-written result may not appear in one
+  # immediately — not even to the process that wrote it. It stays single-node
+  # for the reason above, and the window in which two instances would disagree
+  # about a baseline is wider here, because a listing converges on the
+  # provider's schedule rather than a transaction's. A long history is
+  # compacted into checkpoint objects automatically, with nothing to
+  # configure. Read "the store with no database" in the README first.
+  #
+  # There is no migration between this store and the SQL ones in either
+  # direction. All four keep their documents in the same bucket layout, so
+  # what does not port is the index, and rebuilding it from the documents is
+  # the way across — a command that is not built yet.
+
+  # A store reached over a network — a server database, or a bucket — retries
+  # a transient failure rather than failing the scan's result: a restart, a
+  # failover, a deadlock, a throttled request. A permanent failure — a
+  # constraint violation — is never retried: that would only make it slower.
+  # Every retry is logged and counted.
   maxAttempts: 3       # 1 disables retrying
   retryBackoff: 200ms  # doubles for each attempt after the first
 
   # Where the evidence goes: screenshots, stored response bodies, and every
-  # scan's JSON document. The database keeps the index and a reference; the
-  # bytes live here, named by their own SHA-256, so identical bytes are one
-  # object however many scans captured them.
+  # scan's JSON document. The index keeps a reference; the bytes live here,
+  # named by their own SHA-256, so identical bytes are one object however many
+  # scans captured them.
   #
   # Empty means a directory beside the database file — or beside the state
   # directory when the store is a server database — which is the whole of what
   # the single-binary deployment has to decide about storage. wsaw creates it
   # 0700 and each artifact 0600: evidence can carry personal data.
+  #
+  # The blob driver is the exception: there is no database file to sit beside
+  # and the bucket is the store, so empty is a configuration error rather than
+  # a default.
   artifactDir: ""
 
   # Object storage instead, named as a URL. Set this *or* artifactDir, never
@@ -233,6 +272,11 @@ store:
   # rather than hidden when it cannot be); every artifact is a request, so it
   # costs money and latency; and a lifecycle rule on the bucket will delete
   # evidence behind wsaw's back — leave expiry to maxAge and maxPerSeries below.
+  # With the blob driver that last one is sharper, because the index is in the
+  # bucket too: index objects are small and, once a history settles, old, which
+  # is exactly what an expire-by-age rule catches. Exclude the "_wsaw/" prefix
+  # from every lifecycle policy, and back it up — baselines and the audit log
+  # are decisions, and nothing can rebuild them from a scan.
   #
   # The bucket must be wsaw's alone: a retention sweep walks it, and two
   # deployments sharing one bucket write the same key shapes, so each one's
