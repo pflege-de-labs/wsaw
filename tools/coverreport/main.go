@@ -76,8 +76,22 @@ type counts struct {
 	Covered int
 }
 
+// block is one instrumented range, keyed by its position so the same range
+// reported by several test binaries folds into a single entry.
+type block struct {
+	file    string
+	stmts   int
+	covered bool
+}
+
 // readProfile sums the coverage profile per file. A block counts as covered
 // when any run touched it, which is how `go tool cover` totals it too.
+//
+// A profile produced with -coverpkg lists every block once per test binary
+// that could have executed it, so the same range appears many times over —
+// once covered, usually many times not. Adding those lines up would multiply
+// both the statement count and the covered count by the number of packages
+// under test, so blocks are folded by position first and only then summed.
 func readProfile(path string) (map[string]counts, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -85,7 +99,7 @@ func readProfile(path string) (map[string]counts, error) {
 	}
 	defer f.Close()
 
-	files := make(map[string]counts)
+	blocks := make(map[string]block)
 	sc := bufio.NewScanner(f)
 
 	for sc.Scan() {
@@ -94,19 +108,35 @@ func readProfile(path string) (map[string]counts, error) {
 			continue
 		}
 
-		name, c, err := parseProfileLine(line)
+		pos, name, c, err := parseProfileLine(line)
 		if err != nil {
 			return nil, err
 		}
 
-		acc := files[name]
-		acc.Stmts += c.Stmts
-		acc.Covered += c.Covered
-		files[name] = acc
+		b, seen := blocks[pos]
+		if !seen {
+			b = block{file: name, stmts: c.Stmts}
+		}
+
+		b.covered = b.covered || c.Covered > 0
+		blocks[pos] = b
 	}
 
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("reading profile: %w", err)
+	}
+
+	files := make(map[string]counts)
+
+	for _, b := range blocks {
+		acc := files[b.file]
+		acc.Stmts += b.stmts
+
+		if b.covered {
+			acc.Covered += b.stmts
+		}
+
+		files[b.file] = acc
 	}
 
 	if len(files) == 0 {
@@ -116,25 +146,27 @@ func readProfile(path string) (map[string]counts, error) {
 	return files, nil
 }
 
-func parseProfileLine(line string) (string, counts, error) {
+// parseProfileLine returns the block's position (its identity across test
+// binaries), the file it belongs to, and its statement counts.
+func parseProfileLine(line string) (string, string, counts, error) {
 	fields := strings.Fields(line)
 	if len(fields) != 3 {
-		return "", counts{}, fmt.Errorf("malformed profile line %q", line)
+		return "", "", counts{}, fmt.Errorf("malformed profile line %q", line)
 	}
 
 	name, _, ok := strings.Cut(fields[0], ":")
 	if !ok {
-		return "", counts{}, fmt.Errorf("malformed profile position %q", fields[0])
+		return "", "", counts{}, fmt.Errorf("malformed profile position %q", fields[0])
 	}
 
 	stmts, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return "", counts{}, fmt.Errorf("statement count in %q: %w", line, err)
+		return "", "", counts{}, fmt.Errorf("statement count in %q: %w", line, err)
 	}
 
 	hits, err := strconv.Atoi(fields[2])
 	if err != nil {
-		return "", counts{}, fmt.Errorf("hit count in %q: %w", line, err)
+		return "", "", counts{}, fmt.Errorf("hit count in %q: %w", line, err)
 	}
 
 	c := counts{Stmts: stmts}
@@ -142,7 +174,7 @@ func parseProfileLine(line string) (string, counts, error) {
 		c.Covered = stmts
 	}
 
-	return name, c, nil
+	return fields[0], name, c, nil
 }
 
 // Fn is one function's coverage, as `go tool cover -func` reports it. File is

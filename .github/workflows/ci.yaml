@@ -69,11 +69,13 @@ jobs:
       - name: Test
         run: go test -race -timeout 15m ./...
 
-      - name: Coverage of core logic
+      # A gate, not a readout: below COVER_MIN this fails. The minimum is a
+      # ratchet held in the Makefile, and it is calibrated against this job —
+      # a developer machine with Podman and Chrome covers container paths that
+      # skip here, so its number is the higher one and cannot set the floor.
+      - name: Coverage gate
         if: runner.os == 'Linux'
-        run: |
-          go test -coverprofile=coverage.out ./...
-          go tool cover -func=coverage.out | tail -1
+        run: make cover-gate
 
   lint:
     name: golangci-lint

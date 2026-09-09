@@ -125,10 +125,46 @@ test-store-mysql:
 	  go test -count=1 ./internal/store/
 	$(STORE_TEST_RUNTIME) stop wsaw-test-mysql
 
+# Coverage is measured with -coverpkg, not per-package. Much of wsaw is
+# deliberately tested from the outside: the scanner's integration tests drive
+# a real browser against fixture servers and exercise capture, browser and
+# consent through it. Without -coverpkg, Go credits a test binary only for
+# statements in its own package, so that whole stack reads as untested when it
+# is not.
+#
+# The e2e fixture server and the manual browse tool are excluded: they are
+# test scaffolding, and measuring them says nothing about wsaw while moving
+# the number whenever a fixture grows. tools/coverreport is already out via
+# //go:build ignore.
+COVER_PKGS = $(shell go list ./... | grep -v '/test/e2e/' | paste -sd, -)
+
 .PHONY: cover
 cover:
-	go test -coverprofile=coverage.out ./...
+	go test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
+
+# COVER_MIN is a ratchet, not an aspiration: it holds the number CI last
+# measured so coverage cannot silently regress. Raise it when real coverage
+# rises; never lower it to make a build pass.
+#
+# It sits below what a developer machine measures on purpose. This one has
+# Podman and Chrome, so it covers the container paths that skip on a runner
+# without a container runtime, and a floor calibrated against the higher
+# number would fail CI for a difference in the environment rather than in the
+# code. Raise this to what CI reports once a run has measured it.
+COVER_MIN ?= 75.0
+
+# cover-gate fails the build below COVER_MIN. The percentage comes from
+# `go tool cover -func`, which knows how to fold the repeated blocks a
+# -coverpkg profile contains — summing the profile by hand does not.
+.PHONY: cover-gate
+cover-gate: cover
+	@total=$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$NF}' | tr -d '%'); \
+	echo "coverage: $$total% (minimum $(COVER_MIN)%)"; \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { exit !(t + 0 >= m + 0) }' || { \
+		echo "coverage $$total% is below the $(COVER_MIN)% minimum"; \
+		exit 1; \
+	}
 
 # cover-report renders the same profile as a browsable page: every package
 # ranked, then per file and per function. The generator is named as a file
@@ -138,7 +174,7 @@ COVER_REPORT ?= coverage-report.html
 
 .PHONY: cover-report
 cover-report:
-	go test -coverprofile=coverage.out -covermode=atomic ./...
+	go test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out -covermode=atomic ./...
 	go run tools/coverreport/main.go -profile coverage.out -out $(COVER_REPORT)
 
 # soak runs the long-running stability test, which is deliberately separate
