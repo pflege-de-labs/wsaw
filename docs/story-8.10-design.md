@@ -890,6 +890,15 @@ twelve million requests on the reference deployment below.
 
 ### 7.2 Compaction
 
+**Read this section with §8.5 beside it.** Nine things below are wrong or
+incomplete against what step 13 built, and every one of them is corrected there
+rather than here, so that what was designed and what was built stay
+distinguishable. The two that change the shape of this section: the `audit/`
+prefix is **not** compacted, and the second trigger — a fold that walked more
+than `compactAfter` loose keys — is not built, because its own justification
+("the compaction is one PUT of what is in hand") is false against a fold that
+reads no bodies. **Where the two disagree, §8.5 is what the code does.**
+
 Three prefixes grow without bound: `series/<tk>/<mk>/`, `audit/`, and slowly
 `baseline/<tk>/<mk>/` (which is left alone — human-generated volume).
 
@@ -1148,14 +1157,36 @@ outcome for AC11.
    the pin that will release it, so anything that could add a pin after the
    listing is already in it as a take.
 
-3. **The sweep's grace applies only to an artifact no pin has ever covered.**
+3. **The sweep's grace applies to an artifact no pin has ever covered, and to
+   one whose only pins belong to a write that has not finished.**
    §7.4 gives the dangling-owner pass a grace of its own; SQL's `collectDangling`
-   has none, and `TestADeletionFailureDoesNotFailThePrune` fails with one. A pin
-   — live or dangling — is proof that a stored result named these bytes, so the
-   object's age says nothing; an object with no pin at all is what an
-   interrupted write looks like, and that is where the grace belongs. The
+   has none, and `TestADeletionFailureDoesNotFailThePrune` fails with a grace on
+   age. An object with no pin at all is what the first half of an interrupted
+   write looks like, and that is where the object-age grace belongs.
+
+   **Corrected in fix round 1.** An earlier version of this entry claimed "the
    interrupted-`PutResult` case §7.4 was protecting is covered by the take
-   instead, which is written before the pin.
+   instead, which is written before the pin". Being written before the pin is
+   exactly why the take *cannot* cover it: `liveTake` treats a pin newer than a
+   take as its release, so the dangling pin that proves the scan never finished
+   is what releases the take. `PutResult` writes its pins before the object
+   addressed by scan ID, so a crash between them left pins whose owner is absent
+   and no protection at all — the very next sweep collected the scan's
+   screenshots and stored bodies, seconds after the interruption, while the
+   sweep deliberately preserved the same scan's document as a rebuild candidate.
+
+   What separates that from a prune whose deletes the bucket refused is not
+   time — the two leave pins of identical age — but the **tombstone**, which is
+   the same discriminator `collectOrphanedScanKeys` already applies to a scan-ID
+   object: a tombstone is a prune saying it meant this result to be gone, and
+   its absence is a write that has not reached its own commit point. So an
+   object whose newest pin is younger than `unreferencedArtifactGrace` and whose
+   result has no tombstone is protected; one whose result has a tombstone is
+   collected on the very next sweep, which is what
+   `TestADeletionFailureDoesNotFailThePrune` requires. A dangling *decision* pin
+   is always a write in flight, because nothing deletes a decision object.
+   `TestASweepDoesNotCollectTheEvidenceOfAnInterruptedPutResult` holds both
+   halves.
 
 4. **`result/` objects are protected unless `AllowEmptyIndex` is set.** §7.4 #3
    says never, unconditionally.
@@ -1262,14 +1293,13 @@ outcome for AC11.
    `Audit()` until either another decision of that target is taken or a verify
    pass runs.**
 
-10. **`Options.CheckpointGrace` is declared and nothing reads it.** The rule it
-    feeds is I3's deletion rule, whose only deleter is compaction — step 13 —
-    so in this build setting it changes no behaviour. It is declared with the
-    store it belongs to rather than with its consumer so that the option set an
-    operator and a test see does not change shape when compaction lands, and
-    both declarations say in prose that the rule is not in force. A reader must
-    not take the field's presence for the rule's presence, and a step-13 author
-    must not take the assignment in `OpenBlob` for a wired grace.
+10. **`Options.CheckpointGrace` is declared and nothing reads it.**
+    ~~The rule it feeds is I3's deletion rule, whose only deleter is compaction
+    — step 13 — so in this build setting it changes no behaviour.~~ **Struck by
+    §8.5 #9: step 13 landed and `collectCovered` reads it.** The paragraph is
+    kept struck rather than deleted because the reasoning it records — that the
+    option set an operator and a test see must not change shape when compaction
+    lands — is why the field was declared a step early.
 
     The same is true of two constructors: `auditCheckpointAt` (step 13 writes
     audit checkpoints; this build only detects that one exists and refuses the
@@ -1497,6 +1527,364 @@ compaction timing. **No test sleeps** (AGENTS §5).
 22. **`_wsaw/` is never collected by a sweep**, asserted for *both* store
     kinds against a shared bucket.
 
+### 8.4 Amendments made while implementing §8.2 and §8.3 (step 12)
+
+Recorded here for the same reason §7.6 is: what was designed and what was built
+have to stay distinguishable, and a later step written from §8.2 alone would
+otherwise be written against a fake that does not exist.
+
+1. **The fake owns its storage instead of wrapping `memblob`.** Two of §8.2's
+   behaviours cannot be expressed by a wrapper: a listing served from a pinned
+   view has to report keys the storage no longer holds, and a hidden key has to
+   be absent from a page without disturbing that page's token. Both need the
+   listing to be built from a view the fake controls, and keeping a shadow copy
+   of every object's listing facts beside `memblob`'s own is the same map twice.
+   It is still a `driver.Bucket` under a `lag://` scheme registered by a test
+   file, so every fault still travels through the real `blob.Bucket`,
+   `bucket.go` and `bucket_index.go`.
+
+2. **The knobs are fewer than the table, and each of them has a caller.**
+   `hideFromListings`/`reveal` covers both `hideFromList` and `visibleAfter` —
+   out-of-order visibility is hiding A while B is visible, and two names for one
+   mechanism would be two things to keep in step. `failNext`, `missNext`,
+   `loseResponse` and `ignoreDeletes` are one scheduler with four modes;
+   `serveStaleListings`/`catchUpListings` is `listSnapshot`;
+   `acceptEveryConditionalWrite` is `ifNotExistIsALie`; `count` is
+   `requests`/`forgetRequests`. **`failPage`, `corruptBody` and `futureModTime`
+   are not built.** A damaged body needs no injection — writing bad bytes to the
+   object is what `TestADecisionThatCannotBeReadIsCorruptionAndNotAnEmptyAnswer`
+   already does; a failed page needs a listing longer than one page, which no
+   test in this build constructs; and a `ModTime` in the future feeds the
+   deletion rule whose only deleter is compaction (§7.6 #10). The second and
+   third earn their place in step 13.
+   `forget` was added and is not in §8.2: an object the bucket lost
+   without a request is the only way to reach "listed and gone", and nothing in
+   this store deletes the keys that state matters for.
+
+3. **The strict rules are scoped to the index root**, not to every key. The
+   deletion half — no key is deleted that this run has not listed — is I3, and
+   I3 is about index objects: the startup write probe deletes an artifact key it
+   never listed, and prune deletes an artifact addressed from a *pin* listing
+   rather than from a listing of the artifact itself. The rewrite half is
+   checked on the *attempt* rather than the outcome, because a conditional
+   create refuses the second write and would otherwise hide a key derived from
+   the wrong thing.
+
+4. **§8.3's tests live in `blob_lag_test.go`, not in `blob_test.go`.** Different
+   fixtures, and `blob_test.go` is 1,650 lines before they are added.
+
+5. **§7.1's write rows are wrong in three more places, measured rather than
+   read.** `PutResult` is **5 PUT and 1 attribute read** for a result naming no
+   evidence, not "3 + one per artifact (+1 the first time in a series)": the
+   document is content-addressed, so storing it costs the attribute read that
+   establishes it is not already there, and the series marker is written on
+   *every* result rather than the first — the write is conditional, so it
+   changes nothing after the first time, but the request is made, and the cache
+   that would save it cannot be correct on its own (see `recordSeries`).
+   `PutArtifact` has no row at all in §7.1 and costs **1 attribute read and 2
+   PUT**, the second being §7.6 #1's take marker. Every other row of §7.1, as
+   corrected by §7.6, was measured and holds exactly.
+
+6. **Which of §8.3's twenty-two step 12 answers, and where the rest are.**
+
+   Written here: #1 to #6 and #13's second half, #16, #17. #1 is rewritten as
+   §7.6 #6 requires. #16 and #13's second half — a listed checkpoint whose
+   object is gone is `ErrIndexIncomplete`, a listed decision whose object is
+   gone is `ErrCorrupt` — are here rather than in `blob_test.go` because a
+   bucket that does not lag cannot produce the state: deleting an object takes
+   it out of the listing too. Three answers to one question are pinned side by
+   side, since the differences are deliberate: a listed entry that is gone is a
+   concurrent prune and is dropped silently.
+
+   Already elsewhere: #19 in `blobkeys_test.go`; #20 in
+   `bucket_index_test.go`'s `TestEveryPrefixTheIndexListsOrdersTheSameOnEveryProvider`;
+   #21 in `blob_test.go`'s `TestANewerIndexLayoutIsRefused`; #22 in
+   `retention_safety_test.go`'s `TestASweepLeavesWhatWsawDidNotWrite`; #14's
+   first half in `blob_test.go`'s
+   `TestASweepLeavesAResultDocumentTheIndexHasLostSightOf` and #15 in its
+   `TestASweepCollectsNothingWhileARebuildIsRunning`; #11 in the shared suite,
+   which is where the take marker of §7.6 #1 was forced from.
+
+   Answered by step 13 and recorded in §8.5: **#7, #8 and #9**, with #10's
+   stale-listing prune folded into #7's third refusal — a checkpoint no listing
+   shows authorises no deletion, which is the same fact from the compactor's
+   side. Still open: **#12's stale-ref
+   half** (its revoke half is `blob_test.go`'s
+   `TestAWithdrawnBaselineStopsKeepingTheEvidenceItApproved`) and **#18's Warn
+   for a non-monotonic insert** are both retention and clock behaviour whose
+   substance the shared suite covers, and neither the stale-ref prune nor that
+   Warn exists in the build to be asserted; they belong with whoever adds the
+   log line. **#14's rebuild half** is Story 8.11's.
+
+---
+
+### 8.5 Amendments made while implementing §7.2 (step 13)
+
+Recorded for the same reason §7.6 and §8.4 are: what was designed and what was
+built have to stay distinguishable. Nine things, and the first two are decisions
+rather than details.
+
+1. **Compaction folds `series/<tk>/<mk>/` and does not fold `audit/`.** §7.2
+   names both prefixes. Three reasons, and the third is the one that decides it.
+
+   * An audit key is `<inv>.<stamp>.<did>` where `<did>` hashes the canonical
+     body **and a nonce** (§6.5), so unlike an entry key it is not recomputable
+     from the body it names. §7.2's checkpoint shape — an array of bodies, keys
+     derived back from them — cannot express an audit checkpoint at all; it
+     would have to carry key/body pairs, which is a different object and a
+     design change rather than an implementation of this one.
+   * `freeAuditInstant` decides where a new entry is filed by listing the loose
+     keys at one nanosecond (§7.6 #7). Deleting loose audit keys makes an
+     instant a compacted entry occupies look free, which silently breaks the
+     ordering the shared suite requires of two entries recorded at one instant.
+     Audit compaction cannot land without changing that probe too.
+   * **The volume is not there.** An audit object is written per baseline
+     decision and per action recorded from outside the store — the same
+     human-generated volume §7.2 itself gives as the reason for leaving
+     `baseline/` alone, and in fact the same objects one for one. And `Audit(n)`
+     stops paging as soon as it has the entries the caller asked for, so a log
+     of any length costs one listing: compacting it would buy object count and
+     no requests at all. AC11 asks for compaction "where a prefix grows without
+     bound", and the prefix that does that as a function of scanning rather than
+     of human decisions is the series directory.
+
+   `noAuditCheckpoints` is unchanged and still turns a visible `auditckpt/`
+   object into `ErrIndexIncomplete`, so the day an audit compaction lands it
+   cannot land half way. `auditCheckpointAt` keeps its "nothing calls this" doc
+   comment.
+
+2. **§7.2's second trigger is not built, and the counter grew a rule instead.**
+   §7.2 triggers compaction from "an in-memory per-series write counter checked
+   at the end of `PutResult`" and from "any fold that had to walk more than
+   `compactAfter` loose keys to answer — which has already read every body it
+   needs, so the compaction is one PUT of what is in hand".
+
+   **The second clause is false against the tree.** `foldKeys` reads no bodies
+   at all; that split is the whole of §6.3, and it is why a listing costs no
+   result document. A fold that walked a thousand loose keys holds a thousand
+   *keys*, so compacting from there is ~800 GETs, a PUT and later ~800 DELETEs
+   on a read path — unbounded latency on a page render, and the AC11 cost table
+   for `ListResults` would stop meaning anything.
+
+   What replaces it is a rule on the counter: **a series is due on the first
+   result this process stores for it**, and every `compactAfter` results after
+   that. The hole the second trigger existed to cover was a counter that never
+   matures — at one scan an hour a series takes six weeks to reach a thousand
+   results, so a daemon restarted fortnightly would never compact. Making a
+   restart the thing that *re-arms* compaction rather than the thing that
+   postpones it closes exactly that hole, and costs one listing per series per
+   process. Hanging it off `Prune` was reconsidered and rejected again for
+   §7.2's own reason: `PruneLoop` returns immediately with retention off.
+
+3. **The threshold counts loose keys no visible checkpoint already holds**,
+   where §7.2 counts loose keys. A key a checkpoint covers is a key waiting out
+   its grace, not work. Counting it would make every pass between a checkpoint
+   and its deletes fold the handful of entries that had arrived since into a
+   checkpoint of its own, so a busy series would collect one checkpoint per pass
+   carrying one entry each. The question the threshold asks is how much of this
+   directory no checkpoint accounts for, and that is now what it measures.
+
+4. **Membership for deleting an entry is by the whole key, not by the scan ID.**
+   §7.2's I3 says "`C.entries` contains `K`'s **scan ID**". The implementation
+   requires the checkpoint to hold an entry whose *recomputed key* equals `K`.
+   It is strictly narrower and it fails in the safe direction: a checkpoint
+   entry whose key differs from the loose key is not cover for that key, and
+   deleting on a scan-ID match would drop a spelling of the entry the checkpoint
+   does not hold. The tombstone rule keeps §7.2's scan-ID granularity, because
+   there the conservative answer is also "keep", and the question really is
+   about the scan rather than one spelling of it.
+
+5. **A run folds at most `compactAfter` entries into at most one checkpoint**,
+   which §7.2 does not say and which makes `checkpointMaxEntries` and
+   `checkpointMaxBytes` guards rather than the operative caps. Neither binds
+   under the constants as they stand — a thousand entries of about 450 bytes is
+   roughly 450 KiB against a 4 MiB cap — and both are checked against the sizes
+   the listing already reported, so a checkpoint's bound is decided before a
+   body is read. A backlog is therefore worked off one checkpoint per pass
+   rather than in one enormous object.
+
+6. **A failed delete stops the pass**, where §7.3's prune counts a failed delete
+   and steps over it. The two differ because the work differs: a prune is
+   working through a list of results an operator's policy names and finishing
+   the rest of it is progress, while a compaction's deletes are all the same
+   work and the next pass repeats it from a fresh listing anyway. Pressing a
+   thousand more deletes into a bucket that has just refused one buys nothing.
+
+7. **The tombstone rule is two rules, both of which §7.2 implies and only one of
+   which it states.** §7.2's three conditions collect a tombstone whose scan is
+   in no checkpoint's `entries`; it then says tombstones a checkpoint *does*
+   hold are "folded into the next checkpoint's `tombstoned` array first, so they
+   can be dropped under the ordinary I3 rule". Those are two different
+   predicates and the code spells both: no loose entry key for the scan is
+   visible **and** the tombstone is older than `tombstoneGrace`, **and** either
+   no checkpoint holds the scan at all, or a durably visible one carries it in
+   `Tombstoned`.
+
+8. **Two changes fell out of compaction and are in `blobprune.go` rather than
+   here.** Both are states that could not exist before a compaction deleted a
+   loose entry key.
+
+   * `removeResult` deletes the loose entry key only when the fold found one.
+     An entry the fold took out of a checkpoint has no loose key, so the delete
+     was a request per pruned result against a key the run never listed — which
+     is the one thing I3 says a deletion must follow.
+   * The sweep's orphaned-`byid` pass (§7.4 #5) used to skip any series holding
+     a checkpoint, on the recorded grounds that nothing wrote one. Something
+     does now, so it reads them: one GET per checkpoint per series, and what it
+     is for is the `Tombstoned` array. Once compaction has collected a
+     tombstone object the checkpoint is the only remaining record that the scan
+     was pruned, and without opening it the sweep would keep that leftover for
+     the life of the bucket. The checkpoint's `entries` are deliberately *not*
+     read into the live set: the pass only collects a `byid` key whose scan a
+     tombstone names, so a scan that is merely inside a checkpoint is already
+     kept.
+
+9. **`Options.CheckpointGrace` is read now**, which strikes §7.6 #10's first
+   paragraph. `collectCovered` is its one consumer. The same item's second
+   paragraph still stands for `auditCheckpointAt` and `rebuildKey`.
+
+**Deletion on a write path, and AC3.** Compaction is scheduled by `PutResult`
+and it deletes, while AC3 says no index object is deleted "as part of an
+ordinary write". The tension is real and is named in `considerCompaction`'s doc
+comment rather than smoothed over. What AC3 buys is that two writers racing
+cannot lose an update, and that comes from the key derivation — nothing here
+rewrites or edits anything, and every key deleted is one a durably visible
+checkpoint already holds the body of. `PutResult`'s own writes are complete
+before compaction is considered and its failure is never the write's. The
+alternative was an index that grows without bound in any deployment that has
+not set a retention policy, which is the failure AC11 exists to prevent.
+
+**The test knob §8.4 said would earn its place, and the ones that still have not.**
+`setModTime` is `futureModTime` generalised: it rewrites the bucket's own
+timestamp for a prefix, which is both how a test reaches the deletion half of a
+compaction without waiting out a 24-hour grace and how it produces the
+provider clock that has to switch a deletion off. `failPage` and `corruptBody`
+are still not built and still have no caller.
+
+**What the tests cost and why they cross the real threshold.** `compactAfter` is
+a constant and not configuration, so there is no knob to lower — and none was
+added, because a thousand results into the fake bucket costs about forty
+milliseconds and a compaction tested at a threshold no deployment runs would be
+testing something else. `blob_compact_test.go` writes 1,001 to 3,000 results per
+test and the whole file runs in under half a second.
+
+**Measured, on a series of 1,001 scans (`TestWhatACompactedHistoryCostsToRead`).**
+
+| | LIST | GET |
+|---|---|---|
+| `ListResults(all)` before compaction | 2 | 1,000 |
+| `ListResults(all)` after one pass | 1 | 201 |
+| `LatestResult` after one pass | 1 | 2 |
+| `ListResults(50)` after one pass | 1 | 50 |
+
+The listing drops to one page because 1,001 loose keys become 201 keys and one
+checkpoint. The reads drop because a checkpoint carries the bodies: 800 of the
+thousand summaries in the answer cost nothing beyond the one GET of the
+checkpoint that holds them. The two hot paths are unchanged, which is what
+`compactKeep` buys.
+
+### 8.6 Amendments made in fix round 1 (steps 12–14 and the consistency review)
+
+Recorded for the same reason §7.6, §8.4 and §8.5 are. Four of these were
+compliance failures that failed silently, and each one has a test written before
+the fix that fails without it.
+
+1. **A tie at one ordering field resolves to the withdrawal, not to the body
+   digest.** §6.5 and the first implementation broke a tie between two decisions
+   of one series with the smaller `<did>`, on the grounds that a digest is
+   host-independent. It is, and it is still a coin flip between "approved" and
+   "withdrawn": a withdrawal an operator was told had succeeded went on
+   silencing findings about half the time. Two mechanisms produce the tie — a
+   listing that had not caught up, so `decisionInstant` had nothing to bump
+   against; and a clock past `indexHorizon`, where every instant clamps to one
+   field. `revoke` beats `approve`, which is causally right (a withdrawal can
+   only answer an approval that already existed) and is the only direction a
+   store that silences findings may lean.
+   `TestAWithdrawalThatSharesItsApprovalsInstantStillWithdraws` covers both
+   mechanisms, over eight actor spellings so that no digest can carry it.
+
+2. **`decisionInstant` bumps against the ordering field and not against the two
+   instants**, and warns when the bump has nowhere to go. Past the horizon
+   `clampNano` pins every instant to one field, so comparing times skipped the
+   bump and filed two decisions on top of each other with nothing logged.
+
+3. **A withdrawal reads the log back and reports one that did not take effect.**
+   The bump orders a decision past the newest one the caller could *see*. When
+   the pre-write listing missed the approval and the withdrawing host's clock
+   was behind, the withdrawal was filed *before* the approval it answered,
+   `DeleteBaseline` returned `nil`, and the baseline stood. `verifyDecision`
+   folds the log again after the commit, with the key just written included, and
+   returns an error wrapping `ErrIndexIncomplete` when something else wins;
+   retrying against a caught-up listing takes effect. It is paid by the
+   withdrawal alone — an approval that loses fails safe — so `DeleteBaseline`
+   costs 2 LIST where §7.1 and §8.4 say 1, and `SetBaseline` is unchanged.
+   `TestAWithdrawalThatCouldNotOutrankItsApprovalIsReported`.
+
+4. **A prune may only unpin a decision pin it can show is superseded *for that
+   decision's own series*.** `baselineGuard.superseded` judged every decision pin
+   against the one series being pruned, so pruning series B deleted an artifact
+   series A's standing baseline still named — the everyday case being one asset
+   captured identically in two consent modes, which content addressing makes one
+   object. The prune now reads every visible decision digest once (the listing
+   the sweep already makes, over one prefix of human-generated volume) and
+   removes a decision pin only when the digest is absent from that set or is
+   this series' own superseded decision.
+   `TestPruningOneSeriesKeepsWhatAnotherSeriesBaselineNames`.
+
+5. **The fold keeps the copy of a duplicated entry that already has a body.**
+   `answer` sorted with the unstable `slices.SortFunc` and `compareEntries`
+   returns 0 for the two copies of a scan a checkpoint covers and whose loose
+   key is not deleted yet. Which one survived the dedupe was decided by pivot
+   choice: measured, 422 of 801 covered scans were dropped from a prune's
+   accounting when their loose keys had gone. `compareFoldEntries` adds the one
+   tie-break that is about the entry rather than the scan.
+   `TestACoveredEntryIsReadFromTheCheckpointAndNotFromTheKeyItReplaces`.
+
+6. **A failed audit pointer is a warning and never the approval's failure**, per
+   §7.6's own reading of AC9 — see `putAuditPointer`. Returning it made an
+   operator retry a committed approval and record one human decision twice.
+   `TestAnApprovalWhoseAuditPointerFailedIsStillAnApproval`.
+
+7. **`Series()` reads its markers through `eachBounded`.** One at a time it was
+   S sequential round trips behind every dashboard render — 18 s on §7.5's
+   600-series deployment, and past a few thousand series a whole
+   `blobOpBudget` — while every other multi-read path in this store already used
+   the pool. §7.5's `Series()` row should be read as concurrent.
+
+8. **The layout probe looks four versions ahead, not one.** A bucket first
+   written at layout 3 holds only `00000003.json`, so a bound of
+   `indexLayoutVersion+1` found nothing, wrote layout 1 beside it and read a
+   newer index as its own — the refusal AC14 asks for, defeated.
+   `layoutProbeAhead` states that any fixed bound can be outrun and why four is
+   the one chosen. `TestAnIndexThisBuildDidNotStartIsNotReadAsEmpty` now covers
+   two ahead as well as one.
+
+9. **Four gaps in the blob-only coverage are closed.** An entry object that will
+   not decode (`damagedEntry` and `unreadableEntry` had no test anywhere); the
+   prune's `UnknownReferences` branch, which is this store's replacement for the
+   skipped `TestRetentionKeepsWhatAResultWithUnknownReferencesMightName`; the
+   horizon half of the ordering-field clamp; and §8.3 #18's backwards-clock
+   case, where a scan is stored at an instant earlier than one already in the
+   history and both have to stay listed and reachable
+   (`TestAScanStoredOutOfOrderHidesNothingAndOverwritesNothing`). §8.3 #12's
+   stale-ref half is still not built, and is still recorded in §8.4 #6; so is
+   #18's Warn naming a non-monotonic insert, which the test makes unnecessary
+   rather than merely deferred — ordering is a total function of the key, so
+   there is nothing for a warning to protect against.
+
+10. **Recorded and not changed.** `RecordAudit`'s instant probe decides where an
+    entry is filed from a listing, so the promise that two entries at one
+    instant come back in recording order holds only when the probe sees the
+    earlier one. The limit is now stated on `freeAuditInstant` rather than only
+    implied; the mechanism that would not lean on a listing is a caller supplying
+    distinct instants, which every caller in this package already does. The
+    audit-pointer gap that heals on the next decision rather than on the next
+    read (§7.6 #9) is now in the README's `blob` section as well as here, so an
+    operator meets it in the paragraph they choose from. Audit compaction is
+    still not built and `noAuditCheckpoints` is still the guard that says so.
+    The AC3 tension above stands as written and wants a human's ratification,
+    not a code change.
+
 ---
 
 ## 9. Two existing defects this design depends on
@@ -1559,10 +1947,14 @@ about a failure mode they have never seen.
 >   reads. A page that renders instantly against SQLite takes a couple of
 >   hundred milliseconds here, and every read is a line on your bill. Retention
 >   pruning walks each target's history: run it daily, not hourly.
-> - **A history gets slower as it grows unless compaction is left on.**
->   Compaction folds old index entries into checkpoint objects and removes what
->   they cover 24 hours later. Turning it off corrupts nothing; it makes long
->   listings and pruning steadily more expensive.
+> - **A long history is compacted for you, and you cannot turn it off.** Once a
+>   target's history passes a thousand scans, wsaw folds everything but the
+>   newest two hundred entries into a checkpoint object and removes what it
+>   covers a day later, so reading a whole history stays one listing rather
+>   than one per thousand scans. There is nothing to configure: it runs from
+>   the scan that crosses the threshold, and once per process per target after
+>   a restart. What it costs is that one scan in a thousand takes noticeably
+>   longer to store.
 > - **It is still single-node.** Two wsaw instances against one bucket will not
 >   corrupt the index — nothing is ever overwritten — but they will duplicate
 >   every scheduled scan, and between one approving a baseline and the other
@@ -1623,12 +2015,14 @@ both directions.
 **Two lines of the text above must not ship ahead of the code they describe**
 (step 14 writes the README; steps 12 and 13 are what make these true).
 
-* The compaction bullet — "a history gets slower as it grows unless compaction
-  is left on", and the sentence about checkpoints being removed 24 hours later
-  — describes step 13. This build reads and unions every checkpoint it can see
-  and writes none, so until step 13 lands there is nothing to leave on and
-  nothing to turn off. Either step 13 lands first or the bullet says that a
-  history simply gets slower as it grows.
+* The compaction bullet describes step 13, which has landed — and it was
+  **rewritten** when it did. The draft said "unless compaction is left on" and
+  "turning it off corrupts nothing", and there is nothing to leave on and
+  nothing to turn off: compaction is unconditional, its constants are constants
+  and not configuration (§5), and the only thing an operator can observe about
+  it is the log line it writes and the one scan in a thousand that takes longer.
+  Offering a switch in a README is a support question about a switch that does
+  not exist.
 * The read-your-writes bullet as **corrected above**, not as originally
   drafted: §7.6 #6 struck the promise that the writing process always sees its
   own write, because §6.6's overlay was not built and that guarantee is not one
@@ -1662,6 +2056,61 @@ one above the highest known exists, the binary refuses to start, with the same
 message shape `TestNewerSchemaIsRefused` asserts, naming the bucket through
 `secret.RedactURL`. An empty `layout/` gets `00000001.json` written with
 `IfNotExist`; a race is a harmless no-op.
+
+### 10.1 What step 14 actually shipped
+
+The draft above is raw material, and the README has a voice the draft does not
+match, so none of it is pasted. What landed, and where it differs:
+
+1. **The bullets are split across two places rather than gathered in one.**
+   Four of the draft's costs are not properties of the bucket index at all but
+   of object storage — the lifecycle rule, the cloud build tag, the sweep's
+   `--allow-empty-index`, and the retry behaviour — and the README already had
+   a section on each. Repeating them under `blob` would have been the second
+   account of a thing the document already explained, so the `blob` section
+   carries only what is true of *this store* and the shared sections gained the
+   `blob`-specific sharpening in place (the `_wsaw/` prefix and lifecycle
+   rules, and the sweep leaving index objects alone).
+2. **No "delete failures logged by an earlier version" paragraph**, per §9.
+   Re-verified before deciding: `git log -S` puts `sweepBucket` and its
+   `isArtifactRef` guard in the same commit (`eee6414`), and the repository has
+   no tags, so no released wsaw ever logged them. Writing the line would have
+   described a failure mode to operators who cannot have seen it. What replaced
+   it is the true operator-facing consequence of the same guard: a bucket that
+   once held a `blob` index keeps its `_wsaw/` objects for ever after a switch
+   to a SQL store, and the sweep reports them as `foreign: N objects in the
+   bucket were not written by wsaw and were left alone`. That message reads as
+   "not ours" and the objects *are* wsaw's, so the README says to read it as
+   "not an artifact" — the wording is worth revisiting in the sweep's output,
+   but changing it is not a documentation step's business.
+3. **Three claims the draft made were corrected against the code before
+   shipping.** The single-node bullet no longer restates the general
+   "no store makes wsaw multi-node" paragraph and instead says what is
+   different here (no lost update, but an unbounded disagreement window). The
+   read-cost bullet quotes the figures `TestWhatEachReadPathCostsInRequests`
+   asserts rather than an estimate, and the targets page's cost is the one it
+   actually pays — `ListResults` plus a further `HasBaseline` listing per
+   series. The compaction bullet stays as step 13 rewrote it.
+4. **A contradiction the four editing passes had left** is fixed: "Setting
+   neither is the default" under *The artifact bucket* was flatly untrue for
+   `blob`, which `validateBucketStore` refuses. The `blob` exception is now
+   stated in both places that make the claim.
+5. **`row` is no longer used for an index entry** in the prose that covers all
+   four stores (the lifecycle bullet, the sticky-unknown-references paragraph,
+   and the "evidence does not belong in a row" line). It is kept in *Upgrading
+   a store that predates the bucket*, which is genuinely about a SQL schema.
+6. **The Makefile target and the CI step were already in place** from step 11,
+   as §11 says they would be. Step 14 verified rather than added them:
+   `make test-store-blob` exists, `test-store-all` depends on it, and the CI
+   `test` job runs it on both runners. `internal/store` has no subpackages, so
+   the target's `./internal/store/` is the whole of `./internal/store/...`.
+7. **`wsaw.example.yaml`** gained the commented `blob` block, and three
+   existing comments that were true only of a SQL store were widened: the
+   driver list, the retry paragraph, and `artifactDir`'s "empty means beside
+   the database file". Every documented shape was checked with
+   `wsaw config -check` — the valid one passes, and a `blob` store carrying a
+   `dsn`, a `path` and a pool setting produces the four line-numbered refusals
+   the README promises.
 
 ---
 
@@ -1708,7 +2157,9 @@ Each step leaves the tree compiling and the suite green.
     strict-mode default and the AC11 request-count assertions.
 13. **`feat(store): compaction and checkpoints for the bucket index`** —
     `blobcompact.go` plus its interrupted-compaction, concurrent-compactor
-    and grace-period tests.
+    and grace-period tests. **Done**, with nine deviations recorded in §8.5;
+    the two worth knowing before reading §7.2 are that `audit/` is not
+    compacted and that the fold trigger is not built.
 14. **`docs: the bucket-index store, what it is for and what it costs
     (Story 8.10)`** — README and `wsaw.example.yaml`. **The Makefile target and
     the CI step moved up into step 11**, deliberately: `make test-store-blob`
@@ -1719,7 +2170,11 @@ Each step leaves the tree compiling and the suite green.
     unexercised, which is the one deferred item whose absence creates a false
     green now instead of later. The step needs no container, unlike the
     Postgres and MySQL ones. Step 14 keeps the prose, and §10 says which two of
-    its bullets must not ship ahead of steps 12 and 13.
+    its bullets must not ship ahead of steps 12 and 13. **Done**; §10.1 records
+    what shipped and the seven places it departs from §10's draft, the largest
+    being that the draft's one long bullet list is split between the `blob`
+    section and the shared object-storage sections so that nothing is explained
+    twice.
 
 ---
 

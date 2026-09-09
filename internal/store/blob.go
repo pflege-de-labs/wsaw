@@ -78,15 +78,16 @@ type Blob struct {
 	// carried on the store because the rule it feeds is a property of this
 	// index rather than of one call.
 	//
-	// **No code in this build reads it**, because the rule is I3's deletion
-	// rule and I3's deleter is compaction, which this store does not do yet:
-	// it reads and unions every checkpoint it can see (see unionCheckpoints)
-	// and writes none. The field is kept rather than removed so that the
-	// grace and the store it governs are declared together, and so that a
-	// caller who sets Options.CheckpointGrace is not silently reading a
-	// different store's option — but a reader must not take its presence for
-	// the rule being in force. Recorded in the design's §7.6.
+	// It is invariant I3's grace period and its one reader is collectCovered
+	// in blobcompact.go, which is also where the rest of I3 is argued. The
+	// design's §7.6 records that an earlier build declared this field and read
+	// it nowhere, because compaction had not landed yet; it has, and it does.
 	checkpointGrace time.Duration
+
+	// writes is compaction's schedule: how many results this process has
+	// stored per series, checked at the end of each PutResult. There is no
+	// ticker and no goroutine behind it (AGENTS §4); see seriesWrites.
+	writes *seriesWrites
 
 	// version identifies the build that opened this store, for the layout
 	// object it may have to write. Provenance only: nothing reads it back.
@@ -130,6 +131,7 @@ func OpenBlob(ctx context.Context, opts Options) (*Blob, error) {
 		log:             opts.logger(),
 		now:             opts.clock(),
 		checkpointGrace: opts.checkpointGrace(),
+		writes:          newSeriesWrites(),
 		version:         opts.version(),
 	}
 
@@ -211,16 +213,17 @@ type layoutRecord struct {
 // of a named key is read-after-write consistent on every provider gocloud
 // reaches.
 //
-// Every candidate from 1 to one past what this build understands is probed, and
-// the loop does not stop at the first absent one. Stopping there would miss the
-// case that matters most: a bucket first written by a newer wsaw holds
-// 00000002.json and no 00000001.json, so a build that gave up at the first gap
-// would see an empty layout, write its own, and read a newer index as if it
-// were its own. Two GETs is the cost of that being impossible today.
+// Every candidate from 1 to layoutProbeAhead past what this build understands
+// is probed, and the loop does not stop at the first absent one. Stopping there
+// would miss the case that matters most: a bucket first written by a newer wsaw
+// holds 00000003.json and nothing below it — layout objects are written once,
+// by the build that lays the index out — so a build that gave up at the first
+// gap would see an empty layout, write its own, and read a newer index as if it
+// were its own.
 func (s *Blob) checkLayout(ctx context.Context) error {
 	highest := 0
 
-	for version := 1; version <= indexLayoutVersion+1; version++ {
+	for version := 1; version <= indexLayoutVersion+layoutProbeAhead; version++ {
 		present, err := s.layoutPresent(ctx, version)
 		if err != nil {
 			return err

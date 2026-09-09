@@ -108,15 +108,31 @@ func (p *artifactPins) observe(object indexObject) {
 // artifact of every pruned result look like one a scan had just taken, and
 // retention would delete nothing at all.
 func (p artifactPins) newestRef() time.Time {
-	var newest time.Time
+	pin, _ := p.newestPin()
+
+	return pin.modTime
+}
+
+// newestPin is that same reference, as the pin rather than as the time,
+// reporting separately that there is none.
+//
+// The sweep needs the pin and not only its age: what an object's newest pin is
+// decides whether pins that all read as gone are one write in flight or the
+// leftovers of a prune, and those two are told apart by who the pin belongs to
+// (sweepRun.inFlight).
+func (p artifactPins) newestPin() (artifactPin, bool) {
+	var (
+		newest artifactPin
+		found  bool
+	)
 
 	for _, pin := range p.refs {
-		if pin.modTime.After(newest) {
-			newest = pin.modTime
+		if !found || pin.modTime.After(newest.modTime) {
+			newest, found = pin, true
 		}
 	}
 
-	return newest
+	return newest, found
 }
 
 // liveTake reports whether a scan that has not finished has these bytes.
@@ -128,6 +144,13 @@ func (p artifactPins) newestRef() time.Time {
 // the take is the release: this is how an append-only index expresses what
 // releaseClaimsTx does by deleting the claim row, without a write that rewrites
 // or deletes anything on the ordinary path (AC3).
+//
+// **It does not cover a PutResult interrupted between its pins and its byid
+// object**, and an earlier draft of §7.6 claimed it did. The claim is inverted
+// by the very ordering it rests on: PutArtifact writes the take and PutResult
+// writes the pin afterwards, so the dangling pin that proves the scan never
+// finished is newer than the take and reads as its release. What covers that
+// case is the age of the pins themselves, in sweepRun.tooYoungToCall.
 //
 // **The release comparison assumes the bucket reports modification times more
 // finely than the interval between PutArtifact and PutResult**, and that
@@ -274,6 +297,12 @@ type baselineGuard struct {
 	// prior is every decision key the listing showed, for the audit-pointer
 	// self-heal of §6.5 step 6.
 	prior []decisionKey
+
+	// mine is the body digest of each of those, which is what a decision pin
+	// carries. It is what tells a decision pin of *this* series apart from one
+	// of any other, and see supersededDecision for why the difference decides
+	// whether the pin is this run's to remove.
+	mine map[string]struct{}
 }
 
 // protects reports whether the standing decision names this artifact.
@@ -281,23 +310,6 @@ func (g baselineGuard) protects(artifact string) bool {
 	_, named := g.refs[artifact]
 
 	return named
-}
-
-// superseded reports whether one decision pin belongs to a decision that is no
-// longer in force, and has existed long enough to be sure of it.
-//
-// Without this every superseded and every revoked approval would pin its result
-// document and every screenshot it named for the life of the bucket, and
-// "retention deletes what it stops referencing" would be false. The age is what
-// makes it safe against the listing that produced the current decision being
-// stale: a pin younger than the grace period may belong to an approval this run
-// could not see, so it is left for the next one.
-func (g baselineGuard) superseded(pin artifactPin, now time.Time) bool {
-	if g.found && pin.owner.did == g.current.did {
-		return false
-	}
-
-	return pin.modTime.Before(now.Add(-unreferencedArtifactGrace))
 }
 
 // baselineProtection reads the decision in force for one series and what it
@@ -308,7 +320,15 @@ func (s *Blob) baselineProtection(ctx context.Context, series blobSeries) (basel
 		return baselineGuard{}, err
 	}
 
-	guard := baselineGuard{refs: make(map[string]struct{}), prior: keys}
+	guard := baselineGuard{
+		refs:  make(map[string]struct{}),
+		prior: keys,
+		mine:  make(map[string]struct{}, len(keys)),
+	}
+
+	for _, key := range keys {
+		guard.mine[key.did] = struct{}{}
+	}
 
 	current, ok := currentDecision(keys)
 	if !ok {
@@ -382,6 +402,13 @@ type pruneRun struct {
 	// gone is the pins a plan has decided it would remove, keyed by their own
 	// keys. It is nil for a prune, which needs no such set; see PlanPrune.
 	gone map[string]struct{}
+
+	// decisions is the digest of every baseline decision the index holds, read
+	// once for the whole run. A decision pin carries the digest and nothing
+	// else that identifies it, so this is what separates "a decision of some
+	// other series, which this run may not judge" from "a pin whose decision
+	// does not exist"; see supersededDecision.
+	decisions map[string]struct{}
 }
 
 func (s *Blob) prune(ctx context.Context, now time.Time, r Retention, plan bool) (PruneStats, error) {
@@ -405,6 +432,13 @@ func (s *Blob) prune(ctx context.Context, now time.Time, r Retention, plan bool)
 	if err := s.bucket.reachable(ctx); err != nil {
 		return run.stats, fmt.Errorf("pruning needs the artifact bucket: %w", err)
 	}
+
+	decisions, err := s.decisionDigests(ctx)
+	if err != nil {
+		return run.stats, err
+	}
+
+	run.decisions = decisions
 
 	series, err := s.seriesList(ctx)
 	if err != nil {
@@ -495,6 +529,22 @@ func (r *pruneRun) pruneSeries(ctx context.Context, series blobSeries, ret Reten
 type doomedEntry struct {
 	record seriesRecord
 	body   entryBody
+
+	// loose says the fold took this entry's body from an object of its own
+	// rather than out of a checkpoint, and therefore that there is a key to
+	// delete. A compaction folds an entry's body into a checkpoint and deletes
+	// the loose key, so a prune reaching a scan that old has nothing to remove
+	// but the tombstone: issuing the delete anyway would be a request per
+	// pruned result against a key this run never listed, which is the one thing
+	// invariant I3 says a deletion must follow.
+	//
+	// Inside Options.CheckpointGrace a covered scan still has both, and the
+	// fold deliberately prefers the checkpoint's copy (compareFoldEntries), so
+	// this reads false while a loose key is still there. The key is not leaked:
+	// it is covered, which is exactly the precondition collectCovered deletes
+	// it under, and a prune claiming a delete the compactor already owns is how
+	// two passes end up disagreeing about which keys this run has seen.
+	loose bool
 }
 
 // expiredEntries selects the entries one retention policy no longer keeps.
@@ -619,7 +669,12 @@ func (r *pruneRun) resolve(ctx context.Context, series blobSeries, doomed []fold
 				"so it was left in the history",
 				"key", doomed[i].record.String(), "target", series.target, "consent_mode", string(series.mode))
 		default:
-			out = append(out, doomedEntry{record: doomed[i].record, body: *body})
+			// A body the fold already held came out of a checkpoint; one it had
+			// to read came from a loose object, which is the key removeResult
+			// deletes.
+			out = append(out, doomedEntry{
+				record: doomed[i].record, body: *body, loose: doomed[i].body == nil,
+			})
 		}
 	}
 
@@ -673,9 +728,11 @@ func (r *pruneRun) removeResult(ctx context.Context, series blobSeries, d doomed
 			truncateForMessage(d.body.Summary.ScanID), series, err)
 	}
 
-	if err := r.s.dropIndex(ctx, d.record.String()); err != nil {
-		r.s.log.Warn("a pruned result's entry could not be deleted, and is hidden by its tombstone until it is",
-			"key", d.record.String(), "error", err)
+	if d.loose {
+		if err := r.s.dropIndex(ctx, d.record.String()); err != nil {
+			r.s.log.Warn("a pruned result's entry could not be deleted, and is hidden by its tombstone until it is",
+				"key", d.record.String(), "error", err)
+		}
 	}
 
 	if err := r.s.dropIndex(ctx, series.id.byIDKey(d.record.scan)); err != nil {
@@ -745,11 +802,57 @@ func (r *pruneRun) removing(
 
 			return doomed, nil
 		case ownerDecision:
-			return guard.superseded(pin, r.now), nil
+			return r.supersededDecision(pin, guard), nil
 		default:
 			return false, nil
 		}
 	}
+}
+
+// supersededDecision reports whether one decision pin belongs to a decision
+// that is no longer in force, and has existed long enough to be sure of it.
+//
+// Without it every superseded and every revoked approval would pin its result
+// document and every screenshot it named for the life of the bucket, and
+// "retention deletes what it stops referencing" would be false.
+//
+// The three tests below are three different questions, and an earlier version
+// asked only the last two — with the effect that a prune of one series read
+// *another* series' standing baseline pin as a superseded approval. Artifacts
+// are content-addressed, so one asset captured identically in two consent modes
+// is one object with a pin from each, and pruning the unapproved series then
+// deleted the evidence the approved one's copy names. That is a compliance
+// failure and not a leak: GetBaseline goes on answering and every screenshot it
+// points at is gone.
+//
+//   - **Old enough.** A pin younger than the grace period may belong to a
+//     decision this run's listings could not see, so it is left for the next
+//     one. This is the same guard the rest of the file uses against a stale
+//     listing, and it is asked first because it is free.
+//   - **Dangling.** A pin whose decision is in none of this run's listings at
+//     all is the leftover of an interrupted approval or of a prune whose
+//     deletes the bucket refused, and it protects nothing. The digests were
+//     read once, at the start of the run, over one prefix of human-generated
+//     volume — the same listing the sweep makes for the same question.
+//   - **This series', and not the one in force.** A decision this run *can* see
+//     is only this prune's to unpin when the prune knows it has been
+//     superseded, and it only knows that for the series it is holding the fold
+//     of. Another series' decision is left exactly as it is; the prune of that
+//     series is what decides it.
+func (r *pruneRun) supersededDecision(pin artifactPin, guard baselineGuard) bool {
+	if !pin.modTime.Before(r.now.Add(-unreferencedArtifactGrace)) {
+		return false
+	}
+
+	if _, held := r.decisions[pin.owner.did]; !held {
+		return true
+	}
+
+	if _, ours := guard.mine[pin.owner.did]; !ours {
+		return false
+	}
+
+	return !guard.found || pin.owner.did != guard.current.did
 }
 
 // collectOne decides one artifact's fate and acts on it.
@@ -971,10 +1074,17 @@ type sweepRun struct {
 	// human-generated volume — rather than resolved per pin, which would be a
 	// listing per pin.
 	decisions map[string]struct{}
+
+	// tombstoned is the scans each series' tombstones name, filled in as the
+	// walk meets a pin whose owner is gone; see tombstonedScans.
+	tombstoned map[seriesID]map[encodedScan]struct{}
 }
 
 func (s *Blob) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan bool) (SweepStats, error) {
-	run := &sweepRun{s: s, now: now, plan: plan, opts: opts}
+	run := &sweepRun{
+		s: s, now: now, plan: plan, opts: opts,
+		tombstoned: make(map[seriesID]map[encodedScan]struct{}),
+	}
 
 	// The same reason the prune establishes it, and the same sharper version:
 	// this store's index is in the bucket it is sweeping, so a bucket that has
@@ -1102,14 +1212,39 @@ func (s *Blob) indexIsEmpty(ctx context.Context) (bool, error) {
 
 // readDecisions loads the digest of every baseline decision the index holds.
 func (r *sweepRun) readDecisions(ctx context.Context) error {
-	r.decisions = make(map[string]struct{})
+	decisions, err := r.s.decisionDigests(ctx)
+	if err != nil {
+		return err
+	}
+
+	r.decisions = decisions
+
+	return nil
+}
+
+// decisionDigests is the body digest of every baseline decision the index
+// holds, which is what a decision pin names its owner by.
+//
+// One walk of one prefix, and it is affordable for the reason §7.2 leaves that
+// prefix uncompacted: decisions are human-generated, so the whole of them is a
+// handful of pages on any deployment. Both passes over the pins need it and
+// both need it whole — a decision missing from the set reads as a pin whose
+// owner is gone, which is a deletion — so it is read once, before either starts
+// judging anything, rather than per series or per artifact.
+//
+// A key this grammar does not produce is stepped over rather than failing the
+// walk, the same judgement observeDecisions makes: something else has written
+// into the index, and refusing to run retention because of it would turn one
+// stray object into a bucket that never reclaims anything.
+func (s *Blob) decisionDigests(ctx context.Context) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
 
 	var cursor indexCursor
 
 	for cursor.more() {
-		page, err := r.s.listIndex(ctx, indexBaselinePrefix, cursor, indexListPageSize)
+		page, err := s.listIndex(ctx, indexBaselinePrefix, cursor, indexListPageSize)
 		if err != nil {
-			return fmt.Errorf("listing the baseline decisions in %s: %w", r.s.bucket, err)
+			return nil, fmt.Errorf("listing the baseline decisions in %s: %w", s.bucket, err)
 		}
 
 		cursor = page.next
@@ -1120,11 +1255,11 @@ func (r *sweepRun) readDecisions(ctx context.Context) error {
 				continue
 			}
 
-			r.decisions[key.did] = struct{}{}
+			out[key.did] = struct{}{}
 		}
 	}
 
-	return nil
+	return out, nil
 }
 
 // walkArtifacts streams the evidence against the pins, one kind at a time.
@@ -1295,17 +1430,33 @@ func (r *sweepRun) consider(ctx context.Context, obj artifactObject, pins artifa
 		return nil
 	}
 
-	switch {
-	case r.isRebuildCandidate(obj):
-		r.stats.ResultsWithoutEntry++
-		r.stats.ArtifactsProtected++
-	case r.tooYoungToCall(obj, pins):
-		r.stats.ArtifactsProtected++
-	default:
-		r.collect(ctx, obj, pins)
+	keep, err := r.keepUnreferenced(ctx, obj, pins)
+	if err != nil {
+		return err
 	}
 
+	if keep {
+		r.stats.ArtifactsProtected++
+
+		return nil
+	}
+
+	r.collect(ctx, obj, pins)
+
 	return nil
+}
+
+// keepUnreferenced is the two reasons an object nothing references is kept
+// anyway: it is something a rebuild can restore, or it is too recently written
+// to be called garbage.
+func (r *sweepRun) keepUnreferenced(ctx context.Context, obj artifactObject, pins artifactPins) (bool, error) {
+	if r.isRebuildCandidate(obj) {
+		r.stats.ResultsWithoutEntry++
+
+		return true, nil
+	}
+
+	return r.tooYoungToCall(ctx, obj, pins)
 }
 
 // isRebuildCandidate reports whether an unreferenced object is a result
@@ -1325,17 +1476,143 @@ func (r *sweepRun) isRebuildCandidate(obj artifactObject) bool {
 }
 
 // tooYoungToCall reports whether an unreferenced object is too recently written
-// to be called garbage.
+// to be called garbage. There are two ways it can be, and they are dated
+// against two different clocks because they are two different writes in flight.
 //
-// The grace applies to an object no pin has ever covered, because that is what
-// an interrupted write looks like from out here: artifacts are written to the
-// bucket before the index that names them, deliberately (Story 8.2, AC4). An
-// object that does carry a pin has been named by a stored result, so its own age
-// says nothing about who needs it and the pin is what decided it — which is the
-// same split SQL makes between its reference-side pass, where no age is
+// **The object's own age**, when no pin has ever covered it. That is what the
+// first half of an interrupted write looks like from out here: artifacts are
+// written to the bucket before the index that names them, deliberately
+// (Story 8.2, AC4).
+//
+// **The newest pin's age**, when every pin on it reads as gone — which is the
+// only way fate reaches this line. A pin whose owner is absent is either a
+// write that has not finished, since both PutResult and an approval write their
+// pins before the object that commits them, or the leftover of a prune whose
+// deletes the bucket refused. Without a grace there the window is not a window
+// at all: the very next sweep collects the screenshots and stored bodies of a
+// scan interrupted a second ago, and Story 8.11's rebuild — which the sweep
+// preserves that scan's document for — would restore an entry naming evidence
+// this pass had destroyed (AC6).
+//
+// The take marker cannot stand in for that, and liveTake says why: it is
+// written before the pin, so the pin releases it.
+//
+// Age alone cannot stand in for it either, which is why inFlight is asked: a
+// prune's leftover pin is exactly as young as an interrupted write's, so a
+// grace on age would keep every artifact a prune failed to delete for a day and
+// make "the next sweep collects it" false (Story 8.5, AC4).
+//
+// An object that carries a pin whose owner is still there never reaches here at
+// all: the pin decided it, and its own age says nothing about who needs it —
+// the same split SQL makes between its reference-side pass, where no age is
 // consulted, and its walk of the bucket, where it is.
-func (r *sweepRun) tooYoungToCall(obj artifactObject, pins artifactPins) bool {
-	return len(pins.refs) == 0 && !obj.modTime.Before(r.now.Add(-unreferencedArtifactGrace))
+func (r *sweepRun) tooYoungToCall(ctx context.Context, obj artifactObject, pins artifactPins) (bool, error) {
+	cutoff := r.now.Add(-unreferencedArtifactGrace)
+
+	// newestRef is the zero time when there are no pins at all, which is before
+	// every cutoff and so falls through to the object's own age.
+	if !pins.newestRef().Before(cutoff) {
+		return r.inFlight(ctx, pins)
+	}
+
+	return len(pins.refs) == 0 && !obj.modTime.Before(cutoff), nil
+}
+
+// inFlight reports whether the newest pin on an object nothing references any
+// more belongs to a write that has not finished.
+//
+// It is the newest pin and not all of them because that is the one the question
+// is about: an older pin whose owner has gone has already outlived any write it
+// could have belonged to, and the newest is what the age test above admitted.
+//
+// A **decision** pin with no decision is always a write in flight, because
+// nothing deletes a decision object — not retention, not compaction, not a
+// withdrawal — so the only way to hold one whose decision the index does not
+// have is to be between pinDecisionEvidence and the object that commits it.
+//
+// A **result** pin is told apart by the tombstone, which is the same rule
+// collectOrphanedScanKeys applies to a scan-ID object and for the same reason:
+// a tombstone is a prune saying it meant this result to be gone, and its
+// absence is a PutResult that has not reached its own commit point. That makes
+// the answer a fact the index holds rather than a guess from a clock, so a
+// prune's leftover is collected on the very next sweep and a live write is not.
+func (r *sweepRun) inFlight(ctx context.Context, pins artifactPins) (bool, error) {
+	newest, ok := pins.newestPin()
+	if !ok {
+		return false, nil
+	}
+
+	if newest.owner.kind != ownerResult {
+		return true, nil
+	}
+
+	pruned, err := r.prunedAway(ctx, newest.owner)
+
+	return !pruned, err
+}
+
+// prunedAway reports whether a tombstone says the result one pin names was
+// removed on purpose.
+//
+// The tombstones of one series, and never its whole history: what is wanted is
+// a handful of zero-byte keys, where the directory they sit in holds an entry
+// per scan the target has ever had.
+//
+// A tombstone a compaction has collected and absorbed into a checkpoint is not
+// read, deliberately. That only happens after tombstoneGrace — a week — so a
+// pin young enough to have reached this question cannot be naming a scan whose
+// tombstone is that old, and reading every checkpoint of the series to find out
+// would be a GET per checkpoint on a path that exists to be cheap.
+func (r *sweepRun) prunedAway(ctx context.Context, owner refOwner) (bool, error) {
+	pruned, err := r.tombstonedScans(ctx, owner.series)
+	if err != nil {
+		return false, err
+	}
+
+	_, gone := pruned[owner.scan]
+
+	return gone, nil
+}
+
+// tombstonedScans is every scan one series' tombstones name, read once per
+// series per sweep.
+//
+// Memoised because the artifacts are walked in digest order and not in series
+// order, so two leftovers of one prune arrive nowhere near each other; without
+// it a bucket where one prune failed to delete a thousand objects would list
+// the same directory a thousand times. What it holds is small — a tombstone is
+// collected once nothing can bring its entry back — and it is only ever
+// populated for a series that actually has a pin with no owner.
+func (r *sweepRun) tombstonedScans(ctx context.Context, id seriesID) (map[encodedScan]struct{}, error) {
+	if found, ok := r.tombstoned[id]; ok {
+		return found, nil
+	}
+
+	out := make(map[encodedScan]struct{})
+
+	var cursor indexCursor
+
+	for cursor.more() {
+		page, err := r.s.listIndex(ctx, id.tombstoneDirPrefix(), cursor, indexListPageSize)
+		if err != nil {
+			return nil, fmt.Errorf("reading the prunes recorded under %s: %w", id.tombstoneDirPrefix(), err)
+		}
+
+		cursor = page.next
+
+		for _, object := range page.objects {
+			record, err := parseSeriesRecord(object.key)
+			if err != nil || record.kind != seriesTombstone {
+				continue
+			}
+
+			out[record.scan] = struct{}{}
+		}
+	}
+
+	r.tombstoned[id] = out
+
+	return out, nil
 }
 
 // collect removes one artifact and the keys that pointed at it.
@@ -1539,15 +1816,16 @@ func (w *scanKeySweep) consider(ctx context.Context, object indexObject) error {
 }
 
 // load reads which scans one series still has an entry for and which its
-// tombstones say have been pruned, from one listing of the series directory.
+// tombstones say have been pruned, from one listing of the series directory and
+// a read of each checkpoint that listing showed.
 //
-// A series that holds a compaction checkpoint is left alone entirely: a
-// checkpoint carries the entries whose loose keys were deleted, so a scan inside
-// one is live while its key is not visible, and deciding without reading the
-// checkpoints would delete the scan-ID object of a result that is still in the
-// history. Reading them here would be a second copy of unionCheckpoints; leaving
-// the tidying to a store with no checkpoints yet costs nothing and cannot be
-// wrong.
+// A series holding a checkpoint used to be skipped entirely, on the grounds
+// that nothing wrote one. Compaction does now, so it is read instead: one GET
+// per checkpoint per series — a dozen for a series of ten thousand scans — and
+// what it is for is the tombstones a checkpoint has absorbed, which are the
+// only remaining record that those scans were pruned once compaction has
+// collected the tombstone objects themselves. See loadCheckpoint for why the
+// entries it carries are deliberately not read into the live set.
 func (w *scanKeySweep) load(ctx context.Context, id seriesID) error {
 	w.series, w.loaded, w.decidable = id, true, true
 	w.live, w.tombstoned = make(map[encodedScan]struct{}), make(map[encodedScan]struct{})
@@ -1570,15 +1848,51 @@ func (w *scanKeySweep) load(ctx context.Context, id seriesID) error {
 
 			switch record.kind {
 			case seriesCheckpoint:
-				w.decidable = false
-
-				return nil
+				if err := w.loadCheckpoint(ctx, object.key); err != nil {
+					return err
+				}
 			case seriesTombstone:
 				w.tombstoned[record.scan] = struct{}{}
 			case seriesEntry:
 				w.live[record.scan] = struct{}{}
 			}
 		}
+	}
+
+	return nil
+}
+
+// loadCheckpoint adds the prunes one checkpoint has absorbed to the walk's
+// tombstoned set.
+//
+// Only the tombstones, and the asymmetry is worth stating because the entries
+// look as though they belong here too. What this walk collects is a scan-ID
+// object whose scan a tombstone says was pruned, so a scan that is merely
+// inside a checkpoint is already safe: it has no tombstone, and the rule keeps
+// what it cannot show was removed. What is *not* safe without this read is the
+// other end of §7.2's tombstone collection — once a checkpoint carries a
+// pruned scan in its Tombstoned array the tombstone object itself is collected,
+// and from then on the checkpoint is the only thing that says the scan was ever
+// pruned. Without opening it the sweep would keep that leftover for the life of
+// the bucket.
+//
+// A checkpoint that cannot be read makes the series undecidable rather than
+// failing the sweep. Refusing to tidy one series is a leftover left for the
+// next run; guessing is a scan-ID object deleted for a result that is still in
+// the history.
+func (w *scanKeySweep) loadCheckpoint(ctx context.Context, key string) error {
+	body, err := w.run.s.readCheckpoint(ctx, key)
+	if err != nil {
+		w.decidable = false
+
+		w.run.s.log.Warn("a checkpoint could not be read, so the scan-ID objects of that series were left alone",
+			"key", key, "error", err)
+
+		return nil
+	}
+
+	for _, scan := range body.Tombstoned {
+		w.tombstoned[scan] = struct{}{}
 	}
 
 	return nil

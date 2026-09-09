@@ -222,26 +222,38 @@ func TestANewerIndexLayoutIsRefused(t *testing.T) {
 // matters: a bucket first written by a newer wsaw holds that layout's marker
 // and no earlier one, so giving up at the gap would report an empty bucket,
 // write layout 1 beside a layout 2 index, and read it as this build's own.
+//
+// Two versions ahead as well as one, because a probe bounded at "one past what
+// this build understands" gets the first right and the second wrong — and a
+// deployment that skips a release is exactly how the second happens.
 func TestAnIndexThisBuildDidNotStartIsNotReadAsEmpty(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	for _, layout := range []int{2, 3} {
+		t.Run(fmt.Sprintf("layout %d", layout), func(t *testing.T) {
+			t.Parallel()
 
-	// Only the newer marker: no 00000001.json, exactly as a bucket laid out by
-	// a future wsaw would look.
-	writeLayoutObject(t, dir, 2, `{"layout":2,"createdAt":"2027-01-01T00:00:00Z","writtenBy":"wsaw 2.0.0"}`)
+			dir := t.TempDir()
 
-	_, err := store.Open(t.Context(), blobOptions(dir))
-	if err == nil {
-		t.Fatal("a bucket whose only layout marker is a newer one was opened as if it were empty")
-	}
+			// Only the newer marker: no 00000001.json, exactly as a bucket laid
+			// out by a future wsaw would look.
+			writeLayoutObject(t, dir, layout, fmt.Sprintf(
+				`{"layout":%d,"createdAt":"2027-01-01T00:00:00Z","writtenBy":"wsaw 2.0.0"}`, layout,
+			))
 
-	if !strings.Contains(err.Error(), "newer") {
-		t.Errorf("the refusal does not explain the problem: %v", err)
-	}
+			_, err := store.Open(t.Context(), blobOptions(dir))
+			if err == nil {
+				t.Fatal("a bucket whose only layout marker is a newer one was opened as if it were empty")
+			}
 
-	if _, err := os.Stat(layoutObject(dir, 1)); err == nil {
-		t.Error("the refused open wrote its own layout marker beside the newer one")
+			if !strings.Contains(err.Error(), "newer") {
+				t.Errorf("the refusal does not explain the problem: %v", err)
+			}
+
+			if _, err := os.Stat(layoutObject(dir, 1)); err == nil {
+				t.Error("the refused open wrote its own layout marker beside the newer one")
+			}
+		})
 	}
 }
 
@@ -1305,6 +1317,203 @@ func pinned(at time.Time) func() time.Time {
 	return func() time.Time { return at }
 }
 
+// oneEntryKey is the single loose entry of the site series, which the two tests
+// below damage in two different ways.
+func oneEntryKey(t *testing.T, dir string) string {
+	t.Helper()
+
+	entries := keysUnder(t, dir, "_wsaw/index/v1/series/"+siteSeries+"/reject/r.")
+	if len(entries) != 1 {
+		t.Fatalf("the series holds %d entries, want exactly one: %v", len(entries), entries)
+	}
+
+	return entries[0]
+}
+
+// TestAnEntryThatWillNotDecodeIsShownFromItsKeyAndNotDropped is Tenet 5 at the
+// one object a listing cannot do without.
+//
+// An entry object that is present and unreadable is a fact about one scan, and
+// the answer to it may be neither "the read fails" nor "that scan is not in the
+// history". The key still says when the scan started, what it was called and
+// how it terminated — that is why those are in the key — so the row is shown
+// from the key, carrying the error where its summary would have been, exactly
+// as a SQL store reports a row whose document has gone.
+//
+// It is the entry object and not a decision object, and the two take different
+// paths on purpose: a decision that will not read is ErrCorrupt, because
+// inferring "there is no baseline" from it would silence findings nobody
+// approved, while an entry that will not read is one row among many that must
+// not hide the rest.
+func TestAnEntryThatWillNotDecodeIsShownFromItsKeyAndNotDropped(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	s := blobAt(t, dir, pinned(siteStart()))
+
+	if err := s.PutResult(result("scan-1", siteStart(), model.ConsentReject)); err != nil {
+		t.Fatalf("PutResult: %v", err)
+	}
+
+	writeIndexObject(t, dir, oneEntryKey(t, dir), []byte("not an index entry at all"))
+
+	summaries, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatalf("a listing over one damaged entry failed altogether: %v", err)
+	}
+
+	if len(summaries) != 1 {
+		t.Fatalf("the listing returned %d summaries, want the scan its key still names: %+v",
+			len(summaries), summaries)
+	}
+
+	got := summaries[0]
+
+	if got.ScanID != "scan-1" || got.Target != "site" || got.ConsentMode != model.ConsentReject {
+		t.Errorf("the damaged entry came back as %+v, want the scan its key spells", got)
+	}
+
+	if !got.StartedAt.Equal(siteStart()) || got.Termination != model.TermIdle {
+		t.Errorf("the damaged entry lost what its key still carries: %+v", got)
+	}
+
+	if got.Error == "" {
+		t.Errorf("the damaged entry is reported as an ordinary scan: %+v", got)
+	}
+}
+
+// TestAScanStoredOutOfOrderHidesNothingAndOverwritesNothing is AC5's other
+// half, asserted rather than argued from the key grammar.
+//
+// A host whose clock steps backwards stores a scan at an instant earlier than
+// one already in the history. Ordering here is a total function of the key —
+// the inverted start time, then the scan ID — so the newcomer takes the
+// position its own timestamp gives it and cannot land on top of anything: two
+// distinct scans are two distinct keys whatever the clocks did. What the test
+// adds to that argument is the part a reader cares about, which is that both
+// are still listed, both still resolve by ID, and the newest is still the
+// newest.
+func TestAScanStoredOutOfOrderHidesNothingAndOverwritesNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	s := blobAt(t, dir, pinned(siteStart()))
+
+	if err := s.PutResult(result("scan-late", siteStart(), model.ConsentReject)); err != nil {
+		t.Fatalf("storing the first scan: %v", err)
+	}
+
+	// An hour before the scan that is already there, which is a clock that has
+	// stepped back rather than a scan that arrived out of order on purpose.
+	if err := s.PutResult(result("scan-early", siteStart().Add(-time.Hour), model.ConsentReject)); err != nil {
+		t.Fatalf("storing a scan dated before the one already in the history: %v", err)
+	}
+
+	summaries, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"scan-late", "scan-early"}
+	if got := listedScans(summaries); !slices.Equal(got, want) {
+		t.Errorf("the history lists %v, want %v: newest first, and neither hidden", got, want)
+	}
+
+	for _, id := range want {
+		if _, err := s.GetResult("site", model.ConsentReject, id); err != nil {
+			t.Errorf("scan %s is not reachable by ID: %v", id, err)
+		}
+	}
+
+	latest, err := s.LatestResult("site", model.ConsentReject)
+	if err != nil || latest.ScanID != "scan-late" {
+		t.Errorf("the newest scan reads as %q, %v, want scan-late", scanOf(latest), err)
+	}
+
+	previous, err := s.PreviousResult("site", model.ConsentReject, "scan-late")
+	if err != nil || previous.ScanID != "scan-early" {
+		t.Errorf("the scan before scan-late reads as %q, %v, want scan-early", scanOf(previous), err)
+	}
+}
+
+// TestRetentionKeepsAResultWhoseEntryNamesNoDocument is the bucket-index answer
+// to the SQL suite's TestRetentionKeepsWhatAResultWithUnknownReferencesMightName,
+// which is one of the tests a store with no rows has to skip.
+//
+// The state is not the same — there is no reference table to be behind — but the
+// judgement is: retention may not remove a result whose references it cannot
+// account for, because deleting it would mean inferring "this named nothing"
+// from a gap in wsaw's own index. Here the gap is an entry that does not say
+// where its document is, and the answer is to leave the result in the history
+// and say so in the count the command prints.
+func TestRetentionKeepsAResultWhoseEntryNamesNoDocument(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	s := blobAt(t, dir, pinned(siteStart()))
+
+	res, screenshot, body := resultWithEvidence(t, s, "scan-1", siteStart())
+
+	if err := s.PutResult(res); err != nil {
+		t.Fatalf("PutResult: %v", err)
+	}
+
+	key := oneEntryKey(t, dir)
+
+	// The entry as it was written, with the one field retention needs blanked:
+	// everything else has to stay, or the entry would be damaged rather than
+	// incomplete and a different rule would answer.
+	var entry map[string]any
+
+	if err := json.Unmarshal([]byte(bucketContents(t, dir)[key]), &entry); err != nil {
+		t.Fatalf("reading the entry back: %v", err)
+	}
+
+	document, ok := entry["document"].(map[string]any)
+	if !ok {
+		t.Fatalf("the entry object holds no document section: %v", entry)
+	}
+
+	document["ref"] = ""
+
+	rewritten, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeIndexObject(t, dir, key, rewritten)
+
+	stats, err := s.Prune(t.Context(), siteStart().Add(365*24*time.Hour), store.Retention{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("a result with unaccountable references failed the whole prune: %v", err)
+	}
+
+	if stats.UnknownReferences != 1 {
+		t.Errorf("UnknownReferences = %d, want 1", stats.UnknownReferences)
+	}
+
+	if stats.ResultsDeleted != 0 || stats.ArtifactsDeleted != 0 {
+		t.Errorf("the prune removed %d results and %d artifacts, want none of either",
+			stats.ResultsDeleted, stats.ArtifactsDeleted)
+	}
+
+	// The history still shows it, and its evidence is still there.
+	summaries, err := s.ListResults("site", model.ConsentReject, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(summaries) != 1 || summaries[0].ScanID != "scan-1" {
+		t.Errorf("the listing returned %+v, want the scan retention could not account for", summaries)
+	}
+
+	for _, ref := range []string{screenshot, body} {
+		if _, err := s.StatArtifact(t.Context(), ref); err != nil {
+			t.Errorf("the evidence of a result retention kept (%s) was collected anyway: %v", ref, err)
+		}
+	}
+}
+
 // TestPruningAResultAppendsATombstoneAndLeavesNothingElseBehind is AC12 written
 // out as the objects it produces.
 //
@@ -1465,6 +1674,87 @@ func TestABaselineThatStandsKeepsTheEvidenceThroughAPrune(t *testing.T) {
 
 	if _, err := s.GetBaseline("site", model.ConsentReject); err != nil {
 		t.Errorf("the baseline is unreadable after the prune: %v", err)
+	}
+}
+
+// TestPruningOneSeriesKeepsWhatAnotherSeriesBaselineNames is the same
+// protection across the boundary a prune walks: one series at a time.
+//
+// Artifacts are content-addressed, so one asset captured identically in two
+// consent modes is one object with a pin from each. The prune of the second
+// series meets the first series' decision pin, and it has no baseline of its
+// own to weigh it against — so a rule that judged every decision pin against
+// the series in front of it would read that pin as a superseded approval and
+// collect the object, taking the standing baseline's evidence with it.
+//
+// A decision pin is only this run's to remove when the run has positively
+// established that the decision is not the one in force *for its own series*.
+// Everything else stays, which is the same fail-safe direction §7.3 argues the
+// positive baseline check from.
+func TestPruningOneSeriesKeepsWhatAnotherSeriesBaselineNames(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	s := blobAt(t, dir, pinned(siteStart()))
+
+	// One asset both consent modes captured unchanged, which content addressing
+	// makes one object. This is the everyday case, not a contrived one: a
+	// cookie banner's own logo does not differ between accept and reject.
+	shared := []byte("one screenshot both consent modes captured")
+
+	ref, err := s.PutArtifact("screenshot-before-consent", shared)
+	if err != nil {
+		t.Fatalf("storing a screenshot: %v", err)
+	}
+
+	naming := func(id string, mode model.ConsentMode) *model.Result {
+		res := result(id, siteStart(), mode)
+		res.Screenshots = []model.Artifact{{
+			Kind: "screenshot-before-consent", Ref: ref, Bytes: int64(len(shared)),
+		}}
+
+		return res
+	}
+
+	// The prune walks the series in order, so the approved one is reached first
+	// and the unapproved one meets the pin it left behind.
+	if err := s.PutResult(naming("scan-a", model.ConsentAccept)); err != nil {
+		t.Fatalf("storing the approved scan: %v", err)
+	}
+
+	if _, err := s.SetBaseline("site", model.ConsentAccept, "scan-a", "martin", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.PutResult(naming("scan-b", model.ConsentReject)); err != nil {
+		t.Fatalf("storing the unapproved scan: %v", err)
+	}
+
+	stats, err := s.Prune(t.Context(), siteStart().Add(365*24*time.Hour), store.Retention{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the unapproved scan's own document goes. The shared screenshot is
+	// still named by the standing approval, and so is the approved document.
+	if stats.ResultsDeleted != 2 || stats.ArtifactsDeleted != 1 {
+		t.Errorf("the prune removed %d results and %d artifacts, want 2 and 1 (the unapproved document)",
+			stats.ResultsDeleted, stats.ArtifactsDeleted)
+	}
+
+	if _, err := s.StatArtifact(t.Context(), ref); err != nil {
+		t.Errorf("the screenshot the standing baseline names was collected: %v", err)
+	}
+
+	b, err := s.GetBaseline("site", model.ConsentAccept)
+	if err != nil {
+		t.Fatalf("the baseline of the other series is unreadable after the prune: %v", err)
+	}
+
+	for _, shot := range b.Result.Screenshots {
+		if _, err := s.StatArtifact(t.Context(), shot.Ref); err != nil {
+			t.Errorf("the approved copy names %s, which is gone: %v", shot.Ref, err)
+		}
 	}
 }
 
