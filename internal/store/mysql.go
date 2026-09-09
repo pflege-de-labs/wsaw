@@ -105,12 +105,7 @@ func (mysqlDialect) pruneByCount() string {
 	return `
 		delete r from results r
 		join (
-			select target, consent_mode, scan_id from (
-				select target, consent_mode, scan_id, row_number() over (
-					partition by target, consent_mode
-					order by started_at desc, scan_id desc
-				) as row_rank
-				from results
+			select target, consent_mode, scan_id from (` + rankedResults + `
 			) as ranked
 			where row_rank > ?
 		) as doomed
@@ -159,7 +154,144 @@ func (mysqlDialect) migrations() [][]string {
 				document longtext not null
 			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
 		},
+
+		// Version 2: the document reference and the summary columns. The
+		// sqlite dialect carries the reasoning for the schema; what is
+		// MySQL-specific is the shape of the statement.
+		//
+		// It is one ALTER TABLE rather than ten, because MySQL has no
+		// `add column if not exists` and DDL here is not transactional: ten
+		// statements could stop half way and leave a rerun tripping over the
+		// columns that did apply. A single ALTER TABLE is atomic in MySQL 8.0
+		// — the version this dialect already requires for its row-alias upsert
+		// — so it either adds every column or none. The window that remains is
+		// losing the version record after the ALTER committed, which the next
+		// start meets as a duplicate-column error and alreadyApplied absorbs.
+		//
+		// varchar for the reference and the digest because their lengths are
+		// known and bounded; the collation is the table's own utf8mb4_bin, so
+		// a digest cannot match case-insensitively.
+		//
+		// Every column has a default, scan_error included. MySQL takes no
+		// literal default on a long text column, so it gets the expression
+		// form — available since 8.0.13, below the 8.0.19 this dialect already
+		// requires for its row-alias upsert. Without one, adding a NOT NULL
+		// column to a table that already has rows asks MySQL to invent a value
+		// for each of them, which is exactly what the STRICT_ALL_TABLES this
+		// dialect forces on itself (see dsn) refuses — so the upgrade would
+		// fail on precisely the populated store it exists for.
+		{
+			`alter table results
+				add column artifact_ref        varchar(128) not null default '',
+				add column document_size       bigint       not null default 0,
+				add column document_digest     varchar(64)  not null default '',
+				add column duration_ns         bigint       not null default 0,
+				add column scan_error          longtext     not null default (''),
+				add column consent_outcome     varchar(32)  not null default '',
+				add column consent_cmp         varchar(191) not null default '',
+				add column requests            int          not null default 0,
+				add column third_party_domains int          not null default 0,
+				add column pre_consent_domains int          not null default 0`,
+		},
+
+		// Version 3 (Story 8.4): the document column goes, once every payload
+		// it held is in the bucket. The sqlite dialect carries the reasoning
+		// for the migration; what is MySQL's own is that it cannot write
+		// `drop column if exists`, so the tolerance for a rerun lives in
+		// alreadyApplied instead of in the statement.
+		{
+			`alter table results drop column document`,
+		},
+
+		// Version 4 (Story 8.5): the artifact reference index. The sqlite
+		// dialect carries the reasoning for the table; what is MySQL's own is
+		// that the index is declared inside the CREATE rather than as a
+		// separate statement — there is no `create index if not exists` here —
+		// and that the ALTER cannot say `if not exists`, so the tolerance for a
+		// rerun after a lost version record lives in alreadyApplied instead.
+		//
+		// The key is 1660 bytes at four bytes per character, inside InnoDB's
+		// 3072-byte limit. The collation is the table's own utf8mb4_bin, so a
+		// reference cannot match case-insensitively — two references differing
+		// only in case would otherwise name one row and one object.
+		{
+			`create table if not exists result_artifacts (
+				target       varchar(191) not null,
+				consent_mode varchar(32)  not null,
+				scan_id      varchar(64)  not null,
+				artifact_ref varchar(128) not null,
+				primary key (target, consent_mode, scan_id, artifact_ref),
+				key result_artifacts_ref (artifact_ref)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`alter table results add column refs_indexed int not null default 0`,
+		},
+
+		// Version 5 (Story 8.5): the claim table and the document references
+		// version 4 could not fill. The sqlite dialect carries the reasoning;
+		// what is MySQL's own is that duplicate rows are skipped with `insert
+		// ignore`, there being no `on conflict` clause here, and that the
+		// claim key repeats the collation the reference table declares so that
+		// two references differing only in case cannot name one claim.
+		{
+			`create table if not exists artifact_claims (
+				artifact_ref varchar(128) not null,
+				claimed_at   bigint       not null,
+				primary key (artifact_ref)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+
+			`insert ignore into result_artifacts (target, consent_mode, scan_id, artifact_ref)
+				select target, consent_mode, scan_id, artifact_ref
+				  from results
+				 where artifact_ref <> ''`,
+		},
 	}
+}
+
+// The two errors that mean "this statement's work is already done" for the
+// statements this dialect cannot write conditionally.
+const (
+	// errCantDropField is MySQL's answer to dropping a column that is not
+	// there, which migration 3 asks for.
+	errCantDropField = 1091
+
+	// errDupFieldName is its answer to adding one that is, which migration 2
+	// asks for. Adding a column that already exists means the ALTER committed
+	// and only the version record was lost — the same accident as the drop,
+	// met one migration earlier.
+	errDupFieldName = 1060
+)
+
+// alreadyApplied recognises a schema change this store has already made.
+//
+// MySQL commits DDL implicitly, so a migration can succeed and then lose the
+// record that it did — a connection dropped between the ALTER and the version
+// row. Without this, the next start would meet 1091 or 1060 and refuse to open
+// a store whose schema is in fact correct, which is a store an operator cannot
+// get back without hand-editing a version number.
+//
+// Both numbers are narrow: neither can be produced by a statement that failed
+// to do its work, so accepting them skips nothing that still needs doing.
+func (mysqlDialect) alreadyApplied(err error) bool {
+	var myErr *gomysql.MySQLError
+
+	if !errors.As(err, &myErr) {
+		return false
+	}
+
+	return myErr.Number == errCantDropField || myErr.Number == errDupFieldName
+}
+
+func (mysqlDialect) hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	return countColumn(ctx, db, `
+		select count(*) from information_schema.columns
+		where table_schema = database() and table_name = ? and column_name = ?`,
+		table, column)
+}
+
+// documentByteLength is MySQL's length(), which already counts bytes.
+func (mysqlDialect) documentByteLength() string {
+	return "length(" + documentColumn + ")"
 }
 
 func (mysqlDialect) schemaVersion(ctx context.Context, db *sql.DB) (int, error) {

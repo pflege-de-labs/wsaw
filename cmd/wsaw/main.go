@@ -75,6 +75,9 @@ func run(ctx context.Context, args []string) int {
 	case "share":
 		err = cmdShare(ctx, rest)
 
+	case "store":
+		err = cmdStore(ctx, rest)
+
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
 
@@ -124,6 +127,7 @@ Commands:
   rules          Inspect or test consent rules
   config         Validate and print the effective configuration
   share          Mint an expiring link to one scan result
+  store          Maintain the result store: "wsaw store migrate"
   version        Print build information
 
 Exit codes for "scan":

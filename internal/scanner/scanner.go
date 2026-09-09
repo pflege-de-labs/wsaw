@@ -39,11 +39,29 @@ type Metrics struct {
 	BrowserRestart func(target, reason string)
 }
 
+// ResultStore is what a scan needs from the store, and no more (AGENTS §4).
+//
+// Four methods: write the evidence, write the result, and read the two things
+// a comparison is made against. A scanner given the whole store could approve
+// a baseline or prune history, and a scan has no such authority — the seam is
+// where that is stated, rather than in a rule somebody has to remember.
+type ResultStore interface {
+	PutArtifact(kind string, data []byte) (string, error)
+	PutResult(res *model.Result) error
+	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
+	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+}
+
 // Deps are the collaborators a Scanner needs. They are interfaces at the
 // seams that plausibly get a second implementation (Tenet 12).
 type Deps struct {
-	Pool    *browser.Pool
-	Store   *store.Store
+	Pool *browser.Pool
+	// Store records what a scan produced. Nil is allowed and means nothing is
+	// recorded — a scan still runs, and each call site below says what it
+	// does instead. A nil pointer wrapped in this interface is not the same
+	// thing: it passes those checks and panics on the first call, so a caller
+	// hands over a store that opened or nothing at all.
+	Store   ResultStore
 	Robots  *robots.Checker
 	Rules   *consent.RuleSet
 	Secrets *secret.Registry
@@ -226,7 +244,8 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		s.recordFailure(target.Name, mode, string(res.Termination))
 	}
 
-	log.Info("scan finished",
+	log.Info(
+		"scan finished",
 		"termination", string(res.Termination),
 		"requests", len(res.Requests),
 		"third_party_domains", len(res.ThirdPartyDomains("")),
@@ -447,16 +466,35 @@ func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.L
 	}
 
 	baseline, err := s.baselineFor(target, res)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+
+	// Evidence that has gone missing is called by its name. Without this the
+	// report would be the one a first-ever scan produces — not comparable,
+	// nothing changed, "no baseline to compare against" — and a tracker added
+	// between the two scans would go unreported with nothing in the record
+	// saying why (Story 8.2, AC5; Tenet 5).
+	gone := errors.Is(err, store.ErrEvidenceGone)
+
+	switch {
+	case gone:
+		log.Error("the result this scan should be compared against names evidence the artifact bucket no longer holds",
+			"error", err)
+
+	case err != nil && !errors.Is(err, store.ErrNotFound):
 		log.Warn("reading baseline failed", "error", err)
 	}
 
-	return diff.Compare(baseline, res, diff.Options{
+	rep := diff.Compare(baseline, res, diff.Options{
 		Allow:                target.Allow,
 		Deny:                 target.Deny,
 		Severity:             target.Severity,
 		DegradedFailureRatio: s.opts.DegradedFailureRatio,
 	})
+
+	if gone && rep != nil {
+		rep.Reason = diff.ReasonEvidenceGone
+	}
+
+	return rep
 }
 
 func (s *Scanner) baselineFor(target config.Resolved, res *model.Result) (*model.Result, error) {
@@ -554,7 +592,8 @@ func (s *Scanner) unreachableFromContainer(target config.Resolved) (string, bool
 		"%s resolves to this machine's loopback address, which a browser running in a %s container cannot reach: "+
 			"the container has its own network namespace. Scan it by its routable address, "+
 			"or set browser.runtime to \"local\" for this deployment",
-		host, s.opts.BrowserRuntime), false
+		host, s.opts.BrowserRuntime,
+	), false
 }
 
 // isLoopbackHost reports whether a host names the local machine.

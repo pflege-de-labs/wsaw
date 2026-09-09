@@ -323,7 +323,7 @@ func (s *Server) handleSharedResult(w http.ResponseWriter, r *http.Request) {
 		Result:      res,
 		Hosts:       res.HostSummaries(),
 		Counts:      res.CountsByResourceType(),
-		Screenshots: s.screenshotViews(res),
+		Screenshots: s.screenshotViews(r.Context(), res),
 		ExpiresAt:   claims.Expiry(),
 		Version:     s.opts.Version,
 		base:        sharePath(res),
@@ -408,9 +408,12 @@ func (s *Server) handleSharedCSV(w http.ResponseWriter, r *http.Request) {
 //
 // Artifacts are content-addressed rather than scoped by scan, so a reference
 // alone says nothing about who may read it. Without this check a link to one
-// harmless scan would be a key to every stored artifact wsaw has (AC10).
+// harmless scan would be a key to every stored artifact wsaw has (AC10) —
+// which a shared bucket makes truer rather than less true, since every scan's
+// evidence is one keyspace and the digest is the whole of a key
+// (Story 8.7, AC2).
 func (s *Server) handleSharedArtifact(w http.ResponseWriter, r *http.Request) {
-	res, _, ok := s.sharedResult(w, r)
+	res, claims, ok := s.sharedResult(w, r)
 	if !ok {
 		return
 	}
@@ -423,7 +426,10 @@ func (s *Server) handleSharedArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveArtifact(w, r, ref)
+	// The link's own expiry bounds anything issued off the back of it. A
+	// signed URL outliving the link would leave a reader holding access that
+	// the link's expiry was supposed to end (Story 8.7, AC3).
+	s.serveArtifactUntil(w, r, ref, claims.Expiry())
 }
 
 // resultNamesArtifact reports whether a result actually references an

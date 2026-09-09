@@ -450,10 +450,14 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		AllowAdHocScan: allowAdHoc,
 		Share:          signer,
 		ShareBaseURL:   a.Config.API.Share.BaseURL,
-		RefreshDefault: a.Config.API.RefreshInterval.Duration(),
-		MetricsEnabled: a.Config.Metrics.Enabled,
-		MetricsPath:    a.Config.Metrics.Path,
-		Version:        a.Version,
+		// Where the evidence is kept is a store setting, and so is whether a
+		// reader is sent to it directly (Story 8.7, AC3).
+		SignedArtifactURLs:   a.Config.Store.ArtifactSignedURLs,
+		SignedArtifactURLTTL: a.Config.Store.SignedURLTTL(),
+		RefreshDefault:       a.Config.API.RefreshInterval.Duration(),
+		MetricsEnabled:       a.Config.Metrics.Enabled,
+		MetricsPath:          a.Config.Metrics.Path,
+		Version:              a.Version,
 	}, httpapi.Deps{
 		Store:      a.Store,
 		Metrics:    a.Metrics,

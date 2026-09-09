@@ -83,7 +83,85 @@ func (postgresDialect) migrations() [][]string {
 				document text   not null
 			)`,
 		},
+
+		// Version 2: the document reference and the summary columns. The
+		// sqlite dialect carries the reasoning; this is the same schema in
+		// PostgreSQL's spelling, in one statement because PostgreSQL can add
+		// every column at once and `if not exists` makes a rerun a no-op.
+		{
+			`alter table results
+				add column if not exists artifact_ref        text   not null default '',
+				add column if not exists document_size       bigint not null default 0,
+				add column if not exists document_digest     text   not null default '',
+				add column if not exists duration_ns         bigint not null default 0,
+				add column if not exists scan_error          text   not null default '',
+				add column if not exists consent_outcome     text   not null default '',
+				add column if not exists consent_cmp         text   not null default '',
+				add column if not exists requests            integer not null default 0,
+				add column if not exists third_party_domains integer not null default 0,
+				add column if not exists pre_consent_domains integer not null default 0`,
+		},
+
+		// Version 3 (Story 8.4): the document column goes, once every payload
+		// it held is in the bucket. The sqlite dialect carries the reasoning;
+		// `if exists` is what makes a rerun after a lost version record a
+		// no-op here.
+		{
+			`alter table results drop column if exists document`,
+		},
+
+		// Version 4 (Story 8.5): the artifact reference index. The sqlite
+		// dialect carries the reasoning; `if not exists` is what makes a rerun
+		// after a lost version record a no-op here.
+		{
+			`create table if not exists result_artifacts (
+				target       text not null,
+				consent_mode text not null,
+				scan_id      text not null,
+				artifact_ref text not null,
+				primary key (target, consent_mode, scan_id, artifact_ref)
+			)`,
+
+			`create index if not exists result_artifacts_ref
+				on result_artifacts (artifact_ref)`,
+
+			`alter table results add column if not exists refs_indexed integer not null default 0`,
+		},
+
+		// Version 5 (Story 8.5): the claim table and the document references
+		// version 4 could not fill. The sqlite dialect carries the reasoning;
+		// `if not exists` and `on conflict do nothing` are what make a rerun
+		// after a lost version record a no-op here.
+		{
+			`create table if not exists artifact_claims (
+				artifact_ref text   not null primary key,
+				claimed_at   bigint not null
+			)`,
+
+			`insert into result_artifacts (target, consent_mode, scan_id, artifact_ref)
+				select target, consent_mode, scan_id, artifact_ref
+				  from results
+				 where artifact_ref <> ''
+				    on conflict do nothing`,
+		},
 	}
+}
+
+// alreadyApplied is always false: PostgreSQL says `if exists` in the statement
+// itself, and its DDL rolls back with the transaction that records the version.
+func (postgresDialect) alreadyApplied(error) bool { return false }
+
+func (postgresDialect) hasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	return countColumn(ctx, db, `
+		select count(*) from information_schema.columns
+		where table_schema = current_schema() and table_name = $1 and column_name = $2`,
+		table, column)
+}
+
+// documentByteLength counts bytes rather than characters: PostgreSQL's
+// length() counts characters.
+func (postgresDialect) documentByteLength() string {
+	return "octet_length(" + documentColumn + ")"
 }
 
 // schemaVersionTable is where a server database records the applied schema

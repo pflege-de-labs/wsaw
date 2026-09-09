@@ -1,0 +1,1090 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	// The "mem" scheme, registered here and nowhere else on purpose. A bucket
+	// that discards everything on exit is exactly what these tests want and
+	// exactly what a deployment must never be able to configure by mistake: an
+	// operator who copied "mem://" out of a gocloud example into
+	// store.artifactDir would get a store that opens cleanly, reports every
+	// scan as stored, and loses the evidence at shutdown — a failed observation
+	// wearing a clean result (AGENTS §3.4, Tenet 5). Keeping the import in a
+	// test file means the shipped binary refuses the scheme by name, with the
+	// list of the ones it does support.
+	_ "gocloud.dev/blob/memblob"
+)
+
+// White-box tests of the bucket seam (Story 8.1). They need no database and
+// no network — the file bucket writes to a temp directory and the memory
+// bucket writes to nothing at all — so they run in the fast suite.
+
+const testKind = "screenshot-before-consent"
+
+// bucketFor opens a bucket at location and closes it when the test ends.
+func bucketFor(t *testing.T, location string) *bucket {
+	t.Helper()
+
+	b, err := openBucket(t.Context(), location)
+	if err != nil {
+		t.Fatalf("openBucket(%q): %v", location, err)
+	}
+
+	t.Cleanup(func() {
+		if err := b.close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	return b
+}
+
+// locations are the two providers every behavioural test below runs against.
+// The bucket's whole point is that where evidence lives stops mattering, so a
+// test that only covered the local one would be testing the wrong thing.
+func locations(t *testing.T) map[string]string {
+	t.Helper()
+
+	return map[string]string{
+		"directory": filepath.Join(t.TempDir(), "artifacts"),
+		"file URL":  "file://" + filepath.Join(t.TempDir(), "artifacts"),
+		"memory":    "mem://",
+	}
+}
+
+func TestBucketRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			b := bucketFor(t, location)
+			ref := assertStoredAndReadable(t, b, []byte("one pixel of evidence"))
+			assertDeleted(t, b, ref)
+		})
+	}
+}
+
+// assertStoredAndReadable writes data and checks every read path agrees about
+// it, returning the reference.
+func assertStoredAndReadable(t *testing.T, b *bucket, data []byte) string {
+	t.Helper()
+
+	ctx := t.Context()
+
+	ref, err := b.put(ctx, testKind, data)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	sum := sha256.Sum256(data)
+	if want := testKind + "/" + hex.EncodeToString(sum[:]); ref != want {
+		t.Errorf("put returned %q, want the content address %q", ref, want)
+	}
+
+	got, err := b.get(ctx, ref)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	if string(got) != string(data) {
+		t.Errorf("get returned %q, want %q", got, data)
+	}
+
+	obj, err := b.stat(ctx, ref)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	if obj.size != int64(len(data)) {
+		t.Errorf("stat reported %d bytes, want %d", obj.size, len(data))
+	}
+
+	present, err := b.exists(ctx, ref)
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+
+	if !present {
+		t.Error("exists reported false for an artifact that was just written")
+	}
+
+	return ref
+}
+
+// assertDeleted removes an artifact and checks it is gone.
+func assertDeleted(t *testing.T, b *bucket, ref string) {
+	t.Helper()
+
+	ctx := t.Context()
+
+	if err := b.remove(ctx, ref); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	present, err := b.exists(ctx, ref)
+	if err != nil {
+		t.Fatalf("exists after remove: %v", err)
+	}
+
+	if present {
+		t.Error("exists reported true for a deleted artifact")
+	}
+}
+
+// TestBucketContentAddressingCostsOneObject is AC3. Storing the same
+// screenshot twice must produce one object and one reference, and the second
+// write must not rewrite the first.
+func TestBucketContentAddressingCostsOneObject(t *testing.T) {
+	t.Parallel()
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			b := bucketFor(t, location)
+			data := []byte("the same screenshot, twice")
+
+			first, err := b.put(ctx, testKind, data)
+			if err != nil {
+				t.Fatalf("first put: %v", err)
+			}
+
+			second, err := b.put(ctx, testKind, data)
+			if err != nil {
+				t.Fatalf("second put: %v", err)
+			}
+
+			if first != second {
+				t.Errorf("the same bytes produced two references, %q and %q", first, second)
+			}
+
+			var keys []string
+
+			if err := b.list(ctx, testKind, func(obj artifactObject) error {
+				keys = append(keys, obj.ref)
+
+				return nil
+			}); err != nil {
+				t.Fatalf("list: %v", err)
+			}
+
+			if len(keys) != 1 {
+				t.Errorf("two writes of one screenshot left %d objects (%v), want 1", len(keys), keys)
+			}
+		})
+	}
+}
+
+// TestBucketReadsAnExistingArtifactDirectory is AC2, and it is the criterion
+// that protects installations that already hold months of evidence: a
+// directory written by the filesystem implementation must be readable, and
+// re-writable, through the bucket with nothing moved.
+func TestBucketReadsAnExistingArtifactDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "artifacts")
+	data := []byte("evidence captured by an older wsaw")
+	sum := sha256.Sum256(data)
+	ref := testKind + "/" + hex.EncodeToString(sum[:])
+	path := filepath.Join(dir, filepath.FromSlash(ref))
+
+	// Written exactly the way the directory implementation wrote it: the kind
+	// as a subdirectory at 0700, the hex digest as the file name, 0600, and
+	// no metadata beside it.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("creating the old layout: %v", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("writing the old artifact: %v", err)
+	}
+
+	ctx := t.Context()
+	b := bucketFor(t, dir)
+
+	got, err := b.get(ctx, ref)
+	if err != nil {
+		t.Fatalf("reading an artifact written in the old layout: %v", err)
+	}
+
+	if string(got) != string(data) {
+		t.Errorf("read back %q, want %q", got, data)
+	}
+
+	obj, err := b.stat(ctx, ref)
+	if err != nil {
+		t.Fatalf("stat on an artifact written in the old layout: %v", err)
+	}
+
+	if obj.size != int64(len(data)) {
+		t.Errorf("stat reported %d bytes, want %d", obj.size, len(data))
+	}
+
+	// Re-storing the same evidence is a no-op, and writing new evidence lands
+	// in the same directory in the same shape.
+	if again, err := b.put(ctx, testKind, data); err != nil || again != ref {
+		t.Errorf("re-storing existing evidence returned (%q, %v), want (%q, nil)", again, err, ref)
+	}
+
+	fresh := []byte("evidence captured after the upgrade")
+	if _, err := b.put(ctx, testKind, fresh); err != nil {
+		t.Fatalf("storing new evidence beside the old: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(dir, testKind))
+	if err != nil {
+		t.Fatalf("reading the artifact directory: %v", err)
+	}
+
+	freshSum := sha256.Sum256(fresh)
+	want := map[string]bool{
+		hex.EncodeToString(sum[:]):      true,
+		hex.EncodeToString(freshSum[:]): true,
+	}
+
+	for _, entry := range entries {
+		if !want[entry.Name()] {
+			t.Errorf("the bucket left %q in the artifact directory; the layout is <kind>/<sha256hex> and nothing else", entry.Name())
+		}
+	}
+
+	if len(entries) != len(want) {
+		t.Errorf("the artifact directory holds %d files, want %d", len(entries), len(want))
+	}
+}
+
+// TestBucketRefusesHostileReferences is AC5. References are built from
+// page-controlled data, so the only safe answer is that anything which is not
+// the shape this store writes names nothing at all (Tenet 9).
+func TestBucketRefusesHostileReferences(t *testing.T) {
+	t.Parallel()
+
+	digest := strings.Repeat("a", digestLength)
+
+	hostile := []struct {
+		name string
+		ref  string
+	}{
+		{"empty", ""},
+		{"no separator", digest},
+		{"parent directory", "../../etc/passwd"},
+		{"encoded separator", "..%2f..%2fetc%2fpasswd"},
+		{"traversal after a valid kind", "body/../../b"},
+		{"traversal in the middle", "a/../../b"},
+		{"traversal appended to a digest", "body/" + digest + "/../../../etc/passwd"},
+		{"absolute path", "/abs"},
+		{"absolute path with a digest", "/body/" + digest},
+		{"windows separator", "body\\" + digest},
+		{"bare dot dot", ".."},
+		{"dot kind", "./" + digest},
+		{"empty kind", "/" + digest},
+		{"empty digest", "body/"},
+		{"trailing separator", "body/" + digest + "/"},
+		{"nul byte", "body/" + digest + "\x00"},
+		{"newline", "body\n/" + digest},
+		{"uppercase digest", "body/" + strings.ToUpper(digest)},
+		{"short digest", "body/abc123"},
+		{"long digest", "body/" + digest + "a"},
+		{"non hex digest", "body/" + strings.Repeat("g", digestLength)},
+		{"unicode kind", "b\u00f3dy/" + digest},
+		// Written as escapes rather than as the characters themselves: a
+		// bidirectional override in source is a hazard of its own, and an
+		// invisible space is unreviewable.
+		{"fullwidth separator", "body\uff0f" + digest},
+		{"right to left override", "body/\u202e" + digest[1:]},
+		{"cyrillic homoglyph in the digest", "body/\u0430" + digest[1:]},
+		{"zero width space in the kind", "bo\u200bdy/" + digest},
+		{"very long reference", strings.Repeat("a", 100000) + "/" + digest},
+		{"leading hyphen kind", "-body/" + digest},
+		{"trailing hyphen kind", "body-/" + digest},
+	}
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			b := bucketFor(t, location)
+
+			for _, tc := range hostile {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+
+					if _, err := b.get(ctx, tc.ref); !errors.Is(err, errInvalidRef) {
+						t.Errorf("get(%q) returned %v, want an invalid-reference error", tc.ref, err)
+					}
+
+					if _, err := b.stat(ctx, tc.ref); !errors.Is(err, errInvalidRef) {
+						t.Errorf("stat(%q) returned %v, want an invalid-reference error", tc.ref, err)
+					}
+
+					if _, err := b.exists(ctx, tc.ref); !errors.Is(err, errInvalidRef) {
+						t.Errorf("exists(%q) returned %v, want an invalid-reference error", tc.ref, err)
+					}
+
+					if _, err := b.newReader(ctx, tc.ref); !errors.Is(err, errInvalidRef) {
+						t.Errorf("newReader(%q) returned %v, want an invalid-reference error", tc.ref, err)
+					}
+
+					if err := b.remove(ctx, tc.ref); !errors.Is(err, errInvalidRef) {
+						t.Errorf("remove(%q) returned %v, want an invalid-reference error", tc.ref, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestBucketRefusesHostileKindsAndPrefixes covers the two other places a
+// caller names a key: the kind a write chooses, and the prefix a sweep lists.
+func TestBucketRefusesHostileKindsAndPrefixes(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b := bucketFor(t, "mem://")
+
+	kinds := []string{"", "..", "../escape", "body/nested", "BODY", "body\x00", "b\u00f3dy", strings.Repeat("b", maxKindLength+1)}
+
+	for _, kind := range kinds {
+		if _, err := b.put(ctx, kind, []byte("x")); !errors.Is(err, errInvalidRef) {
+			t.Errorf("put with kind %q returned %v, want an invalid-reference error", kind, err)
+		}
+	}
+
+	prefixes := []string{"..", "../body", "body/..", "body/" + strings.Repeat("a", digestLength+1), "/body", "body/zz"}
+
+	for _, prefix := range prefixes {
+		err := b.list(ctx, prefix, func(artifactObject) error { return nil })
+		if !errors.Is(err, errInvalidRef) {
+			t.Errorf("list under prefix %q returned %v, want an invalid-reference error", prefix, err)
+		}
+	}
+
+	// A partially typed digest is a legitimate way to narrow a listing, so it
+	// is accepted where a malformed one is not.
+	if err := b.list(ctx, "body/abc", func(artifactObject) error { return nil }); err != nil {
+		t.Errorf("list under a partial digest: %v", err)
+	}
+}
+
+// TestBucketMissingArtifactIsNotFound is AC9. Every caller that tells
+// "pruned" from "broken" today keeps that distinction (Story 5.17, AC3).
+func TestBucketMissingArtifactIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	missing := testKind + "/" + strings.Repeat("0", digestLength)
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			b := bucketFor(t, location)
+
+			if _, err := b.get(ctx, missing); !errors.Is(err, ErrNotFound) {
+				t.Errorf("get on a missing artifact returned %v, want ErrNotFound", err)
+			}
+
+			if _, err := b.stat(ctx, missing); !errors.Is(err, ErrNotFound) {
+				t.Errorf("stat on a missing artifact returned %v, want ErrNotFound", err)
+			}
+
+			if _, err := b.newReader(ctx, missing); !errors.Is(err, ErrNotFound) {
+				t.Errorf("newReader on a missing artifact returned %v, want ErrNotFound", err)
+			}
+
+			if err := b.remove(ctx, missing); !errors.Is(err, ErrNotFound) {
+				t.Errorf("remove of a missing artifact returned %v, want ErrNotFound", err)
+			}
+
+			present, err := b.exists(ctx, missing)
+			if err != nil {
+				t.Fatalf("exists on a missing artifact: %v", err)
+			}
+
+			if present {
+				t.Error("exists reported true for an artifact that was never written")
+			}
+		})
+	}
+}
+
+// TestBucketStreamingReaderReportsSize is AC7: the HTTP path needs the length
+// before it has read a byte, and must not have to buffer the object to get it.
+func TestBucketStreamingReaderReportsSize(t *testing.T) {
+	t.Parallel()
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			b := bucketFor(t, location)
+			data := []byte(strings.Repeat("a multi-megabyte document, in miniature. ", 1000))
+
+			ref, err := b.put(ctx, "result", data)
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+
+			r, err := b.newReader(ctx, ref)
+			if err != nil {
+				t.Fatalf("newReader: %v", err)
+			}
+
+			defer func() {
+				if err := r.Close(); err != nil {
+					t.Errorf("closing the reader: %v", err)
+				}
+			}()
+
+			if r.size != int64(len(data)) {
+				t.Errorf("newReader reported %d bytes, want %d", r.size, len(data))
+			}
+
+			// The modification time comes back with the stream too, because a
+			// response has to carry a Last-Modified before its body.
+			if r.modTime.IsZero() {
+				t.Error("newReader reported no modification time")
+			}
+
+			got, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("reading the stream: %v", err)
+			}
+
+			if string(got) != string(data) {
+				t.Error("the stream did not return the bytes that were written")
+			}
+		})
+	}
+}
+
+// TestBucketSigningIsRefusedWhereItCannotBeDone is the fallback Story 8.7,
+// AC3 asks for, at the seam that decides it: neither local provider can sign,
+// and each says so with the sentinel that tells the HTTP layer to serve the
+// bytes itself rather than to fail the request.
+func TestBucketSigningIsRefusedWhereItCannotBeDone(t *testing.T) {
+	t.Parallel()
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			b := bucketFor(t, location)
+
+			ref, err := b.put(ctx, testKind, []byte("one pixel of evidence"))
+			if err != nil {
+				t.Fatalf("put: %v", err)
+			}
+
+			if _, err := b.signedURL(ctx, ref, time.Minute); !errors.Is(err, ErrSigningUnsupported) {
+				t.Errorf("signedURL against %s returned %v, want ErrSigningUnsupported", name, err)
+			}
+
+			// Refused before the provider is asked anything, like every other
+			// reference this store did not write (Tenet 9).
+			if _, err := b.signedURL(ctx, "../escape", time.Minute); !errors.Is(err, errInvalidRef) {
+				t.Errorf("signedURL on a crafted reference returned %v, want an invalid-reference error", err)
+			}
+		})
+	}
+}
+
+// TestBucketListPagesThroughLargeResults exercises the paging, which is the
+// only reason list takes a callback: a sweep over every document of every
+// scan must not depend on one response carrying them all.
+func TestBucketListPagesThroughLargeResults(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b := bucketFor(t, "mem://")
+
+	const count = artifactListPageSize*2 + 7
+
+	want := make(map[string]bool, count)
+
+	for i := range count {
+		ref, err := b.put(ctx, "result", fmt.Appendf(nil, "document %d", i))
+		if err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+
+		want[ref] = true
+	}
+
+	seen := make(map[string]bool, count)
+
+	if err := b.list(ctx, "result", func(obj artifactObject) error {
+		ref, size := obj.ref, obj.size
+
+		if seen[ref] {
+			t.Errorf("list returned %q twice", ref)
+		}
+
+		if size == 0 {
+			t.Errorf("list reported %q as empty", ref)
+		}
+
+		seen[ref] = true
+
+		return nil
+	}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if len(seen) != len(want) {
+		t.Fatalf("list returned %d keys, want %d", len(seen), len(want))
+	}
+
+	for ref := range want {
+		if !seen[ref] {
+			t.Errorf("list did not return %q", ref)
+		}
+	}
+}
+
+// TestBucketListStopsOnCallbackError checks that a caller can abandon a
+// listing without the walk swallowing its reason.
+func TestBucketListStopsOnCallbackError(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	b := bucketFor(t, "mem://")
+
+	for i := range 3 {
+		if _, err := b.put(ctx, "result", fmt.Appendf(nil, "document %d", i)); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+
+	stop := errors.New("enough")
+	calls := 0
+
+	err := b.list(ctx, "result", func(artifactObject) error {
+		calls++
+
+		return stop
+	})
+	if !errors.Is(err, stop) {
+		t.Errorf("list returned %v, want the callback's own error", err)
+	}
+
+	if calls != 1 {
+		t.Errorf("the callback ran %d times after asking to stop, want 1", calls)
+	}
+}
+
+// TestBucketWriteIsAtomicUnderCancellation is AC4 and AC6 together: a write
+// whose context dies must leave no key behind, because a half-written key is
+// a reader's idea of complete evidence.
+func TestBucketWriteIsAtomicUnderCancellation(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "artifacts")
+	b := bucketFor(t, dir)
+	data := []byte("evidence that must not be published half way")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := b.put(ctx, testKind, data); err == nil {
+		t.Fatal("put with a cancelled context succeeded, want a failure")
+	}
+
+	sum := sha256.Sum256(data)
+	ref := testKind + "/" + hex.EncodeToString(sum[:])
+
+	present, err := b.exists(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+
+	if present {
+		t.Error("a cancelled write published its key; a reader would treat it as evidence")
+	}
+
+	// Nor may it leave a partial file under another name for a sweep to trip
+	// over later.
+	entries, err := os.ReadDir(filepath.Join(dir, testKind))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading the artifact directory: %v", err)
+	}
+
+	for _, entry := range entries {
+		t.Errorf("a cancelled write left %q behind", entry.Name())
+	}
+}
+
+// TestBucketArtifactPermissionsAreRestrictive holds the local bucket to what
+// the directory implementation guaranteed: evidence can carry personal data,
+// so it is readable by nobody else (Tenet 19).
+func TestBucketArtifactPermissionsAreRestrictive(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "artifacts")
+	b := bucketFor(t, dir)
+
+	ref, err := b.put(t.Context(), testKind, []byte("private evidence"))
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	paths := map[string]os.FileMode{
+		dir:                          artifactDirMode,
+		filepath.Join(dir, testKind): artifactDirMode,
+		filepath.Join(dir, filepath.FromSlash(ref)): artifactFileMode,
+	}
+
+	for path, want := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s has mode %04o, want %04o", path, got, want)
+		}
+	}
+}
+
+// TestBucketRejectsUnusableLocations is Tenet 15 applied to storage: a
+// location wsaw cannot use fails when it is opened, naming what it is and
+// what this build can actually reach.
+func TestBucketRejectsUnusableLocations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+
+		// Deliberately refused rather than defaulted to the working
+		// directory: a bucket rooted there would let a retention sweep
+		// enumerate files that are not artifacts.
+		if _, err := openBucket(t.Context(), ""); err == nil {
+			t.Fatal("openBucket accepted an empty location")
+		}
+	})
+
+	t.Run("unknown scheme", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := openBucket(t.Context(), "ftp://example.invalid/artifacts")
+		if err == nil {
+			t.Fatal("openBucket accepted an ftp:// location")
+		}
+
+		for _, want := range []string{"ftp", "directory path", "mem", "this build"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the error %q does not mention %q; an operator needs to know what this build supports", err, want)
+			}
+		}
+	})
+
+	t.Run("remote file host", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := openBucket(t.Context(), "file://elsewhere/artifacts"); err == nil {
+			t.Fatal("openBucket accepted a file:// location on another host")
+		}
+	})
+
+	t.Run("path is a file", func(t *testing.T) {
+		t.Parallel()
+
+		path := filepath.Join(t.TempDir(), "not-a-directory")
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("writing the fixture: %v", err)
+		}
+
+		if _, err := openBucket(t.Context(), path); err == nil {
+			t.Fatal("openBucket accepted a path that is a file")
+		}
+	})
+}
+
+// Which schemes the build tag decides, and what each build does with the
+// three cloud ones, is asserted in cloudschemes_test.go and the two files
+// beside it — one per side of the constraint, so neither direction can be the
+// one nobody ran (Story 8.8, AC3 and AC4).
+
+// TestWorthRetryingReadsProviderCodes is AC8's first half: what is worth
+// another attempt is decided from the provider's error code, not its wording.
+func TestWorthRetryingReadsProviderCodes(t *testing.T) {
+	t.Parallel()
+
+	b := bucketFor(t, "mem://")
+
+	_, missing := b.b.Attributes(t.Context(), testKind+"/"+strings.Repeat("0", digestLength))
+	if missing == nil {
+		t.Fatal("reading a missing key succeeded")
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a missing key", missing, false},
+		{"a deadline the service reported", fmt.Errorf("upload: %w", context.DeadlineExceeded), true},
+		{"a refused connection", errors.New("dial tcp: connection refused"), true},
+		{"a reset connection", errors.New("read: connection reset by peer"), true},
+		{"an access denied", errors.New("AccessDenied: not your bucket"), false},
+		{"a malformed request", errors.New("InvalidArgument: key too long"), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := worthRetrying(tc.err); got != tc.want {
+				t.Errorf("worthRetrying(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBucketUsesTheStoresRetryPolicy is AC8's second half, and the reason
+// transientBucketError exists: a retryable bucket failure has to be
+// recognised by the classifier the store's retrier already consults, so that one
+// policy — maxAttempts and retryBackoff — governs both the database and the
+// bucket.
+func TestBucketUsesTheStoresRetryPolicy(t *testing.T) {
+	t.Parallel()
+
+	transient := fmt.Errorf("the bucket is busy: %w", context.DeadlineExceeded)
+	permanent := errors.New("AccessDenied: not your bucket")
+
+	cases := []struct {
+		name     string
+		failures int
+		err      error
+		attempts int
+		wantErr  bool
+	}{
+		{"a transient failure is tried again", 2, transient, 3, false},
+		{"a permanent failure is not", 2, permanent, 1, true},
+		{"retries are bounded", 99, transient, 3, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := bucketFor(t, "mem://")
+
+			var attempts int
+
+			// The same loop the store's retrier runs, down to the dialect's own
+			// classifier. If the bucket's errors did not fit that classifier
+			// this test would fail, which is the point of it.
+			b.setRetry(func(ctx context.Context, _ string, fn func(context.Context) error) error {
+				const maxAttempts = 3
+
+				var last error
+
+				for range maxAttempts {
+					attempts++
+
+					err := fn(ctx)
+					if err == nil {
+						return nil
+					}
+
+					if !(sqliteDialect{}).isTransient(err) {
+						return err
+					}
+
+					last = err
+				}
+
+				return last
+			})
+
+			remaining := tc.failures
+
+			err := b.do(t.Context(), "a bucket operation", func(context.Context) error {
+				if remaining > 0 {
+					remaining--
+
+					return tc.err
+				}
+
+				return nil
+			})
+
+			if (err != nil) != tc.wantErr {
+				t.Errorf("do returned %v, wantErr %v", err, tc.wantErr)
+			}
+
+			if attempts != tc.attempts {
+				t.Errorf("the operation ran %d times, want %d", attempts, tc.attempts)
+			}
+		})
+	}
+}
+
+// TestBucketDoesNotRetryACancelledCaller keeps a shutdown fast: a caller that
+// gave up is not a flaky bucket.
+func TestBucketDoesNotRetryACancelledCaller(t *testing.T) {
+	t.Parallel()
+
+	b := bucketFor(t, "mem://")
+
+	attempts := 0
+
+	b.setRetry(func(ctx context.Context, _ string, fn func(context.Context) error) error {
+		var last error
+
+		for range 3 {
+			attempts++
+
+			if err := fn(ctx); err != nil {
+				if !(sqliteDialect{}).isTransient(err) {
+					return err
+				}
+
+				last = err
+
+				continue
+			}
+
+			return nil
+		}
+
+		return last
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := b.do(ctx, "a bucket operation", func(context.Context) error {
+		return fmt.Errorf("aborted: %w", context.Canceled)
+	})
+	if err == nil {
+		t.Fatal("do succeeded with a cancelled context")
+	}
+
+	if attempts != 1 {
+		t.Errorf("a cancelled caller was retried %d times, want 1 attempt", attempts)
+	}
+}
+
+// TestTransientBucketErrorIsTransparent guards the wrapper: it must not hide
+// the provider's error from errors.Is or from gcerrors.
+func TestTransientBucketErrorIsTransparent(t *testing.T) {
+	t.Parallel()
+
+	inner := fmt.Errorf("upload failed: %w", context.DeadlineExceeded)
+	wrapped := &transientBucketError{err: inner}
+
+	if !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Error("the wrapper hides the error it wraps")
+	}
+
+	if wrapped.Error() != inner.Error() {
+		t.Errorf("the wrapper reports %q, want %q", wrapped.Error(), inner.Error())
+	}
+
+	if !isTransientMessage(wrapped) {
+		t.Error("the store's own classifier does not recognise the wrapper as transient")
+	}
+}
+
+// TestValidKindAcceptsTheKindsThisStoreWrites keeps the whitelist honest
+// against the kinds the rest of wsaw actually uses.
+func TestValidKindAcceptsTheKindsThisStoreWrites(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{
+		"body", "result", "probe", "screenshot",
+		"screenshot-before-consent", "screenshot-after-consent",
+	} {
+		if !validKind(kind) {
+			t.Errorf("validKind(%q) = false; that kind is written today", kind)
+		}
+	}
+}
+
+// TestValidKindRejectsKindsThisStoreDoesNotWrite is the retention sweep's half
+// of the same whitelist (Story 8.5, AC3 and AC4).
+//
+// The sweep walks the bucket and treats what this function accepts as
+// something wsaw wrote and may therefore delete. A kind test that accepted any
+// lowercase word would make every "<word>/<64 hex>" key in the bucket a
+// deletion candidate, including another tool's objects and another wsaw
+// deployment's.
+func TestValidKindRejectsKindsThisStoreDoesNotWrite(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{
+		"", "backup", "vendor-export", "results", "bodies", "screenshots",
+		"screenshot-", "screenshot_before", "Body", "body/2",
+	} {
+		if validKind(kind) {
+			t.Errorf("validKind(%q) = true; this store never writes that kind", kind)
+		}
+	}
+}
+
+// TestValidateArtifactURLAnswersWithoutOpening is what configuration
+// validation stands on (Story 8.6, AC4): a URL is judged at load, with no
+// request made and no credential chain resolved, so a scheme this build cannot
+// open is refused while wsaw is starting rather than during a scan.
+func TestValidateArtifactURLAnswersWithoutOpening(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		url      string
+		accepted bool
+	}{
+		"a file URL":               {url: "file:///var/lib/wsaw/artifacts", accepted: true},
+		"a file URL via localhost": {url: "file://localhost/var/lib/wsaw/artifacts", accepted: true},
+		"a relative file URL":      {url: "file://./artifacts", accepted: true},
+		// Refused for want of a bucket name, which is what "mem://" is
+		// missing. The shipped binary never reaches that check — it does not
+		// link the driver at all — and this is the one location the tests open
+		// that configuration must never be able to name (Tenet 5).
+		"a memory URL":            {url: "mem://"},
+		"a directory path":        {url: "/var/lib/wsaw/artifacts"},
+		"a scheme nothing links":  {url: "ftp://evidence/bucket"},
+		"a file URL with a host":  {url: "file://elsewhere/artifacts"},
+		"a file URL with no path": {url: "file://"},
+		"a malformed URL":         {url: "s3://bucket/%zz"},
+		// Refused rather than accepted and ignored: every cloud opener takes
+		// the bucket from the host and drops the path, so this would put
+		// evidence at the root of the bucket while reading as a subtree
+		// (Tenet 15). Written against the in-memory scheme because that is the
+		// one this build actually links — an s3 URL is refused a step earlier,
+		// for its scheme.
+		"a bucket with a prefix":          {url: "mem://bucket/wsaw"},
+		"a bucket with a trailing slash":  {url: "mem://bucket/", accepted: true},
+		"a bucket named without a prefix": {url: "mem://bucket", accepted: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateArtifactURL(tc.url)
+
+			if tc.accepted && err != nil {
+				t.Fatalf("ValidateArtifactURL(%q) = %v, want it accepted", tc.url, err)
+			}
+
+			if !tc.accepted && err == nil {
+				t.Fatalf("ValidateArtifactURL(%q) accepted it", tc.url)
+			}
+		})
+	}
+}
+
+// TestUnsupportedSchemeNamesTheBuild is the other half of that message. Which
+// schemes resolve is decided at build time, so an operator whose s3:// URL is
+// refused has to be told which binary they are running — otherwise the refusal
+// reads as a bug in wsaw rather than as the wrong download.
+func TestUnsupportedSchemeNamesTheBuild(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateArtifactURL("ftp://evidence/bucket")
+	if err == nil {
+		t.Fatal("ValidateArtifactURL accepted a scheme no build links")
+	}
+
+	// The scheme that failed, the build in hand, and one scheme that does
+	// work: enough to act on without reading the source.
+	for _, want := range []string{"ftp", "cloudblob", "file://"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not mention %q", err, want)
+		}
+	}
+
+	if cloudProvidersLinked() != strings.Contains(err.Error(), "made with -tags cloudblob)") {
+		t.Errorf("the refusal %q does not name the build this test is running in", err)
+	}
+}
+
+// TestValidateArtifactURLKeepsCredentialsOutOfTheMessage: the URL a refusal
+// quotes back is the one that carried the credential (Story 8.6, AC3).
+func TestValidateArtifactURLKeepsCredentialsOutOfTheMessage(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"ftp://key:s3cr3t-do-not-log@minio.example.com/evidence",
+		"ftp://minio.example.com/evidence?secret_access_key=s3cr3t-do-not-log",
+		"ftp://minio.example.com/%zz?secret_access_key=s3cr3t-do-not-log",
+		// The file scheme's own refusal, which is reached with the userinfo
+		// intact: a file URL that names no directory is still a URL somebody
+		// may have written a credential into.
+		"file://localhost?secret_access_key=s3cr3t-do-not-log",
+		"file://key:s3cr3t-do-not-log@localhost",
+		// A bucket named with a prefix the provider would drop.
+		"s3://bucket/wsaw?secret_access_key=s3cr3t-do-not-log",
+	} {
+		err := ValidateArtifactURL(raw)
+		if err == nil {
+			t.Fatalf("ValidateArtifactURL(%q) accepted it", raw)
+		}
+
+		if strings.Contains(err.Error(), "s3cr3t-do-not-log") {
+			t.Errorf("the refusal %q leaks the credential in %q", err, raw)
+		}
+	}
+}
+
+// TestBucketReachability is what readiness asks (Story 8.6, AC5). A bucket
+// that has gone away must be reported as gone: a wsaw that cannot store what
+// it observes is not ready, however healthy the rest of it is.
+func TestBucketReachability(t *testing.T) {
+	t.Parallel()
+
+	for name, location := range locations(t) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			b := bucketFor(t, location)
+
+			if err := b.reachable(t.Context()); err != nil {
+				t.Errorf("a freshly opened bucket is not reachable: %v", err)
+			}
+		})
+	}
+
+	// A directory that has gone stands in for the remote failure this is
+	// really about — a network that is down, a credential that has expired, a
+	// bucket somebody deleted — none of which a test may reach for
+	// (AGENTS.md §3.7). It is also the local deployment's own version of it:
+	// an unmounted volume looks exactly like this.
+	t.Run("a directory that is no longer there", func(t *testing.T) {
+		t.Parallel()
+
+		dir := filepath.Join(t.TempDir(), "artifacts")
+		b := bucketFor(t, dir)
+
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+
+		err := b.reachable(t.Context())
+		if err == nil {
+			t.Fatal("a bucket whose directory is gone reports itself reachable")
+		}
+
+		if !strings.Contains(err.Error(), dir) {
+			t.Errorf("the failure %q does not name the bucket", err)
+		}
+	})
+}

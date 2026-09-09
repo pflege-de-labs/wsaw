@@ -496,7 +496,11 @@ type screenshotView struct {
 // Before-consent comes first and after-consent second, whatever order they
 // were recorded in, because reading them the other way round inverts what
 // they say.
-func (s *Server) screenshotViews(res *model.Result) []screenshotView {
+//
+// It takes the request's context because it asks the artifact bucket about
+// every frame, and a bucket that has stopped answering must not hold the page
+// open past the request that wanted it (Story 8.7, AC6).
+func (s *Server) screenshotViews(ctx context.Context, res *model.Result) []screenshotView {
 	labels := map[string]string{
 		kindBeforeConsent: "Before the consent interaction",
 		kindAfterConsent:  "After the consent interaction",
@@ -522,14 +526,14 @@ func (s *Server) screenshotViews(res *model.Result) []screenshotView {
 			view.Label = a.Kind
 		}
 
-		// Checked by size rather than by reading the file: a result page must
-		// not load megabytes of PNG just to find out whether it can link to
-		// them.
-		if size, err := s.deps.Store.StatArtifact(a.Ref); err != nil {
+		// Checked by attributes rather than by reading the file: a result page
+		// must not load megabytes of PNG just to find out whether it can link
+		// to them.
+		if info, err := s.deps.Store.StatArtifact(ctx, a.Ref); err != nil {
 			view.Missing = true
 			view.Reason = "the stored image is no longer available: " + err.Error()
-		} else if size > 0 {
-			view.Bytes = size
+		} else if info.Size > 0 {
+			view.Bytes = info.Size
 		}
 
 		out = append(out, view)
@@ -647,7 +651,7 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 
 	data := resultData{
 		Result:      res,
-		Screenshots: s.screenshotViews(res),
+		Screenshots: s.screenshotViews(r.Context(), res),
 		Diff:        s.diffFor(res),
 		Hosts:       res.HostSummaries(),
 		Counts:      res.CountsByResourceType(),
@@ -827,7 +831,10 @@ func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
 		"target", target, "consent_mode", string(mode), "scan_id", scanID, "actor", actor)
 
 	s.uiRedirectOK(w, r, "/targets/"+target+"/"+string(mode),
-		"Baseline approved. It is stored in wsaw's database and recorded in the audit log.")
+		// "store" and not "database": a deployment on the bucket-index driver
+		// has no database, and this was the one message outside the store
+		// package that told an operator otherwise (Story 8.10, AC2).
+		"Baseline approved. It is recorded in wsaw's store and in the audit log.")
 }
 
 func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {

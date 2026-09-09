@@ -210,6 +210,18 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 	return rep
 }
 
+// ReasonEvidenceGone is the Reason a caller sets when the result this scan
+// should have been compared against is still in the index and its document is
+// no longer in the artifact bucket.
+//
+// It lives here, beside the reasons Compare produces itself, because a reader
+// has to be able to tell it from "no baseline to compare against" — the two
+// produce an identical report otherwise, and one of them means a change may
+// have gone unreported. Compare cannot produce it: only whoever fetched the
+// baseline knows why it is missing (Story 8.2, AC5; Tenet 5).
+const ReasonEvidenceGone = "the result this scan should be compared against is recorded, " +
+	"but its stored document is no longer in the artifact bucket"
+
 // incomparable reports why two results must not be diffed.
 func incomparable(baseline, current *model.Result) (string, bool) {
 	switch {

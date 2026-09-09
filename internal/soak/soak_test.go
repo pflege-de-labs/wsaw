@@ -17,6 +17,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,7 +58,35 @@ func TestSoak(t *testing.T) {
 
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{Path: dir + "/soak.db", ArtifactDir: dir + "/artifacts"})
+	// What the artifact bucket is asked to do, totalled over the run.
+	//
+	// Every scan now writes its result document to the bucket as well as its
+	// screenshots and stored bodies (Story 8.2), so a long run's storage cost is
+	// requests and bytes against a provider that charges for both. Measured here
+	// rather than estimated, because the deployment this models is the one where
+	// nobody notices until the invoice (Story 8.9, AC6).
+	bucket := &bucketMeter{}
+
+	opts := store.Options{
+		Path:        dir + "/soak.db",
+		ArtifactDir: dir + "/artifacts",
+		OnBucketOp:  bucket.record,
+	}
+
+	// WSAW_SOAK_STORE=blob runs the whole soak against the store that keeps its
+	// index in the bucket as well.
+	//
+	// It is the run the design of that store asks for and nothing else provides
+	// (docs/story-8.10-design.md §12): its compaction thresholds are reasoned
+	// choices rather than measurements, and what they should be is a question
+	// about how a real history grows over hours of scanning. With the meter
+	// above, this is where that number comes from.
+	if os.Getenv("WSAW_SOAK_STORE") == store.DriverBlob {
+		opts.Driver = store.DriverBlob
+		opts.Path = ""
+	}
+
+	st, err := store.Open(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +137,7 @@ func TestSoak(t *testing.T) {
 		}
 	}
 
-	baseline := measure(t, profileDir)
+	baseline := measure(t, profileDir, bucket)
 
 	t.Logf("baseline: %s", baseline)
 
@@ -133,7 +162,7 @@ func TestSoak(t *testing.T) {
 		scans++
 
 		if scans%10 == 0 {
-			t.Logf("after %d scans: %s", scans, measure(t, profileDir))
+			t.Logf("after %d scans: %s", scans, measure(t, profileDir, bucket))
 		}
 	}
 
@@ -145,9 +174,17 @@ func TestSoak(t *testing.T) {
 		t.Errorf("closing pool: %v", err)
 	}
 
-	final := measure(t, profileDir)
+	final := measure(t, profileDir, bucket)
 
 	t.Logf("after %d scans: %s", scans, final)
+
+	// Per scan, because that is the figure a deployment is sized with: a
+	// thousand scans a day against object storage is this multiplied out, and
+	// the total above is only the number this particular run happened to reach
+	// (Story 8.9, AC6).
+	t.Logf("artifact bucket per scan: %.1f requests, %.1f KiB",
+		float64(final.bucketOps)/float64(scans),
+		float64(final.bucketBytes)/float64(scans)/1024)
 
 	// Goroutines are the sharpest signal: a leak here means a scan is not
 	// releasing something on every path.
@@ -175,13 +212,39 @@ type snapshot struct {
 	goroutines  int
 	heapMB      uint64
 	profileDirs int
+
+	// bucketOps and bucketBytes are cumulative over the run rather than levels
+	// like the three above, and are reported rather than compared against the
+	// baseline: nothing leaks if they grow, and what they are for is the
+	// per-scan figure the last line prints.
+	bucketOps   int64
+	bucketBytes int64
 }
 
 func (s snapshot) String() string {
-	return fmt.Sprintf("goroutines=%d heap=%dMiB profile_dirs=%d", s.goroutines, s.heapMB, s.profileDirs)
+	return fmt.Sprintf("goroutines=%d heap=%dMiB profile_dirs=%d bucket_ops=%d bucket_bytes=%d",
+		s.goroutines, s.heapMB, s.profileDirs, s.bucketOps, s.bucketBytes)
 }
 
-func measure(t *testing.T, profileDir string) snapshot {
+// bucketMeter totals what the store reports through Options.OnBucketOp.
+//
+// Atomics rather than a mutex: the hook is called on whichever goroutine made
+// the request, several scans are in flight at once, and a measurement that
+// makes them queue is a measurement that changes what it measures.
+type bucketMeter struct {
+	ops   atomic.Int64
+	bytes atomic.Int64
+}
+
+// record is the hook. The request's name is not kept: what a soak run is
+// reporting is the total cost of the run, and the per-path breakdown is
+// asserted request by request in the store's own tests.
+func (m *bucketMeter) record(_ string, bytes int64) {
+	m.ops.Add(1)
+	m.bytes.Add(bytes)
+}
+
+func measure(t *testing.T, profileDir string, bucket *bucketMeter) snapshot {
 	t.Helper()
 
 	runtime.GC()
@@ -194,6 +257,8 @@ func measure(t *testing.T, profileDir string) snapshot {
 		goroutines:  runtime.NumGoroutine(),
 		heapMB:      m.HeapAlloc / (1 << 20),
 		profileDirs: countProfileDirs(profileDir),
+		bucketOps:   bucket.ops.Load(),
+		bucketBytes: bucket.bytes.Load(),
 	}
 }
 

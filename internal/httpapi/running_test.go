@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -367,5 +368,57 @@ func TestReadinessFailsWhenTheStoreIsUnreachable(t *testing.T) {
 
 	if !strings.Contains(payload.Reason, "not reachable") {
 		t.Errorf("the reason does not say the store is unreachable: %q", payload.Reason)
+	}
+}
+
+// TestReadinessFailsWhenTheArtifactBucketIsGone is Story 8.6, AC5, on the
+// same argument one story later: the result document itself lives in the
+// bucket now, so a wsaw whose database is fine and whose bucket has gone can
+// no more record a scan than one with no database at all.
+func TestReadinessFailsWhenTheArtifactBucketIsGone(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{}, nil)
+
+	if resp := f.get("/api/v1/ready"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("ready = %d with a working bucket, want 200", resp.StatusCode)
+	}
+
+	// An unmounted volume is what this looks like from inside the process,
+	// and it is the local deployment's version of a bucket that has stopped
+	// answering.
+	if err := os.RemoveAll(f.artifactDir); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := f.get("/api/v1/ready")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("ready = %d with the artifact bucket gone, want 503", resp.StatusCode)
+	}
+
+	var payload struct {
+		Ready  bool   `json:"ready"`
+		Reason string `json:"reason"`
+	}
+
+	if err := json.Unmarshal([]byte(body(t, resp)), &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if payload.Ready {
+		t.Error("readiness reported true with no artifact bucket")
+	}
+
+	// The reason names which half of the store is unreachable and nothing
+	// else. Readiness answers every caller when no API token is configured,
+	// which is the default, so the directory the evidence was in — a
+	// deployment's filesystem layout — belongs in the log rather than in a
+	// response body anyone can fetch (Tenet 19).
+	if payload.Reason != "the artifact bucket is not reachable" {
+		t.Errorf("the reason does not say the bucket is unreachable: %q", payload.Reason)
+	}
+
+	if strings.Contains(payload.Reason, f.artifactDir) {
+		t.Errorf("the reason published the artifact directory: %q", payload.Reason)
 	}
 }

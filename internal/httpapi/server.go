@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
@@ -67,6 +68,16 @@ type Options struct {
 	// something an operator can copy and send rather than assemble.
 	ShareBaseURL string
 
+	// SignedArtifactURLs lets an artifact request be answered with a redirect
+	// to the bucket rather than with the bytes. Off unless an operator asked
+	// for it: a redirect moves access control from wsaw to whoever holds the
+	// URL until it expires (Story 8.7, AC3).
+	SignedArtifactURLs bool
+	// SignedArtifactURLTTL is how long such a redirect may be honoured. A
+	// redirect issued to a shared reader is additionally cut to what is left
+	// of their share link.
+	SignedArtifactURLTTL time.Duration
+
 	// RefreshDefault is how often the interface reloads itself for a viewer
 	// who has expressed no preference. Zero means not at all. It is only the
 	// default: the choice belongs to whoever is looking (Story 5.16).
@@ -80,9 +91,40 @@ type Options struct {
 	Version string
 }
 
+// Store is what the HTTP layer needs from the result store (AGENTS §4).
+//
+// It reads results, artifacts and the audit log, and it approves and withdraws
+// baselines — which is an operator's decision made through the interface, so
+// it belongs here. What is deliberately missing is PutResult and PutArtifact:
+// this server triggers scans, it does not record them. A handler that could
+// write a result could write one no scan produced.
+type Store interface {
+	Ping(ctx context.Context) error
+
+	ListResults(target string, mode model.ConsentMode, limit int) ([]store.Summary, error)
+	HasResult(target string, mode model.ConsentMode, scanID string) (bool, error)
+	GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	LatestResult(target string, mode model.ConsentMode) (*model.Result, error)
+	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+
+	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
+	HasBaseline(target string, mode model.ConsentMode) (bool, error)
+	SetBaseline(target string, mode model.ConsentMode, scanID, approvedBy, note string) (*store.Baseline, error)
+	DeleteBaseline(target string, mode model.ConsentMode, actor string) error
+	Audit(limit int) ([]store.AuditEntry, error)
+
+	GetArtifact(ref string) ([]byte, error)
+	OpenArtifact(ctx context.Context, ref string) (*store.ArtifactReader, error)
+	StatArtifact(ctx context.Context, ref string) (store.ArtifactInfo, error)
+	SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error)
+}
+
 // Deps are the collaborators the server reads from.
 type Deps struct {
-	Store   *store.Store
+	// Store is required: New refuses a nil one. A non-nil interface holding a
+	// nil pointer would pass that check and panic on the first request, so a
+	// caller hands over a store that opened or nothing at all.
+	Store   Store
 	Metrics *metrics.Registry
 	Daemon  *daemon.Daemon
 	Trigger ScanTrigger
@@ -112,6 +154,15 @@ type Server struct {
 	http *http.Server
 
 	ui *uiRenderer
+
+	// noSigning records that the artifact bucket cannot produce signed URLs,
+	// so the fallback to serving the bytes costs one attempt for the life of
+	// the process rather than one per request. Whether a provider signs is a
+	// property of the provider (Story 8.7, AC3).
+	noSigning atomic.Bool
+	// signingWarned keeps a bucket that fails to sign for some other reason
+	// from writing a log line per screenshot on every page view.
+	signingWarned atomic.Bool
 }
 
 // New builds the server.
@@ -194,7 +245,8 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.http.Addr = ln.Addr().String()
 
-	s.deps.Logger.Info("http server listening",
+	s.deps.Logger.Info(
+		"http server listening",
 		"addr", s.http.Addr,
 		"web_ui", s.opts.WebUI,
 		"read_only", s.opts.ReadOnly,
@@ -348,7 +400,8 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, r)
 
-		s.deps.Logger.Debug("http request",
+		s.deps.Logger.Debug(
+			"http request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,

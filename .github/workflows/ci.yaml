@@ -20,13 +20,25 @@ permissions:
   contents: read
 
 env:
-  # At least the module's go directive, which chromedp and cdproto set to 1.26.
-  GO_VERSION: "1.26"
+  # An exact patch, not a minor. At least the module's go directive, which
+  # chromedp and cdproto set to 1.26 — but the release job publishes measured
+  # binary sizes (Story 8.8, AC2), and Go binary size moves by tens of
+  # kilobytes between patch releases. A floating "1.26" makes two runs weeks
+  # apart report different numbers under the same label, and makes dist/SIZES
+  # impossible to compare with the table in docs/dependency-review-gocloud.md,
+  # which is measured with this same toolchain. Bump it deliberately.
+  GO_VERSION: "1.27.1"
   # Pinned, and built from source below with the Go above — see the lint job.
   GOLANGCI_LINT_VERSION: "v2.13.2"
   # Pinned: a floating licence classifier can change a gate's verdict without
   # anything in this repository changing.
   GO_LICENSES_VERSION: "v2.0.1"
+  # Pinned for the same reason, and it matters more here: AC5 makes the
+  # vulnerability verdict and the SBOM part of what a release publishes, so
+  # both have to still mean the same thing tomorrow. Keep in step with the
+  # versions in the Makefile.
+  GOVULNCHECK_VERSION: "v1.7.0"
+  CYCLONEDX_GOMOD_VERSION: "v1.12.0"
 
 jobs:
   test:
@@ -69,6 +81,73 @@ jobs:
       - name: Test
         run: go test -race -timeout 15m ./...
 
+      # The store test suite is the specification of what a store does, and the
+      # step above runs it against SQLite only: `open(t)` picks its driver from
+      # WSAW_TEST_STORE_DRIVER, which nothing sets. Without this step an edit
+      # that broke ListResults, PreviousResult or retention under the store
+      # whose index is objects in the bucket (Story 8.10, AC15) would leave
+      # every gate in this repository green.
+      #
+      # On both runners rather than Linux only, unlike the cloudblob step
+      # below. It costs a few seconds — a temporary directory is the bucket, so
+      # there is no service to start — and the local file bucket is exactly
+      # where a case-insensitive filesystem could collapse two index keys the
+      # grammar keeps apart, which is a macOS-specific failure the Linux run
+      # cannot see.
+      - name: Test the store suite against the bucket index
+        run: make test-store-blob
+
+      # The other axis of the same suite: where the evidence goes, rather than
+      # where the index is kept (Story 8.9, AC1). It runs the whole store suite
+      # twice more, with the bucket in memory instead of in a temporary
+      # directory.
+      #
+      # What it buys is that every assertion which reaches past the store to the
+      # objects themselves goes through the bucket seam. Against a directory
+      # such an assertion can be written with os.ReadFile and go on passing long
+      # after the seam it was covering has stopped working — which is how a
+      # provider difference reaches production instead of CI. Against a bucket
+      # with no files, it cannot be written that way at all.
+      #
+      # On both runners, and for the same reason as the step above: it needs
+      # nothing running and costs a couple of seconds.
+      - name: Test the store suite against a bucket in memory
+        run: make test-store-memory
+
+      # The cloud drivers are behind a build tag (Story 8.8, AC3), and a file
+      # whose build constraint is off is invisible to go build, go vet and the
+      # linter alike. Without this step the second released variant would be
+      # compiled for the first time by the release job, or by an operator.
+      #
+      # Linux only. The tag selects one file, which is pure Go with no platform
+      # constraint beyond the tag, so a macOS run repeats the Linux one — and
+      # this step compiles some 455 extra packages plus a -race store suite on
+      # a runner billed at ten times the rate. The darwin cloud binaries are
+      # cross-compiled by the cross-compile job.
+      - name: Test the cloudblob build
+        if: runner.os == 'Linux'
+        run: make test-cloudblob
+
+      # The one gate in this repository that meets an implementation of object
+      # storage nobody here wrote (Story 8.9, AC2). A directory, a memory bucket
+      # and the fake that lags on a schedule are three models, and a model
+      # cannot disagree with the assumption it was built from: listing order,
+      # pagination, modification times, delete semantics and gcerrors codes are
+      # what this step checks and the other three cannot.
+      #
+      # On every push rather than on the nightly schedule, unlike the
+      # end-to-end stack Story 7.6 puts there: this is one small image and about
+      # twenty seconds, and the whole point of the epic is that a bucket is not
+      # a directory. A provider difference found a month later, by an operator,
+      # is the failure the story exists to prevent.
+      #
+      # Linux only — the macOS runners have no container runtime — and docker,
+      # because that is what a GitHub runner has; the target prefers podman
+      # everywhere else.
+      - name: Test the store against a real object store
+        if: runner.os == 'Linux'
+        run: make test-store-minio STORE_TEST_RUNTIME=docker
+
       - name: Coverage of core logic
         if: runner.os == 'Linux'
         run: |
@@ -94,10 +173,20 @@ jobs:
       # therefore lag the floor sooner or later and the job fails for a reason
       # that has nothing to do with the code. Compiling it here makes that
       # mismatch impossible; the Go build cache keeps the cost small.
+      #
+      # Twice, under each set of build tags. internal/store/bucket_cloud.go is
+      # the one file the cloudblob tag adds, and an untagged lint run cannot
+      # see it at all — godox (which is what keeps leftover work markers out of
+      # the tree), gosec, staticcheck and the rest would never look at a file
+      # that ships in a released binary (Story 8.8, AC3).
       - name: Run golangci-lint
         run: |
           go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} \
             run --timeout 5m
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} \
+            run --timeout 5m --build-tags cloudblob
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} \
+            run --timeout 5m --build-tags cloudblob,objectstore ./test/...
 
   build:
     name: cross-compile
@@ -109,10 +198,60 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       # Every supported platform must keep compiling, including the ones no
-      # test runs on.
-      - name: Build all platforms
-        run: make release
-      - uses: actions/upload-artifact@v7
+      # test runs on — and both variants, because the cloud SDKs are the only
+      # dependencies big enough to smuggle in a platform assumption
+      # (Story 8.8, AC1).
+      #
+      # All four default targets, always. The cloud variant is built for one
+      # non-host target on a pull request and for all four on main, on a tag
+      # and on the nightly schedule. The three SDKs are pure Go, so a
+      # cross-compilation break in them is a compile error that linux/arm64 —
+      # a different OS and a different architecture from this runner — catches
+      # exactly as well as four targets would, while each extra cloud target
+      # costs some 455 packages to compile and about 53 MB of artifact.
+      #
+      # `make release` also runs `make verify-variants`, which is where the
+      # promise that the default build carries no cloud SDK is actually
+      # checked (Story 8.8, AC4), and writes dist/SIZES.
+      - name: Build all platforms, both variants
+        env:
+          CLOUD_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/arm64' || 'linux/amd64 linux/arm64 darwin/amd64 darwin/arm64' }}
+        run: make release CLOUD_PLATFORMS="$CLOUD_PLATFORMS"
+
+      # `make release` writes dist/SIZES and renders it into the notes the
+      # release publishes, dist/RELEASE-NOTES.md, both covered by SHA256SUMS
+      # (Story 8.8, AC2). This step puts the same table in the job summary too,
+      # so the number is visible on the run that produced it rather than only
+      # inside a downloaded artifact.
+      - name: Record the binary sizes
+        run: |
+          {
+            echo '### Binary sizes'
+            echo
+            echo '```'
+            cat dist/SIZES
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A pull request gets the record, not the payload. The binaries are
+      # rebuilt by every run and nobody downloads a PR's copy of them; the
+      # checksums and the measured sizes are the two things a reviewer might
+      # actually want, and they are a few hundred bytes rather than a few
+      # hundred megabytes.
+      - name: Upload the release record
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-record
+          path: |
+            dist/SHA256SUMS
+            dist/SIZES
+            dist/RELEASE-NOTES.md
+          retention-days: 7
+
+      - name: Upload the binaries
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
         with:
           name: binaries
           path: dist/
@@ -126,8 +265,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      # Twice: govulncheck reports what the analysed build can reach, so a
+      # vulnerability in an SDK only the cloud build links is invisible to the
+      # default run (Story 8.8, AC5).
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} \
+            -tags cloudblob ./...
 
   licenses:
     name: dependency licenses
@@ -158,10 +303,19 @@ jobs:
       #
       # Pinned because a floating classifier can change a gate's verdict
       # without anything in this repository changing.
+      #
+      # Once per released variant. A build tag decides which packages exist,
+      # so the default run never looks at the three cloud SDKs — which are by
+      # some distance the largest dependency trees in the module (Story 8.8,
+      # AC5). GOFLAGS is how the tag reaches the analyser; go-licenses has no
+      # flag of its own for it.
       - name: Check licenses
         run: |
           go run github.com/google/go-licenses/v2@${{ env.GO_LICENSES_VERSION }} check ./... \
             --allowed_licenses=MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
+          GOFLAGS=-tags=cloudblob \
+            go run github.com/google/go-licenses/v2@${{ env.GO_LICENSES_VERSION }} check ./... \
+              --allowed_licenses=MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0
 
   sbom:
     name: SBOM
@@ -172,12 +326,19 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      # One per released variant: the cloud build's SBOM covers three SDKs the
+      # default build never links, and publishing only the smaller document
+      # would understate what a release ships (Story 6.1, AC3; Story 8.8, AC5).
+      #
+      # Both describe this runner's module selection, linux/amd64. wsaw has no
+      # GOOS-conditional requirement in go.mod, so that selection is the same
+      # for all four released platforms — see the note on the `sbom` target.
       - name: Generate SBOM
-        run: make sbom
+        run: make sbom CYCLONEDX_GOMOD_VERSION="${{ env.CYCLONEDX_GOMOD_VERSION }}"
       - uses: actions/upload-artifact@v7
         with:
           name: sbom
-          path: dist/wsaw.cdx.json
+          path: dist/*.cdx.json
 
   soak:
     name: soak
