@@ -576,7 +576,14 @@ Captured data can itself be personal data, so:
 make check        # fmt, vet, lint, test -race
 make test-fast    # skip browser tests
 make soak         # long-run stability test (Story 6.8)
+make cover        # coverage profile, one total
+make cover-report # the same profile as a browsable HTML page
 ```
+
+`make cover-report` writes `coverage-report.html`: every package ranked by statement coverage and
+again by how many statements are untested, then a card per package with its files and the functions
+no test ever reaches. The two rankings disagree on purpose — one answers "how well tested is this
+package", the other "where should the next test go".
 
 The fast suite runs **without Chrome installed** — browser tests skip themselves and say why. Integration tests use local fixture servers, including a synthetic consent banner and a synthetic third-party host; they never touch a live third-party website, so CI does not depend on someone else's site staying unchanged.
 
