@@ -7,8 +7,11 @@ package diff
 
 import (
 	"fmt"
+	"net/url"
+	"slices"
 	"sort"
 
+	"github.com/pflege-de-labs/wsaw/internal/classify"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
@@ -187,6 +190,10 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 		current:  current,
 		rules:    rules,
 		report:   rep,
+
+		currentDegraded:  rules.degraded(current),
+		baselineDegraded: rules.degraded(baseline),
+		unobserved:       unobservedDomains(current),
 	}
 
 	d.compareHosts()
@@ -237,6 +244,17 @@ type differ struct {
 	current  *model.Result
 	rules    Options
 	report   *Report
+
+	// currentDegraded and baselineDegraded record whether each side lost
+	// enough requests to capture failure that its asset list is incomplete.
+	// They are computed once because every comparison consults them.
+	currentDegraded  bool
+	baselineDegraded bool
+
+	// unobserved are the registrable domains the current scan did not fully
+	// observe. It is consulted per change, not per scan, so a removal can be
+	// withheld for a precise reason even when the scan as a whole is healthy.
+	unobserved map[string]struct{}
 }
 
 func (d *differ) add(c Change) {
@@ -308,6 +326,10 @@ func (d *differ) compareHosts() {
 			continue
 		}
 
+		if d.removalUnprovable(domain, nil) {
+			continue
+		}
+
 		d.add(Change{
 			Type:     HostRemoved,
 			Severity: d.rules.Severity.HostRemoved,
@@ -343,6 +365,19 @@ type assetInfo struct {
 	typ    string
 	status int
 	digest string
+
+	// identity and identityLabel carry a version the script publishes about
+	// itself, when capture was configured to extract one. It is preferred
+	// over the digest, because some scripts rewrite their bytes far more
+	// often than their content changes.
+	identity      string
+	identityLabel string
+
+	// initiators are the registrable domains of whatever caused this request.
+	// They are what makes a missing asset attributable: if the script that
+	// asked for it could not be fetched this time, its absence says nothing
+	// about the site.
+	initiators []string
 }
 
 func assets(r *model.Result) map[string]assetInfo {
@@ -368,6 +403,11 @@ func assets(r *model.Result) map[string]assetInfo {
 			typ:    req.ResourceType,
 			status: req.Status,
 			digest: req.BodySHA256,
+
+			identity:      req.BodyIdentity,
+			identityLabel: req.BodyIdentityLabel,
+
+			initiators: initiatorDomains(req),
 		}
 	}
 
@@ -399,6 +439,10 @@ func (d *differ) compareAssets() {
 			continue
 		}
 
+		if d.removalUnprovable(info.domain, info.initiators) {
+			continue
+		}
+
 		d.add(Change{
 			Type:     AssetRemoved,
 			Severity: d.rules.Severity.AssetRemoved,
@@ -422,11 +466,15 @@ func (d *differ) compareScripts() {
 			continue
 		}
 
-		// A missing digest on either side means the comparison could not be
-		// made. Reporting "unchanged" would be a false negative, so it is
-		// simply not reported as a change.
-		if was.digest == "" || now.digest == "" || was.digest == now.digest {
+		before, after, label, ok := scriptIdentity(was, now)
+		if !ok || before == after {
 			continue
+		}
+
+		detail := fmt.Sprintf("content of %s script %s changed while its URL stayed the same", now.party, key)
+		if label != "" {
+			detail = fmt.Sprintf("%s of %s script %s changed from %s to %s",
+				label, now.party, key, before, after)
 		}
 
 		d.add(Change{
@@ -436,11 +484,43 @@ func (d *differ) compareScripts() {
 			Domain:   now.domain,
 			Party:    now.party,
 			Phase:    now.phase,
-			Before:   was.digest,
-			After:    now.digest,
-			Detail:   fmt.Sprintf("content of %s script %s changed while its URL stayed the same", now.party, key),
+			Before:   before,
+			After:    after,
+			Detail:   detail,
 		})
 	}
+}
+
+// scriptIdentity decides what two observations of the same script URL should
+// be compared on, and whether they can be compared at all.
+//
+// An extracted identity wins over the digest: it is the version the script
+// declares, and it does not move when the server folds a rollout flag into
+// the response. But an identity present on only one side is not a change —
+// it means one scan could not read it — and comparing the digests instead
+// would reintroduce exactly the noise the identity rule exists to remove. So
+// once a rule is in play, both sides must carry a value, on the same footing
+// as a missing digest: not comparable, and therefore not reported. Reporting
+// "unchanged" would be the worse error, since this is the supply-chain check.
+func scriptIdentity(was, now assetInfo) (before, after, label string, ok bool) {
+	if was.identity != "" || now.identity != "" {
+		if was.identity == "" || now.identity == "" {
+			return "", "", "", false
+		}
+
+		label = now.identityLabel
+		if label == "" {
+			label = was.identityLabel
+		}
+
+		return was.identity, now.identity, label, true
+	}
+
+	if was.digest == "" || now.digest == "" {
+		return "", "", "", false
+	}
+
+	return was.digest, now.digest, "", true
 }
 
 func cookieKey(c model.Cookie) string {
@@ -576,21 +656,158 @@ func (d *differ) flagDeniedHosts() {
 	}
 }
 
-// flagDegradation reports a truncated scan, so that "fewer assets than last
-// time" is never mistaken for an improvement.
-func (d *differ) flagDegradation() {
-	if !d.current.Truncated() {
-		return
+// degraded reports whether a result lost so many requests to incomplete
+// observation that its asset list cannot be trusted to be complete.
+//
+// This is deliberately separate from Truncated. A truncated scan announces
+// itself in its termination reason; a scan that goes quiet on schedule and
+// terminates "idle" looks trustworthy while quietly missing every asset that
+// a failed loader would have pulled in. The second case is the one that
+// produced a week of phantom removals, and nothing in the termination reason
+// showed it.
+func (o Options) degraded(r *model.Result) bool {
+	if r == nil {
+		return false
 	}
 
+	return r.IncompleteRatio() >= o.DegradedFailureRatio
+}
+
+// unobservedDomains collects the registrable domains the current scan did not
+// fully observe — a request that failed in transit, or one still in flight
+// when capture stopped waiting — so a missing asset can be attributed to a
+// specific gap rather than to the scan's overall health.
+func unobservedDomains(r *model.Result) map[string]struct{} {
+	out := make(map[string]struct{})
+
+	for i := range r.Requests {
+		if req := &r.Requests[i]; req.Incomplete() && req.Domain != "" {
+			out[req.Domain] = struct{}{}
+		}
+	}
+
+	return out
+}
+
+// initiatorDomains returns the registrable domains that caused a request.
+// Chrome reports the immediate initiator and, where it can, the whole script
+// stack; all of them matter, because any link in that chain failing is enough
+// to stop the request happening at all.
+func initiatorDomains(req *model.Request) []string {
+	var out []string
+
+	add := func(raw string) {
+		if raw == "" {
+			return
+		}
+
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return
+		}
+
+		domain := classify.RegistrableDomain(u.Hostname())
+		if domain == "" || slices.Contains(out, domain) {
+			return
+		}
+
+		out = append(out, domain)
+	}
+
+	add(req.Initiator.URL)
+
+	for _, frame := range req.Initiator.Stack {
+		add(frame)
+	}
+
+	return out
+}
+
+// removalUnprovable reports whether "this is gone" can be stated at all.
+//
+// The asymmetry is the point. A request that is missing may mean the site
+// stopped making it, or may mean wsaw failed to observe it. A request that is
+// *present*, on the other hand, can only mean the site made it. So removals
+// need a healthy scan to be trustworthy and additions never do: a false
+// positive on an addition costs someone a look, while a false negative hides
+// a tracker that fired without consent.
+//
+// There are two ways a removal becomes unprovable, and both are needed. The
+// blunt one is a scan that lost so much that nothing about its asset list can
+// be trusted. The precise one is attribution: the loss is *not* confined to
+// the hosts that failed, because a script that could not be fetched silences
+// every request it would have made — a consent banner that never loads takes
+// its whole second stage with it, on a different host. Checking the domain
+// and the initiator chain catches that case while leaving a healthy scan's
+// removals alone, which a ratio on its own cannot do.
+func (d *differ) removalUnprovable(domain string, initiators []string) bool {
+	unprovable := d.currentDegraded
+
+	if !unprovable {
+		if _, missed := d.unobserved[domain]; missed {
+			unprovable = true
+		}
+	}
+
+	if !unprovable {
+		for _, initiator := range initiators {
+			if _, missed := d.unobserved[initiator]; missed {
+				unprovable = true
+
+				break
+			}
+		}
+	}
+
+	if !unprovable {
+		return false
+	}
+
+	d.report.Suppressed++
+
+	return true
+}
+
+// flagDegradation reports a scan whose asset list is incomplete, so that
+// "fewer assets than last time" is never mistaken for an improvement.
+//
+// Both sides are reported. A degraded current scan invalidates removals; a
+// degraded baseline invalidates additions, which are still reported rather
+// than suppressed, so the reader needs to be told why an addition may be an
+// artefact of the comparison.
+func (d *differ) flagDegradation() {
+	if d.current.Truncated() {
+		d.reportDegraded(string(d.current.Termination),
+			fmt.Sprintf("scan stopped early (%s); the asset list may be incomplete and differences may be artefacts",
+				d.current.Termination))
+	}
+
+	if d.currentDegraded {
+		reason, _ := d.current.TopIncompleteReason()
+		d.reportDegraded(reason, fmt.Sprintf(
+			"%d of this scan's requests produced no observation (%.1f%%, mostly %s); "+
+				"assets those requests would have loaded are missing for reasons the site did not choose, "+
+				"so removals are not reported for this comparison",
+			d.current.IncompleteObservations(), d.current.IncompleteRatio()*100, reason))
+	}
+
+	if d.baselineDegraded {
+		reason, _ := d.baseline.TopIncompleteReason()
+		d.reportDegraded(reason, fmt.Sprintf(
+			"%d of the baseline scan's requests produced no observation (%.1f%%, mostly %s); "+
+				"an asset reported as new here may simply have been missed last time",
+			d.baseline.IncompleteObservations(), d.baseline.IncompleteRatio()*100, reason))
+	}
+}
+
+func (d *differ) reportDegraded(subject, detail string) {
 	d.report.Changes = append(d.report.Changes, Change{
 		Type:        ScanDegraded,
 		Severity:    d.rules.Severity.ScanDegraded,
 		Target:      d.current.Target,
 		ConsentMode: d.current.ConsentMode,
-		Subject:     string(d.current.Termination),
-		Detail: fmt.Sprintf("scan stopped early (%s); the asset list may be incomplete and differences may be artefacts",
-			d.current.Termination),
+		Subject:     subject,
+		Detail:      detail,
 	})
 }
 

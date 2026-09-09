@@ -296,6 +296,19 @@ type Request struct {
 	// BodyRef points at a stored body artifact, when body storage is on.
 	BodyRef string `json:"bodyRef,omitempty"`
 
+	// BodyIdentity is a stable identifier lifted out of the response body by
+	// a configured rule, and BodyIdentityLabel names what it is.
+	//
+	// Some scripts rewrite their own body on every response — a tag manager
+	// embeds experiment flags that change without the container changing — so
+	// a digest reports a change on nearly every scan while the thing an
+	// operator cares about sits inside the body as a version number. Storing
+	// the extracted value alongside the digest lets a comparison use the
+	// identity the script publishes about itself, and keeps the raw digest
+	// available so a reader can still see what was hashed.
+	BodyIdentity      string `json:"bodyIdentity,omitempty"`
+	BodyIdentityLabel string `json:"bodyIdentityLabel,omitempty"`
+
 	// Body carries the stored response body itself. It is present only in an
 	// export — a HAR, or a downloaded result — and never in the stored
 	// document, which keeps bodies outside it as content-addressed files
@@ -376,6 +389,149 @@ func (r *Result) Truncated() bool {
 	default:
 		return false
 	}
+}
+
+// captureFailures are the Chrome network errors that mean wsaw failed to
+// observe a request, as opposed to the page or the site choosing not to
+// complete it.
+//
+// The distinction matters because it decides whether a missing asset is a
+// finding. A request that never opened a connection did not tell us anything
+// about the site, and every asset it would have initiated is missing for a
+// reason the site did not choose — so "this asset is gone" is unprovable.
+// Whereas net::ERR_ABORTED is ordinary: it is what a beacon looks like when
+// the page is torn down around it, and such a request routinely carries a
+// status because the server did answer. Treating it as a capture defect would
+// mark almost every accept-mode scan degraded.
+//
+// Errors that report a deliberate decision — blocked by a policy, by an
+// extension, or by ORB — are likewise not defects: they are observations, and
+// an accurate one.
+var captureFailures = map[string]struct{}{
+	"net::ERR_INSUFFICIENT_RESOURCES": {},
+	"net::ERR_NAME_NOT_RESOLVED":      {},
+	"net::ERR_NAME_RESOLUTION_FAILED": {},
+	"net::ERR_NETWORK_CHANGED":        {},
+	"net::ERR_INTERNET_DISCONNECTED":  {},
+	"net::ERR_ADDRESS_UNREACHABLE":    {},
+	"net::ERR_CONNECTION_CLOSED":      {},
+	"net::ERR_CONNECTION_RESET":       {},
+	"net::ERR_CONNECTION_REFUSED":     {},
+	"net::ERR_CONNECTION_TIMED_OUT":   {},
+	"net::ERR_CONNECTION_FAILED":      {},
+	"net::ERR_SOCKET_NOT_CONNECTED":   {},
+	"net::ERR_OUT_OF_MEMORY":          {},
+	"net::ERR_TIMED_OUT":              {},
+	"net::ERR_TOO_MANY_RETRIES":       {},
+}
+
+// IsCaptureFailure reports whether a request failure reason means wsaw could
+// not observe the request, rather than that the site or page declined it.
+func IsCaptureFailure(reason string) bool {
+	_, ok := captureFailures[reason]
+
+	return ok
+}
+
+// CaptureFailure reports whether this request failed for a reason that makes
+// the observation incomplete rather than informative.
+func (r *Request) CaptureFailure() bool {
+	return !r.NonNetwork && r.Failed && IsCaptureFailure(r.FailureReason)
+}
+
+// ReasonNeverCompleted stands in for a failure reason on a request that was
+// still in flight when capture ended. Chrome reported no error, because from
+// its point of view nothing went wrong yet.
+const ReasonNeverCompleted = "never reported completion"
+
+// NeverCompleted reports whether this request was still in flight when
+// capture stopped waiting: no status, no end offset, and no error.
+//
+// Idle detection deliberately stops waiting for such a request — a
+// cross-origin iframe's completion events go to a separate browser target and
+// would otherwise never arrive, running every scan of a page with an embedded
+// widget to its hard timeout. The consequence is that a request which stalls
+// early can leave the page half-built while the scan still ends on schedule,
+// and nothing in the termination reason says so.
+func (r *Request) NeverCompleted() bool {
+	return !r.NonNetwork && !r.Failed && r.Status == 0 && r.Timing.EndOffset == 0
+}
+
+// Incomplete reports whether this request produced no usable observation,
+// either because it failed in transit or because it never finished. Both mean
+// the same thing for a comparison: whatever this request would have loaded is
+// absent for a reason the site did not choose.
+func (r *Request) Incomplete() bool {
+	return r.CaptureFailure() || r.NeverCompleted()
+}
+
+// IncompleteObservations counts the requests wsaw could not observe. A
+// non-zero count means the asset list is missing entries for reasons that
+// have nothing to do with the site.
+func (r *Result) IncompleteObservations() int {
+	n := 0
+
+	for i := range r.Requests {
+		if r.Requests[i].Incomplete() {
+			n++
+		}
+	}
+
+	return n
+}
+
+// IncompleteRatio is the share of network requests that produced no usable
+// observation. A ratio is used rather than a count because it is comparable
+// across pages: ten lost requests mean something different on a page that
+// issues twenty than on one that issues three hundred.
+func (r *Result) IncompleteRatio() float64 {
+	total, lost := 0, 0
+
+	for i := range r.Requests {
+		if r.Requests[i].NonNetwork {
+			continue
+		}
+
+		total++
+
+		if r.Requests[i].Incomplete() {
+			lost++
+		}
+	}
+
+	if total == 0 {
+		return 0
+	}
+
+	return float64(lost) / float64(total)
+}
+
+// TopIncompleteReason returns the most frequent reason an observation was
+// incomplete and how often it occurred, so a degradation report names the
+// actual fault instead of saying only that something went wrong.
+func (r *Result) TopIncompleteReason() (reason string, count int) {
+	tally := make(map[string]int)
+
+	for i := range r.Requests {
+		req := &r.Requests[i]
+
+		switch {
+		case req.CaptureFailure():
+			tally[req.FailureReason]++
+		case req.NeverCompleted():
+			tally[ReasonNeverCompleted]++
+		}
+	}
+
+	// Ties break on the reason string so the same result always produces the
+	// same report (Tenet 6).
+	for candidate, n := range tally {
+		if n > count || (n == count && candidate < reason) {
+			reason, count = candidate, n
+		}
+	}
+
+	return reason, count
 }
 
 // ThirdPartyDomains returns the sorted distinct registrable domains of

@@ -352,13 +352,15 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 	launch.Container = &containerLauncher{
 		runtime: runtime,
 		spec: container.Spec{
-			Image:          image,
-			Memory:         a.Config.Browser.Container.Memory,
-			PidsLimit:      a.Config.Browser.Container.PidsLimit,
-			ExtraArgs:      a.Config.Browser.Container.ExtraArgs,
-			BrowserArgs:    a.Config.Browser.Container.BrowserArgs,
-			StartupTimeout: a.Config.Browser.Container.StartupTimeout.Or(90 * time.Second),
-			Logger:         a.Logger,
+			Image:           image,
+			Memory:          a.Config.Browser.Container.Memory,
+			PidsLimit:       a.Config.Browser.Container.PidsLimit,
+			SHMSize:         a.Config.Browser.Container.SHMSize,
+			FileDescriptors: a.Config.Browser.Container.FileDescriptors,
+			ExtraArgs:       a.Config.Browser.Container.ExtraArgs,
+			BrowserArgs:     a.Config.Browser.Container.BrowserArgs,
+			StartupTimeout:  a.Config.Browser.Container.StartupTimeout.Or(90 * time.Second),
+			Logger:          a.Logger,
 		},
 	}
 
@@ -486,6 +488,7 @@ func (a *App) buildScanner() error {
 		Normalizer:            normalizer,
 		Baseline:              a.Config.Detection.Baseline,
 		HashResourceTypes:     a.Config.Detection.HashResourceTypes,
+		DegradedFailureRatio:  a.Config.Detection.DegradedFailureRatio,
 		ConsentStepTimeout:    a.Config.Consent.StepTimeout.Or(consent.DefaultStepTimeout),
 		ConsentTotalTimeout:   a.Config.Consent.TotalTimeout.Or(consent.DefaultTotalTimeout),
 		AllowHeuristicConsent: allowHeuristic,

@@ -210,6 +210,36 @@ note in the HAR — because a short body and a truncated one are different
 facts. Bodies can contain personal data, so `storeBodies` is off by default
 and retention applies to them as it does to everything else.
 
+#### Scripts that rewrite themselves
+
+A digest answers "did these bytes change", which is the right question for
+almost every script and the wrong one for a few. A Google Tag Manager
+container folds experiment flags into every response: two fetches of the same
+*published* container can differ by a handful of tokens out of a hundred
+thousand, and hashing them reports `script-changed` on nearly every scan —
+which buries the one publish that mattered.
+
+The container states its own version, so compare that instead:
+
+```yaml
+normalize:
+  bodyIdentity:
+    - urlPattern: 'googletagmanager\.com/gtm\.js'
+      extract: '"version":"(\d+)"'
+      label: GTM container version
+```
+
+`extract` needs exactly one capturing group, and the group is the identity;
+a rule that cannot produce one is rejected at load rather than failing
+silently on every scan. The change then reads *GTM container version changed
+from 231 to 232* instead of printing two hashes.
+
+The digest is still recorded next to it, so a reader can always see what was
+hashed. If a rule matches the URL but the body does not carry the identity,
+the script counts as **not comparable** rather than unchanged — the same
+treatment as a missing digest, because a false "unchanged" is the worse answer
+for a supply-chain check.
+
 The result schema is published at [`docs/result.schema.json`](docs/result.schema.json) and the HTTP API at [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Web interface and API
@@ -306,6 +336,53 @@ passes, which is the opposite of a gate.
 This is not the store's retry (`store.maxAttempts`), which retries a database
 operation *inside* a scan. They are configured separately and neither implies
 the other.
+
+### When a scan half-fails
+
+A scan can finish on schedule, terminate `idle`, and still be missing a tenth
+of its requests. Chrome reports `net::ERR_INSUFFICIENT_RESOURCES` when it
+cannot get a socket or the shared memory to open one — typically because a
+page released its images in one burst and the browser container was sized for
+less. Those requests never reach the network, so they say nothing about the
+site, and every asset they would have loaded is absent too. One failed loader
+silences everything below it.
+
+Left alone this is the worst kind of noise, because it looks exactly like a
+finding: assets vanish, then come back next scan. wsaw counts it instead:
+
+```yaml
+detection:
+  degradedFailureRatio: 0.05   # 0 uses the default; above 1 disables the check
+```
+
+Above that share of lost requests, the scan is reported as `scan-degraded`
+naming the actual error, and **no `asset-removed` or `host-removed` change is
+raised** for that comparison. Additions still are, and so is everything about
+consent. The asymmetry is deliberate: a request that is present can only mean
+the site made it, while a request that is missing may mean wsaw failed to see
+it. A false positive on an addition costs somebody a look; a false negative
+hides a tracker that fired without consent.
+
+A degraded *baseline* is reported too, for the mirror-image reason — an asset
+that looks new may only have been missed last time — but its additions are
+still raised rather than suppressed.
+
+Failures that are not wsaw's fault do not count towards the ratio.
+`net::ERR_ABORTED` is what a beacon looks like when the page is torn down
+around it, and such a request usually carries a status because the server did
+answer; `net::ERR_BLOCKED_BY_*` records a decision. Both are observations.
+
+The fix for the underlying fault is to stop starving the browser:
+
+```yaml
+browser:
+  container:
+    shmSize: 1g          # the runtime default of 64m is not enough for a real page
+    fileDescriptors: 8192
+```
+
+Both are defaults now, and both are limits rather than allocations, so they
+cost nothing until they are needed.
 
 ## Sharing one result
 

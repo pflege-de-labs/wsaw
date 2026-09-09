@@ -16,11 +16,34 @@ type Options struct {
 	Deny HostList
 	// Severity assigns a rank to each kind of change.
 	Severity SeverityRules
+
+	// DegradedFailureRatio is the share of a scan's network requests that may
+	// fail for capture reasons before the scan is treated as degraded.
+	//
+	// Zero selects DefaultDegradedFailureRatio. A value above 1 can never be
+	// reached and so disables the check, for an operator who would rather see
+	// the raw comparison.
+	DegradedFailureRatio float64
 }
+
+// DefaultDegradedFailureRatio is the share of lost requests above which a
+// scan's asset list is no longer trusted for removals.
+//
+// Five percent sits between the two behaviours observed in practice: a site
+// whose homepage releases its images in one burst loses ten to thirteen
+// percent of its requests inside a resource-constrained browser container,
+// while sites that spread the same work lose well under one percent. The
+// point is to separate a capture environment that is failing from one with
+// the occasional unlucky request, not to pick a number that sounds strict.
+const DefaultDegradedFailureRatio = 0.05
 
 func (o Options) withDefaults() Options {
 	out := o
 	out.Severity = out.Severity.withDefaults()
+
+	if out.DegradedFailureRatio <= 0 {
+		out.DegradedFailureRatio = DefaultDegradedFailureRatio
+	}
 
 	return out
 }

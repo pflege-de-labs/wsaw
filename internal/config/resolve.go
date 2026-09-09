@@ -263,6 +263,14 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		})
 	}
 
+	for _, id := range c.Normalize.BodyIdentities {
+		r.BodyIdentities = append(r.BodyIdentities, normalize.BodyIdentity{
+			URLPattern: id.URLPattern,
+			Extract:    id.Extract,
+			Label:      id.Label,
+		})
+	}
+
 	return r, nil
 }
 
