@@ -1,8 +1,10 @@
 # Plan: reach 80% statement coverage
 
-**Status:** proposal. Numbers measured 2026-09-09 on `main` (`f792284`), macOS arm64, Chrome and Podman both present.
+**Status:** Phases 0 and 1 are done; coverage is at **78.3%**. Phases 2–4 are still proposals. See [§6](#6-progress) for what landed and what the numbers turned out to be.
 
-NFR §5 asks for ≥ 80% coverage on core logic. The number the build currently prints is `59.1%`. That number is wrong, and most of the work in this plan is not "write more tests" — it is "stop mismeasuring, then fill two genuinely untested packages".
+Numbers measured 2026-09-09 on `main` (`f792284`), macOS arm64, Chrome and Podman both present.
+
+NFR §5 asks for ≥ 80% coverage on core logic. The number the build printed before this plan was `59.1%`. That number was wrong, and most of the work here is not "write more tests" — it is "stop mismeasuring, then fill two genuinely untested packages". Sections 1–5 are the plan as written against that starting point and are left as they were; §6 records what has since landed.
 
 ---
 
@@ -177,13 +179,13 @@ New: `cmd/wsaw/cli_integration_test.go`, guarded exactly like `internal/scanner/
 
 ## 4. Summary
 
-| Phase | Work | Stmts | Coverage after |
-|---|---|---|---|
-| 0 | `-coverpkg`, drop test scaffolding from the denominator, gate + ratchet | 0 | **71.2%** (from a reported 59.1%) |
-| 1 | `cmd/wsaw` without a browser | +520 | ~76.2% |
-| 2 | `internal/app` | +260 | ~78.6% |
-| 3 | CLI end to end against fixtures | +350 | **~82%** |
-| 4 | Buffer: store dialects in CI, httpapi handlers, pool recycle, TCF, capture interaction | +430 available | headroom |
+| Phase | Work | Stmts | Coverage after | Status |
+|---|---|---|---|---|
+| 0 | `-coverpkg`, drop test scaffolding from the denominator, gate + ratchet | 0 | **71.2%** (from a reported 59.1%) | done |
+| 1 | `cmd/wsaw` without a browser | +656 (est. +520) | **78.3%** (est. ~76.2%) | done |
+| 2 | `internal/app` | +200 remaining | ~80.2% | to do |
+| 3 | CLI end to end against fixtures | +350 | **~83%** | to do |
+| 4 | Buffer: store dialects in CI, httpapi handlers, pool recycle, TCF, capture interaction | +430 available | headroom | to do |
 
 Phase 0 is a few lines of `Makefile` and CI. Phases 1–2 are ordinary table-driven tests with no browser, and are where most of the real risk reduction is. Phase 3 is the one that needs Chrome, and it buys both the last three points and the only coverage the daemon supervisor has ever had.
 
@@ -194,3 +196,42 @@ Phase 0 is a few lines of `Makefile` and CI. Phases 1–2 are ordinary table-dri
 - No `--no-sandbox`, and no sandbox-disabling fixture to make a browser test pass (Rule 1). A test that can only pass with the sandbox off does not get written.
 - No `time.Sleep` to paper over a race (§5). Inject the clock — `internal/daemon` already does.
 - No test written purely to move the number: `main()` (`os.Exit`) and `test/e2e/browse` stay uncovered on purpose, which is why the denominator excludes the latter rather than pretending otherwise.
+
+---
+
+## 6. Progress
+
+### Phase 0 — done
+
+- `make cover` and `make cover-report` now pass `-coverpkg` over a product-code package list (`COVER_PKGS`, which drops `test/e2e/`).
+- `make cover-gate` is new: it fails below `COVER_MIN`, and CI's coverage step calls it instead of printing a number nothing checked.
+- `tools/coverreport` was double-counting. It summed the profile per file, and a `-coverpkg` profile lists every block once per test binary — 22 of them here — so it would have reported ~240,000 statements. It now folds blocks by position first, and agrees with `go tool cover -func` to the decimal.
+- `COVER_MIN` is set to **75.0**, deliberately below the 78.3% a developer machine measures: this one has Podman, so it covers container paths that skip on a runner without a container runtime. **The first green CI run should raise it to what CI actually reports.**
+
+### Phase 1 — done
+
+Five test files, no browser, no network, no new dependency: `main_test.go` (shared helpers and the command dispatch), `config_test.go`, `emit_test.go`, `share_test.go`, `debug_test.go`, `run_build_test.go`.
+
+`cmd/wsaw` went from **0% to 59.0%** (656 of 1111 statements), against an estimated 520. `internal/app` picked up **26.4%** on the way, unplanned: `wsaw config` and `wsaw share` both build a real `app.App`, so the store-opening and rule-loading paths are now exercised from the outside.
+
+| Package | Before | After |
+|---|---|---|
+| `cmd/wsaw` | 0.0% | **59.0%** |
+| `internal/app` | 0.0% | **26.4%** (incidental) |
+| `internal/config` | 83.7% | 85.3% |
+| **total** | **71.2%** | **78.3%** |
+
+What the new tests assert, beyond arithmetic:
+
+- The exit-code contract for every command word, including that an unknown command exits 2 with usage on **stderr** while asked-for help goes to **stdout**.
+- `sanitize` and `adHocName` neutralise path traversal and cap length — a target name derived from a URL reaches a filename (Rule 2).
+- `writeAtomic` leaves neither a partial file at the destination nor a stray `.wsaw-*` temporary behind when the writer fails.
+- Notifier and share-signer secrets are registered for redaction, checked by scrubbing a string that contains them (Rule 3).
+- A reload adopts a targets-only change and refuses one it cannot apply, leaving the running configuration untouched — regression cover for `2aa987f`.
+- Sharing is off unless asked for, and a minted link warns that it cannot be revoked.
+
+### What is left
+
+`cmd/wsaw`'s four uncovered functions are all Phase 3: `runOnce`, `scanWithRetries`, `supervise`, and `main` itself. They need either a real browser or a signal-driven daemon, and mocking a Chrome to reach them would test the mock. `main` (`os.Exit`) stays uncovered on purpose.
+
+At 78.3%, Phase 2 alone (`internal/app`, 248 statements still uncovered) clears 80%.
