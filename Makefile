@@ -130,6 +130,17 @@ cover:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
+# cover-report renders the same profile as a browsable page: every package
+# ranked, then per file and per function. The generator is named as a file
+# rather than a package because it carries //go:build ignore — that keeps it
+# out of ./... so the tool never shows up in the coverage it reports on.
+COVER_REPORT ?= coverage-report.html
+
+.PHONY: cover-report
+cover-report:
+	go test -coverprofile=coverage.out -covermode=atomic ./...
+	go run tools/coverreport/main.go -profile coverage.out -out $(COVER_REPORT)
+
 # soak runs the long-running stability test, which is deliberately separate
 # from the regular suite (Story 6.8).
 .PHONY: soak
