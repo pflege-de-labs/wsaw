@@ -8,18 +8,25 @@ cost to be stated rather than assumed, and for the modules it brings to be
 looked at once, deliberately, instead of arriving as transitive noise
 (Story 8.8, AC5).
 
-This is that review. Every number in it was measured on 2026-09-08 against
-`gocloud.dev v0.46.0`, on the commit that introduced it, with Go 1.27.1 — the
-toolchain `.github/workflows/ci.yaml` pins as `GO_VERSION`, so `dist/SIZES`
+This is that review. Every number in it was measured with Go 1.27.1 — the
+toolchain `.github/workflows/ci.yaml` pins as `GO_VERSION` — so `dist/SIZES`
 from a CI run is comparable with the table below rather than merely similar to
-it.
+it. Two dates, because they answer two questions:
 
-**This document is a point-in-time measurement of that commit.** The byte
-counts and module versions below are what was true when it was written; they
-are not maintained per commit. The live numbers are `make sizes` and the
-`dist/SIZES` that every release and every CI run publishes, which carry their
-own toolchain and their own pre-epic baseline. Where the two disagree, the
-artifact is right and this document is stale.
+- The **module, licence and vulnerability** tables were measured on 2026-09-08
+  against `gocloud.dev v0.46.0`, on the commit that introduced it. They are
+  about what the dependency brings, and nothing since has touched `go.mod`.
+- The **byte counts** were re-measured on 2026-09-09, at the end of the epic,
+  with Stories 8.10 and 8.11 in the tree. They are about what the binary
+  weighs, and the epic's own code kept being added to it after the dependency
+  arrived.
+
+**This document is still a point-in-time measurement.** The byte counts and
+module versions below are what was true on those dates; they are not maintained
+per commit. The live numbers are `make sizes` and the `dist/SIZES` that every
+release and every CI run publishes, which carry their own toolchain and their
+own pre-epic baseline. Where the two disagree, the artifact is right and this
+document is stale.
 
 Reproduce it with:
 
@@ -82,8 +89,8 @@ can, rather than failing with an unsupported-scheme error — see
 Measured with `make release` on this branch and on the commit before the epic
 (`ac072a9`), so every column is `CGO_ENABLED=0 go build -trimpath -ldflags
 "-s -w …"` — the binaries that actually ship, not a plain `go build`, which is
-about half again as large (37,245,842 bytes for the default `darwin/arm64`
-build against the 25,406,930 below) and is not what anybody downloads. The
+about half again as large (37,925,954 bytes for the default `darwin/arm64`
+build against the 25,878,354 below) and is not what anybody downloads. The
 baseline was built from a tagless export of that commit, so its `-X` strings
 are a few dozen bytes shorter than a released build's; nothing else differs.
 
@@ -91,30 +98,43 @@ The columns are the columns of `dist/SIZES`, and the percentages are the
 integer percentages `make sizes` prints, so the two records can be compared
 line by line. The baseline column is fixed at that commit; the other two are
 measured from the artifacts on every run and move as the branch grows, so
-`dist/SIZES` — not this table — is the record for a given release:
+`dist/SIZES` — not this table — is the record for a given release. These were
+taken at the end of the epic, with every story in the tree:
 
 | platform | baseline | default | +epic8 | cloudblob | +cloud |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `linux/amd64` | 21,344,416 | 25,837,728 | +4,493,312 (+21%) | 55,099,552 | +29,261,824 (+113%) |
-| `linux/arm64` | 20,381,856 | 24,576,160 | +4,194,304 (+20%) | 51,511,456 | +26,935,296 (+109%) |
-| `darwin/amd64` | 21,829,936 | 26,561,824 | +4,731,888 (+21%) | 56,689,456 | +30,127,632 (+113%) |
-| `darwin/arm64` | 20,927,106 | 25,406,930 | +4,479,824 (+21%) | 53,474,562 | +28,067,632 (+110%) |
+| `linux/amd64` | 21,344,416 | 26,398,880 | +5,054,464 (+23%) | 55,656,608 | +29,257,728 (+110%) |
+| `linux/arm64` | 20,381,856 | 25,034,912 | +4,653,056 (+22%) | 51,970,208 | +26,935,296 (+107%) |
+| `darwin/amd64` | 21,829,936 | 27,132,000 | +5,302,064 (+24%) | 57,254,960 | +30,122,960 (+111%) |
+| `darwin/arm64` | 20,927,106 | 25,878,354 | +4,951,248 (+23%) | 53,945,410 | +28,067,056 (+108%) |
 
 `+epic8` is the default binary against the pre-epic baseline: the number
 Story 8.8, AC2 asks for. `+cloud` is the cloud binary against the default one.
-Against the baseline the cloud build is 2.5x to 2.6x the pre-epic binary.
+Against the baseline the cloud build is about 2.6x the pre-epic binary.
 
-The shape of it: about a fifth more binary for the storage abstraction and the
-local driver, and two and a half times the binary for the three cloud SDKs.
-The second number is what a deployment storing evidence on a disk would have
-been made to carry, and it is the whole argument for the tag.
+The shape of it: about a quarter more binary for the storage abstraction, the
+local driver and the epic's own store code, and two and a half times the binary
+for the three cloud SDKs. The second number is what a deployment storing
+evidence on a disk would have been made to carry, and it is the whole argument
+for the tag.
+
+`+epic8` grew by some 500 KB between the commit that introduced `gocloud.dev`
+and the end of the epic, and none of that is the dependency: `go.mod` did not
+move. It is Stories 8.10 and 8.11 — the store whose index is objects in the
+bucket, and the rebuild — which is why the column is named `+epic8` rather than
+`+gocloud`. `+cloud` barely moved over the same stretch, which is the same fact
+seen from the other side: the SDKs are a fixed cost, and the code wsaw added
+is linked into both variants.
 
 `make sizes` prints this table from whatever `make release` produced — with the
 toolchain that produced it, and with the same pre-epic baseline, which lives in
 the Makefile as `BASELINES` — and `make release` writes it to `dist/SIZES` and
-covers it with `SHA256SUMS`. There is no release-notes generator in this
-repository, so that file — plus the CI job summary, which repeats it on every
-push — is where the number is recorded (Story 8.8, AC2).
+covers it with `SHA256SUMS`. From there it goes into the notes the release
+publishes — `dist/RELEASE-NOTES.md`, rendered from the same `make sizes` output
+by `make release`, so the two cannot come to disagree — and into the CI job
+summary, which repeats it on every push. AC2 asks for the number in the release
+notes; the release writes notes rather than the criterion pointing at a document
+that does not exist (Story 8.8, AC2).
 
 ## What it costs in modules
 
@@ -177,7 +197,9 @@ links gRPC, protobuf and the OpenTelemetry metrics SDK**, and wsaw calls none
 of them directly. They arrive because `gocloud.dev/blob` instruments itself
 with OpenTelemetry, expresses its error codes as gRPC codes, and reaches for
 `google.golang.org/api/option` in its user-agent helper. That is where most of
-the +4.3 MB goes, and it is not removable without giving up the library.
+the +4.5 MB the dependency itself cost goes — the rest of the `+epic8` column
+is wsaw's own store code — and it is not removable without giving up the
+library.
 
 ### The 55 that only the cloud build links
 
@@ -341,6 +363,7 @@ floating tool would make them unreproducible a week later.
 | the default build cross-compiles to four platforms, CGo-free | `make release` | CI `cross-compile`, every push and pull request |
 | the cloud build cross-compiles too | `make release CLOUD_PLATFORMS=…` | CI `cross-compile`: `linux/arm64` on a pull request, all four on `main`, on a tag and nightly |
 | the sizes, and what the epic added, are recorded | `make sizes` → `dist/SIZES` | covered by `SHA256SUMS`, repeated in the CI job summary |
+| the number reaches whoever reads a release rather than only whoever downloads it | `make release-notes` → `dist/RELEASE-NOTES.md` | written by `make release`, covered by `SHA256SUMS`, published with the binaries (Story 8.8, AC2) |
 | the default build links no cloud SDK and no credential chain | `make verify-variants` | run by `make release` |
 | the cloud build compiles, vets and passes the store suite | `make test-cloudblob` | `make check`; CI `test`, on Linux |
 | the cloud-only source is linted, not merely compiled | `make lint` (second run, `--build-tags cloudblob`) | CI `golangci-lint` |
@@ -390,6 +413,20 @@ credential-chain entry points. The credential-chain names are asserted *absent*
 from the default build, which is where AC4 puts them; requiring them present in
 the cloud build would fail a release for an upstream refactor, or for a linker
 that eliminated one, without anything wsaw depends on having broken.
+
+Telling the two SBOMs apart once they are separated from their filenames is
+asymmetrical, which is worth stating because it looks symmetrical. The cloud
+document records the tag it was generated under as a `cdx:gomod:build:tag`
+property; the default document records no build-tag property at all, because
+the released default build is made with no tags and `cyclonedx-gomod` has
+nothing to record. Absence is weak evidence — an older generator would leave
+the property absent too — so what actually identifies a document is its
+component list: the cloud one names `github.com/aws/aws-sdk-go-v2/service/s3`,
+`cloud.google.com/go/storage` and
+`github.com/Azure/azure-sdk-for-go/sdk/storage/azblob`, and the default one
+names none of them. Those are the same three modules `verify-variants` reads
+off the binaries, so the documents and the artifacts are identified by the same
+fact.
 
 The SBOMs describe the module selection of the machine that generates them,
 which in CI is `linux/amd64`, while a release ships four platforms. wsaw has no

@@ -73,6 +73,14 @@ type Store interface {
 	StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error)
 	SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error)
 
+	// RebuildIndex derives this store's index from the documents in its
+	// bucket, reports what doing so would change, or verifies the two against
+	// each other (Story 8.11). It is on the seam because it is the supported
+	// way between store kinds as well as the recovery procedure for an index
+	// that was lost, and both of those are questions about the store an
+	// operator has rather than about the one they had.
+	RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildStats, error)
+
 	Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
 	PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
 	Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error)
@@ -113,6 +121,49 @@ func Open(ctx context.Context, opts Options) (Store, error) {
 	}
 
 	s, err := OpenSQL(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
+// OpenForInspection opens the configured store without bringing its schema up
+// to date, and refuses one that is behind.
+//
+// It exists for the two modes of `wsaw store rebuild-index` that promise to
+// change nothing. Opening a SQL store the ordinary way applies its migrations,
+// and one of those migrations moves every stored document out of the database
+// and into the bucket and then drops the column — irreversible, minutes long,
+// and a network write per row (Story 8.4). An operator who does not know what
+// state their store is in and reaches for the safe-looking `--verify` would get
+// the whole one-way upgrade and then read "mode: verify" and "Nothing was
+// written." That is the surprise the rebuild's own reasoning says this command
+// must not have, in the one command somebody runs when they are not sure what
+// is safe.
+//
+// A store that is behind is refused with the command that upgrades it rather
+// than upgraded here. What it is not is silently tolerated: a verify against a
+// schema this build does not recognise would be comparing an index it cannot
+// read against a bucket, and reporting the result as agreement or drift would
+// be a made-up answer either way (Tenet 5).
+//
+// It is "no more than a reader would" and not literally nothing: reading the
+// schema version creates the one-row bookkeeping table on PostgreSQL and MySQL,
+// which is the same idempotent DDL every other read of it performs, and opening
+// the bucket-index store writes its layout-version object if the bucket has
+// none (Story 8.10, AC14). Neither touches a scan, a row or a document.
+func OpenForInspection(ctx context.Context, opts Options) (Store, error) {
+	if opts.Driver == DriverBlob {
+		s, err := OpenBlob(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		return s, nil
+	}
+
+	s, err := openSQLAtItsOwnSchema(ctx, opts)
 	if err != nil {
 		return nil, err
 	}

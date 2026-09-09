@@ -758,9 +758,13 @@ type SweepStats struct {
 	// not self-describing and keep the ordinary grace-based collection.
 	ResultsWithoutEntry int `json:"resultsWithoutEntry,omitempty"`
 
-	// RebuildInProgress counts the markers a rebuild of the index leaves while
-	// it runs, and is non-zero only for a store whose index is objects in the
-	// bucket (Story 8.10, §7.4).
+	// RebuildInProgress counts the markers a rebuild of an index leaves while
+	// it runs (Story 8.10, §7.4; Story 8.11, AC12).
+	//
+	// Every store kind reports it, because the marker is a fact about the
+	// bucket rather than about an index: what a sweep would destroy while a
+	// rebuild is half done is the documents of the scans it has not reached,
+	// and those are in the bucket whichever kind of index is being rebuilt.
 	//
 	// It is its own number rather than part of UnknownReferences, which is
 	// where an earlier version of the blob sweep put it. The two say opposite
@@ -772,6 +776,15 @@ type SweepStats struct {
 	// as the first tells an operator their evidence is damaged when nothing at
 	// all is wrong.
 	RebuildInProgress int `json:"rebuildInProgress,omitempty"`
+
+	// RebuildMarkers names the objects RebuildInProgress counted.
+	//
+	// Named and not just counted, because the only way out of a marker whose
+	// run was killed is to delete the object, and an operator told "clear its
+	// marker" without being told which key that is has been given a puzzle
+	// rather than a procedure. A marker older than a day is not in here at all:
+	// see rebuildMarkerTTL.
+	RebuildMarkers []string `json:"rebuildMarkers,omitempty"`
 
 	// Artifacts names what a plan would delete. A sweep that is deleting
 	// leaves it empty.
@@ -790,8 +803,10 @@ type SweepOptions struct {
 	// bucket, a store pointed at the wrong bucket, or a fresh store opened
 	// against an existing one produce exactly it — and a sweep would then
 	// delete every document, screenshot and body in the bucket and report
-	// success. Rebuilding an index from the bucket is Story 8.11 and does not
-	// exist yet, so there is no way back (Tenet 5).
+	// success. Rebuilding an index from the bucket (Story 8.11) can put the
+	// result index back — but only from the documents, which is precisely
+	// what such a sweep would have deleted, so there is still no way back
+	// (Tenet 5).
 	//
 	// An operator who really does have a bucket full of garbage and an empty
 	// history says so, and the sweep proceeds.
@@ -853,6 +868,31 @@ func (s *SQL) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan 
 	}
 
 	stats.UnknownReferences = unknown
+
+	rebuilding, err := s.bucket.rebuildMarkers(ctx, now, s.log)
+	if err != nil {
+		return stats, err
+	}
+
+	if len(rebuilding) > 0 {
+		// A rebuild of an index is running against this bucket, and until it
+		// finishes the documents of the scans it has not reached yet are
+		// referenced by nothing. Collecting on that basis would delete the
+		// evidence the rebuild exists to recover, so nothing is judged at all
+		// (Story 8.11, AC12).
+		//
+		// The marker is in the bucket rather than in either index because that
+		// is where the risk is, so a SQL store honours it exactly as the
+		// bucket-index store does — including a rebuild of a bucket-index store
+		// running against the same bucket this one keeps its evidence in.
+		stats.RebuildInProgress = len(rebuilding)
+		stats.RebuildMarkers = rebuilding
+
+		s.log.Warn("a rebuild of an index is in progress, so the sweep collected nothing",
+			"markers", len(rebuilding), "bucket", s.bucket.String())
+
+		return stats, nil
+	}
 
 	// Asked before anything is collected, because collecting changes the
 	// answer: the reference half below empties the very rows that establish

@@ -19,7 +19,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 # default, so a release ships the full set; CI narrows it to a single target on
 # a pull request, because a cross-compilation break in a pure-Go SDK is a
 # compile error that one non-host target catches exactly as well as four, and
-# each cloud target costs about 455 extra packages and ~53 MB of artifact
+# each cloud target costs about 455 extra packages and ~55 MB of artifact
 # (Story 8.8, AC1). Every value here must also be in PLATFORMS.
 CLOUD_PLATFORMS ?= $(PLATFORMS)
 
@@ -112,7 +112,9 @@ release: clean
 	@$(MAKE) --no-print-directory sizes > $(DIST)/SIZES
 	@cat $(DIST)/SIZES
 	@echo "sizes written to $(DIST)/SIZES"
-	@cd $(DIST) && shasum -a 256 wsaw_* SIZES > SHA256SUMS
+	@$(MAKE) --no-print-directory release-notes > $(DIST)/RELEASE-NOTES.md
+	@echo "release notes written to $(DIST)/RELEASE-NOTES.md"
+	@cd $(DIST) && shasum -a 256 wsaw_* SIZES RELEASE-NOTES.md > SHA256SUMS
 	@echo "checksums written to $(DIST)/SHA256SUMS"
 	@$(MAKE) --no-print-directory verify-variants
 
@@ -133,9 +135,11 @@ release: clean
 # size with no toolchain beside it is not a measurement. CI pins an exact patch
 # for the same reason — see GO_VERSION in .github/workflows/ci.yaml.
 #
-# There is no release-notes generator in this repository, so the numbers go
-# where the release artifacts are listed: $(DIST)/SIZES, written by `release`,
-# covered by SHA256SUMS, and repeated in the CI job summary.
+# The numbers go where the release artifacts are listed — $(DIST)/SIZES, written
+# by `release` and covered by SHA256SUMS — and from there into the notes that
+# release publishes ($(DIST)/RELEASE-NOTES.md, see release-notes below) and into
+# the CI job summary. AC2 asks for the number in the release notes, so the
+# release writes notes rather than the AC pointing at nothing.
 .PHONY: sizes
 sizes:
 	@echo "# wsaw release artifact sizes, in bytes, for $(VERSION)."
@@ -172,6 +176,47 @@ sizes:
 		printf '  %-12s %12s %12s %12s %6s %12s %12s %6s\n' \
 			"$$platform" "$$base" "$$l" "$$epic" "$$epicpct" "$$f" "$$cloud" "$$cloudpct"; \
 	done
+
+# release-notes renders what a release publishes about itself, with the measured
+# binary sizes in it (Story 8.8, AC2).
+#
+# AC2 asks for the size cost of the blob drivers "in the release notes. A number,
+# not an assurance." This repository has no changelog and no notes generator, so
+# rather than leave the AC pointing at something that does not exist, `release`
+# writes the notes itself: dist/RELEASE-NOTES.md, built from the same `sizes`
+# output, covered by SHA256SUMS beside the binaries it describes, and published
+# with them. An operator who reads a release announcement and never downloads
+# dist/SIZES meets the number here.
+#
+# It is derived from `sizes` rather than repeating it, so the two cannot come to
+# disagree. Everything narrative in it is about the storage decision, because
+# that is what this epic added to a release's weight.
+.PHONY: release-notes
+release-notes:
+	@echo "# wsaw $(VERSION)"
+	@echo
+	@echo "## Binary size"
+	@echo
+	@echo "Reaching artifacts through \`gocloud.dev/blob\` (Epic 8) costs the default"
+	@echo "build the \`+epic8\` column below. The cloud build — the same source with the"
+	@echo "S3, GCS and Azure drivers linked in, published as the \`cloudblob\` artifacts —"
+	@echo "costs the \`+cloud\` column on top of that. The default build links no cloud"
+	@echo "SDK, resolves no credential chain and makes no network call at startup, and"
+	@echo "\`make verify-variants\` checks that on every release rather than asserting it."
+	@echo
+	@echo '```'
+	@$(MAKE) --no-print-directory sizes
+	@echo '```'
+	@echo
+	@echo "The baseline column is the same binary at $(PRE_EPIC_COMMIT), the commit"
+	@echo "before Epic 8. See docs/dependency-review-gocloud.md for what the dependency"
+	@echo "buys and what was reviewed."
+	@echo
+	@echo "## Artifacts"
+	@echo
+	@echo "\`wsaw_<os>_<arch>\` is the default build. \`wsaw_cloudblob_<os>_<arch>\` is the"
+	@echo "same build with the cloud storage drivers. \`SHA256SUMS\` covers every artifact,"
+	@echo "\`SIZES\` the measurements above, and this file."
 
 # The three provider SDKs, by module path. A module is either recorded in a
 # binary's build information or it is not, so this is an exact-field test
@@ -353,11 +398,18 @@ GOLANGCI_LINT_VERSION ?= v2.13.2
 # swap one blind spot for another: the tagged run cannot see a file the tag
 # excludes, and today there is none, but the arrangement should not depend on
 # that staying true.
+# Three times, then, and the third is test/e2e/objectstore: a package behind
+# its own tag, which the two runs above cannot see either. It is only ever run
+# by hand and by `make test-store-minio`, which is exactly the kind of code that
+# rots — a leftover work marker or an unchecked error in it would otherwise
+# reach the branch nobody lints.
 .PHONY: lint
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout 5m
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) \
 		run --timeout 5m --build-tags $(CLOUD_TAGS)
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) \
+		run --timeout 5m --build-tags $(CLOUD_TAGS),objectstore ./test/...
 
 # test runs the fast suite. Browser-dependent tests skip themselves when no
 # usable Chrome is present, so this works on a machine without one.
@@ -397,8 +449,25 @@ MYSQL_IMAGE        ?= docker.io/library/mysql:8.4
 PG_PORT            ?= 55432
 MYSQL_PORT         ?= 53306
 
+# MinIO, for the store suite against a real object store (Story 8.9, AC2).
+#
+# Pinned by the digest of the manifest list rather than of one architecture's
+# image, so the same line resolves on an arm64 laptop and an amd64 runner. Keep
+# it in step with minioImage in test/e2e/objectstore/minio_test.go, which is
+# what a bare `go test -tags cloudblob,objectstore ./test/e2e/objectstore/`
+# starts for itself when this target has not already provided one.
+#
+# The port is not 9000, so a MinIO somebody is running for their own reasons is
+# never emptied by a test run.
+MINIO_IMAGE        ?= quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+MINIO_PORT         ?= 59000
+MINIO_BUCKET       ?= wsaw
+MINIO_ACCESS_KEY   ?= wsaw-test-access-key
+MINIO_SECRET_KEY   ?= wsaw-test-secret-key
+MINIO_URL          := s3://$(MINIO_BUCKET)?endpoint=http://127.0.0.1:$(MINIO_PORT)&region=us-east-1&use_path_style=true&disable_https=true
+
 .PHONY: test-store-all
-test-store-all: test test-store-blob test-store-postgres test-store-mysql
+test-store-all: test test-store-blob test-store-memory test-store-postgres test-store-mysql test-store-minio
 
 # test-store-blob runs the same shared suite against the store whose index is
 # objects in the artifact bucket (Story 8.10, AC15). It needs no container and
@@ -413,6 +482,33 @@ test-store-all: test test-store-blob test-store-postgres test-store-mysql
 test-store-blob:
 	WSAW_TEST_STORE_DRIVER=blob go test -count=1 ./internal/store/
 
+# test-store-memory runs the same suite again with the evidence in a bucket that
+# only exists in memory (Story 8.9, AC1).
+#
+# The two axes are independent: WSAW_TEST_STORE_DRIVER says where the index is
+# kept, WSAW_TEST_ARTIFACT_BUCKET says where the evidence goes, and both stores
+# put their evidence in the same bucket layout. What this run is for is the
+# assertion that reaches past the store to the objects: against a directory a
+# test could do that with os.ReadFile and still pass while the bucket seam it
+# was supposed to be covering had rotted. Against a bucket that has no files, it
+# cannot.
+#
+# It needs nothing to be running, so it belongs in the default CI job.
+.PHONY: test-store-memory
+test-store-memory:
+	WSAW_TEST_ARTIFACT_BUCKET=memory go test -count=1 ./internal/store/
+	WSAW_TEST_ARTIFACT_BUCKET=memory WSAW_TEST_STORE_DRIVER=blob go test -count=1 ./internal/store/
+
+# The container-backed targets below all have the same shape, and the shape is
+# load-bearing: the server has to come down whether the tests passed or failed,
+# and the verdict has to survive the teardown.
+#
+# They used to prefix the `go test` line with `-`, which tells make to ignore
+# that line's exit status so the next one still runs. It also throws the status
+# away: `make test-store-minio` exited 0 whether the suite passed, failed or
+# panicked, which turned the one CI gate that meets a real object store into a
+# step that could not fail. So the run and the teardown are one recipe line, the
+# status is saved across it, and the target exits with it.
 .PHONY: test-store-postgres
 test-store-postgres:
 	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-pg \
@@ -423,25 +519,110 @@ test-store-postgres:
 		$(STORE_TEST_RUNTIME) exec wsaw-test-pg pg_isready -U wsaw >/dev/null 2>&1 && break; \
 		sleep 1; \
 	done
-	- WSAW_TEST_STORE_DRIVER=postgres \
+	@status=0; \
+	WSAW_TEST_STORE_DRIVER=postgres \
 	  WSAW_TEST_POSTGRES_DSN="postgres://wsaw:wsaw@127.0.0.1:$(PG_PORT)/wsaw?sslmode=disable" \
-	  go test -count=1 ./internal/store/
-	$(STORE_TEST_RUNTIME) stop wsaw-test-pg
+	  go test -count=1 ./internal/store/ || status=$$?; \
+	$(STORE_TEST_RUNTIME) stop wsaw-test-pg; \
+	exit $$status
 
+# The mysql readiness probe waits for the *second* server the image starts, not
+# the first. mysql:8.4's entrypoint runs a temporary server on a socket to
+# initialise the data directory and then restarts it on the network port, and
+# `mysqladmin ping` inside the container answers for both — so a probe that only
+# pings starts the suite three seconds in, against a server that is about to go
+# away, and every scratch database fails with "invalid connection". The log line
+# that names port 3306 is the one that distinguishes them.
 .PHONY: test-store-mysql
 test-store-mysql:
 	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-mysql \
 		-e MYSQL_ROOT_PASSWORD=wsaw -e MYSQL_DATABASE=wsaw \
 		-p $(MYSQL_PORT):3306 $(MYSQL_IMAGE)
 	@echo "waiting for mysql"
-	@for i in $$(seq 1 60); do \
-		$(STORE_TEST_RUNTIME) exec wsaw-test-mysql mysqladmin ping -uroot -pwsaw >/dev/null 2>&1 && break; \
+	@for i in $$(seq 1 120); do \
+		if $(STORE_TEST_RUNTIME) logs wsaw-test-mysql 2>&1 | grep -q "port: 3306" && \
+		   $(STORE_TEST_RUNTIME) exec wsaw-test-mysql mysqladmin ping -uroot -pwsaw >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		if [ "$$i" = 120 ]; then \
+			echo "mysql never became ready:"; \
+			$(STORE_TEST_RUNTIME) logs wsaw-test-mysql 2>&1 | tail -20; \
+			$(STORE_TEST_RUNTIME) rm -f wsaw-test-mysql >/dev/null 2>&1; \
+			exit 1; \
+		fi; \
 		sleep 1; \
 	done
-	- WSAW_TEST_STORE_DRIVER=mysql \
+	@status=0; \
+	WSAW_TEST_STORE_DRIVER=mysql \
 	  WSAW_TEST_MYSQL_DSN="root:wsaw@tcp(127.0.0.1:$(MYSQL_PORT))/mysql" \
-	  go test -count=1 ./internal/store/
-	$(STORE_TEST_RUNTIME) stop wsaw-test-mysql
+	  go test -count=1 ./internal/store/ || status=$$?; \
+	$(STORE_TEST_RUNTIME) stop wsaw-test-mysql; \
+	exit $$status
+
+# test-store-minio is the same suite once more against a real S3-compatible
+# object store, plus the end-to-end cycle that only makes sense against one
+# (Story 8.9, AC2).
+#
+# This is the first place in the epic where the code meets an implementation
+# nobody here wrote. A directory, a memory bucket and the fake that lags on a
+# schedule are three models of object storage, and a model cannot disagree with
+# the assumption it was built from: listing order, pagination, modification
+# times, delete semantics and error codes are all things this target checks and
+# the other three cannot.
+#
+# The container is started here rather than by the test, so that one server
+# serves all three runs; the end-to-end package starts one for itself when
+# WSAW_TEST_ARTIFACT_BUCKET does not already name one, which is what makes
+# `go test -tags cloudblob,objectstore ./test/e2e/objectstore/` work on its own.
+#
+# The bucket is a directory created on the drive before the server starts:
+# MinIO's single-drive backend lists the directories under its data path as
+# buckets, so nothing here needs a client, an mc container, or a bind mount from
+# a host directory that a container runtime on macOS cannot see.
+#
+# The credentials are obvious fixtures and are in this file on purpose, so that
+# nobody mistakes them for something to protect. They reach the SDK through the
+# standard environment variables, which is also how a deployment supplies real
+# ones (Story 8.6, AC5).
+#
+# The three runs and the teardown are one recipe line holding a saved status, so
+# that the server comes down on both paths and a failing run still fails the
+# target — see the note above test-store-postgres for why that is not the `-`
+# prefix it used to be.
+.PHONY: test-store-minio
+test-store-minio:
+	$(STORE_TEST_RUNTIME) rm -f wsaw-test-minio >/dev/null 2>&1 || true
+	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-minio \
+		-p 127.0.0.1:$(MINIO_PORT):9000 \
+		-e MINIO_ROOT_USER=$(MINIO_ACCESS_KEY) \
+		-e MINIO_ROOT_PASSWORD=$(MINIO_SECRET_KEY) \
+		--entrypoint /bin/sh $(MINIO_IMAGE) \
+		-c "mkdir -p /data/$(MINIO_BUCKET) && exec minio server /data --address :9000"
+	@printf 'waiting for minio '
+	@for i in $$(seq 1 90); do \
+		if curl -fsS "http://127.0.0.1:$(MINIO_PORT)/minio/health/live" >/dev/null 2>&1; then \
+			echo ok; break; \
+		fi; \
+		if [ "$$i" = 90 ]; then \
+			echo; echo "minio never became healthy:"; \
+			$(STORE_TEST_RUNTIME) logs wsaw-test-minio 2>&1 | tail -20; \
+			$(STORE_TEST_RUNTIME) rm -f wsaw-test-minio >/dev/null 2>&1; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@status=0; \
+	AWS_ACCESS_KEY_ID=$(MINIO_ACCESS_KEY) AWS_SECRET_ACCESS_KEY=$(MINIO_SECRET_KEY) \
+	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' \
+	  go test -count=1 -tags $(CLOUD_TAGS) ./internal/store/ || status=$$?; \
+	AWS_ACCESS_KEY_ID=$(MINIO_ACCESS_KEY) AWS_SECRET_ACCESS_KEY=$(MINIO_SECRET_KEY) \
+	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' WSAW_TEST_STORE_DRIVER=blob \
+	  go test -count=1 -tags $(CLOUD_TAGS) ./internal/store/ || status=$$?; \
+	AWS_ACCESS_KEY_ID=$(MINIO_ACCESS_KEY) AWS_SECRET_ACCESS_KEY=$(MINIO_SECRET_KEY) \
+	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' \
+	  go test -count=1 -timeout 15m -tags $(CLOUD_TAGS),objectstore ./test/e2e/objectstore/ || status=$$?; \
+	$(STORE_TEST_RUNTIME) rm -f wsaw-test-minio; \
+	exit $$status
 
 .PHONY: cover
 cover:
@@ -450,6 +631,12 @@ cover:
 
 # soak runs the long-running stability test, which is deliberately separate
 # from the regular suite (Story 6.8).
+#
+# It reports what the artifact bucket cost the run, in requests and bytes and
+# per scan (Story 8.9, AC6). WSAW_SOAK_STORE=blob runs the same soak against the
+# store whose index is objects in the bucket, which is where the per-scan
+# request count of *that* store comes from — some four times the SQL store's,
+# and the number its compaction thresholds should be reasoned about with.
 .PHONY: soak
 soak:
 	go test -tags soak -timeout 60m -run TestSoak ./internal/soak/
@@ -500,9 +687,20 @@ vulncheck:
 #
 # cyclonedx-gomod takes its build constraints from the environment rather than
 # from flags, so CGO_ENABLED and GOFLAGS are how the released build is
-# described; each document records the tag it was generated under as
-# cdx:gomod:build:tag, so the two cannot be confused once separated from their
-# filenames.
+# described.
+#
+# What tells the two documents apart once they are separated from their
+# filenames is not symmetrical, and the asymmetry is worth knowing before
+# somebody writes a check against it. The cloud document carries the tag it was
+# generated under as a cdx:gomod:build:tag property; the default document
+# carries no such property, because the released default build is made with no
+# tags and there is none to record. An absent property is weak evidence — an
+# older generator would leave it absent too — so the reliable discriminator is
+# the component list itself: the cloud document names
+# github.com/aws/aws-sdk-go-v2/service/s3, cloud.google.com/go/storage and
+# github.com/Azure/azure-sdk-for-go/sdk/storage/azblob, and the default one
+# names none of the three. That is the same pair of facts `verify-variants`
+# reads off the binaries, so the documents and the artifacts agree.
 #
 # Both documents describe the module selection for the machine they are
 # generated on, which in CI is linux/amd64. wsaw has no GOOS-conditional

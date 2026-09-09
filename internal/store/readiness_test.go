@@ -18,6 +18,13 @@ import (
 func TestPingCoversTheArtifactBucket(t *testing.T) {
 	t.Parallel()
 
+	// A bucket that goes away is a directory that goes away: no provider
+	// offers "delete the bucket out from under this handle", and emptying one
+	// is a different fact — the store is reachable and holds nothing. What a
+	// ping says when the bucket answers with a failure rather than an absence
+	// is asserted for every store in TestAPingReportsABucketThatWillNotAnswer.
+	skipUnlessLocalBucket(t, "the bucket is taken away by removing its directory")
+
 	opts := storeOptions(t)
 
 	s, err := store.Open(t.Context(), opts)
@@ -70,6 +77,8 @@ func TestProbeArtifactBucketAcceptsAWritableBucket(t *testing.T) {
 // of being discovered by the first scan of the night.
 func TestProbeArtifactBucketRefusesABucketItCannotWriteTo(t *testing.T) {
 	t.Parallel()
+
+	skipUnlessLocalBucket(t, "write access is denied with a directory's permission bits")
 
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, which is not refused write access by permissions")

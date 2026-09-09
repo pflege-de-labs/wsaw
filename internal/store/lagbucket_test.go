@@ -220,7 +220,16 @@ type lagBucket struct {
 	// comes from the key derivation and not from the condition (§8.2).
 	lying bool
 
+	// rewritable turns I1 off. See allowRewrites.
+	rewritable bool
+
 	counts lagRequests
+
+	// bodiesRead is every key whose bytes a reader has actually fetched, in
+	// order. The counters above say how many requests a path cost; this says
+	// which objects it opened, which is the question Story 8.9, AC5 asks —
+	// a listing may cost requests, and must never cost a document.
+	bodiesRead []string
 
 	// listed is every key a listing has reported, which is what the strict
 	// deletion rule is checked against.
@@ -363,6 +372,26 @@ func (b *lagBucket) ignoreDeletes(prefix string, times int) {
 	b.schedule(lagFault{op: lagDelete, prefix: prefix, mode: lagSkip, left: times})
 }
 
+// allowRewrites turns off I1, the rule that no key is written twice with
+// different bytes.
+//
+// It has exactly one caller and it is not a lag test: the shared store suite,
+// when it is being run against this bucket as its in-memory provider
+// (Story 8.9, AC1). Three of those tests plant a tampered, truncated or
+// undecodable object at a live content address on purpose — that is corruption
+// arriving from outside the store, which is the thing they are about, and a
+// fake cannot tell the test's hand from a bad key derivation.
+//
+// I3 stays on, and deliberately: nothing in the shared suite deletes an index
+// key, so "no index key is deleted that this run has not seen in a listing"
+// gains a few hundred more paths to hold in rather than losing one.
+func (b *lagBucket) allowRewrites() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.rewritable = true
+}
+
 // acceptEveryConditionalWrite makes IfNotExist a lie, as it is on a provider
 // that does not implement it.
 func (b *lagBucket) acceptEveryConditionalWrite() {
@@ -412,13 +441,32 @@ func (b *lagBucket) requests() lagRequests {
 	return b.counts
 }
 
-// forgetRequests zeroes the counters, so that one call can be measured without
-// the setup that had to happen first (AC11).
+// forgetRequests zeroes the counters and the record of what has been read, so
+// that one call can be measured without the setup that had to happen first
+// (AC11).
 func (b *lagBucket) forgetRequests() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.counts = lagRequests{}
+	b.bodiesRead = nil
+}
+
+// bodiesReadUnder is how many objects under prefix have had their bytes
+// fetched since the counters were last forgotten.
+func (b *lagBucket) bodiesReadUnder(prefix string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n := 0
+
+	for _, key := range b.bodiesRead {
+		if strings.HasPrefix(key, prefix) {
+			n++
+		}
+	}
+
+	return n
 }
 
 // keysUnder is every key the bucket really holds under prefix, sorted, whatever
@@ -631,6 +679,8 @@ func (b *lagBucket) NewRangeReader(
 		return nil, b.missing(key)
 	}
 
+	b.bodiesRead = append(b.bodiesRead, key)
+
 	if opts.BeforeRead != nil {
 		if err := opts.BeforeRead(func(any) bool { return false }); err != nil {
 			return nil, err
@@ -782,6 +832,10 @@ func (w *lagWriter) Close() error {
 // key, and that is a property of the derivation, which is what an attempt
 // shows.
 func (b *lagBucket) checkRewrite(key string, body []byte) {
+	if b.rewritable {
+		return
+	}
+
 	existing, present := b.objects[key]
 	if !present || bytes.Equal(existing.body, body) {
 		return
@@ -843,8 +897,15 @@ func (b *lagBucket) Delete(ctx context.Context, key string) error {
 // startup write probe (Story 8.6, AC4) deliberately deletes an artifact key it
 // never listed, and that is a probe cleaning up after itself rather than
 // retention making a decision.
+//
+// The rebuild marker is exempt for the same reason (Story 8.11, AC12). It is a
+// lease rather than a record: the process that wrote it deletes exactly the key
+// it wrote, by name, and nothing folds it or reads it as history. Requiring a
+// listing first would be worse than useless — a listing that has not caught up
+// would leave the marker behind for ever, and a marker left behind stops every
+// later sweep from collecting anything at all.
 func (b *lagBucket) checkDeletion(key string) {
-	if !strings.HasPrefix(key, "_wsaw/") {
+	if !strings.HasPrefix(key, "_wsaw/") || strings.HasPrefix(key, "_wsaw/index/v1/rebuild/") {
 		return
 	}
 

@@ -1163,3 +1163,145 @@ func TestACoveredEntryIsReadFromTheCheckpointAndNotFromTheKeyItReplaces(t *testi
 			stats.ResultsDeleted, compactSeed, compactSeed-stats.ResultsDeleted)
 	}
 }
+
+// TestAVerifyOfACompactedHistoryIsClean is Story 8.11, AC3 and AC10 meeting
+// Story 8.10, AC11, and the one place where the two could quietly cancel each
+// other out.
+//
+// Compaction folds a series' older entries into a checkpoint and then deletes
+// the loose entry keys — that is what AC11 buys, and on a series past
+// compactAfter it is hundreds of keys legitimately gone. A rebuild that asked
+// "is the loose key there" would call every one of those scans half indexed:
+// one drift per compacted scan on every verify, for ever, and a rebuild that
+// wrote every key back and undid the compaction, which the next compaction
+// would undo again. "Running it twice changes nothing the second time" cannot
+// be true of a pair of commands that keep reversing each other.
+func TestAVerifyOfACompactedHistoryIsClean(t *testing.T) {
+	t.Parallel()
+
+	fake := newLagBucket(t)
+	s := compactStore(t, fake)
+
+	writeSeries(t, s, compactSeed)
+
+	ageCheckpoints(fake, 24*time.Hour)
+	compactionPass(t, fake, 1)
+
+	loose := countUnder(fake, siteLoosePrefix)
+	if loose != compactSeed+1-compactFolded {
+		t.Fatalf("%d loose entries remain, want %d: this test needs a series whose older keys are gone",
+			loose, compactSeed+1-compactFolded)
+	}
+
+	verified, err := s.RebuildIndex(t.Context(), store.RebuildOptions{Mode: store.RebuildVerify, Limit: 5})
+	if err != nil {
+		t.Fatalf("verifying a compacted history reported %v, want no drift: %+v", err, verified.DriftList)
+	}
+
+	if verified.Drift != 0 {
+		t.Errorf("the verify found %d disagreements over a compacted history, want none: %+v",
+			verified.Drift, verified.DriftList)
+	}
+
+	if verified.EntriesRepaired != 0 {
+		t.Errorf("the verify said %d entries are only half indexed, want none: a scan a checkpoint "+
+			"covers is in the index", verified.EntriesRepaired)
+	}
+
+	// And a rebuild over it writes nothing at all, so it cannot re-inflate the
+	// directory the compaction folded.
+	rebuilt, err := s.RebuildIndex(t.Context(), store.RebuildOptions{})
+	if err != nil {
+		t.Fatalf("rebuilding a compacted history: %v", err)
+	}
+
+	if rebuilt.Writes != 0 || rebuilt.EntriesAdded != 0 || rebuilt.EntriesRepaired != 0 {
+		t.Errorf("the rebuild issued %d writes and added %d and repaired %d entries, want none of any",
+			rebuilt.Writes, rebuilt.EntriesAdded, rebuilt.EntriesRepaired)
+	}
+
+	if got := countUnder(fake, siteLoosePrefix); got != loose {
+		t.Errorf("the series holds %d loose entries after a rebuild, want the %d it had: a rebuild "+
+			"must not put back the keys a compaction folded", got, loose)
+	}
+}
+
+// TestARebuildDeletesNoIndexObject is Story 8.11, AC4 written as the invariant
+// three separate places state: the command adds and never removes.
+//
+// The rebuild used to reach the index through indexResult, whose last step is
+// considerCompaction — and a compaction deletes. A fresh handle makes every
+// series due on its first write (see seriesWrites), so a rebuild scheduled a
+// compaction pass per series, over a directory that was half rebuilt and whose
+// entries had arrived in content-hash order. Nothing was lost, because the
+// deletions are grace-guarded; but an operator running a recovery command on
+// the strength of "it adds and never removes" was being told something untrue.
+func TestARebuildDeletesNoIndexObject(t *testing.T) {
+	t.Parallel()
+
+	fake := newLagBucket(t)
+	s := compactStore(t, fake)
+
+	writeSeries(t, s, compactSeed)
+
+	// A checkpoint that is old enough for its covered keys to be deletable, and
+	// they are all still there — which is exactly the state a compaction pass
+	// would clear out. Nothing has run a second pass, so the only thing that
+	// could delete them is the rebuild below.
+	ageCheckpoints(fake, 24*time.Hour)
+
+	if got := countUnder(fake, siteLoosePrefix); got != compactSeed {
+		t.Fatalf("%d loose entries remain, want all %d before the rebuild", got, compactSeed)
+	}
+
+	// One entry key removed behind the store's back, so that the rebuild has
+	// something to write: a run that finds everything already there never
+	// reaches the write path the compaction used to hang off.
+	loose := slices.Clone(fake.keysUnder(siteLoosePrefix))
+	slices.Sort(loose)
+	fake.forget(loose[0])
+
+	// Everything under the index, so that a deletion anywhere in it is caught
+	// and not only one in the series directory.
+	before := slices.Clone(fake.keysUnder("_wsaw/index/"))
+	slices.Sort(before)
+
+	// A handle that has written nothing, which is the state that makes every
+	// series due for compaction on its next write (see seriesWrites).
+	rebuilder := compactStore(t, fake)
+
+	stats, err := rebuilder.RebuildIndex(t.Context(), store.RebuildOptions{})
+	if err != nil {
+		t.Fatalf("RebuildIndex: %v", err)
+	}
+
+	if stats.EntriesRepaired != 1 {
+		t.Fatalf("the rebuild repaired %d entries, want the one whose key was removed", stats.EntriesRepaired)
+	}
+
+	after := slices.Clone(fake.keysUnder("_wsaw/index/"))
+	slices.Sort(after)
+
+	// The rebuild marker is written and cleared inside the run, so it is in
+	// neither listing; anything else missing is a deletion.
+	deleted := 0
+
+	for _, key := range before {
+		if !slices.Contains(after, key) {
+			deleted++
+
+			if deleted <= 3 {
+				t.Errorf("the rebuild deleted the index object %s", key)
+			}
+		}
+	}
+
+	if deleted > 3 {
+		t.Errorf("the rebuild deleted %d index objects in all", deleted)
+	}
+
+	if got := countUnder(fake, siteLoosePrefix); got != compactSeed {
+		t.Errorf("the series holds %d loose entries after the rebuild, want all %d: a rebuild does not "+
+			"schedule the compaction that folds them away", got, compactSeed)
+	}
+}

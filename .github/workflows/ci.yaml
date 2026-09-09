@@ -97,6 +97,23 @@ jobs:
       - name: Test the store suite against the bucket index
         run: make test-store-blob
 
+      # The other axis of the same suite: where the evidence goes, rather than
+      # where the index is kept (Story 8.9, AC1). It runs the whole store suite
+      # twice more, with the bucket in memory instead of in a temporary
+      # directory.
+      #
+      # What it buys is that every assertion which reaches past the store to the
+      # objects themselves goes through the bucket seam. Against a directory
+      # such an assertion can be written with os.ReadFile and go on passing long
+      # after the seam it was covering has stopped working — which is how a
+      # provider difference reaches production instead of CI. Against a bucket
+      # with no files, it cannot be written that way at all.
+      #
+      # On both runners, and for the same reason as the step above: it needs
+      # nothing running and costs a couple of seconds.
+      - name: Test the store suite against a bucket in memory
+        run: make test-store-memory
+
       # The cloud drivers are behind a build tag (Story 8.8, AC3), and a file
       # whose build constraint is off is invisible to go build, go vet and the
       # linter alike. Without this step the second released variant would be
@@ -110,6 +127,26 @@ jobs:
       - name: Test the cloudblob build
         if: runner.os == 'Linux'
         run: make test-cloudblob
+
+      # The one gate in this repository that meets an implementation of object
+      # storage nobody here wrote (Story 8.9, AC2). A directory, a memory bucket
+      # and the fake that lags on a schedule are three models, and a model
+      # cannot disagree with the assumption it was built from: listing order,
+      # pagination, modification times, delete semantics and gcerrors codes are
+      # what this step checks and the other three cannot.
+      #
+      # On every push rather than on the nightly schedule, unlike the
+      # end-to-end stack Story 7.6 puts there: this is one small image and about
+      # twenty seconds, and the whole point of the epic is that a bucket is not
+      # a directory. A provider difference found a month later, by an operator,
+      # is the failure the story exists to prevent.
+      #
+      # Linux only — the macOS runners have no container runtime — and docker,
+      # because that is what a GitHub runner has; the target prefers podman
+      # everywhere else.
+      - name: Test the store against a real object store
+        if: runner.os == 'Linux'
+        run: make test-store-minio STORE_TEST_RUNTIME=docker
 
       - name: Coverage of core logic
         if: runner.os == 'Linux'
@@ -148,6 +185,8 @@ jobs:
             run --timeout 5m
           go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} \
             run --timeout 5m --build-tags cloudblob
+          go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} \
+            run --timeout 5m --build-tags cloudblob,objectstore ./test/...
 
   build:
     name: cross-compile
@@ -179,10 +218,11 @@ jobs:
           CLOUD_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/arm64' || 'linux/amd64 linux/arm64 darwin/amd64 darwin/arm64' }}
         run: make release CLOUD_PLATFORMS="$CLOUD_PLATFORMS"
 
-      # There is no release-notes generator here, so the measured sizes go
-      # where the release artifacts are listed — dist/SIZES, itself covered by
-      # SHA256SUMS — and into the job summary, so the number is visible on the
-      # run that produced it rather than only inside the artifact (AC2).
+      # `make release` writes dist/SIZES and renders it into the notes the
+      # release publishes, dist/RELEASE-NOTES.md, both covered by SHA256SUMS
+      # (Story 8.8, AC2). This step puts the same table in the job summary too,
+      # so the number is visible on the run that produced it rather than only
+      # inside a downloaded artifact.
       - name: Record the binary sizes
         run: |
           {
@@ -206,6 +246,7 @@ jobs:
           path: |
             dist/SHA256SUMS
             dist/SIZES
+            dist/RELEASE-NOTES.md
           retention-days: 7
 
       - name: Upload the binaries

@@ -1,3 +1,34 @@
+# End-to-end tests
+
+Two things live here. `fixture/` is the Klaro website the scanning end-to-end
+tests use (Story 7.1), described below. `objectstore/` is the suite that runs
+wsaw against a real S3-compatible object store — MinIO in a container — because
+everything else in the store's test suite runs against a directory, a bucket in
+memory, or a fake, and all three are models of object storage written by the
+same people who wrote the code under test (Story 8.9, AC2).
+
+```sh
+make test-store-minio                                   # server, suite, cycle, teardown
+go test -tags cloudblob,objectstore ./test/e2e/objectstore/  # starts its own MinIO
+```
+
+It is behind the `objectstore` build tag so that `go test ./...` never pulls an
+image, and it skips with a reason when no container runtime is present. The
+`cloudblob` tag is required too: what is under test is the S3 driver a released
+binary carries, not one the test registered for itself.
+
+It starts its own container rather than being a service in the containerised
+stack, and that is a gap rather than a choice. Story 8.9, AC2 says MinIO
+"joins the containerised end-to-end stack (Epic 7)" — and that stack is Stories
+7.2 and 7.3, the Compose file and the Podman pod, neither of which is built.
+There is nothing here to join. What AC2 is actually for is delivered: a full
+scan → store → prune → read-back cycle against a real S3-compatible service,
+for both store kinds, skipping with a reason where no runtime is present, and
+gating every CI push through `make test-store-minio`. When 7.2 and 7.3 land,
+MinIO becomes a service in the Compose file and the pod manifest, and this
+package stays as the standalone path — a laptop with no stack running still has
+to be able to run it.
+
 # End-to-end fixture
 
 The website wsaw's end-to-end tests scan (Story 7.1). It is not a mock: the

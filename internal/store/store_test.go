@@ -94,7 +94,7 @@ func storeOptions(t *testing.T) store.Options {
 	t.Helper()
 
 	opts := store.Options{
-		ArtifactDir: filepath.Join(t.TempDir(), "artifacts"),
+		ArtifactDir: artifactLocation(t),
 		// Discarded so that a suite which upgrades a good many stores does not
 		// bury its own failures in migration progress. The one test that
 		// asserts on that progress installs a logger of its own.
@@ -1367,19 +1367,12 @@ func TestUnsummarisedRowIsReportedNotFatal(t *testing.T) {
 // documentPath is where the bucket keeps a result document, given the directory
 // a sqliteOptions store was built in. Reaching into it is the point: these tests
 // assert what is on disk, not what the store says is on disk.
-func documentPath(t *testing.T, dir, ref string) string {
-	t.Helper()
-
-	return artifactFile(t, filepath.Join(dir, "artifacts"), ref)
-}
-
-// artifactFile is where the bucket keeps one artifact, given the artifact
-// directory itself.
 //
-// It is the same layout for every kind of store — the bucket is the bucket, and
-// only the index differs (Story 8.1, AC2) — which is what lets the tests below
-// assert on a stored document without knowing which store wrote it.
-func artifactFile(t *testing.T, artifactDir, ref string) string {
+// It is a path rather than a key because its callers are the tests that build a
+// store's directory themselves, where the bucket is a directory whatever
+// WSAW_TEST_ARTIFACT_BUCKET says. Every test that reaches the *configured*
+// bucket goes through evidence() instead.
+func documentPath(t *testing.T, dir, ref string) string {
 	t.Helper()
 
 	kind, digest, found := strings.Cut(ref, "/")
@@ -1387,38 +1380,22 @@ func artifactFile(t *testing.T, artifactDir, ref string) string {
 		t.Fatalf("artifact reference %q is not one this store wrote", ref)
 	}
 
-	return filepath.Join(artifactDir, kind, digest)
+	return filepath.Join(dir, "artifacts", kind, digest)
 }
 
-// documentRefFor finds the stored document of one scan by reading the artifact
-// directory, so a test can assert on it without knowing whether the store keeps
-// its index in rows or in objects.
+// documentRefFor finds the stored document of one scan among the objects in the
+// bucket, so a test can assert on it without knowing whether the store keeps its
+// index in rows or in objects.
 //
 // It returns what resultRow's three columns hold — where the document is, how
 // big it is, and what it hashes to — computed from the object itself rather than
 // from whatever the index recorded, which is what makes it usable in the tests
 // that go on to prove the index and the object disagree.
-func documentRefFor(t *testing.T, artifactDir, scanID string) (ref string, size int64, digest string) {
+func documentRefFor(t *testing.T, bucket *store.TestBucket, scanID string) (ref string, size int64, digest string) {
 	t.Helper()
 
-	dir := filepath.Join(artifactDir, "result")
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("reading the stored documents: %v", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-
-		stored, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("reading the stored document %s: %v", path, err)
-		}
+	for _, key := range bucket.Keys("result/") {
+		stored := bucket.Read(key)
 
 		var decoded struct {
 			ScanID string `json:"scanId"`
@@ -1430,10 +1407,10 @@ func documentRefFor(t *testing.T, artifactDir, scanID string) (ref string, size 
 
 		sum := sha256.Sum256(stored)
 
-		return "result/" + entry.Name(), int64(len(stored)), hex.EncodeToString(sum[:])
+		return key, int64(len(stored)), hex.EncodeToString(sum[:])
 	}
 
-	t.Fatalf("no stored document in %s names scan %s", dir, scanID)
+	t.Fatalf("no stored document names scan %s", scanID)
 
 	return "", 0, ""
 }
@@ -1490,9 +1467,11 @@ func TestResultDocumentIsStoredInTheBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ref, size, digest := documentRefFor(t, opts.ArtifactDir, "scan-1")
+	bucket := evidence(t, opts)
 
-	stored, err := os.ReadFile(artifactFile(t, opts.ArtifactDir, ref))
+	ref, size, digest := documentRefFor(t, bucket, "scan-1")
+
+	stored, err := bucket.TryRead(ref)
 	if err != nil {
 		t.Fatalf("the reference does not name a stored artifact: %v", err)
 	}
@@ -1598,13 +1577,10 @@ func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
-	path := artifactFile(t, opts.ArtifactDir, ref)
+	bucket := evidence(t, opts)
 
-	stored, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ref, _, _ := documentRefFor(t, bucket, "scan-1")
+	stored := bucket.Read(ref)
 
 	// The same number of bytes, so only the digest can catch it — a size check
 	// alone would hand back a document that says something else.
@@ -1615,11 +1591,9 @@ func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 		t.Fatalf("the tampered document is %d bytes, the original %d", len(tampered), len(stored))
 	}
 
-	if err := os.WriteFile(path, tampered, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	bucket.Write(ref, tampered)
 
-	_, err = s.GetResult("site", model.ConsentReject, "scan-1")
+	_, err := s.GetResult("site", model.ConsentReject, "scan-1")
 
 	if !errors.Is(err, store.ErrCorrupt) {
 		t.Errorf("reading a tampered document = %v, want ErrCorrupt", err)
@@ -1642,17 +1616,12 @@ func TestTruncatedDocumentIsCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
-	path := artifactFile(t, opts.ArtifactDir, ref)
+	bucket := evidence(t, opts)
 
-	stored, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ref, _, _ := documentRefFor(t, bucket, "scan-1")
+	stored := bucket.Read(ref)
 
-	if err := os.WriteFile(path, stored[:len(stored)/2], 0o600); err != nil {
-		t.Fatal(err)
-	}
+	bucket.Write(ref, stored[:len(stored)/2])
 
 	if _, err := s.GetResult("site", model.ConsentReject, "scan-1"); !errors.Is(err, store.ErrCorrupt) {
 		t.Errorf("reading a truncated document = %v, want ErrCorrupt", err)
@@ -1677,10 +1646,10 @@ func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 
 	// Deleted behind the store's back, as a lifecycle rule or a stray operator
 	// would delete it.
-	ref, _, _ := documentRefFor(t, opts.ArtifactDir, "scan-1")
-	if err := os.Remove(artifactFile(t, opts.ArtifactDir, ref)); err != nil {
-		t.Fatal(err)
-	}
+	bucket := evidence(t, opts)
+
+	ref, _, _ := documentRefFor(t, bucket, "scan-1")
+	bucket.Remove(ref)
 
 	got, err := s.ListResults("site", model.ConsentReject, 0)
 	if err != nil {
@@ -1738,8 +1707,8 @@ func TestListingNeedsNoDocumentAtAll(t *testing.T) {
 		}
 	}
 
-	if err := os.RemoveAll(filepath.Join(opts.ArtifactDir, "result")); err != nil {
-		t.Fatal(err)
+	if removed := evidence(t, opts).RemoveAll("result/"); removed != 3 {
+		t.Fatalf("removed %d documents from the bucket, want 3", removed)
 	}
 
 	got, err := s.ListResults("site", model.ConsentReject, 0)

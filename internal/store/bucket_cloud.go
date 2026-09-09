@@ -7,13 +7,15 @@ package store
 // with gocloud's URL mux, which is all openBucket needs to reach them.
 //
 // They are separated from the default build because of what they weigh. The
-// baseline binary is 30.6 MB; fileblob takes it to 37.0 MB; adding
-// S3 alone takes it to 47.9 MB, and all three to 77.4 MB — two and a half
-// times the tool, in SDKs, for a deployment that stores its evidence on a
-// local disk. A single static binary is a promise wsaw makes (Tenet 14), and
-// doubling it for a capability most installations do not use is not the way
-// to keep it. So the default build stays lean and this build is a named,
-// documented release artifact (Story 8.8, AC3).
+// released darwin/arm64 binary is 25.9 MB by default and 53.9 MB with these
+// three imports — more, in SDKs, than the whole of the rest of wsaw, for a
+// deployment that stores its evidence on a local disk. A single static binary
+// is a promise wsaw makes (Tenet 14), and doubling it for a capability most
+// installations do not use is not the way to keep it. So the default build
+// stays lean and this build is a named, documented release artifact
+// (Story 8.8, AC3). All four platforms are tabulated in
+// docs/dependency-review-gocloud.md, and dist/SIZES carries the figures for a
+// given release.
 //
 // The imports are blank because nothing in wsaw touches a provider type: the
 // bucket is the only seam, and it speaks gocloud's interface (Story 8.1, AC1).

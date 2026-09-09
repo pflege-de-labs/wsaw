@@ -2,7 +2,6 @@ package httpapi_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -16,12 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"gocloud.dev/blob"
-	"gocloud.dev/blob/fileblob"
-
 	"github.com/pflege-de-labs/wsaw/internal/httpapi"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"github.com/pflege-de-labs/wsaw/internal/store/storetest"
 )
 
 // Story 8.7: serving evidence that lives in a bucket. The routes are the same
@@ -30,45 +27,21 @@ import (
 // redirect where the operator asked for one, and pruned evidence that still
 // reads as pruned.
 
-// signingScheme is a bucket that signs URLs, which is otherwise something only
-// a cloud provider does.
-//
-// A signed redirect cannot be exercised against the local directory: fileblob
-// signs only when it is given a signer, and wsaw deliberately opens the
-// artifact directory without one, because a URL pointing into a directory is a
-// URL nothing serves. Registering a scheme that does have one is what lets the
-// redirect path be tested without an S3 account.
-const signingScheme = "signedfile"
-
-// signingBaseURL is where the signed URLs of that bucket claim to live.
-const signingBaseURL = "https://bucket.example/evidence"
-
-func init() {
-	blob.DefaultURLMux().RegisterBucket(signingScheme, signingOpener{})
-}
-
-type signingOpener struct{}
-
-func (signingOpener) OpenBucketURL(_ context.Context, u *url.URL) (*blob.Bucket, error) {
-	base, err := url.Parse(signingBaseURL)
-	if err != nil {
-		return nil, err
-	}
-
-	return fileblob.OpenBucket(u.Path, &fileblob.Options{
-		CreateDir: true,
-		Metadata:  fileblob.MetadataDontWrite,
-		URLSigner: fileblob.NewURLSignerHMAC(base, []byte("a signing key for the tests")),
-	})
-}
-
 // signingFixture is a server whose evidence lives in a bucket that can sign.
+//
+// The bucket comes from internal/store/storetest rather than being built here.
+// A signed redirect cannot be exercised against the local directory as wsaw
+// opens it — fileblob signs only when it is given a signer, and wsaw
+// deliberately gives it none — so a scheme that does sign has to be registered
+// somewhere, and Story 8.1, AC1 says where: no provider type appears outside
+// the store's tree, in tests any more than in the daemon, which is the rule
+// Story 4.6, AC1 already holds the database drivers to.
 func signingFixture(t *testing.T, opts httpapi.Options) *fixture {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	f := newFixtureIn(t, opts, nil, nil, signingScheme+"://localhost"+dir)
+	f := newFixtureIn(t, opts, nil, nil, storetest.SigningBucketURL(t, dir))
 	// The bucket is rooted at the directory its URL names, so a test can still
 	// remove an object behind the store's back.
 	f.artifactDir = dir
@@ -363,7 +336,7 @@ func TestASignedRedirectIsIssuedWhenAskedFor(t *testing.T) {
 
 			location := resp.Header.Get("Location")
 
-			if !strings.HasPrefix(location, signingBaseURL) {
+			if !strings.HasPrefix(location, storetest.SigningBaseURL) {
 				t.Errorf("Location = %q, want a URL at the bucket", location)
 			}
 

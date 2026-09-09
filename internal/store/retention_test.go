@@ -19,8 +19,9 @@ import (
 //
 // They run on whichever dialect the suite is configured for, through open(),
 // because deciding what to delete is a query and a query is exactly where a
-// dialect can differ (Story 4.7, AC5). The artifact bucket is a local directory
-// in every case, which is also the default deployment.
+// dialect can differ (Story 4.7, AC5) — and against whichever bucket it is
+// configured for, because deleting evidence is the one operation whose failure
+// modes are the provider's rather than the query planner's (Story 8.9, AC1).
 
 // withEvidence stores a result that names a screenshot and a stored body, and
 // returns the references it names.
@@ -54,28 +55,22 @@ func withEvidence(t *testing.T, s store.Store, id string, at time.Time, screensh
 	return screenshotRef, bodyRef
 }
 
-// writeArtifact puts a file into the artifact directory the way the store's own
-// bucket would: content-addressed, under its kind, readable only by the owner.
+// writeArtifact puts an object into the bucket the way the store's own bucket
+// layer would: content-addressed, under its kind.
 //
-// It writes directly rather than through a store because its caller is building
-// a store in the layout that came before this one, and opening a store to store
-// an artifact would apply the very upgrade the test is about to exercise.
-func writeArtifact(t *testing.T, dir, kind string, data []byte) string {
+// It writes directly rather than through a store because its callers are
+// planting what a store would not: an artifact for a store built in the layout
+// that came before this one, where opening a store would apply the very upgrade
+// the test is about to exercise, or an orphan no index names.
+func writeArtifact(t *testing.T, bucket *store.TestBucket, kind string, data []byte) string {
 	t.Helper()
 
 	sum := sha256.Sum256(data)
-	digest := hex.EncodeToString(sum[:])
-	path := filepath.Join(dir, kind, digest)
+	ref := kind + "/" + hex.EncodeToString(sum[:])
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatalf("creating the artifact directory: %v", err)
-	}
+	bucket.Write(ref, data)
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("writing an artifact: %v", err)
-	}
-
-	return kind + "/" + digest
+	return ref
 }
 
 func assertStored(t *testing.T, s store.Store, ref, what string) {
@@ -384,8 +379,15 @@ func TestASweepKeepsTheEvidenceOfAStoredResult(t *testing.T) {
 // prune must still succeed, count it, and leave the key for the next sweep to
 // find — the reference rows are the work list, so clearing them before the
 // object is gone would turn a refused delete into a permanent leak.
+//
+// The refusal is a local one, so this runs against a directory only. What a
+// bucket that refuses a delete for its own reasons does to a prune is the same
+// assertion made with a scheduled fault instead of a permission bit, in
+// TestAPruneSurvivesABucketThatRefusesToDelete.
 func TestADeletionFailureDoesNotFailThePrune(t *testing.T) {
 	t.Parallel()
+
+	skipUnlessLocalBucket(t, "the refused delete is a directory's permission bits")
 
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, which ignores the directory permissions this test denies with")
@@ -536,7 +538,7 @@ func TestAMigratedStoreCanPrune(t *testing.T) {
 
 	// A screenshot the old row's document names, stored in the bucket the way
 	// Story 4.6 stored one: content-addressed, beside the database.
-	shot := writeArtifact(t, o.opts.ArtifactDir, "screenshot-before-consent", []byte("an old screenshot"))
+	shot := writeArtifact(t, evidence(t, o.opts), "screenshot-before-consent", []byte("an old screenshot"))
 	res.Screenshots = []model.Artifact{{Kind: "screenshot-before-consent", Ref: shot}}
 
 	o.insert(t, res)

@@ -1094,12 +1094,12 @@ func (s *Blob) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan
 		return run.stats, fmt.Errorf("sweeping needs the artifact bucket: %w", err)
 	}
 
-	rebuilding, err := s.rebuildsInProgress(ctx)
+	rebuilding, err := s.rebuildsInProgress(ctx, now)
 	if err != nil {
 		return run.stats, err
 	}
 
-	if rebuilding > 0 {
+	if len(rebuilding) > 0 {
 		// The blob analogue of SQL's resultsWithUnknownRefs safety valve, which
 		// has no counterpart here: a rebuild interrupted at 40 % followed by a
 		// sweep would delete the evidence of the other 60 %. Story 8.10 honours
@@ -1110,10 +1110,11 @@ func (s *Blob) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan
 		// longer decodes" and the command prints it as exactly that. A rebuild
 		// in progress is not a fact about the evidence at all (see
 		// SweepStats.RebuildInProgress).
-		run.stats.RebuildInProgress = rebuilding
+		run.stats.RebuildInProgress = len(rebuilding)
+		run.stats.RebuildMarkers = rebuilding
 
 		s.log.Warn("a rebuild of the index is in progress, so the sweep collected nothing",
-			"markers", rebuilding, "bucket", s.bucket.String())
+			"markers", len(rebuilding), "bucket", s.bucket.String())
 
 		return run.stats, nil
 	}
@@ -1134,26 +1135,6 @@ func (s *Blob) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan
 	}
 
 	return run.stats, run.collectOrphanedScanKeys(ctx)
-}
-
-// rebuildsInProgress counts the markers a rebuild leaves while it runs.
-func (s *Blob) rebuildsInProgress(ctx context.Context) (int, error) {
-	var (
-		found  int
-		cursor indexCursor
-	)
-
-	for cursor.more() {
-		page, err := s.listIndex(ctx, indexRebuildPrefix, cursor, indexListPageSize)
-		if err != nil {
-			return 0, fmt.Errorf("checking whether a rebuild of the index is in progress: %w", err)
-		}
-
-		cursor = page.next
-		found += len(page.objects)
-	}
-
-	return found, nil
 }
 
 // indexCanJudge refuses a sweep when the index has nothing to judge the bucket

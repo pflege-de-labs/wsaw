@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -260,36 +259,32 @@ func (o *oldLayout) reference(t *testing.T, scanID string) string {
 	return ref
 }
 
-// artifact is where the bucket keeps one document on disk. Every dialect's
-// store writes its evidence to a local directory in these tests, so reaching
-// into it works whichever database is under test.
-func (o *oldLayout) artifact(t *testing.T, ref string) string {
+// storedDocument is what the bucket holds for one migrated result.
+//
+// It reads the object rather than a file, so a migration is verified against
+// whichever bucket the suite is pointed at (Story 8.9, AC1 and AC4) — the same
+// dialects, and now also the same providers the operator doing the upgrade
+// will be using.
+func (o *oldLayout) storedDocument(t *testing.T, ref string) []byte {
 	t.Helper()
 
-	kind, digest, found := strings.Cut(ref, "/")
+	kind, _, found := strings.Cut(ref, "/")
 	if !found || kind != "result" {
 		t.Fatalf("artifact reference %q is not a result document", ref)
 	}
 
-	return filepath.Join(o.opts.ArtifactDir, kind, digest)
+	return evidence(t, o.opts).Read(ref)
 }
 
-// storedDocuments lists the result documents the bucket holds.
+// storedDocuments lists the result documents the bucket holds, by digest.
 func (o *oldLayout) storedDocuments(t *testing.T) []string {
 	t.Helper()
 
-	entries, err := os.ReadDir(filepath.Join(o.opts.ArtifactDir, "result"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	keys := evidence(t, o.opts).Keys("result/")
 
-	if err != nil {
-		t.Fatalf("listing the artifact bucket: %v", err)
-	}
-
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
+	names := make([]string, 0, len(keys))
+	for _, key := range keys {
+		names = append(names, strings.TrimPrefix(key, "result/"))
 	}
 
 	return names
@@ -399,10 +394,7 @@ func TestMigratingDocumentsFromRowsToTheBucket(t *testing.T) {
 	for scanID, want := range documents {
 		ref := o.reference(t, scanID)
 
-		stored, err := os.ReadFile(o.artifact(t, ref))
-		if err != nil {
-			t.Fatalf("%s: the document named by the row is not in the bucket: %v", scanID, err)
-		}
+		stored := o.storedDocument(t, ref)
 
 		if string(stored) != string(want) {
 			t.Errorf("%s: the stored document is not the one that was in the row:\n got %s\nwant %s",
@@ -503,8 +495,12 @@ func TestADryRunReportsWhatWouldMoveAndMovesNothing(t *testing.T) {
 		t.Errorf("a dry run reports having moved something: %+v", plan)
 	}
 
-	if plan.Bucket != o.opts.ArtifactDir {
-		t.Errorf("the plan names %q as the destination, want %q", plan.Bucket, o.opts.ArtifactDir)
+	// The location as an operator may see it, which is the redacted one: a
+	// bucket URL can carry a credential, and a migration plan is printed
+	// (Story 8.6, AC3). Against a directory the two are the same string, which
+	// is why this went unnoticed until the suite was pointed at S3.
+	if plan.Bucket != o.opts.ArtifactLocation() {
+		t.Errorf("the plan names %q as the destination, want %q", plan.Bucket, o.opts.ArtifactLocation())
 	}
 
 	// Nothing moved: the rows still hold their documents and the bucket holds
@@ -655,10 +651,7 @@ func TestADocumentThatWillNotDecodeIsMovedAndReported(t *testing.T) {
 		t.Fatalf("the migration reports %+v, want two rows moved and one of them unsummarised", m)
 	}
 
-	stored, err := os.ReadFile(o.artifact(t, o.reference(t, "scan-broken")))
-	if err != nil {
-		t.Fatalf("the undecodable document was not preserved: %v", err)
-	}
+	stored := o.storedDocument(t, o.reference(t, "scan-broken"))
 
 	if string(stored) != "{this was never JSON" {
 		t.Errorf("the undecodable document was rewritten: %s", stored)
@@ -748,11 +741,49 @@ func TestAMigrationThatLostItsVersionRecordFinishes(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if version != 3 {
-				t.Errorf("the recovered store records schema version %d, want 3", version)
+			// The version this build's own migrations reach, read from a store
+			// created normally, rather than a number written here.
+			//
+			// It was written here — as 3 — and went stale the moment Story 8.5
+			// added two more migrations, so the only dialect that runs this
+			// test failed on it. A recovered store has to end up where a fresh
+			// one is, whatever that number is this month; the fact under test
+			// is that a lost version record leaves the schema complete and the
+			// store readable, not what the counter says.
+			if want := freshSchemaVersion(t); version != want {
+				t.Errorf("the recovered store records schema version %d, want %d", version, want)
 			}
 		})
 	}
+}
+
+// freshSchemaVersion is the version a store created by this build records.
+//
+// A second, empty database rather than a constant: the migration list grows
+// with the stories, and a test that spelled its length out would have to be
+// remembered by whoever adds the next one.
+func freshSchemaVersion(t *testing.T) int {
+	t.Helper()
+
+	opts := storeOptions(t)
+
+	s, err := store.OpenSQL(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("creating a store to read the current schema version from: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var version int
+
+	if err := rawDB(t, opts).QueryRowContext(t.Context(),
+		"select version from wsaw_schema_version where id = 1").Scan(&version); err != nil {
+		t.Fatalf("reading the current schema version: %v", err)
+	}
+
+	return version
 }
 
 // TestAnUnwritableBucketFailsBeforeAnyRowIsTouched is AC5. A migration that
@@ -760,6 +791,8 @@ func TestAMigrationThatLostItsVersionRecordFinishes(t *testing.T) {
 // nobody can reason about; discovering it first costs one write.
 func TestAnUnwritableBucketFailsBeforeAnyRowIsTouched(t *testing.T) {
 	t.Parallel()
+
+	skipUnlessLocalBucket(t, "the bucket is made read-only with a directory's permission bits")
 
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, which is not refused write access by permissions")
@@ -801,5 +834,90 @@ func TestAnUnwritableBucketFailsBeforeAnyRowIsTouched(t *testing.T) {
 		if document, ok := o.document(t, scanID); !ok || document != string(want) {
 			t.Errorf("%s: the row was touched before the bucket was checked", scanID)
 		}
+	}
+}
+
+// version reads back the recorded schema version, from wherever the dialect
+// keeps it.
+func (o *oldLayout) version(t *testing.T) int {
+	t.Helper()
+
+	query := "select version from wsaw_schema_version where id = 1"
+	if o.driver == store.DriverSQLite {
+		query = "pragma user_version"
+	}
+
+	var version int
+
+	if err := o.db.QueryRowContext(t.Context(), query).Scan(&version); err != nil {
+		t.Fatalf("reading the schema version: %v", err)
+	}
+
+	return version
+}
+
+// TestAReadOnlyMaintenanceOpenDoesNotMigrate is the promise `wsaw store
+// rebuild-index --verify` and `--dry-run` make, held against the one thing that
+// could break it before either of them printed a word.
+//
+// Opening a store the ordinary way applies its migrations, and one of those
+// migrations moves every document out of the database into the bucket and drops
+// the column — irreversible, minutes long, one network write per row. An
+// operator who does not know what state their store is in and reaches for the
+// safe-looking command must not get that, and must not then be told "mode:
+// verify" and "Nothing was written."
+func TestAReadOnlyMaintenanceOpenDoesNotMigrate(t *testing.T) {
+	t.Parallel()
+
+	o := oldLayoutStore(t)
+
+	for _, res := range migratedResults(t) {
+		o.insert(t, res)
+	}
+
+	s, err := store.OpenForInspection(t.Context(), o.opts)
+	if err == nil {
+		_ = s.Close()
+
+		t.Fatal("opening an un-upgraded store for a command that writes nothing was allowed")
+	}
+
+	if !strings.Contains(err.Error(), "wsaw store migrate") {
+		t.Errorf("the refusal reads %q, want it to name the command that brings the schema up to date", err)
+	}
+
+	// And it is a refusal rather than a migration that failed: the documents
+	// are still in their rows, the bucket holds none, and the version record is
+	// where it was.
+	if document, ok := o.document(t, "scan-clean"); !ok || document == "" {
+		t.Error("a refused open emptied a row")
+	}
+
+	if stored := o.storedDocuments(t); len(stored) != 0 {
+		t.Errorf("a refused open wrote %d documents to the bucket: %v", len(stored), stored)
+	}
+
+	if got := o.version(t); got != 1 {
+		t.Errorf("the schema version is %d after a refused open, want it left at 1", got)
+	}
+
+	// A store that is current opens for inspection without complaint, so the
+	// refusal is about the schema and not about the door.
+	migrated, err := store.OpenSQL(t.Context(), o.opts)
+	if err != nil {
+		t.Fatalf("migrating: %v", err)
+	}
+
+	if err := migrated.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := store.OpenForInspection(t.Context(), o.opts)
+	if err != nil {
+		t.Fatalf("opening an up-to-date store for inspection: %v", err)
+	}
+
+	if err := current.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

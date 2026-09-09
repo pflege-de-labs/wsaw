@@ -165,6 +165,22 @@ type Options struct {
 	// to log and count it (Tenet 8).
 	OnRetry func(op string, attempt int, err error)
 
+	// OnBucketOp is called once for every request made to the artifact bucket,
+	// with the request's own name and the number of object bytes it moved.
+	//
+	// What a bucket costs is requests and bytes, and against object storage
+	// both are money. Neither is visible from inside wsaw otherwise — the
+	// default deployment's bucket is a directory, where both are free and
+	// therefore unmeasured, which is exactly how a read path that costs a
+	// request per row reaches production (Story 8.3, AC2). The soak test
+	// installs one of these and reports the totals beside its other figures,
+	// so the storage cost of a long run is a number rather than a surprise
+	// (Story 8.9, AC6).
+	//
+	// It may be called from several goroutines at once, and it is called on
+	// the request's own path, so it must be cheap and must not block.
+	OnBucketOp func(op string, bytes int64)
+
 	// Logger receives the store's own progress reporting. Opening a store is
 	// otherwise silent, and deliberately so — but the migration that moves
 	// every stored document into the artifact bucket can run for minutes on a
@@ -290,6 +306,63 @@ func OpenSQL(ctx context.Context, opts Options) (*SQL, error) {
 	return s, nil
 }
 
+// openSQLAtItsOwnSchema opens a SQL store and applies no migration, refusing
+// one whose schema is not this build's. See OpenForInspection for why.
+func openSQLAtItsOwnSchema(ctx context.Context, opts Options) (*SQL, error) {
+	s, err := connect(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.requireCurrentSchema(ctx); err != nil {
+		s.closeAfterFailedOpen()
+
+		return nil, err
+	}
+
+	if err := s.d.afterOpen(opts); err != nil {
+		s.closeAfterFailedOpen()
+
+		return nil, err
+	}
+
+	return s, nil
+}
+
+// requireCurrentSchema refuses a store this build would have to change before
+// it could read it.
+//
+// Both directions are refused and the messages differ, because the two need
+// different things from a person: a store that is behind needs `wsaw store
+// migrate`, and one that is ahead needs a newer wsaw. The "ahead" message is
+// the same one migrate itself gives, which is deliberate — an operator meeting
+// it should not have to work out whether they have met two different problems.
+func (s *SQL) requireCurrentSchema(ctx context.Context) error {
+	want := len(s.d.migrations())
+
+	current, err := s.d.schemaVersion(ctx, s.db)
+	if err != nil {
+		return fmt.Errorf("reading the store's schema version: %w", err)
+	}
+
+	switch {
+	case current > want:
+		return fmt.Errorf(
+			"the store was written by a newer wsaw (schema version %d, this build understands %d); upgrade wsaw or point it at a different store",
+			current, want,
+		)
+
+	case current < want:
+		return fmt.Errorf(
+			"this store's schema is version %d and this build needs %d; run \"wsaw store migrate\" first — "+
+				"this command changes nothing, and bringing a schema up to date is a change",
+			current, want,
+		)
+	}
+
+	return nil
+}
+
 // connect performs every part of opening a store except its schema: the
 // dialect, the directories, the connection, the bucket and the retry policy.
 //
@@ -376,6 +449,7 @@ func connect(ctx context.Context, opts Options) (*SQL, error) {
 	// so `maxAttempts` and `retryBackoff` mean the same thing for evidence as
 	// they do for rows (Story 8.1, AC8).
 	b.setRetry(s.retry)
+	b.setMeter(opts.OnBucketOp)
 	s.bucket = b
 
 	return s, nil
