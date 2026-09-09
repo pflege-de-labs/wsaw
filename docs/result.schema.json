@@ -387,6 +387,14 @@
           "type": "string",
           "description": "Reference to the stored response body, present when body storage is on. Bodies live outside this document as content-addressed files; fetch one with GET /api/v1/artifacts/{ref}."
         },
+        "bodyIdentity": {
+          "type": "string",
+          "description": "A stable identifier lifted out of the response body by a configured normalize.bodyIdentity rule, such as a tag-manager container version. Present only where a rule matched and the body carried the value. A comparison prefers it over bodySha256, because some scripts rewrite their bytes on every response without changing what they do."
+        },
+        "bodyIdentityLabel": {
+          "type": "string",
+          "description": "What bodyIdentity is, for reports, e.g. \"GTM container version\"."
+        },
         "body": {
           "type": "string",
           "description": "The stored response body itself. Present only in an export — a HAR, a downloaded result, or the API's result endpoint — and never in the document as stored, which keeps bodies outside it. A result read from the store therefore has bodyRef and no body."

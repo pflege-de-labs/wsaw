@@ -400,6 +400,42 @@ func (r *recorder) setBodyDigest(id network.RequestID, digest string, size int, 
 	}
 }
 
+// requestURL returns the raw URL of an in-flight request, so a body can be
+// matched against identity rules without holding the recorder lock across the
+// regular-expression work.
+func (r *recorder) requestURL(id network.RequestID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.current[id]
+	if !ok {
+		return ""
+	}
+
+	return rec.req.URL
+}
+
+// setBodyIdentity attaches an identifier lifted out of the response body. It
+// is kept separate from the digest: the digest records what was fetched, the
+// identity records what the script says it is, and a comparison may prefer
+// the latter without losing the former.
+func (r *recorder) setBodyIdentity(id network.RequestID, label, value string) {
+	if label == "" || value == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.current[id]
+	if !ok {
+		return
+	}
+
+	rec.req.BodyIdentityLabel = label
+	rec.req.BodyIdentity = value
+}
+
 func (r *recorder) inflightDoneLocked() {
 	r.inflight--
 

@@ -111,11 +111,25 @@ browser:
     memory: 1g
     pidsLimit: 512
     startupTimeout: 90s
+    # Chrome keeps renderer shared memory in /dev/shm, and podman and docker
+    # both default it to 64 MB. That is not enough for a page that releases
+    # its images in one burst: allocations start failing, Chrome reports
+    # net::ERR_INSUFFICIENT_RESOURCES for requests that never opened a
+    # connection, and the assets those requests would have loaded look like
+    # assets the site stopped loading. Both of these are limits, not
+    # allocations, so raising them costs nothing until it is needed.
+    shmSize: 1g
+    fileDescriptors: 8192
 
   # Leave empty to auto-discover Chrome or Chromium for the local runtime.
   path: ""
   poolSize: 2
-  maxScansPerBrowser: 50
+  # 1 is the default and the only value that guarantees per-scan isolation by
+  # construction: one browser, one profile, one cookie jar. Raise it for
+  # throughput, but a browser that serves many scans has more time to
+  # accumulate the resource pressure that ends in dropped requests, so keep
+  # it low enough that a leak is recycled rather than diffed.
+  maxScansPerBrowser: 10
   # The sandbox is the boundary between a hostile page and this host. Only set
   # this where the runtime forbids user namespaces, and expect a warning.
   noSandbox: false
@@ -187,9 +201,39 @@ normalize:
     - session_id
   dropTrailingSlash: true
   # Collapse build hashes, so a deploy is not reported as a new asset.
+  #
+  # Only collapse a path segment that carries no identity of its own. This
+  # pattern is safe because the name survives the collapse: app.a1b2c3d4.js
+  # and vendor.e5f6a7b8.js stay distinct. A bundler that names chunks by hash
+  # alone — Nuxt's _nuxt/CVNmyPYs.js — must NOT be collapsed this way: every
+  # chunk would fold into one key and a genuinely new module would disappear.
   pathReplacements:
     - pattern: '\.[0-9a-f]{8,}\.(js|css)$'
       with: '.{hash}.$1'
+    # consentmanager encodes its settings descriptor into the filename, and
+    # the same version number is already in the sv= parameter of the sibling
+    # /delivery/info call. Left alone, one settings publish reports as two
+    # added assets and two removed ones.
+    - pattern: '/delivery/customdata/[A-Za-z0-9+/=_-]{16,}\.js$'
+      with: '/delivery/customdata/{cmpsettings}.js'
+
+  # Compare a script by the version it publishes about itself, rather than by
+  # the digest of its bytes.
+  #
+  # A tag-manager container folds Google-side experiment flags into every
+  # response: two consecutive fetches of the same published container can
+  # differ by a handful of tokens out of a hundred thousand. Hashing that body
+  # reports script-changed on nearly every scan and buries the one publish
+  # that mattered. The container states its own version, so compare that.
+  #
+  # extract needs exactly one capturing group, and the group is the identity.
+  # A rule that matches the URL but finds nothing in the body makes the script
+  # not comparable rather than changed — the same treatment as a missing
+  # digest, because a false "unchanged" is the worse answer here.
+  bodyIdentity:
+    - urlPattern: 'googletagmanager\.com/gtm\.js'
+      extract: '"version":"(\d+)"'
+      label: 'GTM container version'
 
 detection:
   # "previous" compares each scan with the one before it; "approved" compares
@@ -198,6 +242,18 @@ detection:
   # Collapse a change and its reverse inside this window, so a rotating CDN
   # host does not alert every scan.
   flapWindow: 6h
+  # The share of a scan's requests that may fail for capture reasons — a
+  # starved browser, DNS that did not answer — before the asset list stops
+  # being trusted for removals.
+  #
+  # Above this line the scan is reported as degraded and no asset-removed or
+  # host-removed change is raised, because one failed loader silences every
+  # asset it would have requested and the loss is not confined to the host
+  # that failed. Additions are still reported: a false positive there costs a
+  # look, a false negative hides a tracker that fired without consent.
+  #
+  # 0 uses the built-in default of 0.05; a value above 1 disables the check.
+  degradedFailureRatio: 0.05
   # Severities only need listing where you disagree with the defaults.
   severity:
     firstPartyAssetAdded: info
@@ -245,10 +301,12 @@ api:
   # be derivable from admin access, and withdrawing a link should not mean
   # rotating the credential you use.
   share:
+    # Settings alongside enabled: false are refused, because a file that
+    # carries them reads as though sharing were on. Uncomment them together.
     enabled: false
     # key: "${env:WSAW_SHARE_KEY}"   # at least 32 characters
-    validity: 168h                   # a week; what a link lasts by default
-    maxValidity: 720h                # 30 days; the most anyone may ask for
+    # validity: 168h                 # a week; what a link lasts by default
+    # maxValidity: 720h              # 30 days; the most anyone may ask for
     # Where this wsaw is reachable from, so a minted link is sendable.
     # baseUrl: https://wsaw.example.com
 

@@ -637,6 +637,16 @@ func (s *session) fingerprintBody(id network.RequestID) {
 	}
 
 	s.rec.setBodyDigest(id, digest, len(body), ref, "")
+
+	// The identity is extracted here, where the body is still in hand: the
+	// diff is pure and never reads a stored artifact (Tenet 3), so anything
+	// it needs to compare has to be recorded as an observation.
+	if s.opts.Normalizer != nil && s.opts.Normalizer.HasBodyIdentities() {
+		if u := s.rec.requestURL(id); u != "" {
+			label, value := s.opts.Normalizer.BodyIdentity(u, string(body))
+			s.rec.setBodyIdentity(id, label, value)
+		}
+	}
 }
 
 func (s *session) screenshot(kind string) error {

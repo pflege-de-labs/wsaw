@@ -187,6 +187,15 @@ type ContainerBrowser struct {
 	Memory    string `yaml:"memory,omitempty"`
 	PidsLimit int    `yaml:"pidsLimit,omitempty"`
 
+	// SHMSize sizes /dev/shm inside the container, e.g. "1g". Empty selects
+	// container.DefaultSHMSize. The runtime default of 64 MB starves Chrome
+	// on image-heavy pages, and the requests it then drops look like assets
+	// the site stopped loading.
+	SHMSize string `yaml:"shmSize,omitempty"`
+	// FileDescriptors is the container's open-file limit. Zero selects
+	// container.DefaultFileDescriptors.
+	FileDescriptors int `yaml:"fileDescriptors,omitempty"`
+
 	StartupTimeout Duration `yaml:"startupTimeout,omitempty"`
 
 	// ExtraArgs are runtime arguments; BrowserArgs are appended to the
@@ -276,8 +285,28 @@ type Normalize struct {
 	DropTrailingSlash bool          `yaml:"dropTrailingSlash,omitempty"`
 	PathReplacements  []Replacement `yaml:"pathReplacements,omitempty"`
 
+	// BodyIdentities compare a script by a version it publishes about itself
+	// instead of by the digest of its bytes.
+	BodyIdentities []BodyIdentity `yaml:"bodyIdentity,omitempty"`
+
 	// UseDefaultDropParams adds the shipped list of noise parameters.
 	UseDefaultDropParams *bool `yaml:"useDefaultDropParams,omitempty"`
+}
+
+// BodyIdentity extracts a stable identifier out of a response body.
+//
+// It is for scripts whose bytes change more often than their content does. A
+// tag-manager container folds experiment flags into every response, so its
+// digest moves on almost every scan while the container version it declares
+// stays put — and it is the version an operator needs to hear about.
+type BodyIdentity struct {
+	// URLPattern selects the requests the rule applies to, matched against
+	// the raw URL.
+	URLPattern string `yaml:"urlPattern"`
+	// Extract is a regular expression with exactly one capturing group.
+	Extract string `yaml:"extract"`
+	// Label names the identity in reports, e.g. "GTM container version".
+	Label string `yaml:"label,omitempty"`
 }
 
 // Replacement collapses a volatile path segment.
@@ -294,6 +323,12 @@ type Detection struct {
 	FlapWindow Duration `yaml:"flapWindow,omitempty"`
 	// HashResourceTypes selects which bodies are fingerprinted.
 	HashResourceTypes []string `yaml:"hashResourceTypes,omitempty"`
+
+	// DegradedFailureRatio is the share of a scan's requests that may fail
+	// for capture reasons before its asset list stops being trusted for
+	// removals. Zero selects diff.DefaultDegradedFailureRatio; a value above
+	// 1 disables the check.
+	DegradedFailureRatio float64 `yaml:"degradedFailureRatio,omitempty"`
 
 	AllowHosts []string `yaml:"allowHosts,omitempty"`
 	DenyHosts  []string `yaml:"denyHosts,omitempty"`

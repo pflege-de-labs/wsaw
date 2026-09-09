@@ -333,6 +333,10 @@ func (c *Config) validateScheduler(add addFunc) {
 		add(0, "browser.container.pidsLimit", "must not be negative")
 	}
 
+	if c.Browser.Container.FileDescriptors < 0 {
+		add(0, "browser.container.fileDescriptors", "must not be negative")
+	}
+
 	if c.Browser.RemoteURL != "" {
 		u, err := url.Parse(c.Browser.RemoteURL)
 		if err != nil || u.Host == "" {
@@ -365,6 +369,42 @@ func (c *Config) validateNormalize(add addFunc) {
 	if len(c.Normalize.KeepQueryParams) > 0 && len(c.Normalize.DropQueryParams) > 0 {
 		add(0, "normalize", "keepQueryParams and dropQueryParams are both set; keepQueryParams takes precedence and dropQueryParams will be ignored")
 	}
+
+	c.validateBodyIdentities(add)
+}
+
+// validateBodyIdentities rejects a rule that can never produce a value. Such
+// a rule fails silently at scan time — the script simply keeps being compared
+// by digest — so the mistake has to be caught here or it is invisible.
+func (c *Config) validateBodyIdentities(add addFunc) {
+	for i, id := range c.Normalize.BodyIdentities {
+		field := fmt.Sprintf("normalize.bodyIdentity[%d]", i)
+
+		if id.URLPattern == "" {
+			add(0, field+".urlPattern", "is empty")
+		} else if _, err := regexp.Compile(id.URLPattern); err != nil {
+			add(0, field+".urlPattern", "%q is not a valid regular expression: %v", id.URLPattern, err)
+		}
+
+		if id.Extract == "" {
+			add(0, field+".extract", "is empty")
+
+			continue
+		}
+
+		re, err := regexp.Compile(id.Extract)
+		if err != nil {
+			add(0, field+".extract", "%q is not a valid regular expression: %v", id.Extract, err)
+
+			continue
+		}
+
+		if got := re.NumSubexp(); got != 1 {
+			add(0, field+".extract",
+				"%q has %d capturing groups; exactly one is required, and it is the identity",
+				id.Extract, got)
+		}
+	}
 }
 
 func (c *Config) validateDetection(add addFunc) {
@@ -372,6 +412,10 @@ func (c *Config) validateDetection(add addFunc) {
 	case "", BaselineApproved, BaselinePrevious:
 	default:
 		add(0, "detection.baseline", "%q is not valid; use \"approved\" or \"previous\"", c.Detection.Baseline)
+	}
+
+	if c.Detection.DegradedFailureRatio < 0 {
+		add(0, "detection.degradedFailureRatio", "must not be negative")
 	}
 
 	validateSeverityRules(c.Detection.Severity, 0, "detection.severity", add)

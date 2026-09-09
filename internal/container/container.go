@@ -164,6 +164,13 @@ type Spec struct {
 	// PidsLimit bounds runaway process creation inside the container.
 	PidsLimit int
 
+	// SHMSize is the size of /dev/shm inside the container, e.g. "1g".
+	// Empty selects DefaultSHMSize.
+	SHMSize string
+	// FileDescriptors is the container's open-file limit. Zero selects
+	// DefaultFileDescriptors.
+	FileDescriptors int
+
 	// ExtraArgs are additional runtime arguments for unusual environments.
 	ExtraArgs []string
 	// BrowserArgs are appended to the browser's own command line.
@@ -181,6 +188,42 @@ func (s *Spec) image() string {
 	}
 
 	return s.Image
+}
+
+// DefaultSHMSize is the size of /dev/shm given to the browser container.
+//
+// Chrome keeps renderer shared memory in /dev/shm, and both podman and docker
+// default it to 64 MB. That is not enough for a real page: when a site
+// releases its images in one burst, allocations start failing and Chrome
+// reports net::ERR_INSUFFICIENT_RESOURCES for requests that never opened a
+// connection. Those requests then look like assets the site stopped loading,
+// which is a finding wsaw would be inventing out of its own environment
+// (Tenet 5). One gigabyte is what the Chrome team recommends for
+// containerised runs, and it is cheap: a limit, not an allocation.
+const DefaultSHMSize = "1g"
+
+// DefaultFileDescriptors is the container's open-file limit.
+//
+// A page with a few hundred subresources needs a socket, and therefore a
+// descriptor, for each one in flight. The common container default of 1024 is
+// shared with everything else the browser has open, and running out produces
+// the same phantom-removal failure mode as a small /dev/shm.
+const DefaultFileDescriptors = 8192
+
+func (s *Spec) shmSize() string {
+	if s.SHMSize == "" {
+		return DefaultSHMSize
+	}
+
+	return s.SHMSize
+}
+
+func (s *Spec) fileDescriptors() int {
+	if s.FileDescriptors <= 0 {
+		return DefaultFileDescriptors
+	}
+
+	return s.FileDescriptors
 }
 
 func (s *Spec) startupTimeout() time.Duration {
@@ -219,12 +262,11 @@ func (i *Instance) Endpoint() string { return i.endpoint }
 // ID returns the container identifier, for logs.
 func (i *Instance) ID() string { return i.id }
 
-// Start runs a browser container and waits for it to answer CDP.
-func (r *Runtime) Start(ctx context.Context, spec Spec) (*Instance, error) {
-	started := time.Now()
-
-	name := "wsaw-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-
+// runArgs builds the runtime's command line. It is separate from Start so the
+// arguments can be asserted without a runtime present: they carry decisions —
+// the loopback publish, the resource limits — whose regression would be
+// invisible in a passing scan.
+func runArgs(name string, spec Spec) []string {
 	args := []string{
 		"run", "--detach", "--rm",
 		"--name", name,
@@ -247,6 +289,13 @@ func (r *Runtime) Start(ctx context.Context, spec Spec) (*Instance, error) {
 		args = append(args, "--memory", spec.Memory)
 	}
 
+	// Both of these exist to stop the browser starving in ways that look like
+	// the site changing. See DefaultSHMSize.
+	args = append(args, "--shm-size", spec.shmSize())
+
+	fds := strconv.Itoa(spec.fileDescriptors())
+	args = append(args, "--ulimit", "nofile="+fds+":"+fds)
+
 	if spec.PidsLimit > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(spec.PidsLimit))
 	}
@@ -254,6 +303,17 @@ func (r *Runtime) Start(ctx context.Context, spec Spec) (*Instance, error) {
 	args = append(args, spec.ExtraArgs...)
 	args = append(args, spec.image())
 	args = append(args, spec.BrowserArgs...)
+
+	return args
+}
+
+// Start runs a browser container and waits for it to answer CDP.
+func (r *Runtime) Start(ctx context.Context, spec Spec) (*Instance, error) {
+	started := time.Now()
+
+	name := "wsaw-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+
+	args := runArgs(name, spec)
 
 	startCtx, cancel := context.WithTimeout(ctx, spec.startupTimeout())
 	defer cancel()
