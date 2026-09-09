@@ -206,7 +206,9 @@ Phase 0 is a few lines of `Makefile` and CI. Phases 1–2 are ordinary table-dri
 - `make cover` and `make cover-report` now pass `-coverpkg` over a product-code package list (`COVER_PKGS`, which drops `test/e2e/`).
 - `make cover-gate` is new: it fails below `COVER_MIN`, and CI's coverage step calls it instead of printing a number nothing checked.
 - `tools/coverreport` was double-counting. It summed the profile per file, and a `-coverpkg` profile lists every block once per test binary — 22 of them here — so it would have reported ~240,000 statements. It now folds blocks by position first, and agrees with `go tool cover -func` to the decimal.
-- `COVER_MIN` is set to **75.0**, deliberately below the 78.3% a developer machine measures: this one has Podman, so it covers container paths that skip on a runner without a container runtime. **The first green CI run should raise it to what CI actually reports.**
+- `COVER_MIN` is set to **73.5**, below the 78.3% a developer machine measures. The environment is worth about four points: the same tree measures **78.3% locally and 74.2% on Linux CI**, because a machine with Podman covers container paths that skip on a runner without a container runtime. The floor tracks the CI number, with a little room for the run-to-run variance of the browser-dependent tests.
+
+  This was measured the hard way. The floor was first set to 75.0 on the guess that CI would land near 77%, and CI answered 74.2% — the gate failed on its first run, which is the gate working. Raise it as later phases land.
 
 ### Phase 1 — done
 
