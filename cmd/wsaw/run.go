@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -223,6 +224,20 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
 		return nil, err
 	}
 
+	// A reload can only replace the target list. Everything else became a
+	// browser pool, a normalizer, an HTTP server or a scheduler at startup,
+	// so a change to it cannot take effect in this process — and adopting the
+	// half that can while logging "configuration reloaded" would leave the
+	// operator believing the rest had applied too (Tenet 5). Refusing names
+	// what moved and keeps the running configuration.
+	if changed := config.NonReloadableChanges(a.Config, cfg); len(changed) > 0 {
+		return nil, fmt.Errorf(
+			"%s cannot change without a restart; the running configuration is unchanged. "+
+				"Restart wsaw to apply %s",
+			strings.Join(changed, ", "),
+			pluralSettings(len(changed)))
+	}
+
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
 		return nil, err
@@ -231,6 +246,14 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
 	a.Logger.Info("configuration reloaded", "targets", len(targets))
 
 	return targets, nil
+}
+
+func pluralSettings(n int) string {
+	if n == 1 {
+		return "it"
+	}
+
+	return "them"
 }
 
 func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
