@@ -130,7 +130,7 @@ This is distinct from Story 6.3, which packages *wsaw itself* with Chromium bund
 - AC10: Reaching a host-local target still works, or fails with an explanation. A containerised browser cannot resolve the host's `localhost`, which affects local fixtures and any operator scanning a service on the machine itself.
 - AC11: The browser-driven test suite runs against both the local and the containerised path, and skips with a clear reason where no runtime is present, so the container path is covered rather than assumed.
 
-### Story 1.9 — Treat a `data:` URI's payload as a body, not as a URL (not implemented)
+### Story 1.9 — Treat a `data:` URI's payload as a body, not as a URL
 
 *As a Compliance Officer opening a scan, I want an embedded `data:image/...;base64,...` asset shown the same bounded way every other asset is, so that one inlined icon does not turn the page I am reading into the thing I am trying to read.*
 

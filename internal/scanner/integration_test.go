@@ -155,6 +155,7 @@ func (f *fixtureSite) html(withBanner bool) string {
 <body>
 <h1>fixture site</h1>
 <img src="` + f.thirdURL() + `/px.gif" alt="">
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7" alt="" width="1" height="1">
 ` + banner + `
 <script>
 window.__wsawConsent = function (choice) {
@@ -349,6 +350,57 @@ func TestCaptureHashesScriptBodies(t *testing.T) {
 	}
 
 	t.Error("the first-party script was not recorded at all")
+}
+
+// TestCaptureTruncatesDataURIBodies covers Story 1.9 end to end: a real
+// Chrome, loading a real page with an embedded data: image, produces a
+// request whose URL never carries the raw base64 payload and whose digest is
+// still present — the same shape as any other asset with a stored body.
+func TestCaptureTruncatesDataURIBodies(t *testing.T) {
+	info := requireChrome(t)
+
+	site := newFixtureSite(t, false)
+	s, closePool := newScanner(t, info, site)
+
+	defer closePool()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	out, err := s.Scan(ctx, site.target(t), model.ConsentNone)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	for _, req := range out.Result.Requests {
+		if !strings.HasPrefix(req.URL, "data:image/gif") {
+			continue
+		}
+
+		if strings.Contains(req.URL, "base64,R0lGOD") {
+			t.Errorf("URL still carries the raw payload: %q", req.URL)
+		}
+
+		if !strings.Contains(req.URL, "<truncated:") {
+			t.Errorf("URL is not marked as truncated: %q", req.URL)
+		}
+
+		if len(req.BodySHA256) != 64 {
+			t.Errorf("BodySHA256 = %q, want a 64-character hex string", req.BodySHA256)
+		}
+
+		if req.DecodedSize != 42 {
+			t.Errorf("DecodedSize = %d, want 42", req.DecodedSize)
+		}
+
+		if !req.NonNetwork {
+			t.Error("NonNetwork = false for a data: URL")
+		}
+
+		return
+	}
+
+	t.Error("the embedded data: image was not recorded at all")
 }
 
 func TestCaptureRecordsCookies(t *testing.T) {
