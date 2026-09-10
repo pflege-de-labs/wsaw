@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/wsaw ./cmd/wsaw
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # Chromium and the fonts a page needs to render text at all. Without fonts,
 # layout differs enough that element-visibility checks — which is how consent
