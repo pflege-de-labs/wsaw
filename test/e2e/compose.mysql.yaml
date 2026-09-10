@@ -7,7 +7,13 @@
 
 services:
   db:
-    image: docker.io/library/mysql:8.4
+    # Pinned by digest, not just the tag (Story 7.6, AC4): a floating tag can
+    # move upstream between CI runs, and the point of an end-to-end suite is
+    # to fail because of a change in this repository, not because of one
+    # nobody here made. Bump deliberately, with the manifest-list digest, not
+    # a single-platform one: `docker buildx imagetools inspect mysql:8.4`
+    # prints it under "Digest:".
+    image: docker.io/library/mysql:8.4@sha256:3466ba4a4828aa8d46fb7c3bc16b67b781c98413cf4ea0fac6feaa6e881faa26
     environment:
       MYSQL_DATABASE: wsaw
       MYSQL_USER: wsaw

@@ -448,22 +448,55 @@ e2e-compose-logs:
 #
 # The token, DSN and ports below are exactly what test/e2e/compose.yaml and
 # compose.postgres.yaml already set up wsaw and the database with.
+# e2e-dump-artifacts is what a failed end-to-end run leaves behind to
+# diagnose it: every service's log, and the actual rows the database held —
+# the stored result documents and the audit trail, read back the same way
+# the test itself does, not just what it printed. A diff is never stored, so
+# it comes from test/e2e/stack_test.go's own artifact directory instead
+# (Story 7.6, AC5).
+E2E_ARTIFACTS_DIR = $(DIST)/e2e/artifacts/$(DB)
+
+.PHONY: e2e-dump-artifacts
+e2e-dump-artifacts:
+	$(call e2e_compose_need_db,e2e-dump-artifacts)
+	@mkdir -p $(E2E_ARTIFACTS_DIR)
+	@for svc in site tracker db wsaw; do \
+		$(E2E_COMPOSE) logs --no-color $$svc > $(E2E_ARTIFACTS_DIR)/$$svc.log 2>&1 || true; \
+	done
+	@if [ "$(DB)" = mysql ]; then \
+		for t in results baselines audit; do \
+			$(E2E_COMPOSE) exec -T db mysql -uwsaw -pwsaw-e2e-fixture-only wsaw -N -B \
+				-e "select coalesce(json_arrayagg(cast(document as json)), json_array()) from $$t" \
+				> $(E2E_ARTIFACTS_DIR)/$$t.json 2>/dev/null || true; \
+		done; \
+	else \
+		for t in results baselines audit; do \
+			$(E2E_COMPOSE) exec -T db psql -U wsaw -d wsaw -t -A \
+				-c "select coalesce(json_agg(document::json), '[]') from $$t" \
+				> $(E2E_ARTIFACTS_DIR)/$$t.json 2>/dev/null || true; \
+		done; \
+	fi
+	@echo "artifacts written to $(E2E_ARTIFACTS_DIR)"
+
 .PHONY: e2e-postgres-test
 # A target-specific value: $(E2E_COMPOSE) below is defined in terms of $(DB),
 # and this target's own recipe needs that expansion, not just the DB=postgres
 # argument the nested `$(MAKE)` calls get.
 e2e-postgres-test: DB := postgres
 e2e-postgres-test:
+	@rm -rf $(E2E_ARTIFACTS_DIR)
 	$(MAKE) --no-print-directory e2e-compose-up DB=postgres
 	@WSAW_E2E_API_BASE=http://127.0.0.1:18712 \
 	WSAW_E2E_API_TOKEN=wsaw-e2e-fixture-only-token \
 	WSAW_E2E_SITE_BASE=http://127.0.0.1:18081 \
 	WSAW_E2E_DSN="postgres://wsaw:wsaw-e2e-fixture-only@127.0.0.1:5432/wsaw?sslmode=disable" \
 	WSAW_E2E_COMPOSE_CMD="$(E2E_COMPOSE_FROM_TESTDIR)" \
+	WSAW_E2E_ARTIFACTS_DIR="$(CURDIR)/$(E2E_ARTIFACTS_DIR)" \
 	go test -tags e2e -count=1 -v ./test/e2e/... -run TestPostgresStack; \
 	status=$$?; \
 	if [ $$status -ne 0 ]; then \
-		echo; echo "=== stack logs (the suite failed) ==="; \
+		echo; echo "=== the suite failed; writing artifacts and printing every service's log ==="; \
+		$(MAKE) --no-print-directory e2e-dump-artifacts DB=postgres; \
 		$(E2E_COMPOSE) logs --no-color; \
 	fi; \
 	$(MAKE) --no-print-directory e2e-compose-down DB=postgres; \
@@ -477,16 +510,19 @@ e2e-postgres-test:
 .PHONY: e2e-mysql-test
 e2e-mysql-test: DB := mysql
 e2e-mysql-test:
+	@rm -rf $(E2E_ARTIFACTS_DIR)
 	$(MAKE) --no-print-directory e2e-compose-up DB=mysql
 	@WSAW_E2E_API_BASE=http://127.0.0.1:18712 \
 	WSAW_E2E_API_TOKEN=wsaw-e2e-fixture-only-token \
 	WSAW_E2E_SITE_BASE=http://127.0.0.1:18081 \
 	WSAW_E2E_DSN="wsaw:wsaw-e2e-fixture-only@tcp(127.0.0.1:3306)/wsaw" \
 	WSAW_E2E_COMPOSE_CMD="$(E2E_COMPOSE_FROM_TESTDIR)" \
+	WSAW_E2E_ARTIFACTS_DIR="$(CURDIR)/$(E2E_ARTIFACTS_DIR)" \
 	go test -tags e2e -count=1 -v ./test/e2e/... -run TestMySQLStack; \
 	status=$$?; \
 	if [ $$status -ne 0 ]; then \
-		echo; echo "=== stack logs (the suite failed) ==="; \
+		echo; echo "=== the suite failed; writing artifacts and printing every service's log ==="; \
+		$(MAKE) --no-print-directory e2e-dump-artifacts DB=mysql; \
 		$(E2E_COMPOSE) logs --no-color; \
 	fi; \
 	$(MAKE) --no-print-directory e2e-compose-down DB=mysql; \

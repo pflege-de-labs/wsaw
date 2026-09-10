@@ -7,7 +7,13 @@
 
 services:
   db:
-    image: docker.io/library/postgres:16-alpine
+    # Pinned by digest, not just the tag (Story 7.6, AC4): a floating tag can
+    # move upstream between CI runs, and the point of an end-to-end suite is
+    # to fail because of a change in this repository, not because of one
+    # nobody here made. Bump deliberately, with the manifest-list digest, not
+    # a single-platform one: `docker buildx imagetools inspect
+    # postgres:16-alpine` prints it under "Digest:".
+    image: docker.io/library/postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       POSTGRES_USER: wsaw
       POSTGRES_PASSWORD: wsaw-e2e-fixture-only
