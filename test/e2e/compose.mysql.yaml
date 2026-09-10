@@ -14,7 +14,11 @@ services:
       MYSQL_PASSWORD: wsaw-e2e-fixture-only
       MYSQL_ROOT_PASSWORD: wsaw-e2e-fixture-only-root
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uwsaw -pwsaw-e2e-fixture-only --silent"]
+      # -h127.0.0.1, not -h localhost: the mysql client treats "localhost" as
+      # "use the Unix socket", which the init server answers on before the
+      # real server is listening on TCP — exactly the connection wsaw itself
+      # makes. A probe not forced onto TCP reports ready too early.
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uwsaw -pwsaw-e2e-fixture-only --silent"]
       interval: 2s
       timeout: 2s
       retries: 30
