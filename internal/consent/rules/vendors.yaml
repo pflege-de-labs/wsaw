@@ -285,10 +285,20 @@ rules:
     verify: |
       (() => {
         if (window.CCM && typeof window.CCM.consent !== 'undefined') { return !!window.CCM.consent; }
-        return !document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
+        const el = document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
+        return !el || el.hidden || getComputedStyle(el).display === 'none';
       })()
+    # CCM19 never removes #ccm-widget from the DOM when a choice is made — it
+    # toggles a hidden attribute and display:none instead (its own
+    # ccm-hide/ccm-show classes do the same). A dismissed check that only
+    # asked "does the selector still match anything" would never see that and
+    # would report banner-visible against a screenshot showing an ordinary
+    # page.
     dismissed: |
-      !document.querySelector('#ccm-root, #ccm-widget, .ccm-modal')
+      (() => {
+        const el = document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
+        return !el || el.hidden || getComputedStyle(el).display === 'none';
+      })()
 
   - name: complianz
     vendor: Complianz

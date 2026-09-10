@@ -111,7 +111,13 @@ func ccm19FixtureHTML() string {
   function record(which) {
     choice = which;
     consentGiven = true;
-    document.getElementById('ccm-root').remove();
+    // Real CCM19 never removes #ccm-widget from the DOM on a choice — it
+    // toggles a hidden attribute and display:none instead. A fixture that
+    // removes the node instead of hiding it would hide a rule bug that
+    // checks only "does the selector still match anything".
+    var root = document.getElementById('ccm-root');
+    root.hidden = true;
+    root.style.display = 'none';
     if (which === 'accept') {
       var s = document.createElement('script');
       s.src = 'http://%s/tag.js?c=accept';
@@ -254,8 +260,8 @@ func TestCCM19FallsBackToClickWhenAPIIsAbsent(t *testing.T) {
 <body>
 <div id="ccm-root">
   <div class="ccm-modal">
-    <button class="ccm--save-settings" data-full-consent="true" onclick="document.getElementById('ccm-root').remove()">Accept all</button>
-    <button class="ccm--decline-cookies" onclick="document.getElementById('ccm-root').remove()">Decline</button>
+    <button class="ccm--save-settings" data-full-consent="true" onclick="this.closest('#ccm-root').hidden = true; this.closest('#ccm-root').style.display = 'none'">Accept all</button>
+    <button class="ccm--decline-cookies" onclick="this.closest('#ccm-root').hidden = true; this.closest('#ccm-root').style.display = 'none'">Decline</button>
   </div>
 </div>
 </body></html>`)
