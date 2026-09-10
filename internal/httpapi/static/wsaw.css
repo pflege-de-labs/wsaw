@@ -239,6 +239,7 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
    because a reader who cannot see the tint must still be able to tell which
    row the other rows are measured against (Story 5.20, AC2). */
 .badge-baseline { border-color: var(--ok); color: var(--ok); }
+.badge-necessary-only { border-color: var(--ok); color: var(--ok); }
 
 .sev-info { color: var(--muted); }
 .sev-low { color: var(--muted); }
@@ -299,7 +300,7 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .outcome-not-needed { color: var(--muted); }
 .outcome-unverified { color: var(--warn); }
 .outcome-banner-visible { color: var(--warn); }
-.outcome-necessary-only { color: var(--warn); }
+.outcome-necessary-only { color: var(--ok); }
 .outcome-failed { color: var(--bad); }
 
 .party-first { color: var(--muted); }
