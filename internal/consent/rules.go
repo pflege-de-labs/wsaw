@@ -24,8 +24,15 @@ var builtinRules embed.FS
 
 // Action is one step in a rule.
 type Action struct {
-	// Click clicks the first element matching this selector.
+	// Click clicks the first element matching this selector via a synthetic
+	// el.click(): fast, and indistinguishable from a real click to most CMPs.
 	Click string `yaml:"click,omitempty"`
+	// TrustedClick clicks the first element matching this selector through a
+	// genuine, CDP-dispatched pointer event rather than a synthetic one. Use
+	// it only where Click is known not to work: at least one CMP (CCM19)
+	// checks Event.isTrusted and silently ignores a synthetic click, so the
+	// interaction appears to succeed while the choice is never recorded.
+	TrustedClick string `yaml:"trustedClick,omitempty"`
 	// WaitFor waits for a selector to appear before continuing.
 	WaitFor string `yaml:"waitFor,omitempty"`
 	// WaitMillis pauses, for CMPs that animate their dialog.

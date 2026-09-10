@@ -591,19 +591,24 @@ func (h *handler) escalate(ctx context.Context, rule Rule, steps []Action, conse
 	return consent
 }
 
-// escalateClicks retries every click step the rule defines for this mode
-// through __wsawSimulateClick, and reports whether any of them found and
-// clicked an element.
+// escalateClicks retries every click step the rule defines for this mode —
+// through __wsawSimulateClick for a plain Click, or another trusted dispatch
+// for a TrustedClick whose first attempt landed on a still-animating target —
+// and reports whether any of them found and clicked an element.
 func (h *handler) escalateClicks(ctx context.Context, steps []Action) bool {
 	var clicked bool
 
 	for _, step := range steps {
-		if step.Click == "" {
-			continue
-		}
+		switch {
+		case step.Click != "":
+			if h.simulateClick(ctx, step.Click) {
+				clicked = true
+			}
 
-		if h.simulateClick(ctx, step.Click) {
-			clicked = true
+		case step.TrustedClick != "":
+			if h.trustedClick(ctx, step.TrustedClick) == nil {
+				clicked = true
+			}
 		}
 	}
 
@@ -665,6 +670,59 @@ type clickResult struct {
 	Matched string `json:"matched"`
 }
 
+type locateResult struct {
+	Found   bool    `json:"found"`
+	Visible bool    `json:"visible"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Reason  string  `json:"reason"`
+}
+
+// trustedClick drives a genuine, CDP-dispatched pointer event rather than a
+// synthetic one. A synthetic click (el.click(), or __wsawSimulateClick's
+// fuller pointer/mouse sequence) is still reported as untrusted —
+// Event.isTrusted is false either way — and at least one CMP (CCM19) checks
+// isTrusted and silently ignores the click, so it can appear to succeed
+// while the choice is never recorded. Only the off-screen case — a control a
+// CMP relies on a handler to trigger rather than a pointer, which
+// __wsawLocate cannot meaningfully dispatch a click onto — falls back to the
+// synthetic click.
+func (h *handler) trustedClick(ctx context.Context, selector string) error {
+	var loc locateResult
+
+	locateExpr := fmt.Sprintf("window.__wsawLocate(%s)", jsString(selector))
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(locateExpr, &loc)); err != nil {
+		return fmt.Errorf("locating %s: %w", selector, err)
+	}
+
+	if !loc.Found {
+		return fmt.Errorf("clicking %s: %s", selector, loc.Reason)
+	}
+
+	if !loc.Visible {
+		var out clickResult
+
+		clickExpr := fmt.Sprintf("window.__wsawClick(%s)", jsString(selector))
+
+		if err := chromedp.Run(ctx, chromedp.Evaluate(clickExpr, &out)); err != nil {
+			return fmt.Errorf("clicking %s: %w", selector, err)
+		}
+
+		if !out.Clicked {
+			return fmt.Errorf("clicking %s: %s", selector, out.Reason)
+		}
+
+		return nil
+	}
+
+	if err := chromedp.Run(ctx, chromedp.MouseClickXY(loc.X, loc.Y)); err != nil {
+		return fmt.Errorf("clicking %s: %w", selector, err)
+	}
+
+	return nil
+}
+
 func (h *handler) runStep(ctx context.Context, step Action) error {
 	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
 	defer cancel()
@@ -698,6 +756,9 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 		}
 
 		return nil
+
+	case step.TrustedClick != "":
+		return h.trustedClick(stepCtx, step.TrustedClick)
 
 	case step.Eval != "":
 		// A rule's eval may return a boolean to signal whether it did

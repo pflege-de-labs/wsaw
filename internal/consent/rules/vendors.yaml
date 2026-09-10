@@ -262,7 +262,11 @@ rules:
             return false;
           })()
         optional: true
-      - click: '.ccm--save-settings[data-full-consent="true"]'
+      # A plain click is a synthetic el.click(): CCM19 checks Event.isTrusted
+      # and silently ignores it, so the interaction looks like it succeeded
+      # while nothing was actually recorded. trustedClick dispatches a real
+      # CDP pointer event instead.
+      - trustedClick: '.ccm--save-settings[data-full-consent="true"]'
         optional: true
     reject:
       - eval: |
@@ -271,7 +275,7 @@ rules:
             return false;
           })()
         optional: true
-      - click: ".ccm--decline-cookies"
+      - trustedClick: ".ccm--decline-cookies"
         optional: true
     # Some deployments render the widget markup without exposing window.CCM
     # on the top frame. The consent getter is checked first because it is a
@@ -281,8 +285,10 @@ rules:
     verify: |
       (() => {
         if (window.CCM && typeof window.CCM.consent !== 'undefined') { return !!window.CCM.consent; }
-        return !document.querySelector('#ccm-root, .ccm-modal');
+        return !document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
       })()
+    dismissed: |
+      !document.querySelector('#ccm-root, #ccm-widget, .ccm-modal')
 
   - name: complianz
     vendor: Complianz

@@ -107,6 +107,24 @@ const helperScript = `
     return { clicked: true, synthesized: true };
   };
 
+  // __wsawLocate finds a click target's on-screen centre without clicking
+  // it, so the caller can dispatch a genuine CDP pointer event there instead
+  // of a synthetic one. A CDP-dispatched click is trusted the way
+  // el.click() and dispatchEvent() are not — Event.isTrusted is true only
+  // for input that goes through Chrome's real input pipeline — and at least
+  // one CMP (CCM19) checks isTrusted and silently ignores an untrusted
+  // click, so a synthetic click can appear to succeed while nothing is
+  // actually recorded.
+  window.__wsawLocate = (selector) => {
+    const el = window.__wsawQuery(selector);
+    if (!el) return { found: false, reason: 'no element matched ' + selector };
+    if (visible(el)) {
+      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* best effort */ }
+    }
+    const r = el.getBoundingClientRect();
+    return { found: true, visible: visible(el), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
   // Readiness helpers for Consentmanager's __cmp API.
   //
   // __cmp is installed as a stub before the CMP initialises, and a call made
