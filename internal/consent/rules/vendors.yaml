@@ -220,6 +220,57 @@ rules:
         return !box || getComputedStyle(box).display === 'none';
       })()
 
+  # CCM19 (papoo Software), driven through its window.CCM API.
+  #
+  #   window.CCM.grantAllPrivileges()   accept all, persist, close the widget
+  #   window.CCM.revokeAllPrivileges()  reject all, persist, close the widget
+  #   window.CCM.consent                getter, true once a choice is recorded
+  #
+  # There is no public documentation of this API; the method and property
+  # names above were confirmed by reading the vendor's shipped app.js, which
+  # calls exactly the same internal methods from its own accept/decline
+  # button handlers. The click fallback mirrors the button markup found in
+  # the same script: the accept-all button shares its class with the
+  # "save selection" button and is distinguished only by
+  # data-full-consent="true".
+  - name: ccm19
+    vendor: CCM19
+    priority: 100
+    detect: |
+      !!(window.CCM || document.querySelector('#ccm-root, #ccm-widget, .ccm-modal'))
+    accept:
+      # An explicit false from eval is a step failure (rules.go convention),
+      # which would otherwise abort the rule before the click fallback ever
+      # ran. Marking it optional lets a page whose script failed to expose
+      # window.CCM still be handled through the button markup below.
+      - eval: |
+          (() => {
+            if (window.CCM && window.CCM.grantAllPrivileges) { window.CCM.grantAllPrivileges(); return true; }
+            return false;
+          })()
+        optional: true
+      - click: '.ccm--save-settings[data-full-consent="true"]'
+        optional: true
+    reject:
+      - eval: |
+          (() => {
+            if (window.CCM && window.CCM.revokeAllPrivileges) { window.CCM.revokeAllPrivileges(); return true; }
+            return false;
+          })()
+        optional: true
+      - click: ".ccm--decline-cookies"
+        optional: true
+    # Some deployments render the widget markup without exposing window.CCM
+    # on the top frame. The consent getter is checked first because it is a
+    # direct read-back of the recorded choice; the modal being gone is only
+    # a fallback for when the API is unreachable and a click was the only
+    # option.
+    verify: |
+      (() => {
+        if (window.CCM && typeof window.CCM.consent !== 'undefined') { return !!window.CCM.consent; }
+        return !document.querySelector('#ccm-root, .ccm-modal');
+      })()
+
   - name: complianz
     vendor: Complianz
     priority: 80
