@@ -89,6 +89,22 @@ func newFixtureLive(
 ) *fixture {
 	t.Helper()
 
+	return newFixtureWith(t, opts, trigger, running, nil)
+}
+
+// newFixtureWith is the full constructor. tweak sees the assembled Deps
+// immediately before the server is built, which is how a test supplies a
+// collaborator the other constructors leave nil — the daemon, above all,
+// because Deps.Daemon is a concrete type and cannot be faked.
+func newFixtureWith(
+	t *testing.T,
+	opts httpapi.Options,
+	trigger httpapi.ScanTrigger,
+	running func() []scanner.Running,
+	tweak func(*httpapi.Deps),
+) *fixture {
+	t.Helper()
+
 	dir := t.TempDir()
 
 	st, err := store.Open(store.Options{
@@ -116,7 +132,7 @@ func newFixtureLive(
 
 	logged := &lockedBuffer{}
 
-	srv, err := httpapi.New(opts, httpapi.Deps{
+	deps := httpapi.Deps{
 		Store: st,
 		// Debug level, because the request log — where a leaked token would
 		// show up — is written at debug.
@@ -125,7 +141,13 @@ func newFixtureLive(
 		Trigger: trigger,
 		Targets: func() []config.Resolved { return targets },
 		Running: running,
-	})
+	}
+
+	if tweak != nil {
+		tweak(&deps)
+	}
+
+	srv, err := httpapi.New(opts, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +235,19 @@ func (f *fixture) postForm(path string, form url.Values, headers ...string) *htt
 	}
 
 	resp, err := f.client.Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+
+	return resp
+}
+
+// do issues a request with an arbitrary method, for the verbs the API uses
+// that neither get nor postForm covers.
+func (f *fixture) do(method, path, payload string) *http.Response {
+	f.t.Helper()
+
+	resp, err := f.client.Do(mustRequest(f.t, f, method, path, payload))
 	if err != nil {
 		f.t.Fatal(err)
 	}

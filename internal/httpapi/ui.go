@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -973,7 +974,7 @@ func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Re
 	}
 
 	if err != nil {
-		s.uiError(w, r, http.StatusNotFound, err.Error())
+		s.uiStoreError(w, r, err)
 
 		return nil, false
 	}
@@ -997,6 +998,26 @@ func uiTargetMode(w http.ResponseWriter, r *http.Request) (string, model.Consent
 func (s *Server) uiError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	w.WriteHeader(status)
 	s.render(w, r, "error.html", "Error", msg)
+}
+
+// uiStoreError renders a store failure at the status it deserves.
+//
+// A result that is not there and a store that cannot be read are different
+// facts. Reporting both as "not found" tells a reviewer that a scan does not
+// exist when the truth is that wsaw cannot currently tell — the same mistake
+// as letting an empty result set read as a clean site (Tenet 5). It also
+// misleads whatever is watching the deployment, because a store outage looks
+// like ordinary 404 traffic.
+//
+// This is the web interface's counterpart to writeStoreError, which the API
+// and the shared views already use.
+func (s *Server) uiStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, store.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+
+	s.uiError(w, r, status, err.Error())
 }
 
 func (s *Server) uiRedirectOK(w http.ResponseWriter, r *http.Request, dest, msg string) {
