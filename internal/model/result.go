@@ -55,6 +55,14 @@ const (
 	// OutcomeUnverified means the interaction was performed but its effect
 	// could not be confirmed.
 	OutcomeUnverified ConsentOutcome = "unverified"
+	// OutcomeBannerVisible means the CMP recorded the requested choice — the
+	// traffic this scan observed reflects that choice — but the banner itself
+	// was still displayed after the interaction, and a fallback click could
+	// not close it either. A vendor API commonly records consent without
+	// running the banner's own dismiss handler, which reacts to its buttons,
+	// not to the CMP's internal state. That gap must never be reported as
+	// OutcomeApplied (Story 2.7).
+	OutcomeBannerVisible ConsentOutcome = "banner-visible"
 )
 
 // TerminationReason records why capture stopped. Determinism requires that
@@ -235,6 +243,13 @@ type Consent struct {
 	// InteractedAt is when the consent action completed, used to split the
 	// pre- and post-interaction phases.
 	InteractedAt *time.Time `json:"interactedAt,omitempty"`
+
+	// ScreenshotsIdentical is true when the before- and after-interaction
+	// screenshots are byte-for-byte identical. It is computed once, from the
+	// captured evidence, so any consumer of this document — not only the HTML
+	// report — can see that a claimed interaction left the page looking
+	// unchanged (Story 2.7, Tenet 16).
+	ScreenshotsIdentical bool `json:"screenshotsIdentical,omitempty"`
 }
 
 // Request is a single observed network fetch. Redirects are recorded as

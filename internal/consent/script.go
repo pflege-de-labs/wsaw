@@ -66,6 +66,47 @@ const helperScript = `
     return { clicked: true, visible: true };
   };
 
+  // __wsawSimulateClick is __wsawClick's more thorough sibling, reserved for
+  // the escalation path a rule reaches when its own click already ran but the
+  // banner is still on screen (Story 2.7, AC3).
+  //
+  // Element.click() only ever synthesizes a "click" event. Real user input
+  // fires a whole sequence first — pointerover, pointerdown, mousedown,
+  // pointerup, mouseup — and a control bound to one of those, rather than to
+  // "click" itself, never reacts to a plain .click(). That is a real and
+  // fairly common way for a banner's own dismiss handler to stay silent while
+  // the click step reports success.
+  //
+  // Every event dispatched here is exactly as untrusted as .click() already
+  // is — isTrusted is false either way — so this widens which handlers can
+  // fire without pretending to be a real user gesture.
+  window.__wsawSimulateClick = (selector) => {
+    const el = window.__wsawQuery(selector);
+    if (!el) return { clicked: false, reason: 'no element matched ' + selector };
+
+    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* best effort */ }
+
+    const r = el.getBoundingClientRect();
+    const point = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    const shared = { bubbles: true, cancelable: true, composed: true, view: window, ...point };
+
+    try {
+      el.dispatchEvent(new PointerEvent('pointerover', { ...shared, pointerId: 1, isPrimary: true }));
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...shared, pointerId: 1, isPrimary: true, button: 0 }));
+      el.dispatchEvent(new MouseEvent('mousedown', { ...shared, button: 0 }));
+      el.dispatchEvent(new PointerEvent('pointerup', { ...shared, pointerId: 1, isPrimary: true, button: 0 }));
+      el.dispatchEvent(new MouseEvent('mouseup', { ...shared, button: 0 }));
+      // .click() still runs last: it is what fires "click" handlers and runs
+      // a native control's default action (link navigation, form submit),
+      // neither of which the pointer/mouse sequence above triggers on its own.
+      el.click();
+    } catch (e) {
+      return { clicked: false, reason: String(e) };
+    }
+
+    return { clicked: true, synthesized: true };
+  };
+
   // Readiness helpers for Consentmanager's __cmp API.
   //
   // __cmp is installed as a stub before the CMP initialises, and a call made

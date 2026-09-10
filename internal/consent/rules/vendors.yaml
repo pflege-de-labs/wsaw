@@ -4,11 +4,19 @@
 # this file or by supplying an override pack, never by releasing a new binary.
 #
 # Conventions
-#   detect  must evaluate truthy for the rule to be tried
-#   verify  must evaluate truthy afterwards, otherwise the outcome is
-#           recorded as "unverified" rather than "applied"
-#   eval    is reserved for a vendor's own documented API, which is more
-#           robust than clicking a button whose label may be translated
+#   detect     must evaluate truthy for the rule to be tried
+#   verify     must evaluate truthy afterwards, otherwise the outcome is
+#              recorded as "unverified" rather than "applied"
+#   dismissed  must evaluate truthy once the banner itself is gone. Omit it
+#              when verify already checks the banner's own markup — the two
+#              would only disagree by accident. Set it explicitly only when
+#              verify checks CMP state instead (an API flag, an object
+#              existing), which proves the choice was recorded but says
+#              nothing about the banner still being on screen; left unset,
+#              wsaw falls back to the generic "does anything banner-shaped
+#              remain" check. See Story 2.7.
+#   eval       is reserved for a vendor's own documented API, which is more
+#              robust than clicking a button whose label may be translated
 #
 # Higher priority is tried first. Vendor rules sit above the heuristic
 # fallback in heuristics.yaml.
@@ -77,6 +85,9 @@ rules:
     verify: |
       !document.getElementById('onetrust-banner-sdk') ||
       getComputedStyle(document.getElementById('onetrust-banner-sdk')).display === 'none'
+    dismissed: |
+      !document.getElementById('onetrust-banner-sdk') ||
+      getComputedStyle(document.getElementById('onetrust-banner-sdk')).display === 'none'
 
   - name: cookiebot
     vendor: Cookiebot
@@ -143,6 +154,8 @@ rules:
         optional: true
       - click: "button[title='Reject all'], button[title='Reject All'], .sp_choice_type_13"
     verify: |
+      !document.querySelector('iframe[id^="sp_message_iframe"]')
+    dismissed: |
       !document.querySelector('iframe[id^="sp_message_iframe"]')
 
   # Consentmanager, driven through its documented __cmp API.
@@ -282,6 +295,8 @@ rules:
       - click: ".cmplz-deny"
     verify: |
       !document.querySelector('.cmplz-cookiebanner.cmplz-show')
+    dismissed: |
+      !document.querySelector('.cmplz-cookiebanner.cmplz-show')
 
   - name: borlabs
     vendor: Borlabs Cookie
@@ -306,6 +321,8 @@ rules:
       - click: ".cm-btn-decline, .cn-decline"
     verify: |
       !document.querySelector('#klaro .cookie-notice')
+    dismissed: |
+      !document.querySelector('#klaro .cookie-notice')
 
   - name: osano
     vendor: Osano
@@ -317,4 +334,6 @@ rules:
     reject:
       - click: ".osano-cm-denyAll, .osano-cm-deny"
     verify: |
+      !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
+    dismissed: |
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')

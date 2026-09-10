@@ -609,6 +609,9 @@ func collapseUninteracted(res *model.Result, views []screenshotView) []screensho
 		case res.Consent.Outcome == model.OutcomeFailed:
 			views[before].Note = "the consent interaction failed and left the page " +
 				"unchanged: the after frame is the same image, byte for byte"
+		case res.Consent.Outcome == model.OutcomeBannerVisible:
+			views[before].Note = "the CMP recorded the requested choice, but the banner " +
+				"was still displayed: the after frame is the same image, byte for byte"
 		default:
 			views[before].Note = "the consent interaction left the page looking " +
 				"identical: the after frame is the same image, byte for byte"
