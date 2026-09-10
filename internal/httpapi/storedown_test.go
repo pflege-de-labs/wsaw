@@ -148,11 +148,10 @@ func TestTheWebInterfaceReportsAStoreThatHasGoneAway(t *testing.T) {
 	}{
 		{"/targets/site/reject", http.StatusInternalServerError},
 		{"/audit", http.StatusInternalServerError},
-		// The result page reports a store failure as "not found", because
-		// loadResultUI cannot tell the two apart from the error alone. It is
-		// pinned here as the behaviour that exists: what matters for a
-		// reviewer is that the page is an error page and not an empty result.
-		{"/results/site/reject/scan-1", http.StatusNotFound},
+		// A store that cannot be read is not a scan that does not exist, and
+		// the result page has to say which of the two it is.
+		{"/results/site/reject/scan-1", http.StatusInternalServerError},
+		{"/results/site/reject/latest", http.StatusInternalServerError},
 	} {
 		resp := f.get(tc.path, "Accept", "text/html")
 
@@ -166,6 +165,28 @@ func TestTheWebInterfaceReportsAStoreThatHasGoneAway(t *testing.T) {
 		// had nothing in it.
 		if got := body(t, resp); !strings.Contains(got, "database is closed") {
 			t.Errorf("GET %s did not render the reason: %s", tc.path, got)
+		}
+	}
+}
+
+// The other half of that distinction: a scan that genuinely is not there
+// must still be a 404, so raising the store-failure case to 500 has not
+// simply moved the mis-report to the other side.
+func TestTheWebInterfaceStillReportsAMissingScanAsNotFound(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
+
+	for _, path := range []string{
+		"/results/site/reject/absent",
+		// A target that exists in configuration but has never been scanned
+		// has no latest result either.
+		"/results/site/accept/latest",
+	} {
+		resp := f.get(path, "Accept", "text/html")
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
 		}
 	}
 }
