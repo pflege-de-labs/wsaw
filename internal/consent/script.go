@@ -224,6 +224,15 @@ const helperScript = `
         const r = n.getBoundingClientRect();
         if (r.height < 30 || r.width < 150) continue;
 
+        // visible() checks style and size but not position: a panel parked
+        // off-canvas via transform/negative offset (a common closed-state for
+        // animated cookie panels) still has display, opacity and a nonzero
+        // rect, and would otherwise be mistaken for a banner that never goes
+        // away. Require it to actually intersect the viewport.
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
+
         const text = n.textContent || '';
         // A whole-page wrapper matches the words too, so require the element
         // to be banner-shaped rather than the entire document.

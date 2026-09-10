@@ -257,6 +257,18 @@ rules:
         const box = document.getElementById('cmpbox');
         return !box || getComputedStyle(box).display === 'none';
       })()
+    # Without this override, bannerGone falls back to the generic
+    # __wsawConsentContainer heuristic, which scans the whole page for any
+    # box-shaped element that merely mentions cookies/consent — and can lock
+    # onto an unrelated element (e.g. the always-present recall widget or a
+    # footer privacy link) that never goes away. #cmpbox is the actual
+    # banner element, and this mirrors the same display check verify already
+    # uses to confirm it is gone.
+    dismissed: |
+      (() => {
+        const box = document.getElementById('cmpbox');
+        return !box || getComputedStyle(box).display === 'none';
+      })()
 
   # CCM19 (papoo Software), driven through its window.CCM API.
   #
