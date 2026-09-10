@@ -17,6 +17,14 @@
 #              remain" check. See Story 2.7.
 #   eval       is reserved for a vendor's own documented API, which is more
 #              robust than clicking a button whose label may be translated
+#   necessary  is the fallback tried in `reject` mode when reject defines no
+#              steps, or every reject step is optional and none of them
+#              matched anything on the page — the shape of a banner that
+#              offers no reject/decline control at all. It must reach its
+#              state through a control the banner's own UI actually offers a
+#              visitor, never by calling a vendor API a visitor has no way to
+#              trigger themselves: the API existing is not evidence the site
+#              offers that choice. See Story 2.8.
 #
 # Higher priority is tried first. Vendor rules sit above the heuristic
 # fallback in heuristics.yaml.
@@ -107,16 +115,33 @@ rules:
       - click: "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept"
         optional: true
     reject:
+      # submitCustomConsent(false, false, false) is only tried when a
+      # decline-shaped control actually exists in the DOM. Cookiebot exposes
+      # that function on every site regardless of which buttons the site
+      # configured its banner to show, so calling it unconditionally would
+      # record a rejection no visitor could ever have produced by using the
+      # banner in front of them — exactly the gap that must not be reported
+      # as OutcomeApplied (Story 2.8).
       - eval: |
           (() => {
-            if (window.Cookiebot && window.Cookiebot.submitCustomConsent) {
+            const hasDecline = !!window.__wsawQuery(
+              '#CybotCookiebotDialogBodyButtonDecline, #CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll'
+            );
+            if (hasDecline && window.Cookiebot && window.Cookiebot.submitCustomConsent) {
               window.Cookiebot.submitCustomConsent(false, false, false);
               return true;
             }
             return false;
           })()
+        optional: true
       - click: "#CybotCookiebotDialogBodyButtonDecline, #CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll"
         optional: true
+    necessary:
+      # The "categories" template's own "Allow selection" control submits
+      # whatever the checkboxes are currently set to. Every optional category
+      # is unchecked by default, so clicking it as a visitor would leaves only
+      # the categories Cookiebot itself marks necessary and locks (Story 2.8).
+      - click: "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowallSelection, #CybotCookiebotDialogBodyButtonAcceptSelection"
     verify: |
       !!(window.Cookiebot && window.Cookiebot.hasResponse)
 
