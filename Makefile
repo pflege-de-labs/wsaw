@@ -149,12 +149,22 @@ cover:
 #
 # It sits below what a developer machine measures on purpose. A machine with
 # Podman and Chrome covers container paths that skip on a runner without a
-# container runtime, and that is worth about four points: the same tree
-# measures 78.3% locally and 74.2% on Linux CI. A floor calibrated against
-# the higher number fails the build for a difference in the environment
-# rather than in the code, so this tracks CI, with a little room for the
-# run-to-run variance of the browser-dependent tests.
-COVER_MIN ?= 73.5
+# container runtime, and that was worth about four points at the Phase 0/1
+# baseline: the same tree measured 78.3% locally and 74.2% on Linux CI. A
+# floor calibrated against the higher number fails the build for a
+# difference in the environment rather than in the code, so this tracks CI,
+# with a little room for the run-to-run variance of the browser-dependent
+# tests.
+#
+# Phases 2 and 3 (internal/app wiring, plus cmd/wsaw's browser- and
+# signal-driven paths) landed without touching the container path — every
+# new test forces browser.runtime: local — so they should not change that
+# four-point gap much. Local now measures 82.6%. This is raised to 77.0
+# rather than to a number derived from that, on the same principle the
+# Phase 0/1 floor was set on: guess conservatively and let CI's next run
+# correct it, because a floor set above what CI actually measures is a
+# broken build, not a gate. Raise it again once CI has measured this.
+COVER_MIN ?= 77.0
 
 # cover-gate fails the build below COVER_MIN. The percentage comes from
 # `go tool cover -func`, which knows how to fold the repeated blocks a

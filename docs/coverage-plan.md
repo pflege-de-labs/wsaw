@@ -1,6 +1,6 @@
 # Plan: reach 80% statement coverage
 
-**Status:** Phases 0 and 1 are done; coverage is at **78.3%**. Phases 2–4 are still proposals. See [§6](#6-progress) for what landed and what the numbers turned out to be.
+**Status:** Phases 0–3 are done; coverage is at **82.6%** locally. Phase 4 is still a proposal. See [§6](#6-progress) for what landed and what the numbers turned out to be.
 
 Numbers measured 2026-09-09 on `main` (`f792284`), macOS arm64, Chrome and Podman both present.
 
@@ -183,11 +183,11 @@ New: `cmd/wsaw/cli_integration_test.go`, guarded exactly like `internal/scanner/
 |---|---|---|---|---|
 | 0 | `-coverpkg`, drop test scaffolding from the denominator, gate + ratchet | 0 | **71.2%** (from a reported 59.1%) | done |
 | 1 | `cmd/wsaw` without a browser | +656 (est. +520) | **78.3%** (est. ~76.2%) | done |
-| 2 | `internal/app` | +200 remaining | ~80.2% | to do |
-| 3 | CLI end to end against fixtures | +350 | **~83%** | to do |
+| 2 | `internal/app` | +244 (est. +260 of 337) | **~80.1%** (est. ~80.2%) | done |
+| 3 | CLI end to end against fixtures | +241 more in `cmd/wsaw` (est. +350) | **82.6%** (est. ~83%) | done |
 | 4 | Buffer: store dialects in CI, httpapi handlers, pool recycle, TCF, capture interaction | +430 available | headroom | to do |
 
-Phase 0 is a few lines of `Makefile` and CI. Phases 1–2 are ordinary table-driven tests with no browser, and are where most of the real risk reduction is. Phase 3 is the one that needs Chrome, and it buys both the last three points and the only coverage the daemon supervisor has ever had.
+Phase 0 is a few lines of `Makefile` and CI. Phases 1–2 are ordinary table-driven tests with no browser, and are where most of the real risk reduction is. Phase 3 is the one that needed Chrome, and it bought both the last few points and the only coverage the daemon supervisor has ever had.
 
 ## 5. Rules this plan will not break
 
@@ -232,8 +232,42 @@ What the new tests assert, beyond arithmetic:
 - A reload adopts a targets-only change and refuses one it cannot apply, leaving the running configuration untouched — regression cover for `2aa987f`.
 - Sharing is off unless asked for, and a minted link warns that it cannot be revoked.
 
+### What was left after Phase 1
+
+`cmd/wsaw`'s four uncovered functions were all Phase 3: `runOnce`, `scanWithRetries`, `supervise`, and `main` itself. They needed either a real browser or a signal-driven daemon, and mocking a Chrome to reach them would have tested the mock. `main` (`os.Exit`) stays uncovered on purpose.
+
+### Phase 2 — done
+
+Two new files, no browser: `internal/app/app_test.go` and `internal/app/browser_test.go`. `internal/app` went from the 26.4% Phase 1 left incidentally to **72.4%** (244 of 337 statements) — short of the ~77% estimate, because `resolveBrowser`'s container branch (`containerLauncher.Start`, the image-resolution and reap logic) is deliberately left to `internal/container`'s own tests rather than exercised here: every test in this package forces `browser.runtime: local` specifically so it runs the same on a machine with Podman as on CI without one.
+
+What the new tests assert, beyond arithmetic:
+
+- `BrowserSandboxed` and `BrowserRuntimeName` are pure functions of `Runtime`/`NoSandbox`, tested as a table with no I/O at all.
+- `Close` is idempotent and unwinds acquired resources in reverse order, and a closer's error is joined rather than dropped (Rule 5).
+- `openServerStore` registers a DSN as a secret *before* the connection attempt that might fail, so a failed connection's own log line cannot leak it (Story 4.7, AC6) — asserted directly by scrubbing a string containing it after a deliberately-failing open.
+- `Trigger` refuses a target that is not configured and a scan with no browser, without needing either a target list built from real config or an actual scanner.
+- `PruneLoop` returns immediately with no retention policy configured, and returns on context cancellation with one configured — neither case needs an hour to elapse: the first returns before any ticker exists, and the second races cancellation against the same `select` regardless of when the ticker would next fire.
+- One test (`TestNewWithARealLocalBrowserBuildsAPoolAndScanner`) does use a real Chrome, because `buildScanner`'s success path — a non-nil pool reaching `scanner.New` — cannot otherwise be reached without one; it launches nothing, since `browser.NewPool` defers that to the first scan.
+
+### Phase 3 — done
+
+One new file: `cmd/wsaw/cli_integration_test.go`, guarded exactly like `internal/scanner/integration_test.go` — skips on `WSAW_SKIP_BROWSER_TESTS`, skips with a stated reason when no usable Chrome is found. Every fixture forces `browser.runtime: local` for the same reason Phase 2's tests do: this development machine has Podman running, and the container path needs an image this sandbox cannot pull. Fixture servers only, never a live site (Rule 7).
+
+`cmd/wsaw` went from **59.0%** to **80.7%** (897 of 1,111 statements). Total measured coverage: **82.6%** (8,660 of 10,478 statements), against the 82% the plan projected.
+
+| Package | Before Phase 3 | After |
+|---|---|---|
+| `cmd/wsaw` | 59.0% | **80.7%** |
+| **total** | **80.1%** | **82.6%** |
+
+What the new tests assert, beyond arithmetic:
+
+- The exit-code contract end to end, against a real scan rather than a hand-built `scanner.Outcome`: a clean fixture scan exits 0; a second scan of the same target, after the fixture starts serving a pixel from a third-party host absent from the first scan's baseline, trips the default `--fail-on high` threshold (a new third-party host in reject mode defaults to critical severity) and exits 1.
+- **Operational failure outranks findings** — the invariant the plan called out specifically: a scan of an unreachable target still produces a result (just not an `OK` one), which `runOnce` counts as a failure, which `cmdScan` reports as exit 2 regardless of what any diff found. Asserted against a real failed navigation, not a synthesized one.
+- `cmdDebug`'s success path: a real scan, reported as markdown on stdout, with the scan announcement on stderr.
+- `cmdShare` end to end: mints a link from a seeded store with no browser at all (sharing never requires one), and the link is fed back through a real `share.Signer.Verify` rather than asserted on its shape.
+- `supervise`, previously the least-tested code in the repository (113 statements, no coverage): a real SIGHUP, delivered to the test process exactly as an operator's `kill -HUP` would be, reloads a targets-only configuration change and is rejected — leaving the running configuration untouched — when the change is one only a restart can apply. Cancelling the context afterward, standing in for the SIGTERM `main` turns into cancellation, shuts it down cleanly within the test's timeout.
+
 ### What is left
 
-`cmd/wsaw`'s four uncovered functions are all Phase 3: `runOnce`, `scanWithRetries`, `supervise`, and `main` itself. They need either a real browser or a signal-driven daemon, and mocking a Chrome to reach them would test the mock. `main` (`os.Exit`) stays uncovered on purpose.
-
-At 78.3%, Phase 2 alone (`internal/app`, 248 statements still uncovered) clears 80%.
+Phase 4 remains a proposal: store dialects other than SQLite are only exercised when their DSN env vars are set in CI, and `internal/httpapi`'s handlers, `browser`'s pool-recycle path, TCF/GPP consent, and capture's dialog/scroll interactions are all lower-value, higher-cost additions than anything Phases 0–3 did. `COVER_MIN` is raised to 77.0 — conservatively, on the same "guess and let CI correct it" principle the Phase 0 floor was set on, since this was measured on a machine with both Podman and Chrome and CI's next run is what actually calibrates it.
