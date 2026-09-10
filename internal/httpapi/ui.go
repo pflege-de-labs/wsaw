@@ -311,6 +311,10 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 				Target: j.Target, Mode: j.Mode, NextRun: j.NextRun, LastRun: j.LastRun,
 			})
 		}
+
+		sort.SliceStable(data.Jobs, func(i, k int) bool {
+			return data.Jobs[i].NextRun.Before(data.Jobs[k].NextRun)
+		})
 	}
 
 	s.renderPage(w, r, "dashboard.html", "wsaw", data, len(data.Running))
