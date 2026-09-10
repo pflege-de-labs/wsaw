@@ -469,6 +469,29 @@ e2e-postgres-test:
 	$(MAKE) --no-print-directory e2e-compose-down DB=postgres; \
 	exit $$status
 
+# The same test again, against MySQL (Story 7.5): one test body parameterized
+# by dialect (TestMySQLStack, alongside TestPostgresStack in the same file),
+# not two files that would drift, plus the dialect differences that have no
+# Postgres equivalent at all — charset/collation, strict sql_mode, timestamp
+# precision, the upsert form.
+.PHONY: e2e-mysql-test
+e2e-mysql-test: DB := mysql
+e2e-mysql-test:
+	$(MAKE) --no-print-directory e2e-compose-up DB=mysql
+	@WSAW_E2E_API_BASE=http://127.0.0.1:18712 \
+	WSAW_E2E_API_TOKEN=wsaw-e2e-fixture-only-token \
+	WSAW_E2E_SITE_BASE=http://127.0.0.1:18081 \
+	WSAW_E2E_DSN="wsaw:wsaw-e2e-fixture-only@tcp(127.0.0.1:3306)/wsaw" \
+	WSAW_E2E_COMPOSE_CMD="$(E2E_COMPOSE_FROM_TESTDIR)" \
+	go test -tags e2e -count=1 -v ./test/e2e/... -run TestMySQLStack; \
+	status=$$?; \
+	if [ $$status -ne 0 ]; then \
+		echo; echo "=== stack logs (the suite failed) ==="; \
+		$(E2E_COMPOSE) logs --no-color; \
+	fi; \
+	$(MAKE) --no-print-directory e2e-compose-down DB=mysql; \
+	exit $$status
+
 # The Podman pod (Story 7.3): the same four services as the Compose stack
 # above, but as a genuine pod rather than a translation of one. A pod's
 # containers share one network namespace, so they reach each other on

@@ -310,6 +310,53 @@ which differs between the two (Story 7.3 found exactly that difference
 once already) — using the same invocation `make e2e-postgres-test` was
 called with, passed through as `WSAW_E2E_COMPOSE_CMD`.
 
+### The same test against MySQL
+
+```sh
+make e2e-mysql-test
+```
+
+`TestMySQLStack` in the same file runs every assertion above against the
+MySQL profile — one test body parameterized by dialect, not a second file
+that would drift (Story 7.5, AC1) — plus what MySQL specifically forces that
+Postgres does not:
+
+- **Charset and collation.** MySQL's default collation is case-insensitive
+  and accent-insensitive, which would silently merge two differently-cased
+  target names into one series; the schema wsaw's own migrations created on
+  the live server is confirmed pinned to `utf8mb4`/`utf8mb4_bin` (AC3).
+- **Strict `sql_mode`.** Without `STRICT_ALL_TABLES`, MySQL truncates a value
+  that overflows its column and reports success — which would shorten a
+  captured URL and change the finding rather than fail loudly. This is
+  confirmed against the live server with a value that overflows a real
+  column, in a transaction that is always rolled back so it can never affect
+  what another subtest counts (AC4).
+- **Timestamp precision.** MySQL's default `DATETIME` drops fractional
+  seconds, and "the scan before this one" is decided by that ordering. wsaw
+  sidesteps `DATETIME` entirely — `started_at` is a bigint count of
+  nanoseconds, the same as every other dialect — and this confirms that
+  choice actually preserves sub-second precision on a live server (AC5).
+- **The upsert form.** MySQL's `insert ... as new on duplicate key update`
+  is not the portable form the other two dialects use. Approving a second
+  baseline for the same target and mode must overwrite the first rather
+  than error or duplicate the row, proven through a real baseline approval
+  rather than a hand-built query (AC2).
+
+Two things AC2 also names are deliberately not re-tested here, rather than
+worked around silently (AC6):
+
+- **The JSON accessor.** There is not one. Story 4.6 chose to derive
+  summaries by parsing the stored document in Go rather than in SQL, so
+  nothing in the store depends on `json_extract`, `->>`, or
+  `JSON_EXTRACT()` — the dialect seam is smaller because of it, and there is
+  nothing dialect-specific left to exercise.
+- **The retention delete's absence of `rowid`.** Pruning has no HTTP
+  endpoint to trigger it on demand from outside the process, so this suite
+  cannot reach it without reopening the store package directly — which is
+  exactly what `internal/store`'s own dialect tests already do, against a
+  real MySQL container, via `make test-store-mysql`. Re-deriving that here
+  would test the same SQL a second way rather than a new one.
+
 ## Licence
 
 Klaro is BSD-3-Clause, © KIProtect GmbH. It is fetched at build time rather
