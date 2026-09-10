@@ -202,6 +202,56 @@ outside. Read the results back with SQL against the database directly
 through wsaw's own API — asking the writer whether it wrote correctly proves
 less. That is what Stories 7.4 and 7.5 automate.
 
+## Podman pod
+
+The rootless runtime is preferred throughout wsaw (Story 1.8 already picks
+Podman where a runtime is being detected), so the deployment story is not
+Docker-only either: `make e2e-pod-up DB=postgres|mysql` brings up the same
+four services as a genuine Podman pod (Story 7.3) — not a translation of the
+Compose file, a pod.
+
+```sh
+make e2e-pod-up   DB=postgres   # or DB=mysql
+make e2e-pod-scan DB=postgres   # scans all three consent modes
+make e2e-pod-logs                # follow every container
+make e2e-pod-down                # stop the pod and remove it
+```
+
+The difference that matters: a pod's containers share one network
+namespace, so they reach each other on `localhost` rather than by service
+name, and — unlike Compose, where every container has its own address —
+every one of them needs its **own port** there or two services collide. That
+is a real failure mode inside a pod, and it is the reason
+`test/e2e/pod/wsaw.postgres.yaml` is its own file rather than
+`compose/wsaw.postgres.yaml` with the hostnames swapped: site, tracker, the
+database and wsaw's own API each get an unobvious port
+(`18081`/`18082`/`5432` or `3306`/`18712`), chosen the same way the fixture's
+own `8081`/`8082` are — so a pod left running cannot collide with the
+Compose stack, with `e2e-fixture-up`, or with a wsaw already running on the
+machine for real (wsaw's documented default port, `8712`, is exactly what a
+real deployment would be using).
+
+It runs rootless — the same as every other `podman` target in this file.
+Nothing about being in a pod needs anything extra granted to Chrome's
+sandbox beyond what a standalone container already needs; where a host's
+rootless configuration does need more (user namespaces, a seccomp
+adjustment), that requirement belongs to running Chrome in *any*
+unprivileged container, and is documented once, in the root `Dockerfile`,
+rather than repeated here.
+
+`e2e-pod-up` builds the wsaw image itself (there is no Compose to do it),
+creates the pod, starts the fixture's two origins and the database, waits
+for the database to answer over **TCP** — not the Unix socket a bare
+`mysqladmin ping -h localhost` would silently prefer, which answers before
+the real server is listening on the port wsaw actually connects to — then
+starts wsaw and waits for its own health endpoint, the same way
+`e2e-compose-up --wait` does.
+
+There is no Kubernetes manifest in this repository yet to compare this pod
+against (Story 6.10 is not implemented): once one exists, this is the
+container list, images and ports it should be checked against, and the
+documentation should say where they differ and why (Story 7.3, AC5).
+
 ## Licence
 
 Klaro is BSD-3-Clause, © KIProtect GmbH. It is fetched at build time rather

@@ -429,6 +429,132 @@ e2e-compose-logs:
 	$(call e2e_compose_need_db,e2e-compose-logs)
 	$(E2E_COMPOSE) logs -f
 
+# The Podman pod (Story 7.3): the same four services as the Compose stack
+# above, but as a genuine pod rather than a translation of one. A pod's
+# containers share one network namespace, so they reach each other on
+# localhost — which means every one of them needs its own port, unlike
+# Compose where each container has its own address and site/tracker can both
+# listen on :8080 without conflict. A port collision here is a real failure
+# mode, so the ports below are chosen to avoid one (AC2), including against
+# e2e-fixture-up's own 8081/8082 on the same machine.
+#
+# It runs rootless, the same as every other podman target in this file —
+# there is nothing pod-specific to grant Chrome's sandbox beyond what
+# e2e-fixture-up and e2e-compose-up already need (AC3).
+E2E_POD_NAME         ?= wsaw-e2e-pod
+E2E_POD_DIR          := $(DIST)/e2e/pod
+# wsaw's own documented default, 8712, is exactly the port a wsaw already
+# running on this machine (the compose stack, a manual `wsaw run`, another
+# deployment) would be using — so, like the fixture's own 8081/8082, the pod
+# uses an unobvious one instead of colliding with it.
+E2E_POD_API_PORT     ?= 18712
+E2E_POD_SITE_PORT    ?= 18081
+E2E_POD_TRACKER_PORT ?= 18082
+E2E_POD_TOKEN        := wsaw-e2e-fixture-only-token
+E2E_POD_IMAGE        := localhost/wsaw:e2e-pod
+
+# The database is picked the same way e2e-compose-up picks one: DB=postgres
+# or DB=mysql, this time selecting a set of variables rather than an
+# override file, because a pod is one set of `podman run` invocations rather
+# than a document another document can be merged into.
+ifeq ($(DB),mysql)
+E2E_POD_DB_PORT   := 3306
+E2E_POD_DB_IMAGE  := docker.io/library/mysql:8.4
+E2E_POD_DB_ENV    := -e MYSQL_DATABASE=wsaw -e MYSQL_USER=wsaw \
+	-e MYSQL_PASSWORD=wsaw-e2e-fixture-only -e MYSQL_ROOT_PASSWORD=wsaw-e2e-fixture-only-root
+# -h127.0.0.1 rather than -h localhost: the mysql client treats "localhost"
+# as "connect over the Unix socket", which the init server answers on before
+# the real server is listening on TCP — exactly the connection wsaw itself
+# makes. A probe that is not forced onto TCP reports ready too early.
+E2E_POD_DB_READY  := mysqladmin ping -h127.0.0.1 -uwsaw -pwsaw-e2e-fixture-only --silent
+E2E_POD_STORE_DSN := wsaw:wsaw-e2e-fixture-only@tcp(localhost:3306)/wsaw
+else
+E2E_POD_DB_PORT   := 5432
+E2E_POD_DB_IMAGE  := docker.io/library/postgres:16-alpine
+E2E_POD_DB_ENV    := -e POSTGRES_USER=wsaw -e POSTGRES_PASSWORD=wsaw-e2e-fixture-only -e POSTGRES_DB=wsaw
+E2E_POD_DB_READY  := pg_isready -U wsaw -d wsaw
+E2E_POD_STORE_DSN := postgres://wsaw:wsaw-e2e-fixture-only@localhost:5432/wsaw?sslmode=disable
+endif
+
+# e2e-pod-config writes the wsaw configuration the pod's wsaw container
+# mounts. It differs from test/e2e/compose/wsaw.$(DB).yaml only in using
+# localhost ports rather than service names — the two are not the same file
+# with the hostnames swapped, they express a genuinely different topology
+# (AC2) — so it is copied rather than generated from a template.
+.PHONY: e2e-pod-config
+e2e-pod-config:
+	$(call e2e_compose_need_db,e2e-pod-config)
+	@mkdir -p $(E2E_POD_DIR)
+	@cp test/e2e/pod/wsaw.$(DB).yaml $(E2E_POD_DIR)/wsaw.yaml
+	@echo "wrote $(E2E_POD_DIR)/wsaw.yaml"
+
+.PHONY: e2e-pod-up
+e2e-pod-up: e2e-fixture-image e2e-pod-down e2e-pod-config
+	$(call e2e_compose_need_db,e2e-pod-up)
+	$(E2E_RUNTIME) build -q -f Dockerfile -t $(E2E_POD_IMAGE) .
+	$(E2E_RUNTIME) pod create --name $(E2E_POD_NAME) \
+		-p 127.0.0.1:$(E2E_POD_API_PORT):$(E2E_POD_API_PORT) \
+		-p 127.0.0.1:$(E2E_POD_SITE_PORT):$(E2E_POD_SITE_PORT) \
+		-p 127.0.0.1:$(E2E_POD_TRACKER_PORT):$(E2E_POD_TRACKER_PORT) \
+		-p 127.0.0.1:$(E2E_POD_DB_PORT):$(E2E_POD_DB_PORT)
+	$(E2E_RUNTIME) run -d --pod $(E2E_POD_NAME) --name $(E2E_POD_NAME)-tracker \
+		$(E2E_FIXTURE_IMAGE) -role=third-party -listen=:$(E2E_POD_TRACKER_PORT) \
+		-self-base=http://localhost:$(E2E_POD_TRACKER_PORT)
+	$(E2E_RUNTIME) run -d --pod $(E2E_POD_NAME) --name $(E2E_POD_NAME)-site \
+		$(E2E_FIXTURE_IMAGE) -role=site -listen=:$(E2E_POD_SITE_PORT) \
+		-third-party-base=http://localhost:$(E2E_POD_TRACKER_PORT)
+	$(E2E_RUNTIME) run -d --pod $(E2E_POD_NAME) --name $(E2E_POD_NAME)-db \
+		$(E2E_POD_DB_ENV) $(E2E_POD_DB_IMAGE)
+	@printf 'waiting for the database '
+	@for i in $$(seq 1 50); do \
+		$(E2E_RUNTIME) exec $(E2E_POD_NAME)-db sh -c '$(E2E_POD_DB_READY)' >/dev/null 2>&1 && { echo ok; break; }; \
+		if [ "$$i" = 50 ]; then \
+			echo; echo "the database never became ready:"; $(E2E_RUNTIME) logs $(E2E_POD_NAME)-db; exit 1; \
+		fi; \
+		sleep 0.5; \
+	done
+	$(E2E_RUNTIME) run -d --pod $(E2E_POD_NAME) --name $(E2E_POD_NAME)-wsaw \
+		--shm-size=1gb \
+		-e WSAW_STORE_DSN="$(E2E_POD_STORE_DSN)" \
+		-e WSAW_API_TOKEN=$(E2E_POD_TOKEN) \
+		-v $(CURDIR)/$(E2E_POD_DIR)/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro \
+		$(E2E_POD_IMAGE)
+	@for name_port in site:$(E2E_POD_SITE_PORT):/__fixture/healthz tracker:$(E2E_POD_TRACKER_PORT):/__fixture/healthz wsaw:$(E2E_POD_API_PORT):/api/v1/health; do \
+		name=$${name_port%%:*}; rest=$${name_port#*:}; port=$${rest%%:*}; path=$${rest#*:}; \
+		printf 'waiting for %s on 127.0.0.1:%s ' "$$name" "$$port"; \
+		for i in $$(seq 1 50); do \
+			if curl -fsS -H "Authorization: Bearer $(E2E_POD_TOKEN)" "http://127.0.0.1:$$port$$path" >/dev/null 2>&1; then \
+				echo ok; break; \
+			fi; \
+			if [ "$$i" = 50 ]; then \
+				echo; echo "$$name never became healthy:"; $(E2E_RUNTIME) logs $(E2E_POD_NAME)-$$name 2>&1 | tail -20; exit 1; \
+			fi; \
+			sleep 0.2; \
+		done; \
+	done
+	@echo
+	@echo "The pod is up, wsaw included, all reporting healthy."
+	@echo "Scan it:            make e2e-pod-scan DB=$(DB)"
+	@echo "Watch what it says: make e2e-pod-logs"
+	@echo "Take it down:       make e2e-pod-down"
+
+.PHONY: e2e-pod-scan
+e2e-pod-scan:
+	@for mode in none reject accept; do \
+		echo "scanning fixture ($$mode)..."; \
+		curl -fsS -X POST -H "Authorization: Bearer $(E2E_POD_TOKEN)" \
+			"http://127.0.0.1:$(E2E_POD_API_PORT)/api/v1/scan/fixture/$$mode" >/dev/null || exit 1; \
+	done
+	@echo "done — read the results back with SQL, not through wsaw (Story 7.4, AC1)."
+
+.PHONY: e2e-pod-down
+e2e-pod-down:
+	@$(E2E_RUNTIME) pod rm -f $(E2E_POD_NAME) >/dev/null 2>&1 || true
+
+.PHONY: e2e-pod-logs
+e2e-pod-logs:
+	$(E2E_RUNTIME) logs -f $(E2E_POD_NAME)-tracker $(E2E_POD_NAME)-site $(E2E_POD_NAME)-db $(E2E_POD_NAME)-wsaw
+
 .PHONY: docker
 docker:
 	docker buildx build \
