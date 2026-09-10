@@ -194,6 +194,28 @@ Interact with the site's consent management platform (CMP) so the same URL can b
 - AC2: The report summarizes third-party hosts contacted in the `pre-interaction` phase separately.
 - AC3: In `reject` mode, third-party hosts contacted after rejection are highlighted as the primary finding.
 
+### Story 2.7 — Fall back to the click when the API does not close the banner (not implemented)
+
+*As a Compliance Officer, I want wsaw to click the banner's own control when the vendor API leaves the banner standing so that the evidence I show a regulator matches what a visitor would have seen.*
+
+Tenet 11 ranks the API above the click, and that ranking is right for expressing the choice: `submitCustomConsent(false, false, false)` denies every category without depending on a button label. It is not right for concluding the interaction is over. A vendor API writes the CMP's consent state; the banner's disappearance is usually wired to the button's own handler, and calling the API around the button leaves that handler unrun. The result is a page that has rejected everything and still shows the dialog.
+
+`https://www.hartmann.info/` is the case that surfaced this. Its Cookiebot skin offers category checkboxes, "Allow selected cookies" and "Allow all cookies" — and no decline control at all, so the `cookiebot` rule's `click` step for `#CybotCookiebotDialogBodyButtonDecline` matches nothing and, being `optional`, is skipped without comment. The `eval` step succeeds, `window.Cookiebot.hasResponse` turns true, `verify` passes, and the scan records `applied — rule "cookiebot" applied and verified`. The before and after screenshots are the same image byte for byte, and the report says so — the one place the truth appears is a caption the consent outcome never reads.
+
+The rejection itself was real: no non-essential third party was contacted afterwards. That is what makes the gap subtle rather than loud, and why it is worth a story. wsaw claims a state it has only half reached, which is the failure Tenet 5 exists to prevent, and it does so on the two words a reviewer actually reads.
+
+The fix is to stop letting one expression stand for two questions. "Did the CMP record my choice?" and "is the banner gone?" are separate facts with separate evidence, and only the second one licenses the tool to stop interacting. When the choice is recorded and the banner persists, the click steps that were skipped as optional become the next thing to try, not the thing to skip — the ranking in Tenet 11 is about which mechanism to *try first*, never about which one is allowed to finish the job.
+
+- AC1: A rule can express two verifications: that the CMP recorded the choice (`verify`, as today) and that the banner is no longer displayed (a new expression, defaulting to the shared visible-container check that `window.__wsawConsentContainer` already provides for the heuristic rules). A rule that names neither can still only ever be `unverified` (Story 2.5).
+- AC2: When the choice is recorded but the banner is still displayed, the engine escalates: the rule's remaining steps run even where they are marked `optional`, and where a rule offers no selector the heuristic label match for the current mode is attempted (Story 2.4, AC5). Escalation is bounded to one pass with the existing step timeout — a banner that survives it is reported, not retried in a loop (Tenet 6).
+- AC3: The escalation click reaches controls that `HTMLElement.click()` alone does not. The element is scrolled into view and receives the pointer and mouse event sequence a real click produces before `click()` is dispatched, because a CMP whose handler is bound to `pointerdown` is exactly the case this story exists to serve. The synthesized events are recorded as synthesized; wsaw does not claim a trusted event.
+- AC4: The recorded mechanism names what actually closed the banner, not what was tried first. An interaction that began at the vendor API and finished with a click is distinguishable in the result from one the API completed alone, and a click that only ran because the API left the banner up is distinguishable from a rule that was selector-based from the start (Tenet 11).
+- AC5: A banner that is still displayed after the escalation yields an honest outcome. The recorded choice is not thrown away — the categories really were denied and the post-interaction traffic really is evidence — but the result states that the banner persisted, and the outcome is not a bare `applied`.
+- AC6: The escalation does not move the pre/post-consent phase boundary. It is marked once, before the first step (Story 2.6, AC1); traffic a fallback click triggers is post-consent traffic, and no request already recorded is relabelled.
+- AC7: The screenshot pair and the consent outcome agree. Where before and after are the same image byte for byte and the outcome claims the banner was handled, that contradiction is surfaced in the result rather than only in the report's caption — the signal already exists in the UI layer and belongs where every consumer of the document can see it (Tenet 16).
+- AC8: The `cookiebot` rule closes the banner on `https://www.hartmann.info/` in `reject` mode, or reports that it could not. Regression coverage uses a stored fixture of that banner — a Cookiebot skin with no decline control — so the case survives the site being redesigned.
+- AC9: Rules that the API already closes cleanly do not gain a click. The escalation is driven by the banner-gone check, never by the mode or the vendor, so a CMP whose API does dismiss its own dialog performs exactly the interactions it performs today.
+
 ---
 
 # Epic 3 — Targets, Configuration & Daemon Operation
