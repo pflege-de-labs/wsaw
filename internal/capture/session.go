@@ -291,6 +291,8 @@ func (s *session) execute(hooks Hooks) error {
 		if acted {
 			if err := s.screenshot("after-consent"); err != nil {
 				s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
+			} else {
+				s.recordScreenshotIdentity()
 			}
 		}
 
@@ -646,6 +648,33 @@ func (s *session) fingerprintBody(id network.RequestID) {
 			label, value := s.opts.Normalizer.BodyIdentity(u, string(body))
 			s.rec.setBodyIdentity(id, label, value)
 		}
+	}
+}
+
+// recordScreenshotIdentity notes when the before- and after-interaction
+// screenshots are byte-for-byte identical, directly on the consent result.
+//
+// The HTTP UI already computes this to caption the screenshot pair, but a
+// caption is not evidence a JSON consumer can see (Tenet 16): a claimed
+// interaction that left the page looking unchanged belongs in the document
+// wsaw hands over, not only in a page rendered from it (Story 2.7, AC7).
+func (s *session) recordScreenshotIdentity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var before, after string
+
+	for _, shot := range s.screenshots {
+		switch shot.Kind {
+		case "screenshot-before-consent":
+			before = shot.SHA256
+		case "screenshot-after-consent":
+			after = shot.SHA256
+		}
+	}
+
+	if before != "" && before == after {
+		s.res.Consent.ScreenshotsIdentical = true
 	}
 }
 

@@ -161,12 +161,14 @@ wsaw rules test --rules my-rules.yaml https://www.example.com/
 
 A rule without a `verify` expression can never report `applied`, only `unverified`. That is deliberate.
 
+`verify` proves the CMP recorded the choice; it does not prove the banner closed — a vendor API commonly records consent without ever running the banner's own dismiss handler. When `verify` passes but the banner is still on screen, wsaw retries the rule's click steps with a fuller pointer/mouse event sequence and, failing that, the generic label-matching fallback, before giving up and reporting `banner-visible` rather than `applied`. A rule can name its own banner-gone check with `dismissed`; left unset, wsaw falls back to the same "does anything banner-shaped remain" heuristic the label-matching fallback uses.
+
 ## Reading a result
 
 Two fields decide whether anything else on the page can be believed:
 
 - **`termination`** — `idle` means the page went quiet on its own. `timeout`, `request-cap` or `byte-cap` mean the list may be incomplete. `error` or `skipped` mean it is not a result at all.
-- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), or `failed`.
+- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), `banner-visible` (the CMP recorded the choice, but the banner stayed on screen even after a fallback click), or `failed`.
 
 Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Third-party hosts in the pre-interaction phase of a `reject`-mode scan are the headline compliance finding.
 

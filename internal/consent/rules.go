@@ -62,6 +62,14 @@ type Rule struct {
 	// steps ran. Without it, the interaction can only ever be "unverified".
 	Verify string `yaml:"verify,omitempty"`
 
+	// Dismissed is a JavaScript expression that must evaluate truthy once the
+	// banner itself is no longer displayed. It answers a different question
+	// than Verify: a vendor API can record a choice without the banner's own
+	// dismiss handler ever running, so "the CMP recorded my choice" and "the
+	// banner is gone" need separate evidence (Story 2.7, AC1). Empty means
+	// the shared heuristic container check decides.
+	Dismissed string `yaml:"dismissed,omitempty"`
+
 	// Priority orders rules; higher wins. Site-specific rules should
 	// outrank generic vendor rules.
 	Priority int `yaml:"priority,omitempty"`

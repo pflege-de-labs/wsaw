@@ -141,9 +141,10 @@
             "applied",
             "not-needed",
             "failed",
-            "unverified"
+            "unverified",
+            "banner-visible"
           ],
-          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed."
+          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed. 'banner-visible' means the CMP recorded the requested choice but the banner itself was still displayed even after a fallback click was attempted."
         },
         "reason": {
           "type": "string"
@@ -163,9 +164,12 @@
             "gpp",
             "vendor-api",
             "selector",
-            "heuristic"
+            "heuristic",
+            "vendor-api+click",
+            "selector+click",
+            "heuristic+click"
           ],
-          "description": "How the state was reached. A TCF API call is strong evidence; a heuristic label match is weak."
+          "description": "How the state was reached. A TCF API call is strong evidence; a heuristic label match is weak. A '+click' suffix means the primary mechanism recorded the choice but left the banner displayed, and a fallback click was needed to close it."
         },
         "heuristic": {
           "type": "boolean",
@@ -180,6 +184,10 @@
         "interactedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "screenshotsIdentical": {
+          "type": "boolean",
+          "description": "True when the before- and after-interaction screenshots are byte-for-byte identical, which contradicts an 'applied' outcome and is worth checking even when the outcome is 'banner-visible' or 'failed'."
         }
       }
     },

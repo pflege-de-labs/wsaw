@@ -194,7 +194,7 @@ Interact with the site's consent management platform (CMP) so the same URL can b
 - AC2: The report summarizes third-party hosts contacted in the `pre-interaction` phase separately.
 - AC3: In `reject` mode, third-party hosts contacted after rejection are highlighted as the primary finding.
 
-### Story 2.7 — Fall back to the click when the API does not close the banner (not implemented)
+### Story 2.7 — Fall back to the click when the API does not close the banner
 
 *As a Compliance Officer, I want wsaw to click the banner's own control when the vendor API leaves the banner standing so that the evidence I show a regulator matches what a visitor would have seen.*
 

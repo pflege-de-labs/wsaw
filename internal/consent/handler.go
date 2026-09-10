@@ -29,6 +29,18 @@ const (
 	MechanismHeuristic = "heuristic"
 )
 
+// mechanismEscalatedSuffix is appended to a mechanism when a fallback click
+// was needed to close a banner that the primary mechanism left displayed —
+// "vendor-api+click" and "selector+click" report a different story than
+// "vendor-api" and "selector" alone (Story 2.7, AC4).
+const mechanismEscalatedSuffix = "+click"
+
+// defaultDismissedExpr decides whether a banner is gone when a rule does not
+// define its own Dismissed expression. It reuses the same container check the
+// heuristic fallback already relies on, rather than inventing a second
+// definition of "banner-shaped" (Story 2.7, AC1).
+const defaultDismissedExpr = "!window.__wsawConsentContainer()"
+
 // FailurePolicy decides what a failed interaction does to the scan.
 type FailurePolicy string
 
@@ -334,7 +346,8 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		attempted = append(attempted, rule.Name)
 
 		consent := h.runRule(ctx, rule, steps)
-		if consent.Outcome == model.OutcomeApplied || consent.Outcome == model.OutcomeUnverified {
+		if consent.Outcome == model.OutcomeApplied || consent.Outcome == model.OutcomeUnverified ||
+			consent.Outcome == model.OutcomeBannerVisible {
 			return consent
 		}
 
@@ -449,16 +462,162 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but verification errored: %v", rule.Name, err)
 
+		return consent
+
 	case !ok:
 		consent.Outcome = model.OutcomeFailed
 		consent.Reason = fmt.Sprintf("rule %q ran but verification reported the banner is still present", rule.Name)
 
+		return consent
+	}
+
+	// The CMP recorded the choice. Whether the banner itself is gone is a
+	// separate question (Story 2.7, AC1): a vendor API can record a
+	// rejection without ever running the banner's own dismiss handler, which
+	// reacts to its buttons, not to the CMP's internal state.
+	consent.Outcome = model.OutcomeApplied
+	consent.Reason = fmt.Sprintf("rule %q applied and verified", rule.Name)
+
+	if gone, gerr := h.bannerGone(ctx, rule); gerr == nil && gone {
+		return consent
+	}
+
+	return h.escalate(ctx, rule, steps, consent)
+}
+
+// bannerGone reports whether the banner is still displayed, using the rule's
+// own Dismissed expression where it defines one and the shared container
+// heuristic otherwise (Story 2.7, AC1).
+func (h *handler) bannerGone(ctx context.Context, rule Rule) (bool, error) {
+	expr := rule.Dismissed
+	if expr == "" {
+		expr = defaultDismissedExpr
+	}
+
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var gone bool
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone)); err != nil {
+		return false, err
+	}
+
+	return gone, nil
+}
+
+// escalate is reached when a rule's own verification says the CMP recorded
+// the requested choice, but the banner itself is still on screen — the gap
+// Story 2.7 exists to close. Tenet 11 ranks a vendor API above clicking for
+// expressing the choice; it never licenses treating the API's silence about
+// the banner as evidence the banner is gone.
+//
+// This is one bounded pass, not a retry loop (Tenet 6): every click step the
+// rule already defines for this mode is retried once, this time with the
+// fuller pointer/mouse event sequence __wsawSimulateClick provides, and if
+// none of them close the banner the generic heuristic label match is tried
+// for the same mode (Story 2.4, AC5). A CMP whose own mechanism already
+// closes its dialog never reaches this method, because the caller only calls
+// it once bannerGone has already reported the banner is still displayed.
+func (h *handler) escalate(ctx context.Context, rule Rule, steps []Action, consent model.Consent) model.Consent {
+	clicked := h.escalateClicks(ctx, steps)
+
+	if !clicked && h.opts.AllowHeuristic {
+		clicked = h.escalateHeuristic(ctx, rule)
+	}
+
+	if clicked {
+		consent.Mechanism += mechanismEscalatedSuffix
+	}
+
+	gone, err := h.bannerGone(ctx, rule)
+
+	switch {
+	case err != nil:
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q recorded the choice, but whether the banner closed could not be checked: %v", rule.Name, err)
+
+	case gone:
+		consent.Reason = fmt.Sprintf(
+			"rule %q applied and verified; the banner needed a fallback click to close", rule.Name)
+
 	default:
-		consent.Outcome = model.OutcomeApplied
-		consent.Reason = fmt.Sprintf("rule %q applied and verified", rule.Name)
+		consent.Outcome = model.OutcomeBannerVisible
+		consent.Reason = fmt.Sprintf(
+			"rule %q recorded the choice, but the banner was still displayed after a fallback click was attempted",
+			rule.Name)
 	}
 
 	return consent
+}
+
+// escalateClicks retries every click step the rule defines for this mode
+// through __wsawSimulateClick, and reports whether any of them found and
+// clicked an element.
+func (h *handler) escalateClicks(ctx context.Context, steps []Action) bool {
+	var clicked bool
+
+	for _, step := range steps {
+		if step.Click == "" {
+			continue
+		}
+
+		if h.simulateClick(ctx, step.Click) {
+			clicked = true
+		}
+	}
+
+	return clicked
+}
+
+// escalateHeuristic tries the generic label-matching fallback for the current
+// mode, reusing the shipped heuristic rule rather than a second copy of its
+// label lists (Story 2.4, AC5).
+func (h *handler) escalateHeuristic(ctx context.Context, originating Rule) bool {
+	for _, r := range h.opts.Rules.Rules() {
+		if !r.Heuristic || r.Name == originating.Name {
+			continue
+		}
+
+		steps := r.Steps(h.opts.Mode)
+		if len(steps) == 0 {
+			continue
+		}
+
+		var acted bool
+
+		for _, step := range steps {
+			if step.Click == "" && step.Eval == "" {
+				continue
+			}
+
+			if err := h.runStep(ctx, step); err == nil {
+				acted = true
+			}
+		}
+
+		if acted {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *handler) simulateClick(ctx context.Context, selector string) bool {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var out clickResult
+
+	expr := fmt.Sprintf("window.__wsawSimulateClick(%s)", jsString(selector))
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &out)); err != nil {
+		return false
+	}
+
+	return out.Clicked
 }
 
 type clickResult struct {
