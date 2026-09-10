@@ -385,7 +385,16 @@ e2e-fixture-logs:
 #   $(E2E_RUNTIME) compose -f test/e2e/compose.yaml -f test/e2e/compose.postgres.yaml ...
 # `DB=mysql` the same with the other override (AC5).
 E2E_COMPOSE_PROJECT ?= wsaw-e2e
-E2E_COMPOSE := $(E2E_RUNTIME) compose -p $(E2E_COMPOSE_PROJECT) -f test/e2e/compose.yaml -f test/e2e/compose.$(DB).yaml
+# Recursive (=), not immediate (:=): DB is set as a target-specific variable
+# by e2e-postgres-test/e2e-mysql-test below, and a := binding here would
+# freeze $(DB) at parse time — before any target-specific value exists —
+# rather than re-reading it when a recipe actually uses $(E2E_COMPOSE).
+E2E_COMPOSE = $(E2E_RUNTIME) compose -p $(E2E_COMPOSE_PROJECT) -f test/e2e/compose.yaml -f test/e2e/compose.$(DB).yaml
+
+# The same invocation with paths relative to test/e2e/ rather than the repo
+# root, for WSAW_E2E_COMPOSE_CMD below: `go test` runs with its package
+# directory as the working directory, not wherever `make` was invoked from.
+E2E_COMPOSE_FROM_TESTDIR = $(E2E_RUNTIME) compose -p $(E2E_COMPOSE_PROJECT) -f compose.yaml -f compose.$(DB).yaml
 
 define e2e_compose_need_db
 	@test -n "$(DB)" || { echo "usage: make $(1) DB=postgres|mysql"; exit 2; }
@@ -428,6 +437,37 @@ e2e-compose-down:
 e2e-compose-logs:
 	$(call e2e_compose_need_db,e2e-compose-logs)
 	$(E2E_COMPOSE) logs -f
+
+# The end-to-end test itself (Story 7.4): brings the Compose stack up with
+# Postgres, runs the Go suite in test/e2e against it, and always tears the
+# stack down afterwards — whether the suite passed or not, and dumping every
+# service's log first when it did not, because a red end-to-end test that
+# says only "assertion failed" costs more time than it saves (AC8). This
+# make target is "the test" as much as the Go code it runs is; the Go file
+# refuses to run on its own without the environment this sets.
+#
+# The token, DSN and ports below are exactly what test/e2e/compose.yaml and
+# compose.postgres.yaml already set up wsaw and the database with.
+.PHONY: e2e-postgres-test
+# A target-specific value: $(E2E_COMPOSE) below is defined in terms of $(DB),
+# and this target's own recipe needs that expansion, not just the DB=postgres
+# argument the nested `$(MAKE)` calls get.
+e2e-postgres-test: DB := postgres
+e2e-postgres-test:
+	$(MAKE) --no-print-directory e2e-compose-up DB=postgres
+	@WSAW_E2E_API_BASE=http://127.0.0.1:18712 \
+	WSAW_E2E_API_TOKEN=wsaw-e2e-fixture-only-token \
+	WSAW_E2E_SITE_BASE=http://127.0.0.1:18081 \
+	WSAW_E2E_DSN="postgres://wsaw:wsaw-e2e-fixture-only@127.0.0.1:5432/wsaw?sslmode=disable" \
+	WSAW_E2E_COMPOSE_CMD="$(E2E_COMPOSE_FROM_TESTDIR)" \
+	go test -tags e2e -count=1 -v ./test/e2e/... -run TestPostgresStack; \
+	status=$$?; \
+	if [ $$status -ne 0 ]; then \
+		echo; echo "=== stack logs (the suite failed) ==="; \
+		$(E2E_COMPOSE) logs --no-color; \
+	fi; \
+	$(MAKE) --no-print-directory e2e-compose-down DB=postgres; \
+	exit $$status
 
 # The Podman pod (Story 7.3): the same four services as the Compose stack
 # above, but as a genuine pod rather than a translation of one. A pod's

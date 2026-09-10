@@ -194,6 +194,15 @@ it for a real one.
 earlier run must never be why a later one passes or fails for reasons that
 are not in the code.
 
+Three ports are published to the host, for a test driving the stack from
+outside it (Stories 7.4 and 7.5): wsaw's API on `18712` — not its documented
+default, `8712`, which a wsaw already running on this machine for real could
+be using, and a request that lands on the wrong process fails with a
+confusing 401 rather than a connection error — the fixture site on `18081`,
+so a test can switch its variant with a real PUT (the fixture ships no curl,
+and busybox `wget` cannot send one), and the database on its normal port, so
+results can be read back with SQL from the host directly.
+
 `e2e-compose-scan` triggers a scan through wsaw's own HTTP API
 (`allowAdHocScan`), because inside the stack that API is the only thing that
 can reach it — there is no shared file store to run `wsaw scan` against from
@@ -251,6 +260,55 @@ There is no Kubernetes manifest in this repository yet to compare this pod
 against (Story 6.10 is not implemented): once one exists, this is the
 container list, images and ports it should be checked against, and the
 documentation should say where they differ and why (Story 7.3, AC5).
+
+## The end-to-end test
+
+Everything above stands the stack up; `test/e2e/stack_test.go` (Story 7.4) is
+what actually proves it. It is a normal Go test, behind the `e2e` build tag
+so `go test ./...` never runs it, but it does not start the stack itself —
+it needs `test/e2e/compose.yaml` already up with a database picked, which is
+what the wrapper below is for:
+
+```sh
+make e2e-postgres-test
+```
+
+This brings the Compose stack up with Postgres, runs the suite, and always
+tears the stack down afterwards — printing every service's log first if the
+suite failed, because a red end-to-end test that says only "assertion
+failed" costs more time than it saves (AC8). Running `go test -tags e2e`
+directly, without the make target, skips every test with an explanation
+rather than failing to dial a stack nobody started.
+
+What it actually checks, against the running stack rather than a hand-built
+result:
+
+- The schema exists because wsaw's own migrations created it, not a
+  migration tool run separately (AC5).
+- In `none` the banner is present and untouched; in `reject` the blocked
+  third party never appears, in either phase — Klaro's own state, not just
+  wsaw's report of it; in `accept` it appears, post-interaction (AC2).
+- The fixture's one unconditional third party is reported as contacted
+  before any consent decision, in every mode (AC3).
+- Two scans of the unchanged fixture diff as nothing; switching the variant
+  and scanning again produces exactly the two changes the switch makes, at
+  the severities the real diff engine assigns them — not a hand-built
+  expectation (AC4).
+- A baseline approval and its audit entry, read back with SQL, describe the
+  same event (AC7).
+- The database is stopped, a scan is triggered while it is down, and started
+  again: the attempt is not silently retried into existence once the
+  database returns, wsaw's own log says persisting it failed, and the next
+  scan after recovery is stored normally (AC6).
+- Restarting wsaw against the same, already-populated database changes
+  nothing already stored and does not duplicate the schema version row
+  (AC5).
+
+It drives the stack the same way the Makefile does — through
+`docker compose` / `podman compose`, never by guessing a container's name,
+which differs between the two (Story 7.3 found exactly that difference
+once already) — using the same invocation `make e2e-postgres-test` was
+called with, passed through as `WSAW_E2E_COMPOSE_CMD`.
 
 ## Licence
 
