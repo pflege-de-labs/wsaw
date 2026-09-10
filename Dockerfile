@@ -4,7 +4,7 @@
 # Chromium rather than Chrome, because Chromium is the one that may be
 # redistributed (NFR §9).
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 ARG VERSION=dev
 ARG COMMIT=unknown
