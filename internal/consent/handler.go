@@ -488,19 +488,58 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 // bannerGone reports whether the banner is still displayed, using the rule's
 // own Dismissed expression where it defines one and the shared container
 // heuristic otherwise (Story 2.7, AC1).
+//
+// The check is retried briefly, mirroring verify(): a CMP that recorded the
+// choice often still fades its dialog out over the following frames, and a
+// single check taken the instant the choice is recorded can catch that
+// animation mid-flight. Without the retry, the outcome is decided from a
+// frame that is already stale by the time the after-consent screenshot is
+// taken a moment later, so the report claims the banner is visible in an
+// image that does not show it.
 func (h *handler) bannerGone(ctx context.Context, rule Rule) (bool, error) {
 	expr := rule.Dismissed
 	if expr == "" {
 		expr = defaultDismissedExpr
 	}
 
+	const (
+		attempts = 10
+		interval = 250 * time.Millisecond
+	)
+
 	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
 	defer cancel()
 
-	var gone bool
+	var (
+		gone    bool
+		lastErr error
+	)
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone)); err != nil {
-		return false, err
+	for range attempts {
+		err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone))
+		if err == nil && gone {
+			return true, nil
+		}
+
+		if err != nil {
+			lastErr = err
+		}
+
+		timer := time.NewTimer(interval)
+
+		select {
+		case <-timer.C:
+		case <-stepCtx.Done():
+			timer.Stop()
+
+			return false, lastErr
+		}
+
+		timer.Stop()
+	}
+
+	if lastErr != nil {
+		return false, lastErr
 	}
 
 	return gone, nil
