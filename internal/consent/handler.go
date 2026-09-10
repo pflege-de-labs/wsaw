@@ -328,7 +328,14 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		}
 
 		steps := rule.Steps(h.opts.Mode)
-		if len(steps) == 0 {
+
+		// A rule may declare a necessary-only fallback for `reject` mode
+		// (Story 2.8): the closest reachable state on a banner that offers no
+		// reject/decline control at all. A rule with neither real steps nor a
+		// fallback for this mode is not a candidate.
+		hasFallback := h.opts.Mode == model.ConsentReject && len(rule.Necessary) > 0
+
+		if len(steps) == 0 && !hasFallback {
 			continue
 		}
 
@@ -345,9 +352,30 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 
 		attempted = append(attempted, rule.Name)
 
-		consent := h.runRule(ctx, rule, steps)
-		if consent.Outcome == model.OutcomeApplied || consent.Outcome == model.OutcomeUnverified ||
-			consent.Outcome == model.OutcomeBannerVisible {
+		var consent model.Consent
+
+		switch {
+		case len(steps) == 0:
+			// No reject sequence is defined at all: the fallback is the only
+			// thing to try.
+			consent = h.runNecessaryOnly(ctx, rule)
+
+		default:
+			var ranAnyStep bool
+
+			consent, ranAnyStep = h.runRule(ctx, rule, steps)
+
+			if hasFallback && !ranAnyStep {
+				// Every defined reject step was optional and none of them
+				// found or affected anything — the shape of a banner whose
+				// reject control does not exist, which is exactly what the
+				// fallback is for.
+				consent = h.runNecessaryOnly(ctx, rule)
+			}
+		}
+
+		switch consent.Outcome {
+		case model.OutcomeApplied, model.OutcomeUnverified, model.OutcomeBannerVisible, model.OutcomeNecessaryOnly:
 			return consent
 		}
 
@@ -408,12 +436,33 @@ func (h *handler) interacted() {
 	}
 }
 
-func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.Consent {
+// runRule executes a rule's step sequence and reports what happened, plus
+// whether any step actually found or affected anything on the page.
+//
+// The second return value distinguishes "this step sequence has nothing to
+// try" from every other case, including a hard failure: a sequence made
+// entirely of optional steps, none of which matched, means the control this
+// rule is looking for is not on the page at all — which for a `reject` rule
+// is exactly the shape of a banner with no reject control (Story 2.8, AC2).
+// A sequence with even one required step is never mistaken for that case,
+// whether it succeeds or fails, because a required step is evidence the rule
+// author expected a real control to be there.
+func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) (model.Consent, bool) {
 	consent := model.Consent{
 		CMP:       ruleCMPName(rule),
 		Detection: "rule:" + rule.Name,
 		Mechanism: mechanismFor(rule, steps),
 		Heuristic: rule.Heuristic,
+	}
+
+	allOptional := true
+
+	for _, s := range steps {
+		if !s.Optional {
+			allOptional = false
+
+			break
+		}
 	}
 
 	// The phase boundary is marked before the action, not after it.
@@ -429,6 +478,8 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 	// pre-consent request can be swept into the post-consent phase.
 	h.interacted()
 
+	var anySucceeded bool
+
 	for i, step := range steps {
 		if err := h.runStep(ctx, step); err != nil {
 			if step.Optional {
@@ -438,8 +489,14 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 			consent.Outcome = model.OutcomeFailed
 			consent.Reason = fmt.Sprintf("rule %q step %d failed: %v", rule.Name, i+1, err)
 
-			return consent
+			return consent, true
 		}
+
+		anySucceeded = true
+	}
+
+	if allOptional && !anySucceeded {
+		return consent, false
 	}
 
 	now := time.Now()
@@ -452,7 +509,7 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but defines no verification", rule.Name)
 
-		return consent
+		return consent, true
 	}
 
 	ok, err := h.verify(ctx, rule)
@@ -462,13 +519,13 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but verification errored: %v", rule.Name, err)
 
-		return consent
+		return consent, true
 
 	case !ok:
 		consent.Outcome = model.OutcomeFailed
 		consent.Reason = fmt.Sprintf("rule %q ran but verification reported the banner is still present", rule.Name)
 
-		return consent
+		return consent, true
 	}
 
 	// The CMP recorded the choice. Whether the banner itself is gone is a
@@ -479,10 +536,99 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 	consent.Reason = fmt.Sprintf("rule %q applied and verified", rule.Name)
 
 	if gone, gerr := h.bannerGone(ctx, rule); gerr == nil && gone {
+		return consent, true
+	}
+
+	return h.escalate(ctx, rule, steps, consent), true
+}
+
+// runNecessaryOnly drives a rule's necessary-only fallback (Story 2.8): the
+// closest reachable state on a banner that offers no reject/decline control
+// at all. It mirrors runRule's step execution and verification, but its
+// success is never OutcomeApplied — this banner did not offer a rejection, so
+// nothing here claims one was performed.
+func (h *handler) runNecessaryOnly(ctx context.Context, rule Rule) model.Consent {
+	steps := rule.Necessary
+
+	consent := model.Consent{
+		CMP:       ruleCMPName(rule),
+		Detection: "rule:" + rule.Name,
+		Mechanism: mechanismFor(rule, steps),
+		Heuristic: rule.Heuristic,
+	}
+
+	h.interacted()
+
+	for i, step := range steps {
+		if err := h.runStep(ctx, step); err != nil {
+			if step.Optional {
+				continue
+			}
+
+			consent.Outcome = model.OutcomeFailed
+			consent.Reason = fmt.Sprintf(
+				"rule %q has no reject control; its necessary-only fallback step %d failed: %v",
+				rule.Name, i+1, err)
+
+			return consent
+		}
+	}
+
+	now := time.Now()
+	consent.InteractedAt = &now
+
+	if rule.Verify == "" {
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but defines no verification", rule.Name)
+
 		return consent
 	}
 
-	return h.escalate(ctx, rule, steps, consent)
+	ok, err := h.verify(ctx, rule)
+
+	switch {
+	case err != nil:
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but verification errored: %v",
+			rule.Name, err)
+
+		return consent
+
+	case !ok:
+		consent.Outcome = model.OutcomeFailed
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but verification reported no choice was recorded",
+			rule.Name)
+
+		return consent
+	}
+
+	consent.Outcome = model.OutcomeNecessaryOnly
+	consent.Reason = fmt.Sprintf(
+		"rule %q has no reject control; wsaw limited consent to strictly necessary categories via its necessary-only fallback",
+		rule.Name)
+
+	gone, gerr := h.bannerGone(ctx, rule)
+	if gerr == nil && !gone {
+		clicked := h.escalateClicks(ctx, steps)
+		if !clicked && h.opts.AllowHeuristic {
+			clicked = h.escalateHeuristic(ctx, rule)
+		}
+
+		if clicked {
+			consent.Mechanism += mechanismEscalatedSuffix
+		}
+
+		gone, gerr = h.bannerGone(ctx, rule)
+	}
+
+	if gerr == nil && !gone {
+		consent.Reason = appendReason(consent.Reason, "the banner remained displayed after the fallback was attempted")
+	}
+
+	return consent
 }
 
 // bannerGone reports whether the banner is still displayed, using the rule's

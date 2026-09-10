@@ -20,6 +20,9 @@
           {{if .Missing}}<span class="muted">(never scanned)</span>
           {{else}}<span class="muted">{{ago .Result.StartedAt}}</span>
             {{if not .Result.OK}}<span class="badge badge-warn">scan failed</span>{{end}}
+            {{if eq .Result.Consent.Outcome "necessary-only"}}
+              <br><span class="badge badge-warn" title="{{.Result.Consent.Reason}}">no reject control — necessary only</span>
+            {{end}}
           {{end}}
         </th>
       {{end}}

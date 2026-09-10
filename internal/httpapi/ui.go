@@ -612,6 +612,9 @@ func collapseUninteracted(res *model.Result, views []screenshotView) []screensho
 		case res.Consent.Outcome == model.OutcomeBannerVisible:
 			views[before].Note = "the CMP recorded the requested choice, but the banner " +
 				"was still displayed: the after frame is the same image, byte for byte"
+		case res.Consent.Outcome == model.OutcomeNecessaryOnly:
+			views[before].Note = "this banner has no reject control; wsaw limited consent to strictly " +
+				"necessary categories instead, and the after frame is the same image, byte for byte"
 		default:
 			views[before].Note = "the consent interaction left the page looking " +
 				"identical: the after frame is the same image, byte for byte"

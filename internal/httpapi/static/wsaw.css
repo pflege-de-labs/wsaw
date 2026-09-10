@@ -299,6 +299,7 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .outcome-not-needed { color: var(--muted); }
 .outcome-unverified { color: var(--warn); }
 .outcome-banner-visible { color: var(--warn); }
+.outcome-necessary-only { color: var(--warn); }
 .outcome-failed { color: var(--bad); }
 
 .party-first { color: var(--muted); }

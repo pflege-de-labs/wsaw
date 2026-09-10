@@ -63,6 +63,15 @@ const (
 	// not to the CMP's internal state. That gap must never be reported as
 	// OutcomeApplied (Story 2.7).
 	OutcomeBannerVisible ConsentOutcome = "banner-visible"
+	// OutcomeNecessaryOnly means the requested mode was "reject", the banner
+	// offered no reject/decline control at all, and wsaw fell back to its
+	// next best reachable state: every optional category deselected, leaving
+	// only the categories the CMP itself marks as strictly necessary. This is
+	// never reported as OutcomeApplied — a reader comparing reject-mode
+	// results across sites must be able to tell a site that truly has no
+	// non-essential traffic when rejected from one that has no reject
+	// control and reached the closest state wsaw could manage (Story 2.8).
+	OutcomeNecessaryOnly ConsentOutcome = "necessary-only"
 )
 
 // TerminationReason records why capture stopped. Determinism requires that
