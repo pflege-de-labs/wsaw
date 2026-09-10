@@ -357,6 +357,40 @@ worked around silently (AC6):
   real MySQL container, via `make test-store-mysql`. Re-deriving that here
   would test the same SQL a second way rather than a new one.
 
+## In CI
+
+Both `make e2e-postgres-test` and `make e2e-mysql-test` run in
+`.github/workflows/ci.yaml`'s `e2e` job (Story 7.6) — on the same schedule
+as the soak test, on a release tag, and on demand, never on every push
+(AC2): the whole stack takes minutes to build and run, which no pull request
+should wait on. A failure there is a release blocker in the sense that
+matters here — this repository has no separate automated release pipeline
+to gate directly, so it is a required status check, the same as everything
+else here that blocks a merge, and the job runs again, deliberately, on the
+release tag itself (AC3).
+
+The database image each profile pulls is pinned by digest in
+`test/e2e/compose.postgres.yaml` / `compose.mysql.yaml`, not just a tag that
+can move upstream between runs (AC4) — a floating tag would make this suite
+fail because of a change nobody here made, which defeats the point of an
+end-to-end gate. The pinned image is cached between CI runs keyed on that
+same digest, so a passing pin never re-pulls; only a deliberately bumped one
+does.
+
+On failure, the job uploads every service's log, the stored result
+documents and the audit trail — read back the database the same way the
+test itself does — and every diff the run actually produced, which is
+never stored anywhere to read back on its own (AC5). The job has a time
+budget; exceeding it fails the run rather than hanging (AC6).
+
+What is not wired into CI: the Podman pod (Story 7.3) has no Go test suite
+of its own, only the manual verification recorded in that story — Story
+7.3's AC4 ("the same assertions run against the pod as against Compose")
+is proven by hand, not automated. Extending `runStack` with a third,
+pod-shaped way to reach the stack, rather than a parallel copy of the
+Compose-only assertions, is the next piece of this epic to pick up, not
+something worked around silently here.
+
 ## Licence
 
 Klaro is BSD-3-Clause, © KIProtect GmbH. It is fetched at build time rather

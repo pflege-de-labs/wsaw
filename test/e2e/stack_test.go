@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,6 +75,11 @@ type stackEnv struct {
 	compose       string
 	db            *sql.DB
 	dsn           string
+	// artifactsDir, when set, is where every scan's diff is written — the
+	// one thing a failure needs that the database does not hold, since a
+	// diff is never stored (Story 7.6, AC5). Empty means don't bother: a
+	// plain `go test -tags e2e` run has nothing to upload it to.
+	artifactsDir string
 }
 
 func runStack(t *testing.T, dialect, sqlDriverName string) *stackEnv { //nolint:thelper // this is the test body, not an assertion helper: failures belong to its own lines
@@ -90,6 +96,7 @@ func runStack(t *testing.T, dialect, sqlDriverName string) *stackEnv { //nolint:
 		siteBase:      requireEnv(t, "WSAW_E2E_SITE_BASE"),
 		compose:       requireEnv(t, "WSAW_E2E_COMPOSE_CMD"),
 		dsn:           requireEnv(t, "WSAW_E2E_DSN"),
+		artifactsDir:  os.Getenv("WSAW_E2E_ARTIFACTS_DIR"),
 	}
 
 	db, err := sql.Open(sqlDriverName, e.dsn)
@@ -647,7 +654,39 @@ func (e *stackEnv) scan(t *testing.T, target string, mode model.ConsentMode) (*m
 		t.Fatalf("decoding the scan response for %s/%s: %v\n%s", target, mode, err, body)
 	}
 
+	e.writeDiffArtifact(t, out.Result, out.Diff)
+
 	return out.Result, out.Diff
+}
+
+// writeDiffArtifact is the one thing a failing assertion needs that the
+// database does not hold: a diff is computed and returned, never stored
+// (Story 7.6, AC5). A no-op unless WSAW_E2E_ARTIFACTS_DIR is set, which only
+// the CI wrapper does.
+func (e *stackEnv) writeDiffArtifact(t *testing.T, res *model.Result, d *diff.Report) {
+	t.Helper()
+
+	if e.artifactsDir == "" || res == nil || d == nil {
+		return
+	}
+
+	dir := filepath.Join(e.artifactsDir, "diffs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Logf("writing diff artifact for %s: %v", res.ScanID, err)
+
+		return
+	}
+
+	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		t.Logf("encoding diff artifact for %s: %v", res.ScanID, err)
+
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, res.ScanID+".json"), b, 0o644); err != nil { //nolint:gosec // an artifact directory, not a secret
+		t.Logf("writing diff artifact for %s: %v", res.ScanID, err)
+	}
 }
 
 func (e *stackEnv) setVariant(t *testing.T, variant string) {
