@@ -47,33 +47,52 @@ func TestPostgresStack(t *testing.T) {
 	runStack(t, "postgres", "pgx")
 }
 
+// TestMySQLStack is Story 7.5: the same body as TestPostgresStack, plus the
+// dialect differences MySQL specifically forces (AC2-AC5) — those have no
+// Postgres equivalent, so they are not part of the shared body.
+func TestMySQLStack(t *testing.T) {
+	e := runStack(t, "mysql", "mysql")
+
+	t.Run("mysql: charset and collation are pinned to utf8mb4", func(t *testing.T) { testMySQLCharset(t, e) })
+	t.Run("mysql: strict sql_mode refuses an over-long value rather than truncating it",
+		func(t *testing.T) { testMySQLStrictMode(t, e) })
+	t.Run("mysql: a timestamp survives the round trip at the precision ordering needs",
+		func(t *testing.T) { testMySQLTimestampPrecision(t, e) })
+	t.Run("mysql: approving a second baseline exercises the upsert form",
+		func(t *testing.T) { testMySQLUpsert(t, e) })
+}
+
 // stackEnv is what every subtest needs to reach the running stack: the API,
 // direct SQL against the database, the fixture's variant switch, and enough
 // of the Compose invocation that started it to stop and restart one service.
 type stackEnv struct {
-	dialect  string // "postgres" or "mysql"
-	apiBase  string
-	token    string
-	siteBase string
-	compose  string
-	db       *sql.DB
+	dialect       string // "postgres" or "mysql"
+	sqlDriverName string
+	apiBase       string
+	token         string
+	siteBase      string
+	compose       string
+	db            *sql.DB
+	dsn           string
 }
 
-func runStack(t *testing.T, dialect, sqlDriverName string) { //nolint:thelper // this is the test body, not an assertion helper: failures belong to its own lines
+func runStack(t *testing.T, dialect, sqlDriverName string) *stackEnv { //nolint:thelper // this is the test body, not an assertion helper: failures belong to its own lines
 	apiBase := os.Getenv("WSAW_E2E_API_BASE")
 	if apiBase == "" {
 		t.Skipf("WSAW_E2E_API_BASE is not set; run `make e2e-%s-test`, which brings the stack up and sets it, rather than `go test` directly", dialect)
 	}
 
 	e := &stackEnv{
-		dialect:  dialect,
-		apiBase:  apiBase,
-		token:    requireEnv(t, "WSAW_E2E_API_TOKEN"),
-		siteBase: requireEnv(t, "WSAW_E2E_SITE_BASE"),
-		compose:  requireEnv(t, "WSAW_E2E_COMPOSE_CMD"),
+		dialect:       dialect,
+		sqlDriverName: sqlDriverName,
+		apiBase:       apiBase,
+		token:         requireEnv(t, "WSAW_E2E_API_TOKEN"),
+		siteBase:      requireEnv(t, "WSAW_E2E_SITE_BASE"),
+		compose:       requireEnv(t, "WSAW_E2E_COMPOSE_CMD"),
+		dsn:           requireEnv(t, "WSAW_E2E_DSN"),
 	}
 
-	db, err := sql.Open(sqlDriverName, requireEnv(t, "WSAW_E2E_DSN"))
+	db, err := sql.Open(sqlDriverName, e.dsn)
 	if err != nil {
 		t.Fatalf("opening %s: %v", dialect, err)
 	}
@@ -111,6 +130,8 @@ func runStack(t *testing.T, dialect, sqlDriverName string) { //nolint:thelper //
 
 	// AC5, second half.
 	t.Run("restarting wsaw against the same database is a no-op", func(t *testing.T) { testDaemonRestart(t, e) })
+
+	return e
 }
 
 func testSchemaCreated(t *testing.T, e *stackEnv) { //nolint:thelper // extracted subtest body, not an assertion helper
@@ -349,6 +370,124 @@ func testDaemonRestart(t *testing.T, e *stackEnv) { //nolint:thelper // extracte
 		if got := e.countResults(t, "fixture", mode); got != want {
 			t.Errorf("%s result count after restart = %d, want unchanged at %d", mode, got, want)
 		}
+	}
+}
+
+// testMySQLCharset is AC3: MySQL's default collation is case-insensitive and
+// accent-insensitive, which would silently merge two differently-cased
+// target names into one series. This confirms the schema wsaw's own
+// migrations created on this live server actually pins utf8mb4_bin rather
+// than assuming the dialect code that builds the DDL is enough on its own.
+func testMySQLCharset(t *testing.T, e *stackEnv) { //nolint:thelper // extracted subtest body, not an assertion helper
+	var table, ddl string
+	if err := e.db.QueryRowContext(context.Background(), "show create table results").Scan(&table, &ddl); err != nil {
+		t.Fatalf("reading the results table's definition: %v", err)
+	}
+
+	if !strings.Contains(ddl, "utf8mb4") {
+		t.Errorf("results table charset: %s does not mention utf8mb4", ddl)
+	}
+
+	if !strings.Contains(ddl, "utf8mb4_bin") {
+		t.Errorf("results table collation: %s is not pinned to utf8mb4_bin — a case-insensitive default would make \"Site\" and \"site\" one series", ddl)
+	}
+}
+
+// testMySQLStrictMode is AC4: without STRICT_ALL_TABLES, MySQL truncates a
+// value that overflows its column and reports success — which would shorten
+// a captured URL and change the finding rather than fail loudly. wsaw's own
+// DSN always appends it (internal/store's mysqlDialect.dsn, unit-tested
+// there); this proves the live server actually honours it, using a second
+// connection built the same way and a value in a real column, rolled back
+// regardless of outcome so it never touches what the other subtests count.
+func testMySQLStrictMode(t *testing.T, e *stackEnv) { //nolint:thelper // extracted subtest body, not an assertion helper
+	sep := "?"
+	if strings.Contains(e.dsn, "?") {
+		sep = "&"
+	}
+
+	strictDB, err := sql.Open(e.sqlDriverName, e.dsn+sep+"sql_mode='STRICT_ALL_TABLES'")
+	if err != nil {
+		t.Fatalf("opening a second connection: %v", err)
+	}
+	defer func() { _ = strictDB.Close() }()
+
+	tx, err := strictDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("beginning a transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() // always: this insert must never be the reason a later subtest's count is wrong
+
+	// consent_mode is varchar(32); this is longer.
+	overLong := strings.Repeat("x", 64)
+
+	_, err = tx.ExecContext(context.Background(),
+		"insert into results (target, consent_mode, scan_id, started_at, termination, document) values (?, ?, ?, ?, ?, ?)",
+		"e2e-strict-mode-probe", overLong, "probe", int64(1), "idle", "{}")
+
+	if err == nil {
+		t.Error("an over-long consent_mode was accepted — strict mode should have refused it rather than truncating it silently")
+	}
+}
+
+// testMySQLTimestampPrecision is AC5: MySQL's default DATETIME drops
+// fractional seconds, and "the scan before this one" is decided by that
+// ordering. wsaw sidesteps DATETIME entirely — started_at is a bigint count
+// of nanoseconds, the same as every other dialect — so this confirms that
+// choice actually preserves sub-second precision on a live server rather
+// than assuming the column type in the migration is enough on its own.
+func testMySQLTimestampPrecision(t *testing.T, e *stackEnv) { //nolint:thelper // extracted subtest body, not an assertion helper
+	res, _ := e.scan(t, "fixture", model.ConsentNone)
+
+	var startedAt int64
+	if err := e.db.QueryRowContext(context.Background(),
+		"select started_at from results where target = 'fixture' and consent_mode = 'none' and scan_id = ?",
+		res.ScanID).Scan(&startedAt); err != nil {
+		t.Fatalf("reading started_at for %s: %v", res.ScanID, err)
+	}
+
+	if startedAt%1_000_000_000 == 0 {
+		t.Errorf("started_at = %d, a whole number of seconds — sub-second precision did not survive the round trip", startedAt)
+	}
+}
+
+// testMySQLUpsert is AC2's upsert form: approving a baseline for a target
+// and consent mode that already has one must overwrite it, which is
+// MySQL's "insert ... as new on duplicate key update" rather than the
+// portable form the other two dialects use. The row-level mechanics of that
+// SQL are internal/store's own dialect tests to prove (test-store-mysql,
+// against a real MySQL container already); this confirms the same
+// guarantee holds through the real API and a real baseline approval rather
+// than a hand-built query.
+func testMySQLUpsert(t *testing.T, e *stackEnv) { //nolint:thelper // extracted subtest body, not an assertion helper
+	first, _ := e.scan(t, "fixture", model.ConsentAccept)
+	e.approveBaseline(t, "fixture", model.ConsentAccept, first.ScanID)
+
+	second, _ := e.scan(t, "fixture", model.ConsentAccept)
+	e.approveBaseline(t, "fixture", model.ConsentAccept, second.ScanID)
+
+	var got string
+
+	row := e.db.QueryRowContext(context.Background(),
+		e.rebind("select scan_id from baselines where target = ? and consent_mode = ?"),
+		"fixture", string(model.ConsentAccept))
+	if err := row.Scan(&got); err != nil {
+		t.Fatalf("reading the baseline row: %v", err)
+	}
+
+	if got != second.ScanID {
+		t.Errorf("baseline scan_id = %q after a second approval, want %q — the second approval should have overwritten the first, not left it or duplicated the row", got, second.ScanID)
+	}
+
+	var rows int
+	if err := e.db.QueryRowContext(context.Background(),
+		e.rebind("select count(*) from baselines where target = ? and consent_mode = ?"),
+		"fixture", string(model.ConsentAccept)).Scan(&rows); err != nil {
+		t.Fatalf("counting baseline rows: %v", err)
+	}
+
+	if rows != 1 {
+		t.Errorf("baselines has %d rows for fixture/accept, want exactly 1", rows)
 	}
 }
 

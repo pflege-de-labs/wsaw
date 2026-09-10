@@ -24,6 +24,11 @@ services:
       retries: 30
     volumes:
       - mysql-data:/var/lib/mysql
+    # Published so the e2e test (Story 7.5) can read results back with SQL
+    # from the host, directly, rather than through wsaw's own API — the
+    # whole point of asserting on what the database actually holds.
+    ports:
+      - "127.0.0.1:3306:3306"
 
   wsaw:
     depends_on:
