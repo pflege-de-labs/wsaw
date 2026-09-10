@@ -216,7 +216,7 @@ The fix is to stop letting one expression stand for two questions. "Did the CMP 
 - AC8: The `cookiebot` rule closes the banner on `https://www.hartmann.info/` in `reject` mode, or reports that it could not. Regression coverage uses a stored fixture of that banner — a Cookiebot skin with no decline control — so the case survives the site being redesigned.
 - AC9: Rules that the API already closes cleanly do not gain a click. The escalation is driven by the banner-gone check, never by the mode or the vendor, so a CMP whose API does dismiss its own dialog performs exactly the interactions it performs today.
 
-### Story 2.8 — Detect a CMP with no reject control, and settle for necessary-only consent (not implemented)
+### Story 2.8 — Detect a CMP with no reject control, and settle for necessary-only consent
 
 *As a Compliance Officer, I want wsaw to recognize when a consent banner offers no way to reject at all, and record that as its own finding, so that a missing reject control is documented as a fact about the site rather than silently smoothed over as a successful rejection.*
 
