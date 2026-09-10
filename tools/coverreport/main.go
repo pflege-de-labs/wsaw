@@ -326,6 +326,27 @@ func (p Pkg) Band() string { return band(p.Pct, p.Stmts) }
 // Band buckets a file the same way its package is bucketed.
 func (f File) Band() string { return band(f.Pct, f.Stmts) }
 
+// gapBand buckets a gap-list entry's severity by how much of the worst
+// package's uncovered count it carries, not by its coverage percentage —
+// this list is ranked by uncovered statements, so its colour should be too.
+func gapBand(uncovered, maxGap int) string {
+	if maxGap == 0 {
+		return "1"
+	}
+
+	r := float64(uncovered) / float64(maxGap)
+	switch {
+	case r < 0.25:
+		return "1"
+	case r < 0.5:
+		return "2"
+	case r < 0.75:
+		return "3"
+	default:
+		return "4"
+	}
+}
+
 func band(pct float64, stmts int) string {
 	switch {
 	case stmts == 0:
@@ -709,6 +730,7 @@ func funcMap() template.FuncMap {
 		"share":     func(part, whole int) string { return strconv.Itoa(int(percent(part, whole) + 0.5)) },
 		"width":     width,
 		"gapWidth":  func(part, whole int) template.CSS { return width(percent(part, whole)) },
+		"gapBand":   gapBand,
 		"bandLabel": bandLabel,
 		"openIf":    openIf,
 		"deadHead":  func(fns []Fn) []Fn { return head(fns, deadShown) },
@@ -809,6 +831,7 @@ const pageCSS = `
   --ink:#111C22; --ink-2:#465A65; --ink-3:#7A8C96; --rule:#D5DFE3;
   --s1:#A8D2CB; --s2:#5CA79C; --s3:#2A8177; --s4:#0F5A52;
   --warm:#A83E24; --warm-soft:#F2DCD4;
+  --w1:#F2DCD4; --w2:#E7A98E; --w3:#CB6A45; --w4:#A83E24;
   --shadow:0 1px 2px rgba(17,28,34,.05), 0 8px 24px -16px rgba(17,28,34,.35);
 }
 @media (prefers-color-scheme: dark) {
@@ -817,6 +840,7 @@ const pageCSS = `
     --ink:#E7EFF2; --ink-2:#9FB2BC; --ink-3:#6A7D88; --rule:#25333A;
     --s1:#2E5A55; --s2:#47897F; --s3:#63B3A5; --s4:#8AD8C7;
     --warm:#E4785A; --warm-soft:#3A2119;
+    --w1:#3A2119; --w2:#6E3A28; --w3:#B0553A; --w4:#E4785A;
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
   }
 }
@@ -825,6 +849,7 @@ const pageCSS = `
   --ink:#E7EFF2; --ink-2:#9FB2BC; --ink-3:#6A7D88; --rule:#25333A;
   --s1:#2E5A55; --s2:#47897F; --s3:#63B3A5; --s4:#8AD8C7;
   --warm:#E4785A; --warm-soft:#3A2119;
+  --w1:#3A2119; --w2:#6E3A28; --w3:#B0553A; --w4:#E4785A;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -20px rgba(0,0,0,.9);
 }
 * { box-sizing:border-box; }
@@ -872,6 +897,10 @@ code, .pkg, .file, .loc, .pctnum, .tile-num, .hero-num, .c-num, .fnpct,
 .b-solid { background:var(--s3); }
 .b-strong { background:var(--s4); }
 .b-none { background:var(--ink-3); }
+.g-1 { background:var(--w1); }
+.g-2 { background:var(--w2); }
+.g-3 { background:var(--w3); }
+.g-4 { background:var(--w4); }
 
 .pill { font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.08em;
   text-transform:uppercase; padding:3px 8px; border:1px solid var(--rule); border-radius:2px;
@@ -1041,7 +1070,7 @@ const pageHTML = `<title>{{.Title}}</title>
     <li class="gap">
       <div class="gap-head"><span class="pkg">{{.Name}}</span>
         <span class="gap-n">{{num .Uncovered}} <span class="unit">uncovered</span></span></div>
-      <div class="bar gap-bar"><div class="bar-fill b-{{.Band}}" style="{{gapWidth .Uncovered $.MaxGap}}"></div></div>
+      <div class="bar gap-bar"><div class="bar-fill g-{{gapBand .Uncovered $.MaxGap}}" style="{{gapWidth .Uncovered $.MaxGap}}"></div></div>
       <div class="gap-sub">{{pct1 .Pct}}% covered &middot; {{num .Stmts}} statements &middot; {{num .SrcLOC}} lines of source</div>
     </li>
   {{- end}}
