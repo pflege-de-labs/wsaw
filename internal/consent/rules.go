@@ -65,6 +65,15 @@ type Rule struct {
 	Accept []Action `yaml:"accept,omitempty"`
 	Reject []Action `yaml:"reject,omitempty"`
 
+	// Necessary is the fallback step sequence tried in `reject` mode when this
+	// rule defines no Reject steps, or when every Reject step is optional and
+	// none of them matched anything — the shape of a banner that offers no
+	// reject/decline control at all (Story 2.8). It should reach the closest
+	// state such a banner allows: every optional category deselected, saved.
+	// It is never tried ahead of a working Reject sequence, and it is never
+	// used for any mode but `reject`.
+	Necessary []Action `yaml:"necessary,omitempty"`
+
 	// Verify is a JavaScript expression that must evaluate truthy after the
 	// steps ran. Without it, the interaction can only ever be "unverified".
 	Verify string `yaml:"verify,omitempty"`
@@ -172,8 +181,8 @@ func parseRules(source string, b []byte) ([]Rule, error) {
 			return nil, fmt.Errorf("rule file %s: rule %d has no name", source, i)
 		}
 
-		if len(file.Rules[i].Accept) == 0 && len(file.Rules[i].Reject) == 0 {
-			return nil, fmt.Errorf("rule file %s: rule %q defines neither accept nor reject steps",
+		if len(file.Rules[i].Accept) == 0 && len(file.Rules[i].Reject) == 0 && len(file.Rules[i].Necessary) == 0 {
+			return nil, fmt.Errorf("rule file %s: rule %q defines neither accept, reject, nor necessary steps",
 				source, file.Rules[i].Name)
 		}
 	}

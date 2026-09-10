@@ -142,9 +142,10 @@
             "not-needed",
             "failed",
             "unverified",
-            "banner-visible"
+            "banner-visible",
+            "necessary-only"
           ],
-          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed. 'banner-visible' means the CMP recorded the requested choice but the banner itself was still displayed even after a fallback click was attempted."
+          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed. 'banner-visible' means the CMP recorded the requested choice but the banner itself was still displayed even after a fallback click was attempted. 'necessary-only' means the requested mode was 'reject' but the banner offered no reject/decline control at all, so wsaw fell back to deselecting every optional category; it is never reported as 'applied' and must not be read as a verified full rejection."
         },
         "reason": {
           "type": "string"

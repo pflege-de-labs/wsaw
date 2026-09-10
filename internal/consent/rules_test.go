@@ -172,6 +172,38 @@ rules:
 	}
 }
 
+// TestNecessaryOnlyFallbackParses covers Story 2.8: a rule may declare a
+// necessary-only fallback for banners with no reject control, and a rule
+// defining only that fallback (no accept, no reject) is a valid rule rather
+// than one rejected for having "no steps".
+func TestNecessaryOnlyFallbackParses(t *testing.T) {
+	t.Parallel()
+
+	path := writeRules(t, `
+version: 1
+rules:
+  - name: settings-only
+    detect: "true"
+    necessary:
+      - click: "#open-settings"
+      - click: "#save-settings"
+    verify: "true"
+`)
+
+	set, err := consent.LoadRuleFiles(path)
+	if err != nil {
+		t.Fatalf("LoadRuleFiles: %v", err)
+	}
+
+	if set.Len() != 1 {
+		t.Fatalf("loaded %d rules, want 1", set.Len())
+	}
+
+	if got := len(set.Rules()[0].Necessary); got != 2 {
+		t.Errorf("necessary steps = %d, want 2", got)
+	}
+}
+
 // TestUnknownFieldIsRejected protects operators from silent typos: a
 // misspelled key that is ignored would look like a working rule that never
 // fires.
