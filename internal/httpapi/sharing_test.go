@@ -333,6 +333,38 @@ func TestSharingIsOffUntilConfigured(t *testing.T) {
 	}
 }
 
+// Regression: shared.html once referenced a field the host-summary type does
+// not have, which made html/template abort mid-render on any shared result
+// with third-party requests — after the 200 status and part of the page were
+// already flushed, so the page came back truncated rather than as an error.
+func TestASharedResultRendersHostSummariesInFull(t *testing.T) {
+	t.Parallel()
+
+	f, signer := sharedFixture(t)
+
+	// The default seed already has a third-party, pre-consent request, so
+	// the Hosts table's {{range}} body executes.
+	resp := f.get(linkFor(t, signer, "site", "reject", "scan-1"), "Accept", "text/html")
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a shared link with host data = %d, want 200", resp.StatusCode)
+	}
+
+	html := body(t, resp)
+
+	if !strings.HasSuffix(strings.TrimSpace(html), "</html>") {
+		t.Errorf("the shared page did not render to its closing tag; got a truncated body: %q", html)
+	}
+
+	if !strings.Contains(html, "tracker.test") {
+		t.Error("the shared page does not list the third-party host")
+	}
+
+	if strings.Contains(f.logs(), "rendering the shared page") {
+		t.Error("rendering the shared page logged an error")
+	}
+}
+
 // AC10: the artifacts of its own result, and no others. This is the check
 // that stops a link to one harmless scan being a key to every stored file.
 func TestAShareLinkReachesOnlyItsOwnArtifacts(t *testing.T) {
