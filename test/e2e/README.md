@@ -145,6 +145,63 @@ podman run --rm -p 127.0.0.1:8081:8080 localhost/wsaw-fixture:dev \
   -extra-third-party-base=http://extra-tracker.example:8082
 ```
 
+## Compose stack
+
+The fixture above is one origin among four. `test/e2e/compose.yaml` brings up
+the whole system (Story 7.2): wsaw, the fixture's two origins, and a server
+database, addressing each other by name on one Compose network — which is
+what makes it work at all, since a browser inside a container cannot resolve
+the host's `localhost` (Story 1.8, AC10). The browser runs **inside** the
+wsaw container rather than as a sibling: mounting the runtime socket so wsaw
+could start one alongside itself would give a container that renders hostile
+pages the ability to start privileged containers, which is a worse trade
+than losing sibling-container isolation.
+
+The database is not defined in `compose.yaml` — it is picked with an
+override file, so the same base file serves either database rather than two
+copies of it drifting apart:
+
+```sh
+make e2e-compose-up   DB=postgres   # or DB=mysql
+make e2e-compose-scan DB=postgres   # scans all three consent modes
+make e2e-compose-logs DB=postgres   # follow every service
+make e2e-compose-down DB=postgres   # stop the stack and remove its volumes
+```
+
+which is the same as running Compose directly:
+
+```sh
+docker compose -f test/e2e/compose.yaml -f test/e2e/compose.postgres.yaml up -d --wait
+```
+
+(`podman compose` works the same way — everything here has been run against
+both.)
+
+`e2e-compose-up` passes `--wait`, so it blocks until every service —
+including wsaw itself — reports healthy rather than merely started, and
+fails loudly if one does not. A race that usually passes is worse than one
+that always fails.
+
+`/dev/shm`'s container default, 64 MiB, is not enough for Chrome on a real
+page; `compose.yaml` sizes it explicitly rather than leaving it as a
+troubleshooting note. Every credential anywhere in the stack — the database
+password, the API token wsaw needs because its listener is reachable beyond
+loopback inside the Compose network — is an obvious fixture
+(`wsaw-e2e-fixture-only...`), set nowhere else and named so nobody mistakes
+it for a real one.
+
+`e2e-compose-down` always passes `-v`: a stale database left over from an
+earlier run must never be why a later one passes or fails for reasons that
+are not in the code.
+
+`e2e-compose-scan` triggers a scan through wsaw's own HTTP API
+(`allowAdHocScan`), because inside the stack that API is the only thing that
+can reach it — there is no shared file store to run `wsaw scan` against from
+outside. Read the results back with SQL against the database directly
+(`docker compose ... exec db psql ...` / `... exec db mysql ...`), not
+through wsaw's own API — asking the writer whether it wrote correctly proves
+less. That is what Stories 7.4 and 7.5 automate.
+
 ## Licence
 
 Klaro is BSD-3-Clause, © KIProtect GmbH. It is fetched at build time rather

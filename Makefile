@@ -373,6 +373,62 @@ e2e-fixture-browse:
 e2e-fixture-logs:
 	$(E2E_RUNTIME) logs -f $(E2E_SITE_NAME) $(E2E_TRACKER_NAME)
 
+# The Compose stack (Story 7.2): wsaw, a server database, and the Klaro
+# fixture's two origins, all addressing each other by name on one Compose
+# network. Unlike e2e-fixture-up, the browser runs inside the wsaw
+# container — there is no host loopback to resolve into (Story 1.8, AC10) —
+# and the database is a real one, not the file store the fixture targets
+# above use.
+#
+# The database is picked with an override file, not a flag wsaw reads: `make
+# e2e-compose-up DB=postgres` runs
+#   $(E2E_RUNTIME) compose -f test/e2e/compose.yaml -f test/e2e/compose.postgres.yaml ...
+# `DB=mysql` the same with the other override (AC5).
+E2E_COMPOSE_PROJECT ?= wsaw-e2e
+E2E_COMPOSE := $(E2E_RUNTIME) compose -p $(E2E_COMPOSE_PROJECT) -f test/e2e/compose.yaml -f test/e2e/compose.$(DB).yaml
+
+define e2e_compose_need_db
+	@test -n "$(DB)" || { echo "usage: make $(1) DB=postgres|mysql"; exit 2; }
+endef
+
+.PHONY: e2e-compose-up
+e2e-compose-up:
+	$(call e2e_compose_need_db,e2e-compose-up)
+	$(E2E_COMPOSE) up -d --build --wait --wait-timeout 180
+	@echo
+	@echo "The stack is up, wsaw included, all reporting healthy."
+	@echo "Scan it:            make e2e-compose-scan DB=$(DB)"
+	@echo "Watch what it says: make e2e-compose-logs DB=$(DB)"
+	@echo "Take it down:       make e2e-compose-down DB=$(DB)"
+
+# e2e-compose-scan triggers a scan through wsaw's own API rather than the
+# CLI, because inside the stack that API is the only thing that can reach
+# it — there is no shared file store to run `wsaw scan` against from here.
+.PHONY: e2e-compose-scan
+e2e-compose-scan:
+	$(call e2e_compose_need_db,e2e-compose-scan)
+	@for mode in none reject accept; do \
+		echo "scanning fixture ($$mode)..."; \
+		$(E2E_COMPOSE) exec -T wsaw \
+			wget -qO- --header="Authorization: Bearer wsaw-e2e-fixture-only-token" \
+			--post-data="" "http://localhost:8712/api/v1/scan/fixture/$$mode" >/dev/null || exit 1; \
+	done
+	@echo "done — read the results back with SQL, not through wsaw (Story 7.4, AC1):"
+	@echo "  make e2e-compose-logs DB=$(DB)"
+
+# Bringing the stack down always removes its volumes: a stale database left
+# over from an earlier run must never be why a later one passes or fails
+# (AC8).
+.PHONY: e2e-compose-down
+e2e-compose-down:
+	$(call e2e_compose_need_db,e2e-compose-down)
+	$(E2E_COMPOSE) down -v
+
+.PHONY: e2e-compose-logs
+e2e-compose-logs:
+	$(call e2e_compose_need_db,e2e-compose-logs)
+	$(E2E_COMPOSE) logs -f
+
 .PHONY: docker
 docker:
 	docker buildx build \

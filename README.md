@@ -589,6 +589,8 @@ package", the other "where should the next test go".
 
 The fast suite runs **without Chrome installed** — browser tests skip themselves and say why. Integration tests use local fixture servers, including a synthetic consent banner and a synthetic third-party host; they never touch a live third-party website, so CI does not depend on someone else's site staying unchanged.
 
+Everything above proves wsaw in one process. What a deployment breaks — a browser that cannot reach the host's loopback from inside a container, a database connection that drops, a consent banner served over a real origin rather than a fixture string — only shows up between processes, so it has its own containerised end-to-end stack: [`test/e2e/README.md`](test/e2e/README.md).
+
 Contributors and coding agents: read [`AGENTS.md`](AGENTS.md), [`architecture-tenets.MD`](architecture-tenets.MD) and [`non-functional-requirements.MD`](non-functional-requirements.MD) first. The tenets are binding, not advisory.
 
 ## Limitations
