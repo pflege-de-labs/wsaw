@@ -1,0 +1,36 @@
+# Mounted into the wsaw container at /etc/wsaw/wsaw.yaml by
+# test/e2e/compose.postgres.yaml (Story 7.2). Not for deployment: the token
+# and the database password are obvious fixtures, set again next to where
+# compose.postgres.yaml defines them.
+
+defaults:
+  consentModes: [none, reject, accept]
+  robots: ignore
+  idleQuiet: 2s
+  hardTimeout: 25s
+
+browser:
+  # The browser runs as a process in this container, not a nested one: there
+  # is nothing to reach outside it, and mounting the runtime socket to start
+  # one would hand a container that renders hostile pages the ability to
+  # start privileged containers (Story 7.2, AC3).
+  runtime: local
+
+targets:
+  - name: fixture
+    url: http://site:8080/
+
+store:
+  driver: postgres
+  dsn: "${env:WSAW_STORE_DSN}"
+  maxAttempts: 3
+  retryBackoff: 200ms
+
+api:
+  enabled: true
+  listen: ":8712"
+  token: "${env:WSAW_API_TOKEN}"
+  allowAdHocScan: true
+
+logging:
+  level: info
