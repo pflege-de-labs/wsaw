@@ -1,6 +1,9 @@
 package capture
 
 import (
+	"encoding/base64"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +32,8 @@ func newTestRecorder(t *testing.T) *recorder {
 		t.Fatal(err)
 	}
 
-	return newRecorder(time.Now(), cl, n, []string{"script"}, 100, 1<<20, DefaultStallAfter)
+	return newRecorder(time.Now(), cl, n, []string{"script"}, 100, 1<<20, DefaultStallAfter,
+		DefaultMaxBodyBytes, false, nil)
 }
 
 func mono(offset time.Duration) *cdp.MonotonicTime {
@@ -194,7 +198,7 @@ func TestRecorderRequestCapIsRecordedNotIgnored(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 3, 0, DefaultStallAfter)
+	r := newRecorder(time.Now(), cl, n, nil, 3, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
 
 	for i := range 10 {
 		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeXHR))
@@ -214,7 +218,7 @@ func TestRecorderByteCap(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 100, 1000, DefaultStallAfter)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 1000, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
 
 	r.requestWillBeSent(willBeSent("1", "https://example.com/big", "GET", network.ResourceTypeOther))
 	r.loadingFinished(&network.EventLoadingFinished{RequestID: "1", EncodedDataLength: 2000, Timestamp: mono(0)})
@@ -291,6 +295,116 @@ func TestRecorderMarksNonNetworkURLs(t *testing.T) {
 	case id := <-r2.bodyWanted:
 		t.Errorf("queued body fingerprint for non-network resource %s", id)
 	default:
+	}
+}
+
+// TestRecorderExtractsDataURIBody covers Story 1.9: a data: URI's payload
+// becomes a body — hashed, and truncated out of the URL field — the same way
+// a fetched body already is, instead of sitting inline in every consumer of
+// the request record.
+func TestRecorderExtractsDataURIBody(t *testing.T) {
+	t.Parallel()
+
+	cl, _ := classify.New("https://example.com/", nil)
+	n, _ := normalize.New(normalize.Rules{})
+
+	payload := []byte("a small embedded png, pretend")
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
+	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
+
+	got := r.requests()[0]
+
+	wantDigest := sha256Hex(payload)
+	if got.BodySHA256 != wantDigest {
+		t.Errorf("BodySHA256 = %q, want %q", got.BodySHA256, wantDigest)
+	}
+
+	if got.DecodedSize != int64(len(payload)) {
+		t.Errorf("DecodedSize = %d, want %d", got.DecodedSize, len(payload))
+	}
+
+	if got.BodyRef != "" {
+		t.Errorf("BodyRef = %q, want empty: body storage was not enabled", got.BodyRef)
+	}
+
+	if strings.Contains(got.URL, encoded) {
+		t.Errorf("URL still contains the raw base64 payload: %q", got.URL)
+	}
+
+	wantURL := fmt.Sprintf("data:image/png;base64,<truncated: %d bytes>", len(payload))
+	if got.URL != wantURL {
+		t.Errorf("URL = %q, want %q", got.URL, wantURL)
+	}
+}
+
+// TestRecorderStoresDataURIBody covers the --store-bodies path: with a sink
+// configured, the decoded payload is handed to it exactly like any other
+// captured body, and the returned reference is what the scan detail page's
+// existing body-link renders (Story 5.11, AC5).
+func TestRecorderStoresDataURIBody(t *testing.T) {
+	t.Parallel()
+
+	cl, _ := classify.New("https://example.com/", nil)
+	n, _ := normalize.New(normalize.Rules{})
+
+	payload := []byte("a small embedded png, pretend")
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	var stored []byte
+	sink := func(kind string, data []byte) (string, error) {
+		if kind != "body" {
+			t.Errorf("sink kind = %q, want %q", kind, "body")
+		}
+
+		stored = data
+
+		return "ref-123", nil
+	}
+
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, true, sink)
+	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
+
+	got := r.requests()[0]
+
+	if got.BodyRef != "ref-123" {
+		t.Errorf("BodyRef = %q, want %q", got.BodyRef, "ref-123")
+	}
+
+	if string(stored) != string(payload) {
+		t.Errorf("sink received %q, want %q", stored, payload)
+	}
+}
+
+// TestRecorderCapsDataURIBody covers a data: URI whose payload is too large
+// to decode, mirroring the fetched-body cap (Story 1.6): the URL is still
+// truncated so the payload never renders inline, but no digest is claimed
+// for bytes that were never read (Tenet 5).
+func TestRecorderCapsDataURIBody(t *testing.T) {
+	t.Parallel()
+
+	cl, _ := classify.New("https://example.com/", nil)
+	n, _ := normalize.New(normalize.Rules{})
+
+	payload := make([]byte, 100)
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, 10, false, nil)
+	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
+
+	got := r.requests()[0]
+
+	if got.BodySHA256 != "" {
+		t.Errorf("BodySHA256 = %q, want empty: payload was over the cap", got.BodySHA256)
+	}
+
+	if got.BodyUnavailable == "" {
+		t.Error("BodyUnavailable is empty for a payload over the cap")
+	}
+
+	if strings.Contains(got.URL, encoded) {
+		t.Errorf("URL still contains the raw base64 payload: %q", got.URL)
 	}
 }
 
@@ -535,7 +649,7 @@ func TestStalledRequestsDoNotBlockIdle(t *testing.T) {
 
 	const stallAfter = 50 * time.Millisecond
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, stallAfter)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, stallAfter, DefaultMaxBodyBytes, false, nil)
 
 	// An iframe document that never reports completion.
 	r.requestWillBeSent(willBeSent("1", "https://widget.test/frame.html", "GET", network.ResourceTypeDocument))
@@ -568,7 +682,7 @@ func TestFreshRequestsStillBlockIdle(t *testing.T) {
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, time.Hour)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, time.Hour, DefaultMaxBodyBytes, false, nil)
 
 	for i := range 3 {
 		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeScript))

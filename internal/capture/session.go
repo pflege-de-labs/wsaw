@@ -83,7 +83,8 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 	defer stopParent()
 
 	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes,
-		opts.MaxRequests, opts.MaxBytes, opts.StallAfter)
+		opts.MaxRequests, opts.MaxBytes, opts.StallAfter,
+		opts.MaxBodyBytes, opts.StoreBodies, opts.BodySink)
 
 	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
 
