@@ -14,6 +14,10 @@
   --panel: #f9fafb;
   --accent: #1d4ed8;
   --ok: #047857;
+  /* A second green, for an outcome that succeeded but is not the same
+     success as `applied`: a lime hue, so necessary-only never reads as a
+     verified reject at a glance (Story 2.8, AC6). */
+  --ok-partial: #4d7c0f;
   --warn: #b45309;
   --bad: #b91c1c;
   --crit: #7f1d1d;
@@ -28,6 +32,7 @@
     --panel: #181b21;
     --accent: #93b4ff;
     --ok: #34d399;
+    --ok-partial: #a3e635;
     --warn: #fbbf24;
     --bad: #f87171;
     --crit: #fca5a5;
@@ -239,6 +244,7 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
    because a reader who cannot see the tint must still be able to tell which
    row the other rows are measured against (Story 5.20, AC2). */
 .badge-baseline { border-color: var(--ok); color: var(--ok); }
+.badge-necessary-only { border-color: var(--ok-partial); color: var(--ok-partial); }
 
 .sev-info { color: var(--muted); }
 .sev-low { color: var(--muted); }
@@ -299,7 +305,7 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .outcome-not-needed { color: var(--muted); }
 .outcome-unverified { color: var(--warn); }
 .outcome-banner-visible { color: var(--warn); }
-.outcome-necessary-only { color: var(--warn); }
+.outcome-necessary-only { color: var(--ok-partial); }
 .outcome-failed { color: var(--bad); }
 
 .party-first { color: var(--muted); }
