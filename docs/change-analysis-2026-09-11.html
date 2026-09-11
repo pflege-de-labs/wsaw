@@ -1,0 +1,682 @@
+<title>wsaw Drift Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;900&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;600&display=swap">
+
+<style>
+  :root {
+    color-scheme: light;
+
+    --bg: #eef1f1;
+    --surface: #fbfcfc;
+    --surface-2: #f4f7f6;
+    --ink: #121c1b;
+    --ink-2: #4e5c5a;
+    --ink-3: #74817f;
+    --rule: #d6dedd;
+    --rule-strong: #b9c5c3;
+
+    --accent: #0e5f59;
+    --accent-soft: rgba(14, 95, 89, 0.13);
+    --accent-ink: #0b4a45;
+
+    --sev-critical: #8c1d18;
+    --sev-high: #b8492c;
+    --sev-medium: #a97400;
+    --sev-low: #2a6fd6;
+    --sev-info: #6f7d7b;
+
+    --heat: 14, 95, 89;
+
+    --step: clamp(1.6rem, 2.4vw, 2.4rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+
+      --bg: #0e1413;
+      --surface: #141b1a;
+      --surface-2: #19221f;
+      --ink: #eaf1ef;
+      --ink-2: #a5b5b2;
+      --ink-3: #7f908d;
+      --rule: #253331;
+      --rule-strong: #354643;
+
+      --accent: #5cc4b7;
+      --accent-soft: rgba(92, 196, 183, 0.16);
+      --accent-ink: #8fd9cf;
+
+      --sev-critical: #e2635a;
+      --sev-high: #e08a55;
+      --sev-medium: #d6a321;
+      --sev-low: #6aa4e8;
+      --sev-info: #8c9c99;
+
+      --heat: 92, 196, 183;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg: #0e1413;
+    --surface: #141b1a;
+    --surface-2: #19221f;
+    --ink: #eaf1ef;
+    --ink-2: #a5b5b2;
+    --ink-3: #7f908d;
+    --rule: #253331;
+    --rule-strong: #354643;
+
+    --accent: #5cc4b7;
+    --accent-soft: rgba(92, 196, 183, 0.16);
+    --accent-ink: #8fd9cf;
+
+    --sev-critical: #e2635a;
+    --sev-high: #e08a55;
+    --sev-medium: #d6a321;
+    --sev-low: #6aa4e8;
+    --sev-info: #8c9c99;
+
+    --heat: 92, 196, 183;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1rem, 3vw, 2rem) 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--step);
+  }
+
+  h1, h2, h3 {
+    font-family: Chivo, ui-sans-serif, system-ui, sans-serif;
+    text-wrap: balance;
+    margin: 0;
+    letter-spacing: -0.015em;
+  }
+
+  h1 { font-size: clamp(2rem, 4.4vw, 3rem); font-weight: 900; line-height: 1.05; }
+  h2 { font-size: clamp(1.25rem, 2.2vw, 1.55rem); font-weight: 700; }
+  h3 { font-size: 1.02rem; font-weight: 700; }
+
+  p { margin: 0; max-width: 68ch; color: var(--ink-2); }
+  p.lede { color: var(--ink); font-size: 1.08rem; }
+  strong { color: var(--ink); font-weight: 600; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+  }
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding-bottom: 1.4rem;
+    border-bottom: 2px solid var(--rule-strong);
+  }
+
+  .masthead .meta {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem;
+    color: var(--ink-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.2rem;
+  }
+
+  section { display: flex; flex-direction: column; gap: 0.9rem; }
+
+  .funnel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+
+  .funnel div {
+    background: var(--surface);
+    padding: 0.85rem 0.95rem 0.95rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .funnel .n {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.55rem;
+    font-weight: 600;
+    line-height: 1.1;
+    color: var(--ink);
+  }
+
+  .funnel .k {
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  .funnel .sub { font-size: 0.82rem; color: var(--ink-2); }
+  .funnel div.mark .n { color: var(--sev-critical); }
+
+  .scroll { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    background: var(--surface);
+  }
+
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-size: 0.85rem;
+    color: var(--ink-3);
+    padding-bottom: 0.45rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+
+  thead th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  td.num, th.num {
+    text-align: right;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  /* Bar-in-row: the bar is the magnitude, the number beside it is the value. */
+  td.bar { width: 42%; min-width: 160px; padding-right: 0.9rem; }
+
+  .track {
+    position: relative;
+    height: 9px;
+    background: var(--accent-soft);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .track > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    font-weight: 500;
+  }
+
+  .chip::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    background: currentColor;
+    flex: none;
+  }
+
+  .sev-critical { color: var(--sev-critical); }
+  .sev-high { color: var(--sev-high); }
+  .sev-medium { color: var(--sev-medium); }
+  .sev-low { color: var(--sev-low); }
+  .sev-info { color: var(--sev-info); }
+
+  .heat td.num { position: relative; }
+
+  .heat td.num span {
+    position: relative;
+    z-index: 1;
+  }
+
+  .heat td.num i {
+    position: absolute;
+    inset: 2px;
+    border-radius: 2px;
+    background: rgba(var(--heat), var(--w, 0));
+    z-index: 0;
+  }
+
+  .heat td.zero { color: var(--ink-3); }
+
+  .findings { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+
+  .finding {
+    background: var(--surface);
+    padding: 1rem 1.1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .finding header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem 1rem;
+  }
+
+  .finding .when {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.76rem;
+    color: var(--ink-3);
+    margin-left: auto;
+  }
+
+  .finding p { font-size: 0.94rem; }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.85em;
+  }
+
+  code {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.05em 0.32em;
+    color: var(--ink);
+  }
+
+  ul { margin: 0; padding-left: 1.15rem; color: var(--ink-2); max-width: 68ch; }
+  li { margin-bottom: 0.3rem; }
+  li::marker { color: var(--accent); }
+
+  .spark {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 92px;
+    padding: 0.6rem 0.7rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+  }
+
+  .spark div {
+    flex: 1;
+    background: var(--accent);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+  }
+
+  .spark div.partial { background: var(--accent-soft); border: 1px solid var(--accent); }
+
+  .sparkaxis {
+    display: flex;
+    justify-content: space-between;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: var(--ink-3);
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.1rem;
+    font-size: 0.86rem;
+    color: var(--ink-3);
+  }
+
+  a { color: var(--accent-ink); }
+  a:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <span class="eyebrow">Replayed scan history · 11 targets · 3 consent modes</span>
+    <h1>What changed across every target</h1>
+    <p class="lede">Ten days of wsaw scans, re-diffed end to end: <strong>22,746 changes</strong> that would have
+      been reported, of which <strong>61 are critical</strong> — every one of them a third party reached in
+      <em>reject</em> mode. The rest is dominated by one thing: third-party tracking URLs that are never the
+      same twice.</p>
+    <div class="meta">
+      <span>window 2026-09-01 15:46Z → 2026-09-11 07:00Z</span>
+      <span>store: 1,447 results</span>
+      <span>baseline: previous scan</span>
+      <span>flap window 6h</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>From raw diff to reported change</h2>
+    <p>A change is not stored — it is derived by comparing a scan with the previous usable scan in the same
+      series. Replaying all 1,388 comparisons with each target's own allow list and severity rules gives the
+      funnel below. Nine of ten comparisons produce at least one change.</p>
+    <div class="funnel">
+      <div><span class="k">Scans</span><span class="n">1,447</span><span class="sub">59 first-in-series</span></div>
+      <div><span class="k">Comparisons</span><span class="n">1,388</span><span class="sub">30 incomparable</span></div>
+      <div><span class="k">Raw changes</span><span class="n">40,393</span><span class="sub">before suppression</span></div>
+      <div><span class="k">Allow-listed</span><span class="n">−5,048</span><span class="sub">12.5% of raw</span></div>
+      <div><span class="k">Flap-collapsed</span><span class="n">−17,647</span><span class="sub">43.7% of raw</span></div>
+      <div><span class="k">Reported</span><span class="n">22,746</span><span class="sub">in 1,263 comparisons</span></div>
+      <div class="mark"><span class="k">Critical</span><span class="n">61</span><span class="sub">0.3%, all reject mode</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>By severity</h2>
+    <p>Severity is assigned by rule, not by judgement: a third-party host in reject mode is critical, a
+      third-party script is high, a third-party asset is medium, first-party drift and every removal is
+      informational. The shape below is therefore a shape of <em>party and consent mode</em>, not of risk
+      that someone assessed.</p>
+    <div class="scroll">
+      <table>
+        <caption>22,746 reported changes · rate is per day over the 9.6-day window</caption>
+        <thead>
+          <tr><th>Severity</th><th class="num">Changes</th><th class="num">Share</th><th class="num">Per day</th><th class="bar">&nbsp;</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="chip sev-critical">critical</span></td><td class="num">61</td><td class="num">0.3%</td><td class="num">6</td><td class="bar"><div class="track" title="critical: 61"><span style="width:0.4%"></span></div></td></tr>
+          <tr><td><span class="chip sev-high">high</span></td><td class="num">5,793</td><td class="num">25.5%</td><td class="num">603</td><td class="bar"><div class="track" title="high: 5,793"><span style="width:42.4%"></span></div></td></tr>
+          <tr><td><span class="chip sev-medium">medium</span></td><td class="num">13,651</td><td class="num">60.0%</td><td class="num">1,422</td><td class="bar"><div class="track" title="medium: 13,651"><span style="width:100%"></span></div></td></tr>
+          <tr><td><span class="chip sev-low">low</span></td><td class="num">283</td><td class="num">1.2%</td><td class="num">29</td><td class="bar"><div class="track" title="low: 283"><span style="width:2.1%"></span></div></td></tr>
+          <tr><td><span class="chip sev-info">info</span></td><td class="num">2,958</td><td class="num">13.0%</td><td class="num">308</td><td class="bar"><div class="track" title="info: 2,958"><span style="width:21.7%"></span></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>By change type</h2>
+    <p>Five in six reported changes are a new asset. Removals are far rarer than additions — 1,291 against
+      18,950 — because a scan that lost requests is barred from reporting removals at all, while additions
+      are always reported. The asymmetry is a property of the detector, not of the sites.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Change type</th><th class="num">Changes</th><th class="num">Share</th><th class="bar">&nbsp;</th><th>What it means</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">asset-added</td><td class="num">18,950</td><td class="num">83.3%</td><td class="bar"><div class="track" title="asset-added: 18,950"><span style="width:100%"></span></div></td><td>a URL not seen in the previous scan</td></tr>
+          <tr><td class="mono">asset-removed</td><td class="num">1,291</td><td class="num">5.7%</td><td class="bar"><div class="track" title="asset-removed: 1,291"><span style="width:6.8%"></span></div></td><td>a URL that stopped loading</td></tr>
+          <tr><td class="mono">cookie-removed</td><td class="num">734</td><td class="num">3.2%</td><td class="bar"><div class="track" title="cookie-removed: 734"><span style="width:3.9%"></span></div></td><td>cookie gone since last scan</td></tr>
+          <tr><td class="mono">script-changed</td><td class="num">711</td><td class="num">3.1%</td><td class="bar"><div class="track" title="script-changed: 711"><span style="width:3.8%"></span></div></td><td>same URL, different body</td></tr>
+          <tr><td class="mono">cookie-added</td><td class="num">414</td><td class="num">1.8%</td><td class="bar"><div class="track" title="cookie-added: 414"><span style="width:2.2%"></span></div></td><td>new cookie set</td></tr>
+          <tr><td class="mono">host-added</td><td class="num">339</td><td class="num">1.5%</td><td class="bar"><div class="track" title="host-added: 339"><span style="width:1.8%"></span></div></td><td>a domain contacted for the first time</td></tr>
+          <tr><td class="mono">scan-degraded</td><td class="num">152</td><td class="num">0.7%</td><td class="bar"><div class="track" title="scan-degraded: 152"><span style="width:0.8%"></span></div></td><td>too many lost requests to trust removals</td></tr>
+          <tr><td class="mono">consent-changed</td><td class="num">82</td><td class="num">0.4%</td><td class="bar"><div class="track" title="consent-changed: 82"><span style="width:0.4%"></span></div></td><td>banner outcome differed</td></tr>
+          <tr><td class="mono">host-removed</td><td class="num">69</td><td class="num">0.3%</td><td class="bar"><div class="track" title="host-removed: 69"><span style="width:0.4%"></span></div></td><td>a domain stopped being contacted</td></tr>
+          <tr><td class="mono">status-changed</td><td class="num">4</td><td class="num">0.0%</td><td class="bar"><div class="track" title="status-changed: 4"><span style="width:0.1%"></span></div></td><td>response status moved</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>By asset type</h2>
+    <p>Asset type is the browser's own resource type for the request behind the change, looked up in the scan
+      that observed it. Host, cookie, consent and scan-level changes have no asset behind them and are shown
+      as their own kinds, in parentheses.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Asset type</th><th class="num">Changes</th><th class="num">Share</th><th class="bar">&nbsp;</th><th>Dominant severity</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">image</td><td class="num">7,323</td><td class="num">32.2%</td><td class="bar"><div class="track" title="image: 7,323"><span style="width:100%"></span></div></td><td><span class="chip sev-medium">medium · 6,610</span></td></tr>
+          <tr><td class="mono">script</td><td class="num">5,990</td><td class="num">26.3%</td><td class="bar"><div class="track" title="script: 5,990"><span style="width:81.8%"></span></div></td><td><span class="chip sev-high">high · 5,455</span></td></tr>
+          <tr><td class="mono">fetch</td><td class="num">4,957</td><td class="num">21.8%</td><td class="bar"><div class="track" title="fetch: 4,957"><span style="width:67.7%"></span></div></td><td><span class="chip sev-medium">medium · 4,421</span></td></tr>
+          <tr><td class="mono">xhr</td><td class="num">1,752</td><td class="num">7.7%</td><td class="bar"><div class="track" title="xhr: 1,752"><span style="width:23.9%"></span></div></td><td><span class="chip sev-medium">medium · 1,530</span></td></tr>
+          <tr><td class="mono">(cookie)</td><td class="num">1,148</td><td class="num">5.0%</td><td class="bar"><div class="track" title="cookie: 1,148"><span style="width:15.7%"></span></div></td><td><span class="chip sev-info">info · 734</span></td></tr>
+          <tr><td class="mono">ping</td><td class="num">448</td><td class="num">2.0%</td><td class="bar"><div class="track" title="ping: 448"><span style="width:6.1%"></span></div></td><td><span class="chip sev-medium">medium · 435</span></td></tr>
+          <tr><td class="mono">(host)</td><td class="num">408</td><td class="num">1.8%</td><td class="bar"><div class="track" title="host: 408"><span style="width:5.6%"></span></div></td><td><span class="chip sev-high">high · 300</span></td></tr>
+          <tr><td class="mono">document</td><td class="num">300</td><td class="num">1.3%</td><td class="bar"><div class="track" title="document: 300"><span style="width:4.1%"></span></div></td><td><span class="chip sev-medium">medium · 276</span></td></tr>
+          <tr><td class="mono">(scan)</td><td class="num">152</td><td class="num">0.7%</td><td class="bar"><div class="track" title="scan: 152"><span style="width:2.1%"></span></div></td><td><span class="chip sev-medium">medium · 152</span></td></tr>
+          <tr><td class="mono">stylesheet</td><td class="num">92</td><td class="num">0.4%</td><td class="bar"><div class="track" title="stylesheet: 92"><span style="width:1.3%"></span></div></td><td><span class="chip sev-info">info · 82</span></td></tr>
+          <tr><td class="mono">font</td><td class="num">88</td><td class="num">0.4%</td><td class="bar"><div class="track" title="font: 88"><span style="width:1.2%"></span></div></td><td><span class="chip sev-info">info · 88</span></td></tr>
+          <tr><td class="mono">(consent)</td><td class="num">82</td><td class="num">0.4%</td><td class="bar"><div class="track" title="consent: 82"><span style="width:1.1%"></span></div></td><td><span class="chip sev-high">high · 38</span></td></tr>
+          <tr><td class="mono">other / manifest</td><td class="num">6</td><td class="num">0.0%</td><td class="bar"><div class="track" title="other and manifest: 6"><span style="width:0.1%"></span></div></td><td><span class="chip sev-info">info · 5</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Asset type × severity</h2>
+    <p>The cross-cut shows where severity actually comes from. Scripts carry nearly every high; hosts and
+      cookies carry every critical; images and fetches are the medium bulk.</p>
+    <div class="scroll">
+      <table class="heat">
+        <caption>Cell shading is relative to the largest cell (6,610).</caption>
+        <thead>
+          <tr><th>Asset type</th><th class="num">critical</th><th class="num">high</th><th class="num">medium</th><th class="num">low</th><th class="num">info</th><th class="num">total</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">image</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:1"></i><span>6,610</span></td><td class="num zero"><span>1</span></td><td class="num"><i style="--w:0.11"></i><span>712</span></td><td class="num">7,323</td></tr>
+          <tr><td class="mono">script</td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.83"></i><span>5,455</span></td><td class="num zero"><span>1</span></td><td class="num"><i style="--w:0.01"></i><span>60</span></td><td class="num"><i style="--w:0.07"></i><span>474</span></td><td class="num">5,990</td></tr>
+          <tr><td class="mono">fetch</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.67"></i><span>4,421</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.08"></i><span>536</span></td><td class="num">4,957</td></tr>
+          <tr><td class="mono">xhr</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.23"></i><span>1,530</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.03"></i><span>222</span></td><td class="num">1,752</td></tr>
+          <tr><td class="mono">(cookie)</td><td class="num"><i style="--w:0.01"></i><span>22</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.03"></i><span>171</span></td><td class="num"><i style="--w:0.03"></i><span>221</span></td><td class="num"><i style="--w:0.11"></i><span>734</span></td><td class="num">1,148</td></tr>
+          <tr><td class="mono">ping</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.07"></i><span>435</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>13</span></td><td class="num">448</td></tr>
+          <tr><td class="mono">(host)</td><td class="num"><i style="--w:0.01"></i><span>39</span></td><td class="num"><i style="--w:0.05"></i><span>300</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.01"></i><span>69</span></td><td class="num">408</td></tr>
+          <tr><td class="mono">document</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.04"></i><span>276</span></td><td class="num zero"><span>1</span></td><td class="num zero"><span>23</span></td><td class="num">300</td></tr>
+          <tr><td class="mono">(scan)</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.02"></i><span>152</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num">152</td></tr>
+          <tr><td class="mono">stylesheet</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>10</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.01"></i><span>82</span></td><td class="num">92</td></tr>
+          <tr><td class="mono">font</td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.01"></i><span>88</span></td><td class="num">88</td></tr>
+          <tr><td class="mono">(consent)</td><td class="num zero"><span>0</span></td><td class="num"><i style="--w:0.01"></i><span>38</span></td><td class="num"><i style="--w:0.01"></i><span>44</span></td><td class="num zero"><span>0</span></td><td class="num zero"><span>0</span></td><td class="num">82</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the changes land</h2>
+    <p>Four in five reported changes come from <em>accept</em>-mode scans, where the site is allowed to load
+      everything it wants. Reject mode is one in nine changes — and holds every critical. Volume tracks
+      scan count and site complexity, so the useful column is not the total but the criticals.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Target</th><th class="num">Changes</th><th class="num">critical</th><th class="num">high</th><th class="num">in reject mode</th><th class="num">3rd-party domains flagged in reject</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">curabox.de</td><td class="num">6,560</td><td class="num">5</td><td class="num">1,805</td><td class="num">533</td><td class="num">5</td></tr>
+          <tr><td class="mono">service.pflege.de</td><td class="num">5,885</td><td class="num">5</td><td class="num">1,498</td><td class="num">532</td><td class="num">6</td></tr>
+          <tr><td class="mono">pflege.de</td><td class="num">5,163</td><td class="num">20</td><td class="num">1,187</td><td class="num">604</td><td class="num">10</td></tr>
+          <tr><td class="mono">PGR</td><td class="num">2,338</td><td class="num">6</td><td class="num">583</td><td class="num">199</td><td class="num">6</td></tr>
+          <tr><td class="mono">Kneipp.Home</td><td class="num">829</td><td class="num">23</td><td class="num">187</td><td class="num">351</td><td class="num">17</td></tr>
+          <tr><td class="mono">hartmann.info</td><td class="num">817</td><td class="num">1</td><td class="num">203</td><td class="num">99</td><td class="num">2</td></tr>
+          <tr><td class="mono">Wizco</td><td class="num">458</td><td class="num">0</td><td class="num">166</td><td class="num">168</td><td class="num">4</td></tr>
+          <tr><td class="mono">HC</td><td class="num">354</td><td class="num">0</td><td class="num">88</td><td class="num">51</td><td class="num">5</td></tr>
+          <tr><td class="mono">HD</td><td class="num">296</td><td class="num">0</td><td class="num">63</td><td class="num">55</td><td class="num">4</td></tr>
+          <tr><td class="mono">pflege <span class="sev-info">(retired name)</span></td><td class="num">29</td><td class="num">1</td><td class="num">8</td><td class="num">29</td><td class="num">3</td></tr>
+          <tr><td class="mono">hartmanndirect.com-de-de <span class="sev-info">(retired name)</span></td><td class="num">17</td><td class="num">0</td><td class="num">5</td><td class="num">17</td><td class="num">4</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="scroll">
+      <table>
+        <caption>Consent mode × severity. Criticals exist only where consent was refused — by design.</caption>
+        <thead>
+          <tr><th>Consent mode</th><th class="num">critical</th><th class="num">high</th><th class="num">medium</th><th class="num">low</th><th class="num">info</th><th class="num">total</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">accept</td><td class="num">0</td><td class="num">3,865</td><td class="num">12,015</td><td class="num">159</td><td class="num">2,052</td><td class="num">18,091</td></tr>
+          <tr><td class="mono">reject</td><td class="num">61</td><td class="num">1,006</td><td class="num">1,041</td><td class="num">60</td><td class="num">470</td><td class="num">2,638</td></tr>
+          <tr><td class="mono">none</td><td class="num">0</td><td class="num">922</td><td class="num">595</td><td class="num">64</td><td class="num">436</td><td class="num">2,017</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Volume over the window</h2>
+    <p>Reported changes per day. The first two days and the last are partial — the store's oldest scans start
+      mid-afternoon on 1 September and the window ends at 07:00Z. 10 September stands out at 5,052, but that
+      is scanning, not drift: 428 scans ran that day against 130–180 on a normal day, spread evenly across
+      every target. Per scan it is the <em>quietest</em> full day in the window (11.8 changes, against 19.3
+      on 9 September).</p>
+    <div class="spark" role="img" aria-label="Reported changes per day: Sep 1 29 (partial), Sep 2 214 (partial), Sep 3 1222, Sep 4 2096, Sep 5 3011, Sep 6 1994, Sep 7 2525, Sep 8 2174, Sep 9 2907, Sep 10 5052, Sep 11 1522 (partial)">
+      <div class="partial" style="height:1%" title="Sep 1 — 29 (partial day)"></div>
+      <div class="partial" style="height:4%" title="Sep 2 — 214 (partial day)"></div>
+      <div style="height:24%" title="Sep 3 — 1,222"></div>
+      <div style="height:41%" title="Sep 4 — 2,096"></div>
+      <div style="height:60%" title="Sep 5 — 3,011"></div>
+      <div style="height:39%" title="Sep 6 — 1,994"></div>
+      <div style="height:50%" title="Sep 7 — 2,525"></div>
+      <div style="height:43%" title="Sep 8 — 2,174"></div>
+      <div style="height:58%" title="Sep 9 — 2,907"></div>
+      <div style="height:100%" title="Sep 10 — 5,052"></div>
+      <div class="partial" style="height:30%" title="Sep 11 — 1,522 (partial day)"></div>
+    </div>
+    <div class="sparkaxis"><span>Sep 1</span><span>Sep 6</span><span>Sep 11</span></div>
+  </section>
+
+  <section>
+    <h2>The findings behind the counts</h2>
+    <p>Four things in this window are worth acting on. Two are about the sites; two are about the watcher.</p>
+    <div class="findings">
+
+      <article class="finding">
+        <header>
+          <span class="chip sev-critical">critical</span>
+          <h3>An OpenAI pixel shipped to four properties at once — and fires after reject</h3>
+          <span class="when">2026-09-08 12:28–13:12Z</span>
+        </header>
+        <p>Within 45 minutes, <code>bzrcdn.openai.com/sdk/oaiq.min.js</code> and its event endpoint
+          <code>bzr.openai.com/v1/sdk/events</code> appeared on pflege.de, service.pflege.de, curabox.de and
+          PGR, all carrying the same pixel id <code>NCuKoZ3wbS2WqQ</code> — one tag rollout across the group,
+          not four site changes. It accounts for 220 reported changes, and it is <strong>not gated by
+          consent</strong>: 64 of those are pre-interaction and 63 are in reject mode, where it also sets
+          <code>__cf_bm</code> and <code>_cfuvid</code> cookies on both OpenAI hosts.</p>
+      </article>
+
+      <article class="finding">
+        <header>
+          <span class="chip sev-critical">critical</span>
+          <h3>Kneipp.Home ignores rejection the most broadly</h3>
+          <span class="when">throughout the window</span>
+        </header>
+        <p>Kneipp.Home produces 23 of the 61 criticals off only 829 changes — the worst ratio of any target.
+          In reject mode it contacts bing.com, doubleclick.net, facebook.com, facebook.net, google.de,
+          googletagmanager.com, unpkg.com, webgains.io and a Cloud Run host, and sets
+          <code>.bing.com</code> and <code>.doubleclick.net</code> cookies. pflege.de is second at 20
+          criticals, mostly google.com, google.de, googleadservices.com, doubleclick.net and consentmanager
+          contacted either before any interaction or after rejection.</p>
+      </article>
+
+      <article class="finding">
+        <header>
+          <span class="chip sev-high">watcher defect</span>
+          <h3>A reused browser leaked a pflege.de cookie into two unrelated scans</h3>
+          <span class="when">2026-09-11 02:30Z and 03:39Z</span>
+        </header>
+        <p>An <code>FPID</code> cookie scoped to <code>.pflege.de</code> was recorded as a third-party cookie
+          in a hartmann.info scan and a Kneipp.Home scan — both on browsers marked
+          <code>browserReused</code>, and the hartmann.info scan contacted only hartmann.info, cookiebot.eu
+          and cloudflareinsights.com, so nothing in it could have set that cookie. This is cookie-jar carry-over
+          between scans sharing a browser, and it lands at critical severity: two of the 61 criticals are
+          false positives from the watcher itself.</p>
+      </article>
+
+      <article class="finding">
+        <header>
+          <span class="chip sev-medium">watcher defect</span>
+          <h3>The GTM container-version rule only fires a third of the time</h3>
+          <span class="when">throughout the window</span>
+        </header>
+        <p><code>gtm.js</code> produced 172 <code>script-changed</code> reports, but only 15 of them named a
+          container version — the other 157 compared raw body digests, which is exactly what the
+          <code>bodyIdentity</code> rule exists to prevent. Across the store, only 440 of 1,326 captured
+          <code>gtm.js</code> responses carry an extracted identity at all. Until that extraction works on
+          every capture, GTM is the single largest source of script-change noise (366 of 711).</p>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Why the volume is what it is</h2>
+    <p>22,746 reported changes over ten days is roughly 2,370 a day, and nobody reads that. The composition
+      explains where it comes from — and that most of it is one identifiable problem.</p>
+    <ul>
+      <li><strong>84% of asset-added changes are a URL seen exactly once.</strong> 18,950 additions span
+        16,582 distinct URLs; only 149 URLs recur five times or more. These are per-request tracking URLs
+        whose parameters are not yet normalised away, not new assets.</li>
+      <li><strong>Four domains produce half of all additions:</strong> google.com (3,827), consentmanager.net
+        (3,740), doubleclick.net (1,588) and bing.com (1,209). consentmanager.net alone is the single largest
+        source of reported changes of any domain (4,134 across all types).</li>
+      <li><strong>Flap suppression already absorbs 43.7% of raw changes</strong>, and allow lists another
+        12.5%. The remainder is what reaches a reader — so tightening <code>dropQueryParams</code> for the
+        consentmanager <code>delivery/info</code> and Taboola <code>unip</code> shapes, and for the Facebook
+        <code>/tr</code> <code>cas</code> parameter, is the highest-leverage change available.</li>
+      <li><strong>Capture quality is a real contributor.</strong> 152 scans were reported degraded — 77 on
+        pflege.de alone — and 30 comparisons were incomparable, nearly all from bursts of
+        <code>ERR_NAME_NOT_RESOLVED</code> that hit every target at once, so a resolver hiccup on the scanning
+        host rather than the sites.</li>
+      <li><strong>Consent interaction is not fully stable.</strong> 82 consent-changed reports, dominated by
+        pflege.de flipping <code>applied</code> ↔ <code>failed</code> 13 times in each direction. Each flip
+        also distorts the asset diff on both sides of it.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>How this was produced</h2>
+    <p>Changes are derived, so the history was replayed rather than read: every stored result, grouped into
+      (target, consent mode) series, compared with the previous usable result using the same
+      <code>diff.Compare</code> the scanner runs, with each target's allow list, deny list and severity
+      overrides from <code>wsaw.yaml</code>, and a 6-hour flap window applied in scan order across all
+      targets. Errored and skipped scans are never used as a baseline, matching the store's own
+      <code>PreviousResult</code> rule.</p>
+    <ul>
+      <li>Source: a read-only snapshot of the live store, 1,447 results, taken 2026-09-11 09:01 local.</li>
+      <li>Tool: <code>go run ./tools/changeanalysis -db snap.db -config wsaw.yaml -csv changes.csv</code>.</li>
+      <li>Caveat: this replays <em>previous-scan</em> baselines, which is the configured detection mode; an
+        approved-baseline comparison would produce different counts.</li>
+      <li>Caveat: two targets appear under retired names (<code>pflege</code>,
+        <code>hartmanndirect.com-de-de</code>) whose series ended when the target was renamed, and
+        <code>HC</code>/<code>HD</code> series are short, so their totals are not comparable with the rest.</li>
+    </ul>
+  </section>
+
+  <footer>
+    wsaw drift report · window 2026-09-01 → 2026-09-11 · all figures from the replayed comparison, not from
+    stored reports.
+  </footer>
+
+</div>
