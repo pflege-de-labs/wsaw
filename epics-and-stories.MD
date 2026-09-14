@@ -445,7 +445,7 @@ Get results and change events out of the daemon and into humans and other system
 
 **Goal:** every result is consumable machine-first (stable JSON), human-first (readable report), and interactively (a web interface served by the daemon), and material changes reach a notification channel.
 
-**Scope:** JSON/JSONL result format with a versioned schema, HAR export, CSV summaries, HTTP API (query results, trigger scan, health), a bundled web interface for browsing targets, results, diffs and findings plus approving baselines, webhook notifications, Slack/Teams/e-mail via generic webhook, exit-code contract for CI usage, rule-based alert filtering.
+**Scope:** JSON/JSONL result format with a versioned schema, HAR export, CSV summaries, HTTP API (query results, trigger scan, health), a bundled web interface for browsing targets, results, diffs and findings plus approving baselines, a CLI command to open that interface pre-authenticated, webhook notifications, Slack/Teams/e-mail via generic webhook, exit-code contract for CI usage, rule-based alert filtering.
 
 **Out of scope:** multi-user accounts, roles and permissions; user management; a separately deployed frontend application; editing the target configuration through the UI (config stays a versionable file — see Epic 3).
 
@@ -692,6 +692,26 @@ None of this is a missing feature so much as a missing sentence. The page alread
 - AC9: None of it appears on a shared view. A share link is one result with no navigation into the interface (Story 5.19, AC8), and a link to the baseline would be a link out of the shared scope.
 
 Not in this story, and worth its own: a scan detail page saying "this scan is the current baseline", and the Changes section naming — and linking — the scan it was compared against rather than calling it "the baseline".
+
+### Story 5.21 — Open the web interface from the CLI, already signed in
+
+*As an Operator, I want one command that opens my browser straight into wsaw's dashboard, already authenticated, so that reaching the interface costs a command rather than finding the URL, finding the token in the config, and pasting both into the right places.*
+
+Story 5.11 AC2 put a bearer token in front of the interface, correctly — but the audience that pays for it is the one that needs it least. An Operator running `wsaw ui` already has shell access to the config file the token lives in (Story 3.6); making them also copy that token into a login form is friction with no security benefit, and it teaches people to leave a browser tab logged in indefinitely to avoid doing it twice.
+
+The shape borrows from Story 5.19 rather than reinventing it: a link that carries its own authority, verified without a lookup table, scoped to exactly one thing and nothing more. Where a share link's one thing is "read this result," this one's is "start one browser session" — and because that is a local, same-operator action rather than something handed to a colleague, it can be single-use and short-lived instead of merely time-boxed, and it never needs to be typed by a human at all.
+
+- AC1: `wsaw ui` opens the operator's default browser at the dashboard, already authenticated, when a token is configured (Story 5.11 AC2). When no token is configured, it just opens the URL — matching the daemon's own auth-optional behaviour (`withAuth`: `!Token.IsSet()` skips the check).
+- AC2: The command reads the same config the daemon runs with (`--config`, defaulting like every other subcommand), resolves the interface's address and the token from the same secret reference (Story 3.6), and does not need a new way to read the token back out of a running daemon over HTTP. If nothing answers at the resolved address, the command says so — it does not open a browser tab onto a connection error and call that done.
+- AC3: The standing API token is never put in a URL. The CLI instead asks the daemon for a **one-time login token**: a new endpoint, reachable only from loopback regardless of the interface's configured `Listen`, that mints a random, single-use token authorising nothing but "start one session," expiring in a short, documented window (default a few seconds). A second redemption, or one past expiry, fails explicitly — the same honesty Story 5.19 AC7 already requires of an expired share link, not a generic 401.
+- AC4: The one-time token is its own secret, distinct from both the API token and the sharing key (Story 5.19 AC5); rotating or reusing either does not touch it. It cannot be presented as a `Bearer` token to any API endpoint and grants no scope beyond what the session cookie it sets already carries.
+- AC5: The token appears in exactly one HTTP request — the redemption. That request's response sets the session cookie (the same `wsaw_session` cookie `withAuth` already issues) and redirects to the plain dashboard URL with no token in it, so nothing token-bearing ever sits in browser history, autocomplete, or a `Referer` header on the next click (`Referrer-Policy: no-referrer`, Story 5.11, covers the hop after that).
+- AC6: Where there is no usable way to open a browser — a headless host, no `xdg-open`/`open`, no `$DISPLAY` — the command prints the fully-formed one-time login URL instead of failing outright, so it stays useful over SSH. The printed URL carries the same short expiry as the happy path; the fallback is not a wider hole than opening the browser directly would have been.
+- AC7: `--print` prints the login URL without attempting to open a browser at all, for a script or an SSH session that hands the link to a human elsewhere.
+- AC8: If the web interface is disabled (Story 5.7 AC5), the command fails immediately with that reason rather than opening a browser onto a 404.
+- AC9: The one-time-login endpoint needs no CSRF token — there is no prior session to protect against (Story 5.11 AC6) — but is rate-limited per source address, so its use is bounded by more than the token's own entropy and lifetime.
+- AC10: A read-only deployment (Story 5.10 AC4, Story 5.11 AC8) opens read-only, exactly as a manual login would. The command grants no capability the operator's configured token did not already have.
+- AC11: Regression coverage: a token is rejected on a second redemption, rejected after its window expires, never appears in the browser's final URL, and is rejected outright if presented as a `Bearer` token against any API endpoint.
 
 ---
 
