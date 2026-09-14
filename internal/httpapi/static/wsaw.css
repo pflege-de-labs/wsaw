@@ -135,6 +135,14 @@ tr.row-running {
 
 table.running { margin-bottom: 1.4rem; }
 
+/* The target list: one compact table per target, tighter than the default
+   so more targets fit on screen without scrolling (the redesign this
+   supports folds "none" and "reject" into one row when they agree, which
+   already does most of the compacting — this just stops the remaining rows
+   from wasting height). */
+table.compact th, table.compact td { padding: 0.25rem 0.5rem; }
+table.compact { margin: 0.3rem 0 0.8rem; }
+
 tr.row-baseline {
   background: color-mix(in srgb, var(--ok) 8%, transparent);
   box-shadow: inset 3px 0 0 0 var(--ok);
@@ -375,4 +383,5 @@ button:hover { border-color: var(--accent); }
 .downloads { color: var(--muted); }
 .downloads a { margin-right: 0.6rem; }
 
-.target { margin-bottom: 2rem; }
+.target { margin-bottom: 1.2rem; }
+.target h2 .sev { margin: 0 0.5rem; vertical-align: middle; }

@@ -54,53 +54,70 @@
 {{range .Targets}}
   {{$target := .}}
   <section class="target">
-    <h2>{{.Name}} <a class="compare-link" href="/compare/{{.Name}}">compare consent modes</a></h2>
+    <h2>
+      {{.Name}}
+      {{/* The one badge that answers "did the last scan find anything
+           critical" without opening a single row — the worst Severity
+           across this target's series (Story 5.8, AC1). Below "medium" it
+           stays quiet: a compact list should flag what needs a look, not
+           restate "clean" on every row. */}}
+      {{if severityNotable .Severity}}<span class="sev sev-{{.Severity}}" title="worst open finding across this target's consent modes, vs. baseline or previous scan">{{.Severity}}</span>{{end}}
+      <a class="compare-link" href="/compare/{{.Name}}">compare consent modes</a>
+    </h2>
     <p class="url">{{.URL}}</p>
     {{if .Labels}}<p class="labels">{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span>{{end}}</p>{{end}}
 
-    <table>
+    <table class="compact">
       <thead>
         <tr>
-          <th>Consent mode</th>
+          <th>Mode</th>
           <th>Last scan</th>
           <th>Outcome</th>
           <th>Consent</th>
-          <th class="num">Requests</th>
+          <th class="num">Req</th>
           <th class="num">3rd-party</th>
           <th class="num">Pre-consent</th>
+          <th>Findings</th>
           <th>Baseline</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-      {{range .Series}}
-        <tr class="{{if .Running}}row-running{{else if .Stale}}row-stale{{end}}">
-          <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a>
-            {{if .Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
-          {{if .LastScan}}
+      {{range .Rows}}
+        {{$mode := .Series.Mode}}
+        <tr class="{{if .Series.Running}}row-running{{else if .Series.Stale}}row-stale{{end}}">
+          {{/* Two consent modes share this line when their last scans agreed
+               on every signal shown below — "none" and "reject" usually
+               produce the same result, so a reader should only have to look
+               twice when they didn't (this row's Label names both, and the
+               link still opens the specific mode a reader would rescan). */}}
+          <td><a href="/targets/{{$target.Name}}/{{$mode}}">{{.Label}}</a>
+            {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
+          {{with .Series.LastScan}}
             {{/* The link points at this specific scan, never at "latest": a
                  row that says "3h ago" and opens a scan from four minutes ago
                  has misrepresented what the reader clicked. A failed scan is
                  linked too — that is the row most worth opening. */}}
-            <td title="{{time .LastScan.StartedAt}}">
+            <td title="{{time .StartedAt}}">
               <a class="scan-link"
-                 href="/results/{{$target.Name}}/{{.Mode}}/{{.LastScan.ScanID}}"
-                 aria-label="Open the last scan of {{$target.Name}} in {{.Mode}} mode, {{.LastScan.ScanID}}"
-                >{{ago .LastScan.StartedAt}}<span class="open-icon" aria-hidden="true">↗</span></a></td>
-            <td><span class="term term-{{.LastScan.Termination}}">{{.LastScan.Termination}}</span></td>
-            <td><span class="outcome outcome-{{.LastScan.ConsentOutcome}}">{{.LastScan.ConsentOutcome}}</span>
-              {{if .LastScan.ConsentCMP}}<span class="cmp">{{.LastScan.ConsentCMP}}</span>{{end}}</td>
-            <td class="num">{{.LastScan.Requests}}</td>
-            <td class="num">{{.LastScan.ThirdPartyDomains}}</td>
-            <td class="num {{if .LastScan.PreConsentDomains}}warn{{end}}">{{.LastScan.PreConsentDomains}}</td>
+                 href="/results/{{$target.Name}}/{{$mode}}/{{.ScanID}}"
+                 aria-label="Open the last scan of {{$target.Name}} in {{$mode}} mode, {{.ScanID}}"
+                >{{ago .StartedAt}}<span class="open-icon" aria-hidden="true">↗</span></a></td>
+            <td><span class="term term-{{.Termination}}">{{.Termination}}</span></td>
+            <td><span class="outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
+              {{if .ConsentCMP}}<span class="cmp">{{.ConsentCMP}}</span>{{end}}</td>
+            <td class="num">{{.Requests}}</td>
+            <td class="num">{{.ThirdPartyDomains}}</td>
+            <td class="num {{if .PreConsentDomains}}warn{{end}}">{{.PreConsentDomains}}</td>
           {{else}}
             <td colspan="6" class="empty">never scanned</td>
           {{end}}
-          <td>{{if .HasBaseline}}approved{{else}}<span class="muted">none</span>{{end}}</td>
+          <td>{{if severityNotable .Series.Severity}}<span class="sev sev-{{.Series.Severity}}">{{.Series.Severity}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+          <td>{{if .Series.HasBaseline}}approved{{else}}<span class="muted">none</span>{{end}}</td>
           <td>
-            {{if .Stale}}<span class="badge badge-stale" title="{{.StaleReason}}">stale</span>{{end}}
+            {{if .Series.Stale}}<span class="badge badge-stale" title="{{.Series.StaleReason}}">stale</span>{{end}}
             {{if $page.AllowScan}}
-            <form method="post" action="/rescan/{{$target.Name}}/{{.Mode}}" class="inline">
+            <form method="post" action="/rescan/{{$target.Name}}/{{$mode}}" class="inline">
               <input type="hidden" name="csrf" value="{{$page.CSRF}}">
               <button type="submit">Scan now</button>
             </form>

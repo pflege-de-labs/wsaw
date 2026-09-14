@@ -135,6 +135,17 @@ type SeriesView struct {
 	Stale bool `json:"stale"`
 	// StaleReason explains it in operator-readable terms.
 	StaleReason string `json:"staleReason,omitempty"`
+
+	// Severity is the highest severity among the last scan's findings
+	// against its baseline (or, absent one, the previous scan) — the same
+	// comparison the result page shows in full (Story 5.9, AC5), condensed
+	// to its worst outcome so the target list can flag it without opening
+	// the scan (Story 5.8, AC1: "open findings by severity").
+	//
+	// Empty when there is nothing to compare: no scan yet, or the pair
+	// could not be compared (diff.Report.Comparable is false, e.g. a
+	// series' first-ever scan).
+	Severity diff.Severity `json:"severity,omitempty"`
 }
 
 // running returns the in-flight scans, or nil when activity is not tracked.
@@ -184,8 +195,11 @@ func (s *Server) targetViews() []TargetView {
 				sv.LastScan = &summaries[0]
 			}
 
-			if _, err := s.deps.Store.GetBaseline(t.Name, mode); err == nil {
-				sv.HasBaseline = true
+			baseline, err := s.deps.Store.GetBaseline(t.Name, mode)
+			sv.HasBaseline = err == nil
+
+			if sv.LastScan != nil {
+				sv.Severity = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -198,6 +212,37 @@ func (s *Server) targetViews() []TargetView {
 	}
 
 	return out
+}
+
+// lastScanSeverity is Story 5.8 AC1's "open findings by severity", computed
+// the same way the result page computes it (diffFor, Story 5.9 AC5): against
+// the approved baseline when there is one, else the scan before it.
+//
+// It costs one extra document load per series (the scan itself; the
+// baseline was already loaded for HasBaseline). That is a deliberate
+// trade — store.ListResults's own doc comment already accepts a full parse
+// per row so a summary can never drift from the document it describes, and
+// a severity flag on the target list is worth the same price.
+func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline) diff.Severity {
+	res, err := s.deps.Store.GetResult(target, mode, scanID)
+	if err != nil {
+		return ""
+	}
+
+	var baseRes *model.Result
+
+	if baseline != nil {
+		baseRes = baseline.Result
+	} else if prev, err := s.deps.Store.PreviousResult(target, mode, scanID); err == nil {
+		baseRes = prev
+	}
+
+	rep := diff.Compare(baseRes, res, diff.Options{})
+	if !rep.Comparable {
+		return ""
+	}
+
+	return rep.MaxSeverity()
 }
 
 // staleness decides whether a series should be flagged. Never-scanned and
