@@ -509,7 +509,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC5: The web interface can be disabled entirely by configuration; the API remains usable without it.
 - AC6: Usable without JavaScript for the core read paths (target list, result view, diff view), degrading to plain server-rendered pages.
 
-### Story 5.8 — Dashboard and target overview (partly implemented: no filter or sort, AC4)
+### Story 5.8 — Dashboard and target overview (partly implemented: AC4's filter by severity, outcome, mode and label is covered by Story 5.22; no filter by staleness and no sort, AC4)
 
 *As an Operator, I want a single screen showing the state of every target so that I can see at a glance whether wsaw is healthy and whether anything changed.*
 
