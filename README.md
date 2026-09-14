@@ -102,6 +102,8 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw debug <url>` | One scan, verbose, for authoring consent rules |
 | `wsaw rules list` / `rules test <url>` | Inspect consent rules, or test them against a live page |
 | `wsaw config` | Print the *resolved* configuration, or `--check` to validate |
+| `wsaw share` | Mint an expiring link to one scan result |
+| `wsaw ui` | Open the web interface in a browser, already signed in |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
@@ -275,6 +277,15 @@ The result schema is published at [`docs/result.schema.json`](docs/result.schema
 Both are served by the same process and the same port; the web interface is a client of the public API and has no privileged path into the store. Assets are embedded in the binary, so there is nothing to deploy alongside it and no Node toolchain to build it.
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
+
+That token also protects the loopback case, which means normally typing it into a login form. `wsaw ui` skips that: it reads the token from the same config file the daemon runs with — which an operator running the command can already read — and opens the browser at a one-time sign-in link instead of the plain address:
+
+```
+wsaw ui                # opens the browser, already signed in
+wsaw ui --print        # prints the link instead, e.g. to open over SSH
+```
+
+The link is minted by the running daemon on request, is good for one redemption, expires in seconds, and never carries the standing token anywhere a browser keeps history — only the one-time link does, and it is worthless to anyone the moment it is used or the moment it expires, whichever comes first.
 
 The dashboard refreshes itself, so it can be left on a screen and still be
 worth looking at:

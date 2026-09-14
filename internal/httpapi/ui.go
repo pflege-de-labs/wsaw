@@ -105,6 +105,8 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /", s.handleUIDashboard)
 	s.mux.HandleFunc("GET /login", s.handleUILogin)
 	s.mux.HandleFunc("POST /login", s.handleUILoginSubmit)
+	s.mux.HandleFunc("POST /api/v1/ui/login-token", s.handleMintLoginToken)
+	s.mux.HandleFunc("GET /login/otp/{token}", s.handleRedeemLoginToken)
 	s.mux.HandleFunc("GET /targets/{target}/{mode}", s.handleUISeries)
 	s.mux.HandleFunc("GET /results/{target}/{mode}/{scan}", s.handleUIResult)
 	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
@@ -937,6 +939,19 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setSessionCookie(w)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sessionCookieTTL is how long a browser session lasts once signed in,
+// whichever door it came through.
+const sessionCookieTTL = 12 * time.Hour
+
+// setSessionCookie starts a browser session. Shared by the login form
+// (handleUILoginSubmit) and the one-time link a CLI-opened browser redeems
+// (handleRedeemLoginToken, Story 5.21) — both end up authenticating the same
+// browser the same way.
+func (s *Server) setSessionCookie(w http.ResponseWriter) {
 	// Secure is set only when wsaw is serving TLS. The default listener is
 	// loopback over plain HTTP, where a Secure cookie would simply never be
 	// sent and the session would appear broken; HttpOnly and SameSite=Strict
@@ -948,10 +963,8 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   s.opts.TLSCert != "",
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int((12 * time.Hour).Seconds()),
+		MaxAge:   int(sessionCookieTTL.Seconds()),
 	})
-
-	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Result, bool) {
