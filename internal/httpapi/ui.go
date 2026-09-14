@@ -95,6 +95,13 @@ func uiFuncs() template.FuncMap {
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},
+		// severityNotable decides whether the target list's compact badge
+		// shows at all. "info" and "low" stay quiet: a list built to be
+		// scanned at a glance should flag what needs a look, not restate
+		// "clean" on every row (Story 5.8, AC1).
+		"severityNotable": func(s diff.Severity) bool {
+			return s != "" && s.AtLeast(diff.SeverityMedium)
+		},
 		"add": func(a, b int) int { return a + b },
 	}
 }
@@ -259,7 +266,7 @@ func sortIntervals(list []time.Duration) {
 
 // dashboardData is the target overview.
 type dashboardData struct {
-	Targets []TargetView
+	Targets []targetRow
 	Stale   int
 	Ready   bool
 	Reason  string
@@ -272,6 +279,109 @@ type dashboardData struct {
 	// Tracked is false where this instance does not run scans at all, which
 	// must read differently from "nothing is running".
 	Tracked bool
+}
+
+// targetRow is one target's compact display on the target list: its state
+// (also what the JSON API serves as TargetView) plus how that state groups
+// into rows for a reader. The grouping is a display decision, not a fact
+// about the target, so it lives here rather than on TargetView, which stays
+// what it already was — the UI gets no data the API does not also have
+// (Story 5.8, AC4).
+type targetRow struct {
+	TargetView
+
+	// Rows is the target list's rendering of Series: one row per consent
+	// mode, except "none" and "reject" fold into a single row when their
+	// last scans agreed on every signal the list shows. The two usually
+	// produce the same result, so a reader should only have to look twice
+	// when they didn't. This folding is not yet written into Story 5.8 — a
+	// deviation made on explicit request in the session that added it,
+	// flagged per AGENTS.md §1.
+	Rows []modeRow
+
+	// Severity is the worst Severity across the target's series, condensed
+	// to a single per-target badge (Story 5.8, AC1: "open findings by
+	// severity").
+	Severity diff.Severity
+}
+
+// modeRow is one displayed row of a target's consent modes: either a single
+// mode's series, or the series "none" and "reject" agreed on — the fold
+// picks either one to show, since by definition they show the same thing.
+type modeRow struct {
+	Label  string
+	Series SeriesView
+}
+
+// newTargetRow groups a TargetView's series into modeRows and rolls its
+// series up to a single worst Severity.
+func newTargetRow(v TargetView) targetRow {
+	row := targetRow{TargetView: v, Rows: modeRows(v.Series)}
+
+	for _, sv := range v.Series {
+		if sv.Severity.Rank() > row.Severity.Rank() {
+			row.Severity = sv.Severity
+		}
+	}
+
+	return row
+}
+
+// modeRows groups a target's series for compact display. See targetRow.Rows.
+func modeRows(series []SeriesView) []modeRow {
+	var (
+		none, reject *SeriesView
+		rest         []SeriesView
+		rows         []modeRow
+	)
+
+	for i := range series {
+		switch series[i].Mode {
+		case model.ConsentNone:
+			none = &series[i]
+		case model.ConsentReject:
+			reject = &series[i]
+		default:
+			rest = append(rest, series[i])
+		}
+	}
+
+	switch {
+	case none != nil && reject != nil && sameOutcome(none.LastScan, reject.LastScan):
+		rows = append(rows, modeRow{Label: "none / reject", Series: *none})
+	case none != nil && reject != nil:
+		// They disagree: both stay fully visible rather than picking one to
+		// show and burying the other, since the disagreement is itself the
+		// finding worth noticing.
+		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
+		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
+	case none != nil:
+		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
+	case reject != nil:
+		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
+	}
+
+	for _, sv := range rest {
+		rows = append(rows, modeRow{Label: string(sv.Mode), Series: sv})
+	}
+
+	return rows
+}
+
+// sameOutcome reports whether two series' last scans are indistinguishable
+// on every signal the target list shows: termination, consent outcome, and
+// the three request counts. Two never-scanned series count as the same; one
+// scanned and one not never does.
+func sameOutcome(a, b *store.Summary) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+
+	return a.Termination == b.Termination &&
+		a.ConsentOutcome == b.ConsentOutcome &&
+		a.Requests == b.Requests &&
+		a.ThirdPartyDomains == b.ThirdPartyDomains &&
+		a.PreConsentDomains == b.PreConsentDomains
 }
 
 type scheduleRow struct {
@@ -289,11 +399,14 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Targets: s.targetViews(),
 		Ready:   true,
 		Reason:  "readiness is not tracked",
 		Running: s.running(),
 		Tracked: s.deps.Running != nil,
+	}
+
+	for _, v := range s.targetViews() {
+		data.Targets = append(data.Targets, newTargetRow(v))
 	}
 
 	for _, t := range data.Targets {
