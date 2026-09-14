@@ -112,6 +112,12 @@ type Server struct {
 	http *http.Server
 
 	ui *uiRenderer
+
+	// otp and loginLimiter back the one-time browser sign-in (Story 5.21).
+	// They exist whether or not the web interface is on; only the routes
+	// that reach them are conditional.
+	otp          *otpStore
+	loginLimiter *otpLimiter
 }
 
 // New builds the server.
@@ -136,7 +142,13 @@ func New(opts Options, deps Deps) (*Server, error) {
 		opts.StaleAfter = 48 * time.Hour
 	}
 
-	s := &Server{opts: opts, deps: deps, mux: http.NewServeMux()}
+	s := &Server{
+		opts:         opts,
+		deps:         deps,
+		mux:          http.NewServeMux(),
+		otp:          newOTPStore(),
+		loginLimiter: newOTPLimiter(),
+	}
 
 	if opts.WebUI {
 		ui, err := newUIRenderer()
@@ -284,6 +296,17 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		// The login form itself must be reachable unauthenticated.
 		if r.URL.Path == "/login" {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		// A one-time login link (Story 5.21) authenticates itself: it
+		// carries no standing credential, is single-use, expires in
+		// seconds, and the handler behind it refuses anything that did not
+		// originate on this machine. It is the one other path that does not
+		// need the standing token first.
+		if strings.HasPrefix(r.URL.Path, "/login/otp/") {
 			next.ServeHTTP(w, r)
 
 			return

@@ -75,6 +75,9 @@ func run(ctx context.Context, args []string) int {
 	case "share":
 		err = cmdShare(ctx, rest)
 
+	case "ui":
+		err = cmdUI(ctx, rest)
+
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
 
@@ -124,6 +127,7 @@ Commands:
   rules          Inspect or test consent rules
   config         Validate and print the effective configuration
   share          Mint an expiring link to one scan result
+  ui             Open the web interface in a browser, already signed in
   version        Print build information
 
 Exit codes for "scan":
