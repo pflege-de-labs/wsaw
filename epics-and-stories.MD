@@ -859,7 +859,7 @@ Prove that wsaw works as a deployed system — its own container, a server datab
 - AC5: The fixture can be changed by the test between scans in a controlled way — one extra third-party host, one changed script body — so the diff engine and the severity rules are exercised on real captures rather than on hand-built results.
 - AC6: The image is built from source in the repository, and its build is part of the stack rather than a step someone has to remember.
 
-### Story 7.2 — A Docker Compose stack (not implemented)
+### Story 7.2 — A Docker Compose stack
 
 *As a Developer, I want `docker compose up` to bring up the whole system so that reproducing a deployment problem takes a minute rather than an afternoon.*
 
@@ -872,7 +872,7 @@ Prove that wsaw works as a deployed system — its own container, a server datab
 - AC7: The stack runs unprivileged and holds no real credentials. The passwords in it are obviously fixtures, and the file says so, so that nobody copies it into production and inherits them.
 - AC8: Bringing the stack down removes its volumes, so a stale database from an earlier run cannot make a test pass or fail for reasons that are not in the code.
 
-### Story 7.3 — A Podman pod (not implemented)
+### Story 7.3 — A Podman pod
 
 *As an Operator, I want the same stack as a Podman pod so that the rootless runtime we prefer is a first-class path and not an afterthought.*
 
@@ -884,7 +884,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC4: The same assertions run against the pod as against Compose. Two stacks that are tested differently are two systems.
 - AC5: If `podman kube play` is used, the manifest is close enough to Story 6.10's Kubernetes manifests to be worth comparing, and the documentation says where they differ and why.
 
-### Story 7.4 — End-to-end test against Postgres (not implemented)
+### Story 7.4 — End-to-end test against Postgres
 
 *As a Compliance Officer, I want proof that a wsaw deployment backed by Postgres records what it observed, so that the evidence chain holds outside a developer's laptop.*
 
@@ -897,7 +897,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC7: Baseline approval and its audit entry are asserted to be atomic under Postgres, not merely assumed to have carried over from SQLite.
 - AC8: The test cleans up after itself — containers, volumes, networks — whether it passes or fails, and reports the container logs of every service on failure. A red end-to-end test that says only "assertion failed" costs more time than it saves.
 
-### Story 7.5 — End-to-end test against MySQL (not implemented)
+### Story 7.5 — End-to-end test against MySQL
 
 *As an Operator running MySQL rather than Postgres, I want the same guarantees, so that the choice of database is a deployment decision and not a support tier.*
 
@@ -908,7 +908,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC5: Timestamps survive a round trip at the precision wsaw relies on for ordering. MySQL's default `DATETIME` drops fractional seconds, and "the scan before this one" is decided by that ordering.
 - AC6: Where MySQL cannot do something the same way, the difference is recorded in the dialect documentation rather than worked around silently in the test.
 
-### Story 7.6 — Run the stack in CI, and keep it out of the fast suite (not implemented)
+### Story 7.6 — Run the stack in CI, and keep it out of the fast suite
 
 *As a Developer, I want the end-to-end tests to run automatically without slowing down the loop I work in.*
 
