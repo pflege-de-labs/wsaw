@@ -103,6 +103,45 @@ func uiFuncs() template.FuncMap {
 			return s != "" && s.AtLeast(diff.SeverityMedium)
 		},
 		"add": func(a, b int) int { return a + b },
+		// filterSeverities, filterOutcomes and filterModes enumerate the
+		// values the target list's filter panel offers (Story 5.22, AC1).
+		// They live here rather than as constants in the template so the
+		// options can never drift from the types the rest of the interface
+		// already renders.
+		"filterSeverities": func() []diff.Severity {
+			return []diff.Severity{
+				diff.SeverityInfo, diff.SeverityLow, diff.SeverityMedium,
+				diff.SeverityHigh, diff.SeverityCritical,
+			}
+		},
+		"filterOutcomes": func() []model.ConsentOutcome {
+			return []model.ConsentOutcome{
+				model.OutcomeApplied, model.OutcomeNecessaryOnly, model.OutcomeNotNeeded,
+				model.OutcomeBannerVisible, model.OutcomeUnverified, model.OutcomeFailed,
+			}
+		},
+		"filterModeValues": func() []model.ConsentMode {
+			return []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
+		},
+		// rowModes turns a modeRow's display label ("reject", or the folded
+		// "none / reject") into the space-separated mode tokens a filter
+		// checkbox value can match against — a folded row represents both
+		// modes it agreed on, not only the one its Series happens to carry
+		// (Story 5.22, AC1).
+		"rowModes": func(label string) string {
+			return strings.ReplaceAll(label, " / ", " ")
+		},
+		// rowOutcome reads the consent outcome for a target-list row's data
+		// attribute. A series with no last scan yet has none to report, and
+		// an empty attribute correctly matches no outcome filter rather than
+		// a specific one (Story 5.22, AC1).
+		"rowOutcome": func(sv SeriesView) model.ConsentOutcome {
+			if sv.LastScan == nil {
+				return ""
+			}
+
+			return sv.LastScan.ConsentOutcome
+		},
 	}
 }
 

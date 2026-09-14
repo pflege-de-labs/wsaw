@@ -204,6 +204,71 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .status-bad strong { color: var(--bad); }
 .status-active strong { color: var(--accent); }
 
+/* Target list filters (Story 5.22). Starts `hidden` in markup and is only
+   ever revealed by filter.js, so there is nothing here to style for a
+   no-JavaScript reader — it simply never appears. */
+
+.filters {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.6rem 0.8rem;
+  margin: 0.4rem 0 1.2rem;
+}
+
+.filters-row { display: flex; align-items: flex-start; gap: 1.2rem; flex-wrap: wrap; }
+
+.filter-group {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.filter-group legend, .filter-labels label {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0;
+  margin-bottom: 0.1rem;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9em;
+  font-weight: normal;
+}
+
+.filter-labels input {
+  font-size: 0.9em;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 12rem;
+}
+
+.filter-reset {
+  align-self: flex-end;
+  margin-left: auto;
+  font-size: 0.9em;
+}
+
+.filter-reset:disabled { opacity: 0.5; cursor: default; }
+
+.filter-count {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 0.5rem 0 0;
+}
+
 .banner {
   border-left: 4px solid var(--border);
   padding: 0.6rem 0.9rem;

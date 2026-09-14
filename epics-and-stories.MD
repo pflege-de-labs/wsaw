@@ -509,7 +509,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC5: The web interface can be disabled entirely by configuration; the API remains usable without it.
 - AC6: Usable without JavaScript for the core read paths (target list, result view, diff view), degrading to plain server-rendered pages.
 
-### Story 5.8 — Dashboard and target overview (partly implemented: no filter or sort, AC4)
+### Story 5.8 — Dashboard and target overview (partly implemented: AC4's filter by severity, outcome, mode and label is covered by Story 5.22; no filter by staleness and no sort, AC4)
 
 *As an Operator, I want a single screen showing the state of every target so that I can see at a glance whether wsaw is healthy and whether anything changed.*
 
@@ -712,6 +712,23 @@ The shape borrows from Story 5.19 rather than reinventing it: a link that carrie
 - AC9: The one-time-login endpoint needs no CSRF token — there is no prior session to protect against (Story 5.11 AC6) — but is rate-limited per source address, so its use is bounded by more than the token's own entropy and lifetime.
 - AC10: A read-only deployment (Story 5.10 AC4, Story 5.11 AC8) opens read-only, exactly as a manual login would. The command grants no capability the operator's configured token did not already have.
 - AC11: Regression coverage: a token is rejected on a second redemption, rejected after its window expires, never appears in the browser's final URL, and is rejected outright if presented as a `Bearer` token against any API endpoint.
+
+### Story 5.22 — Instant, client-side filtering of the target list
+
+*As an Operator watching a long target list, I want to narrow it by severity, consent outcome, mode and label as I type or click, so that finding the handful of rows I care about does not cost a page round-trip for every change of mind.*
+
+Story 5.8 AC4 asks for filter and sort on the dashboard and is still open — today the only way to find one target among many is the browser's own text search, which knows nothing about severity, outcome, mode, or a label's structure. Server-side filtering would work but is the wrong shape for this page: the dashboard already renders every target's current state in one response (Story 5.8 AC1), so the data a filter needs is already on the page, and round-tripping to the daemon on every keystroke or checkbox would make the common case — "does anything need my attention right now" — slower than just scanning the list by eye. The values worth filtering on are exactly the ones the compact target list already renders per row (`internal/httpapi/templates/dashboard.html`): a target's worst severity and its labels, and per consent-mode series the consent outcome and the mode itself (`$mode`, `.ConsentOutcome`).
+
+- AC1: Filter controls sit above the target list: a multi-select or checkbox group for severity (matching the values Story 4.5 defines), one for consent outcome (Story 2.5 AC2, Story 2.8 AC3), one for consent mode (Story 2.1 AC1), and a text input for labels that matches against the `key=value` pairs Story 3.1 AC1 defines. Each is independent and combines with the others by AND; multiple selections within one filter combine by OR — the same convention as any faceted filter, stated explicitly in the UI so it isn't guessed at.
+- AC2: Filtering runs entirely client-side, against the DOM already rendered by the server for this page load. No request is made to apply, change, or clear a filter — the daemon is not asked to re-render or re-query for something the browser already has.
+- AC3: A filter takes effect the instant its control changes — a checkbox toggle, a select change, a keystroke in the label field, with no debounce delay for checkboxes/selects and a short debounce (documented, on the order of 100–150ms) for free-text label input to avoid filtering on every keystroke of a fast typist.
+- AC4: A target section is hidden in full when none of its consent-mode rows match the active filters; where a target has multiple modes and only some rows match, the target section stays visible with only the matching rows shown, so a reader is never left looking at an empty target header.
+- AC5: A visible, always-current count reads "showing N of M targets" (or the row-level equivalent), so filtering to zero results is distinguishable from a slow-loading page — an empty filtered view states plainly that nothing matched, per the empty-state honesty Story 5.8 AC5 already requires.
+- AC6: A single "reset all" control clears every active filter in one action and is disabled (or hidden) when no filter is active, so it is never a dead click.
+- AC7: The active filter state lives in the URL (query string), not only in DOM/JS state: applying a filter updates the URL without a navigation (`history.pushState`/`replaceState`), so the current view survives a page reload, a bookmark, and a link shared with a colleague. "Reset all" clears the query string to match.
+- AC8: This is additive to, not a replacement for, the no-JavaScript baseline Story 5.7 AC6 requires: with JavaScript disabled, the filter controls are either absent or inert, and the full target list renders exactly as it does today — the dashboard's core read path does not regress to depend on script.
+- AC9: Filtering never touches write actions already on this page (Story 5.10 AC6's "scan now", Story 5.16's refresh control) — a filtered-out row's in-flight scan still completes and still updates the row if a refresh brings it back into view.
+- AC10: Regression coverage: each filter dimension in isolation, two filters combined (AND), multiple values within one filter (OR), the zero-match empty state, "reset all" restoring the unfiltered list, the URL round-trip (filter → reload → same filtered view), and the no-JS fallback rendering the unfiltered list with no broken controls.
 
 ---
 

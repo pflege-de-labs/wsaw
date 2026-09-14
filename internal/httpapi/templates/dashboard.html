@@ -51,9 +51,46 @@
   <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
 {{end}}
 
+{{if .Targets}}
+{{/* Filtering runs entirely against what the server already rendered below —
+     no request is made to apply, change or clear a filter (Story 5.22, AC2).
+     It starts hidden: without JavaScript there is no way to make it do
+     anything, so it is absent rather than left sitting inert on the page
+     (Story 5.22, AC8); filter.js reveals it once it has attached its
+     listeners. */}}
+<div class="filters" id="target-filters" hidden>
+  <div class="filters-row">
+    <fieldset class="filter-group">
+      <legend>Severity</legend>
+      {{range filterSeverities}}
+      <label class="filter-option"><input type="checkbox" name="severity" value="{{.}}">{{.}}</label>
+      {{end}}
+    </fieldset>
+    <fieldset class="filter-group">
+      <legend>Outcome</legend>
+      {{range filterOutcomes}}
+      <label class="filter-option"><input type="checkbox" name="outcome" value="{{.}}">{{.}}</label>
+      {{end}}
+    </fieldset>
+    <fieldset class="filter-group">
+      <legend>Mode</legend>
+      {{range filterModeValues}}
+      <label class="filter-option"><input type="checkbox" name="mode" value="{{.}}">{{.}}</label>
+      {{end}}
+    </fieldset>
+    <div class="filter-group filter-labels">
+      <label for="filter-label">Labels</label>
+      <input type="text" id="filter-label" name="label" placeholder="key=value" autocomplete="off">
+    </div>
+    <button type="button" id="filter-reset" class="filter-reset" disabled>Reset all</button>
+  </div>
+  <p class="filter-count" id="filter-count" aria-live="polite">showing {{len .Targets}} of {{len .Targets}} targets</p>
+</div>
+{{end}}
+
 {{range .Targets}}
   {{$target := .}}
-  <section class="target">
+  <section class="target" data-labels="{{range $k, $v := $target.Labels}}{{$k}}={{$v}} {{end}}">
     <h2>
       {{.Name}}
       {{/* The one badge that answers "did the last scan find anything
@@ -85,7 +122,16 @@
       <tbody>
       {{range .Rows}}
         {{$mode := .Series.Mode}}
-        <tr class="{{if .Series.Running}}row-running{{else if .Series.Stale}}row-stale{{end}}">
+        {{/* Filter data lives on the row itself (Story 5.22, AC1/AC4): a row is
+             the unit filtering hides or shows, so severity, outcome, the
+             modes it represents (a folded "none / reject" row answers to
+             both) and its target's labels are all read from here, never
+             recomputed by walking back up to the section. */}}
+        <tr class="{{if .Series.Running}}row-running{{else if .Series.Stale}}row-stale{{end}}"
+            data-severity="{{.Series.Severity}}"
+            data-outcome="{{rowOutcome .Series}}"
+            data-modes="{{rowModes .Label}}"
+            data-labels="{{range $k, $v := $target.Labels}}{{$k}}={{$v}} {{end}}">
           {{/* Two consent modes share this line when their last scans agreed
                on every signal shown below — "none" and "reject" usually
                produce the same result, so a reader should only have to look
