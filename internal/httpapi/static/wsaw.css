@@ -575,16 +575,64 @@ button:hover { border-color: var(--accent); }
   justify-content: center;
   gap: 0.15rem;
   min-width: 0;
+  transition: border-left-width 0.12s ease;
 }
+
+/* The rail's only interactive cue: the left border widens on hover. Nothing
+   else moves — the extra 8px comes out of the padding box, not the grid
+   track, so the tile's outer width stays fixed (design_handoff_target_tile). */
+.watch-rail:hover { border-left-width: 12px; }
 
 /* The rail's left edge is the target's worst finding. The badge next to the
    name says it in words too — the colour must never be the only carrier. */
+.watch-rail.sev-info, .watch-rail.sev-low { border-left-color: var(--muted); }
 .watch-rail.sev-medium { border-left-color: var(--warn); }
 .watch-rail.sev-high { border-left-color: var(--bad); }
 .watch-rail.sev-critical { border-left-color: var(--crit); }
 
-.watch-name { font-size: 1.1rem; font-weight: 600; line-height: 1.25; word-break: break-word; }
-.watch-host { color: var(--muted); font-size: 0.8em; word-break: break-all; }
+.watch-name-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+.watch-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Always shown, unlike the old notable-only badge: text carries the exact
+   severity at every level, colour intensity carries how much it matters —
+   info/low stay a quiet grey rather than disappearing outright. Its own
+   class rather than the shared .sev used elsewhere (result.html's plain
+   coloured-text badge is untouched; this is a solid pill, scoped to the
+   target tile only). */
+.watch-sev {
+  flex: none;
+  margin-left: auto;
+  font: 700 0.62rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 0.34rem;
+  border-radius: 3px;
+  color: #fff;
+}
+
+.watch-sev.sev-info, .watch-sev.sev-low { background: var(--muted); }
+.watch-sev.sev-medium { background: var(--warn); }
+.watch-sev.sev-high { background: var(--bad); }
+.watch-sev.sev-critical { background: var(--crit); }
+
+.watch-host {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .watch-tile {
   /* Named so .watch-tile-actions's rectangle (below) can match whichever of

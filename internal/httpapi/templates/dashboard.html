@@ -70,10 +70,16 @@
     {{range .Targets}}
       {{$t := .}}
       <div class="watch-row" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
+        {{/* design_handoff_target_tile, option 4a: the badge is always shown
+             (never gated on severity — info/low just read as muted), and the
+             left border widens on hover as the tile's only interactive cue;
+             the target name link inside it is unaffected. */}}
         <div class="watch-rail {{sevclass $t.Severity}}">
-          <a class="watch-name" href="/compare/{{$t.Name}}">{{$t.Name}}</a>
-          <span class="watch-host">{{$t.Host}}</span>
-          {{if severityNotable $t.Severity}}<span class="sev sev-{{$t.Severity}}" title="worst open finding across this target's consent modes">{{$t.Severity}}</span>{{end}}
+          <div class="watch-name-row">
+            <a class="watch-name" href="/compare/{{$t.Name}}">{{$t.Name}}</a>
+            <span class="watch-sev sev-{{$t.Severity}}" title="worst open finding across this target's consent modes">{{$t.Severity}}</span>
+          </div>
+          <span class="watch-host" title="{{$t.URL}}">{{$t.Host}}</span>
         </div>
 
         {{range $t.Rows}}

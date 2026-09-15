@@ -108,13 +108,6 @@ func uiFuncs() template.FuncMap {
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},
-		// severityNotable decides whether the target list's compact badge
-		// shows at all. "info" and "low" stay quiet: a list built to be
-		// scanned at a glance should flag what needs a look, not restate
-		// "clean" on every row (Story 5.8, AC1).
-		"severityNotable": func(s diff.Severity) bool {
-			return s != "" && s.AtLeast(diff.SeverityMedium)
-		},
 		"add": func(a, b int) int { return a + b },
 		// filterSeverities, filterOutcomes and filterModes enumerate the
 		// values the target list's filter panel offers (Story 5.22, AC1).
@@ -368,7 +361,9 @@ type targetRow struct {
 
 	// Severity is the worst Severity across the target's series, condensed
 	// to a single per-target badge (Story 5.8, AC1: "open findings by
-	// severity").
+	// severity"). Never empty: newTargetRow defaults it to SeverityInfo, so
+	// the rail's badge always has a real word to show rather than needing a
+	// separate no-scans-yet case (design_handoff_target_tile).
 	Severity diff.Severity
 }
 
@@ -389,6 +384,10 @@ func newTargetRow(v TargetView) targetRow {
 		if sv.Severity.Rank() > row.Severity.Rank() {
 			row.Severity = sv.Severity
 		}
+	}
+
+	if row.Severity == "" {
+		row.Severity = diff.SeverityInfo
 	}
 
 	return row
