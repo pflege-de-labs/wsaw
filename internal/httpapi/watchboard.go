@@ -38,15 +38,21 @@ const watchLabel = "env"
 // (Tenet 5).
 const unlabelledGroup = "no env label"
 
-// Cookies. Both are display preferences of the person looking rather than
-// properties of the deployment, so they live in a cookie exactly as the
-// refresh interval does (Story 5.16) — one viewer collapsing a group must not
-// change what anybody else sees (Tenet 15).
+// Cookies. All three are display preferences of the person looking rather
+// than properties of the deployment, so they live in a cookie exactly as the
+// refresh interval does (Story 5.16) — one viewer collapsing a group, or
+// narrowing severity to hosts, must not change what anybody else sees
+// (Tenet 15).
 const (
 	// envsCookie lists the collapsed groups, comma-separated.
 	envsCookie = "wsaw_envs"
 	// filterCookie holds the target filter text.
 	filterCookie = "wsaw_filter"
+	// hostsOnlyCookie holds whether a series' Severity narrows to
+	// hostChangeTypes (api.go). Any non-empty value means on; the checkbox
+	// that sets it submits nothing at all when unchecked, so "on" is the only
+	// state that needs a value.
+	hostsOnlyCookie = "wsaw_hostsonly"
 )
 
 // maxFilterLen bounds what is read back out of the filter cookie. The value
@@ -213,6 +219,16 @@ func collapsedEnvs(r *http.Request) map[string]bool {
 	return out
 }
 
+// hostsOnly reads the remembered "hosts only" preference. It has to be read
+// before targetViews builds the dashboard's targets, unlike the other
+// preferences here: Severity is computed once, inside targetViews, not
+// filtered afterwards by shapeWatchboard.
+func hostsOnly(r *http.Request) bool {
+	c, err := r.Cookie(hostsOnlyCookie)
+
+	return err == nil && c.Value != ""
+}
+
 // filterTargets keeps the targets a filter string matches.
 //
 // It matches the name, the URL and the labels — the three things written on
@@ -318,8 +334,9 @@ func groupByLabel(rows []targetRow, key string, collapsed map[string]bool) []env
 	return out
 }
 
-// handleUIFilter stores the viewer's filter text and sends them back to the
-// board.
+// handleUIFilter stores the viewer's filter text and "hosts only" choice —
+// the two preferences the watch-head form submits together — and sends them
+// back to the board.
 //
 // A POST with CSRF and a redirect afterwards, exactly like the refresh
 // interval it sits next to (Story 5.16, AC9): it is a deliberate change to a
@@ -340,6 +357,21 @@ func (s *Server) handleUIFilter(w http.ResponseWriter, r *http.Request) {
 		Value:    filter,
 		Path:     "/",
 		HttpOnly: false, // watch.js reads it to keep the field and the board in step
+		Secure:   s.opts.TLSCert != "",
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int((365 * 24 * 60 * 60)),
+	})
+
+	hostsOnlyValue := ""
+	if r.FormValue("hostsonly") != "" {
+		hostsOnlyValue = "1"
+	}
+
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // a display preference, no secret; Secure follows TLS as elsewhere
+		Name:     hostsOnlyCookie,
+		Value:    hostsOnlyValue,
+		Path:     "/",
+		HttpOnly: true, // nothing client-side reads it; Severity is server-computed
 		Secure:   s.opts.TLSCert != "",
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int((365 * 24 * 60 * 60)),

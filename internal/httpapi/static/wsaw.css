@@ -501,6 +501,15 @@ button:hover { border-color: var(--accent); }
    header's status cluster. */
 .watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-left: auto; }
 .watch-filter input[type="text"] { min-width: 16rem; }
+.watch-hostsonly {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  cursor: pointer;
+}
 .watch-shown { color: var(--muted); font-size: 0.85em; margin: 0; white-space: nowrap; }
 
 /* Visually hidden but still reachable by assistive tech — the placeholder

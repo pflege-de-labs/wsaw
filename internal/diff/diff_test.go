@@ -98,6 +98,39 @@ func TestNewThirdPartyInRejectModeIsCritical(t *testing.T) {
 	}
 }
 
+// MaxSeverityOf must actually narrow the result, not just happen to agree
+// with MaxSeverity: the change kept out of the host bucket here is the more
+// severe one, so a MaxSeverityOf that silently fell back to the full report
+// would pass a weaker version of this test by luck.
+func TestMaxSeverityOfNarrowsToTheGivenChangeTypes(t *testing.T) {
+	t.Parallel()
+
+	a := result(model.ConsentReject, req("https://example.com/", "example.com", model.FirstParty))
+	a.Cookies = []model.Cookie{{Name: "id", Domain: "tracker.test", Party: model.ThirdParty}}
+
+	b := result(model.ConsentReject,
+		req("https://example.com/", "example.com", model.FirstParty),
+		// A new first-party host: FirstPartyHostAdded, low by default.
+		req("https://newhost.example/", "newhost.example", model.FirstParty),
+	)
+	// A new third-party cookie under reject mode: critical by default, and
+	// higher than the host change above.
+	b.Cookies = []model.Cookie{
+		{Name: "id", Domain: "tracker.test", Party: model.ThirdParty},
+		{Name: "session", Domain: "tracker.test", Party: model.ThirdParty},
+	}
+
+	rep := diff.Compare(a, b, diff.Options{})
+
+	if rep.MaxSeverity() != diff.SeverityCritical {
+		t.Fatalf("MaxSeverity = %q, want critical (test fixture is not exercising what it claims to)", rep.MaxSeverity())
+	}
+
+	if got := rep.MaxSeverityOf(diff.HostAdded, diff.HostRemoved, diff.DeniedHost); got != diff.SeverityLow {
+		t.Errorf("MaxSeverityOf(host types) = %q, want low", got)
+	}
+}
+
 func TestNewThirdPartyPreConsentIsHigh(t *testing.T) {
 	t.Parallel()
 

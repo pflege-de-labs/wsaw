@@ -335,6 +335,11 @@ type dashboardData struct {
 	Shown           int
 	PreConsentHosts int
 
+	// HostsOnly is the viewer's remembered choice to narrow every series'
+	// Severity to a host appearing, disappearing, or denied — set before
+	// targetViews runs, not filtered afterwards (watchboard.go, hostsOnly).
+	HostsOnly bool
+
 	// Running is every scan in flight, across all targets, so the dashboard
 	// answers "is wsaw doing anything right now" without drilling in
 	// (Story 5.12).
@@ -462,13 +467,14 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Ready:   true,
-		Reason:  "readiness is not tracked",
-		Running: s.running(),
-		Tracked: s.deps.Running != nil,
+		Ready:     true,
+		Reason:    "readiness is not tracked",
+		Running:   s.running(),
+		Tracked:   s.deps.Running != nil,
+		HostsOnly: hostsOnly(r),
 	}
 
-	for _, v := range s.targetViews() {
+	for _, v := range s.targetViews(data.HostsOnly) {
 		data.Targets = append(data.Targets, newTargetRow(v))
 	}
 

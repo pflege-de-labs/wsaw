@@ -1,11 +1,13 @@
-// Watchboard enhancements: filter as you type, and remember which groups are
-// collapsed.
+// Watchboard enhancements: filter as you type, remember which groups are
+// collapsed, and submit the "hosts only" toggle the moment it changes.
 //
-// Both behaviours already work without this file. The filter is a form that
-// POSTs to /filter and is applied on the server from a cookie; the groups are
-// <details> elements, which collapse in every browser on their own. This adds
-// only the two things script is actually needed for — filtering without a
-// round trip, and persisting a collapse that <details> forgets on navigation.
+// All three already work without this file. The filter and the toggle are
+// one form that POSTs to /filter and applies on the server from a cookie;
+// the groups are <details> elements, which collapse in every browser on
+// their own. This adds only what script is actually needed for — filtering
+// without a round trip, persisting a collapse that <details> forgets on
+// navigation, and skipping the Apply click for a preference that always
+// needs a round trip anyway.
 //
 // Dependency-free and in the same style as filter.js and refresh.js: there is
 // no bundler in this project and there is not going to be one (Tenet 14).
@@ -45,6 +47,17 @@
   groups.forEach(function (g) {
     g.addEventListener('toggle', rememberCollapsed);
   });
+
+  // Severity is computed on the server, so this preference can't apply
+  // itself the way the text filter does — it submits the form the moment
+  // it's toggled instead of waiting for Apply, which the checkbox still
+  // reaches with script off.
+  var hostsOnly = document.getElementById('watch-hostsonly-input');
+  if (hostsOnly && hostsOnly.form) {
+    hostsOnly.addEventListener('change', function () {
+      hostsOnly.form.submit();
+    });
+  }
 
   if (!input) {
     return;

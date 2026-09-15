@@ -35,6 +35,15 @@
     <label for="watch-filter-input" class="sr-only">Filter</label>
     <input type="text" id="watch-filter-input" name="filter" value="{{.Filter}}"
            placeholder="filter target, url or env" autocomplete="off">
+    {{/* Narrows every tile's notion of "changed" to a host appearing,
+         disappearing, or denied — not an asset, script, cookie, status flip,
+         or consent regression. Submits with the same form, so it works with
+         JavaScript off exactly like the filter does; watch.js submits it the
+         moment it's toggled instead of waiting for Apply. */}}
+    <label class="watch-hostsonly">
+      <input type="checkbox" id="watch-hostsonly-input" name="hostsonly" value="1"{{if .HostsOnly}} checked{{end}}>
+      hosts only
+    </label>
     <button type="submit">Apply</button>
     {{if .Filter}}<button type="submit" name="filter" value="" class="watch-filter-clear">Clear</button>{{end}}
   </form>

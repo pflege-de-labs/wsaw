@@ -170,7 +170,20 @@ func runningFor(all []scanner.Running, target string, mode model.ConsentMode) []
 	return out
 }
 
-func (s *Server) targetViews() []TargetView {
+// hostChangeTypes is what the watchboard's "hosts only" toggle narrows a
+// series' Severity to: a host appearing, disappearing, or denied. Everything
+// else a diff can report — an asset, a script, a cookie, a status flip, a
+// consent regression, a degraded scan — is left out on purpose, since the
+// toggle exists for a viewer who wants the board to speak up only when the
+// set of hosts contacted has actually changed.
+var hostChangeTypes = []diff.ChangeType{diff.HostAdded, diff.HostRemoved, diff.DeniedHost}
+
+// targetViews builds the dashboard's and the JSON API's shared view model.
+// hostsOnly narrows each series' Severity to hostChangeTypes; the JSON API
+// always passes false; only the HTML dashboard's per-viewer toggle (Tenet 15)
+// ever passes true, since Severity is otherwise the same machine-readable
+// value for both (Tenet 16).
+func (s *Server) targetViews(hostsOnly bool) []TargetView {
 	var out []TargetView
 
 	if s.deps.Targets == nil {
@@ -199,7 +212,7 @@ func (s *Server) targetViews() []TargetView {
 			sv.HasBaseline = err == nil
 
 			if sv.LastScan != nil {
-				sv.Severity = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline)
+				sv.Severity = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, hostsOnly)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -223,7 +236,7 @@ func (s *Server) targetViews() []TargetView {
 // trade — store.ListResults's own doc comment already accepts a full parse
 // per row so a summary can never drift from the document it describes, and
 // a severity flag on the target list is worth the same price.
-func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline) diff.Severity {
+func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline, hostsOnly bool) diff.Severity {
 	res, err := s.deps.Store.GetResult(target, mode, scanID)
 	if err != nil {
 		return ""
@@ -240,6 +253,10 @@ func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID 
 	rep := diff.Compare(baseRes, res, diff.Options{})
 	if !rep.Comparable {
 		return ""
+	}
+
+	if hostsOnly {
+		return rep.MaxSeverityOf(hostChangeTypes...)
 	}
 
 	return rep.MaxSeverity()
@@ -268,7 +285,9 @@ func staleness(last *store.Summary, now time.Time, maxAge time.Duration) (bool, 
 }
 
 func (s *Server) handleTargets(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews()})
+	// Always the full severity: the "hosts only" toggle is an HTML dashboard
+	// display preference, not a property of the result (Tenet 16).
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews(false)})
 }
 
 // handleRunning reports the scans in flight. "tracked" distinguishes a daemon

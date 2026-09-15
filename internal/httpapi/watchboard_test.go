@@ -306,6 +306,125 @@ func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
 	}
 }
 
+// With "hosts only" off (the default), a critical cookie change against the
+// baseline still marks the tile, same as any other critical change.
+func TestWithoutHostsOnlyACriticalCookieChangeMarksTheTile(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	// Identical requests in both scans: no host appears or disappears.
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A third-party cookie appearing under reject mode is critical
+	// (ThirdPartyCookieRejectMode) but is not a host-level change.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("a critical cookie change against the baseline did not mark the tile\n%s", html)
+	}
+}
+
+// "Hosts only" narrows a tile's notion of "changed" to a host appearing,
+// disappearing, or denied — a cookie change alone must stop marking it.
+func TestHostsOnlyDoesNotMarkATileForACookieChangeAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+
+	if strings.Contains(html, "has-critical") {
+		t.Errorf("hosts-only still marked a tile for a cookie-only change\n%s", html)
+	}
+}
+
+// A genuine host-level change must still mark the tile with "hosts only" on
+// — the toggle narrows what counts, it does not turn marking off.
+func TestHostsOnlyStillMarksAGenuineHostChange(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tracker surviving rejection: HostAdded, critical.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("hosts-only hid a genuine host-level critical change\n%s", html)
+	}
+}
+
+// The checkbox reflects the remembered preference either way.
+func TestTheHostsOnlyCheckboxReflectsTheRememberedPreference(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	on := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+	if !strings.Contains(on, `id="watch-hostsonly-input" name="hostsonly" value="1" checked`) {
+		t.Errorf("the hosts-only checkbox did not reflect an enabled preference\n%s", on)
+	}
+
+	off := body(t, f.get("/", "Accept", "text/html"))
+	if strings.Contains(off, `id="watch-hostsonly-input" name="hostsonly" value="1" checked`) {
+		t.Errorf("the hosts-only checkbox was checked with no preference set\n%s", off)
+	}
+}
+
+// The JSON API is the product's real interface (Tenet 16) and must not
+// change shape because of an HTML-only viewer preference: a machine reading
+// severity off it must see the same value regardless of what a browser's
+// cookie jar happens to hold.
+func TestTheJSONAPIIgnoresTheHostsOnlyCookie(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	json := body(t, f.get("/api/v1/targets", "Cookie", "wsaw_hostsonly=1"))
+
+	if !strings.Contains(json, `"severity": "critical"`) {
+		t.Errorf("the JSON API's severity narrowed to hosts because of a cookie meant only for the HTML dashboard\n%s", json)
+	}
+}
+
 // A clean board must not shout. Counts stay muted until they are non-zero,
 // because a page that reports "0 stale" in red every day teaches the reader
 // to stop looking at it.
