@@ -725,12 +725,6 @@ button:hover { border-color: var(--accent); }
    filter costs no request (Story 5.22, AC2). */
 .watch-row[hidden], .watch-env[hidden] { display: none; }
 
-/* ------------------------------------------------------------------------
-   Append to internal/httpapi/static/wsaw.css, after the .watch-tile-actions
-   block. Nothing above it is removed; the four rules marked REPLACE below
-   change existing declarations and are listed separately in PULL_REQUEST.md.
-   ------------------------------------------------------------------------ */
-
 /* The consent mode, once per column instead of once per tile. Eight targets
    and three modes wrote the same three words twenty-four times; the column
    header says each one once, and the tile spends that line on the figures
