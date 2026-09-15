@@ -8,11 +8,11 @@ import (
 // What a tile says about time.
 //
 // Two facts, both already published by the daemon: how old the scan the tile
-// describes is, and how long until the next one. The board derives no cadence
-// of its own — every interval here is NextRun minus LastRun as the schedule
-// reports it (scheduleRow, ui.go), so a tile can never claim a rhythm the
-// daemon is not actually keeping. Where the schedule says nothing, the tile
-// says "not scheduled" rather than guessing.
+// describes is, and how long until the next one. The bar under them is a
+// third reading of the same two facts, not a third fact: its total is their
+// sum (age plus time-to-next), and it fills for the age's share of that
+// total. Where the schedule says nothing, the tile says "not scheduled"
+// rather than guessing, and draws no bar at all.
 
 // AgeLabel is the left half of the tile's time line: how old the shown scan
 // is. A running scan replaces it, because "3h old" next to a scan in flight
@@ -101,16 +101,22 @@ func (r modeRow) Scheduled() bool {
 	return !r.NextRun.IsZero()
 }
 
-// interval is the cadence the schedule implies for this series. LastRun
-// rather than the shown scan's start: the schedule's own two timestamps
-// belong to the same clock, and the last stored result can be older than the
-// last attempted run (a failed scan still moves LastRun).
+// interval is the bar's total: the shown scan's age plus the time to the
+// next scheduled one, i.e. NextRun minus the same start AgeLabel measures
+// from. Using scanStart rather than LastRun keeps the bar's total equal to
+// the sum of the two numbers written above it — age and next-in — even when
+// a failed scan has moved LastRun without producing a result.
 func (r modeRow) interval() time.Duration {
-	if r.NextRun.IsZero() || r.LastRun.IsZero() {
+	if r.NextRun.IsZero() {
 		return 0
 	}
 
-	return r.NextRun.Sub(r.LastRun)
+	start := r.scanStart()
+	if start.IsZero() {
+		return 0
+	}
+
+	return r.NextRun.Sub(start)
 }
 
 // scanStart is when the scan the tile describes began, falling back to the

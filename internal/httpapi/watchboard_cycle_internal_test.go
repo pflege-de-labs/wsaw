@@ -152,6 +152,24 @@ func TestCyclePercent(t *testing.T) {
 		}
 	})
 
+	t.Run("total is age plus time-to-next, not NextRun minus LastRun", func(t *testing.T) {
+		t.Parallel()
+
+		// LastRun is 3h in the past (a stale schedule entry), but the shown
+		// scan is only 10m old and next in 10m — the bar must read from
+		// those two numbers, not from the disagreeing LastRun.
+		row := modeRow{
+			LastRun: now.Add(-3 * time.Hour),
+			NextRun: now.Add(10 * time.Minute),
+			Series:  SeriesView{LastScan: &store.Summary{StartedAt: now.Add(-10 * time.Minute)}},
+		}
+
+		got := row.CyclePercent()
+		if got < 45 || got > 55 {
+			t.Errorf("CyclePercent() = %d, want roughly 50 (age and next-in both ~10m)", got)
+		}
+	})
+
 	t.Run("zero interval does not panic", func(t *testing.T) {
 		t.Parallel()
 
