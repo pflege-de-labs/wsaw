@@ -159,6 +159,7 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
 
 	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
+	s.mux.HandleFunc("POST /filter", s.handleUIFilter)
 
 	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
 	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
@@ -311,6 +312,16 @@ type dashboardData struct {
 	Reason  string
 	Jobs    []scheduleRow
 
+	// The board's display shape. Total is what is configured and Shown is
+	// what survived the filter: the page states both, because a watcher that
+	// reports "6 targets" while eight are configured has misrepresented
+	// itself.
+	Groups          []envGroup
+	Filter          string
+	Total           int
+	Shown           int
+	PreConsentHosts int
+
 	// Running is every scan in flight, across all targets, so the dashboard
 	// answers "is wsaw doing anything right now" without drilling in
 	// (Story 5.12).
@@ -459,6 +470,8 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Metrics != nil {
 		data.Ready, data.Reason = s.deps.Metrics.Ready()
 	}
+
+	data.shapeWatchboard(r)
 
 	if s.deps.Daemon != nil {
 		for _, j := range s.deps.Daemon.Jobs() {

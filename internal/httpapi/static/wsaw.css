@@ -456,3 +456,165 @@ button:hover { border-color: var(--accent); }
 
 .target { margin-bottom: 1.2rem; }
 .target h2 .sev { margin: 0 0.5rem; vertical-align: middle; }
+
+/* The target list as a watchboard. Appended to internal/httpapi/static/wsaw.css.
+ *
+ * Every colour here is an existing token, so the board inherits the dark
+ * palette under prefers-color-scheme with nothing further to maintain.
+ */
+
+.watch-head { margin: 0.6rem 0 1.2rem; }
+.watch-head h1 { margin: 0 0 0.3rem; }
+
+.watch-counts {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A count is muted until it is non-zero: a board that shouts "0 stale" in
+   red every day teaches the reader to stop looking at it. */
+.watch-count { color: var(--muted); }
+.watch-pre.is-set { color: var(--warn); font-weight: 600; }
+.watch-stale.is-set, .watch-notready.is-set { color: var(--bad); font-weight: 600; }
+.watch-running.is-set { color: var(--accent); font-weight: 600; }
+
+.watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.watch-filter label { color: var(--muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
+.watch-filter input[type="text"] { min-width: 16rem; }
+.watch-shown { color: var(--muted); font-size: 0.85em; margin: 0.4rem 0 0; }
+
+/* A group of targets. <summary> is the collapse control, so it works with
+   JavaScript off; watch.js only remembers the state. */
+.watch-env { margin: 0 0 1.2rem; }
+
+.watch-env > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.watch-env-label {
+  font-weight: 600;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.watch-env-n { color: var(--muted); font-size: 0.8em; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+.watch-row {
+  display: grid;
+  grid-template-columns: 15rem repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  align-items: stretch;
+}
+
+/* Narrow viewports: the rail sits above its tiles rather than squeezing four
+   columns into a phone. */
+@media (max-width: 60rem) {
+  .watch-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+.watch-rail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+/* The rail's left edge is the target's worst finding. The badge next to the
+   name says it in words too — the colour must never be the only carrier. */
+.watch-rail.sev-medium { border-left-color: var(--warn); }
+.watch-rail.sev-high { border-left-color: var(--bad); }
+.watch-rail.sev-critical { border-left-color: var(--crit); }
+
+.watch-name { font-size: 1.1rem; font-weight: 600; line-height: 1.25; word-break: break-word; }
+.watch-host { color: var(--muted); font-size: 0.8em; word-break: break-all; }
+
+.watch-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+/* The one state on the board allowed to draw the eye by itself: a third
+   party contacted before the consent interaction. */
+.watch-tile.has-pre {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, transparent);
+}
+
+.watch-tile.is-running {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.watch-tile.is-stale { border-color: var(--warn); }
+
+.watch-tile-top { display: flex; align-items: baseline; gap: 0.5rem; }
+
+.watch-mode {
+  font-weight: 600;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.watch-age {
+  margin-left: auto;
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.watch-outcome { font-size: 1rem; font-weight: 600; }
+
+.watch-metrics {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.watch-metrics .term { border: none; padding: 0; margin-left: auto; }
+.watch-pre-n.is-set { color: var(--warn); font-weight: 700; }
+
+.watch-tile-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  margin-top: auto;
+}
+
+/* A row the script filtered out. Hidden rather than removed, so clearing the
+   filter costs no request (Story 5.22, AC2). */
+.watch-row[hidden], .watch-env[hidden] { display: none; }

@@ -2,41 +2,129 @@
 {{$page := .}}
 {{with .Data}}
 
-<h1>Targets</h1>
+{{/* The target list as a watchboard (this replaces the table-per-target
+     list). Every value here was on the previous list; what changed is what
+     size and position claim about it — the age and the pre-consent count
+     decide whether somebody has to act, so they are what a reader sees from
+     across the room. */}}
 
-<div class="status-row">
-  <div class="status {{if .Ready}}status-ok{{else}}status-bad{{end}}">
-    <strong>{{if .Ready}}Ready{{else}}Not ready{{end}}</strong>
-    <span>{{.Reason}}</span>
-  </div>
-  <div class="status {{if .Stale}}status-bad{{else}}status-ok{{end}}">
-    <strong>{{.Stale}} stale</strong>
-    <span>series without a recent successful scan</span>
-  </div>
-  <div class="status {{if .Running}}status-active{{end}}">
+<div class="watch-head">
+  <h1>{{.Shown}} targets watched</h1>
+  <p class="watch-counts">
+    <span class="watch-count watch-pre{{if .PreConsentHosts}} is-set{{end}}">{{.PreConsentHosts}} pre-consent hosts</span>
+    <span class="watch-count watch-stale{{if .Stale}} is-set{{end}}">{{.Stale}} stale series</span>
     {{if not .Tracked}}
-      <strong>Activity not tracked</strong>
-      <span>this instance does not run scans</span>
-    {{else if .Running}}
-      <strong>{{len .Running}} running</strong>
-      <span>scans in flight right now</span>
+      <span class="watch-count">activity not tracked</span>
     {{else}}
-      <strong>Idle</strong>
-      <span>no scan is running</span>
+      <span class="watch-count watch-running{{if .Running}} is-set{{end}}">{{len .Running}} running</span>
     {{end}}
-  </div>
+    <span class="watch-count {{if .Ready}}watch-ready{{else}}watch-notready is-set{{end}}">{{if .Ready}}ready{{else}}not ready — {{.Reason}}{{end}}</span>
+  </p>
+  {{/* The filter is a plain input with a submit button: it works with
+       JavaScript off (the choice is remembered in a cookie and applied on the
+       server), and watch.js upgrades it to filter as you type. */}}
+  <form method="post" action="/filter" class="watch-filter">
+    <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+    <input type="hidden" name="return" value="{{$page.RefreshTarget}}">
+    <label for="watch-filter-input">Filter</label>
+    <input type="text" id="watch-filter-input" name="filter" value="{{.Filter}}"
+           placeholder="target, url or env" autocomplete="off">
+    <button type="submit">Apply</button>
+    {{if .Filter}}<button type="submit" name="filter" value="" class="watch-filter-clear">Clear</button>{{end}}
+  </form>
+  <p class="watch-shown" id="watch-shown" aria-live="polite">showing {{.Shown}} of {{.Total}} targets</p>
 </div>
 
+{{if not .Targets}}
+  {{if .Filter}}
+    <p class="empty">No target matches this filter. {{.Total}} are configured.</p>
+  {{else}}
+    <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
+  {{end}}
+{{end}}
+
+{{range .Groups}}
+  {{/* <details> rather than a scripted toggle: collapsing works with
+       JavaScript off, and watch.js only adds remembering it. The summary
+       carries the group's size so a collapsed group can still be judged. */}}
+  <details class="watch-env" data-env="{{.Value}}"{{if not .Collapsed}} open{{end}}>
+    <summary>
+      <span class="watch-env-label">{{.Label}}</span>
+      <span class="watch-env-n">{{.Count}}</span>
+    </summary>
+
+    {{range .Targets}}
+      {{$t := .}}
+      <div class="watch-row" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
+        <div class="watch-rail {{sevclass $t.Severity}}">
+          <a class="watch-name" href="/compare/{{$t.Name}}">{{$t.Name}}</a>
+          <span class="watch-host">{{$t.Host}}</span>
+          {{if severityNotable $t.Severity}}<span class="sev sev-{{$t.Severity}}" title="worst open finding across this target's consent modes">{{$t.Severity}}</span>{{end}}
+        </div>
+
+        {{range $t.Rows}}
+          {{$mode := .Series.Mode}}
+          <div class="{{.TileClass}}"
+               data-severity="{{.Series.Severity}}"
+               data-outcome="{{rowOutcome .Series}}"
+               data-modes="{{rowModes .Label}}">
+            <div class="watch-tile-top">
+              <span class="watch-mode">{{.Label}}</span>
+              {{with .Series.LastScan}}
+                <a class="watch-age" href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
+                   title="{{time .StartedAt}}"
+                   aria-label="Open the last scan of {{$t.Name}} in {{$mode}} mode, {{.ScanID}}">{{ago .StartedAt}}</a>
+              {{else}}
+                <span class="watch-age muted">never</span>
+              {{end}}
+            </div>
+
+            {{with .Series.LastScan}}
+              <div class="watch-outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</div>
+              <div class="watch-metrics">
+                <span>{{.Requests}} req</span>
+                <span>{{.ThirdPartyDomains}} 3p</span>
+                <span class="watch-pre-n{{if .PreConsentDomains}} is-set{{end}}">{{.PreConsentDomains}} pre</span>
+                <span class="term term-{{.Termination}}">{{.Termination}}</span>
+              </div>
+            {{else}}
+              <div class="watch-outcome muted">never scanned</div>
+              <div class="watch-metrics"><span class="muted">no observation yet</span></div>
+            {{end}}
+
+            <div class="watch-tile-foot">
+              <a href="/targets/{{$t.Name}}/{{$mode}}">history</a>
+              {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}
+              {{if .Series.Stale}}<span class="badge badge-stale" title="{{.Series.StaleReason}}">stale</span>{{end}}
+              {{if $page.AllowScan}}
+              <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline">
+                <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+                <button type="submit">Scan now</button>
+              </form>
+              {{end}}
+            </div>
+          </div>
+        {{end}}
+      </div>
+    {{end}}
+  </details>
+{{end}}
+
+<p class="note muted">Pre-consent counts are third-party hosts contacted before the consent interaction. In reject mode they are the headline finding.</p>
+
 {{if .Running}}
+{{/* Kept from the previous list, and deliberately: a running scan exists in
+     no stored result, so without this row an idle daemon and a busy one look
+     the same (Story 5.12). The board shows which series is scanning; this
+     says which scan, since when, and who asked for it. */}}
+<h2>Running scans</h2>
 <table class="running">
-  <caption>Running scans</caption>
   <thead><tr><th>Target</th><th>Mode</th><th>Scan</th><th>Started</th><th>Elapsed</th><th>Started by</th></tr></thead>
   <tbody>
   {{range .Running}}
     <tr class="row-running">
       <td><a href="/targets/{{.Target}}/{{.ConsentMode}}">{{.Target}}</a></td>
       <td>{{.ConsentMode}}</td>
-      {{/* No link: a running scan has no result to open yet (Story 5.15, AC6). */}}
       <td title="this scan has not finished, so there is no result to open yet"><code>{{.ScanID}}</code></td>
       <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
       <td>{{since .StartedAt}}</td>
@@ -45,135 +133,6 @@
   {{end}}
   </tbody>
 </table>
-{{end}}
-
-{{if not .Targets}}
-  <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
-{{end}}
-
-{{if .Targets}}
-{{/* Filtering runs entirely against what the server already rendered below —
-     no request is made to apply, change or clear a filter (Story 5.22, AC2).
-     It starts hidden: without JavaScript there is no way to make it do
-     anything, so it is absent rather than left sitting inert on the page
-     (Story 5.22, AC8); filter.js reveals it once it has attached its
-     listeners. */}}
-<div class="filters" id="target-filters" hidden>
-  <div class="filters-row">
-    <fieldset class="filter-group">
-      <legend>Severity</legend>
-      {{range filterSeverities}}
-      <label class="filter-option"><input type="checkbox" name="severity" value="{{.}}">{{.}} <span class="filter-n" data-dim="severity" data-value="{{.}}"></span></label>
-      {{end}}
-    </fieldset>
-    <fieldset class="filter-group">
-      <legend>Outcome</legend>
-      {{range filterOutcomes}}
-      <label class="filter-option"><input type="checkbox" name="outcome" value="{{.}}">{{.}} <span class="filter-n" data-dim="outcome" data-value="{{.}}"></span></label>
-      {{end}}
-    </fieldset>
-    <fieldset class="filter-group">
-      <legend>Mode</legend>
-      {{range filterModeValues}}
-      <label class="filter-option"><input type="checkbox" name="mode" value="{{.}}">{{.}} <span class="filter-n" data-dim="mode" data-value="{{.}}"></span></label>
-      {{end}}
-    </fieldset>
-    <div class="filter-group filter-labels">
-      <label for="filter-label">Labels</label>
-      <input type="text" id="filter-label" name="label" placeholder="key=value" autocomplete="off">
-    </div>
-    <button type="button" id="filter-reset" class="filter-reset" disabled>Reset all</button>
-  </div>
-  <p class="filter-count" id="filter-count" aria-live="polite">showing {{len .Targets}} of {{len .Targets}} targets</p>
-</div>
-{{end}}
-
-{{range .Targets}}
-  {{$target := .}}
-  <section class="target" data-labels="{{range $k, $v := $target.Labels}}{{$k}}={{$v}} {{end}}">
-    <h2>
-      {{.Name}}
-      {{/* The one badge that answers "did the last scan find anything
-           critical" without opening a single row — the worst Severity
-           across this target's series (Story 5.8, AC1). Below "medium" it
-           stays quiet: a compact list should flag what needs a look, not
-           restate "clean" on every row. */}}
-      {{if severityNotable .Severity}}<span class="sev sev-{{.Severity}}" title="worst open finding across this target's consent modes, vs. baseline or previous scan">{{.Severity}}</span>{{end}}
-      <a class="compare-link" href="/compare/{{.Name}}">compare consent modes</a>
-    </h2>
-    <p class="url">{{.URL}}</p>
-    {{if .Labels}}<p class="labels">{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span>{{end}}</p>{{end}}
-
-    <table class="compact">
-      <thead>
-        <tr>
-          <th>Mode</th>
-          <th>Last scan</th>
-          <th>Outcome</th>
-          <th>Consent</th>
-          <th class="num">Req</th>
-          <th class="num">3rd-party</th>
-          <th class="num">Pre-consent</th>
-          <th>Findings</th>
-          <th>Baseline</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-      {{range .Rows}}
-        {{$mode := .Series.Mode}}
-        {{/* Filter data lives on the row itself (Story 5.22, AC1/AC4): a row is
-             the unit filtering hides or shows, so severity, outcome, the
-             modes it represents (a folded "none / reject" row answers to
-             both) and its target's labels are all read from here, never
-             recomputed by walking back up to the section. */}}
-        <tr class="{{if .Series.Running}}row-running{{else if .Series.Stale}}row-stale{{end}}"
-            data-severity="{{.Series.Severity}}"
-            data-outcome="{{rowOutcome .Series}}"
-            data-modes="{{rowModes .Label}}"
-            data-labels="{{range $k, $v := $target.Labels}}{{$k}}={{$v}} {{end}}">
-          {{/* Two consent modes share this line when their last scans agreed
-               on every signal shown below — "none" and "reject" usually
-               produce the same result, so a reader should only have to look
-               twice when they didn't (this row's Label names both, and the
-               link still opens the specific mode a reader would rescan). */}}
-          <td><a href="/targets/{{$target.Name}}/{{$mode}}">{{.Label}}</a>
-            {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
-          {{with .Series.LastScan}}
-            {{/* The link points at this specific scan, never at "latest": a
-                 row that says "3h ago" and opens a scan from four minutes ago
-                 has misrepresented what the reader clicked. A failed scan is
-                 linked too — that is the row most worth opening. */}}
-            <td title="{{time .StartedAt}}">
-              <a class="scan-link"
-                 href="/results/{{$target.Name}}/{{$mode}}/{{.ScanID}}"
-                 aria-label="Open the last scan of {{$target.Name}} in {{$mode}} mode, {{.ScanID}}"
-                >{{ago .StartedAt}}<span class="open-icon" aria-hidden="true">↗</span></a></td>
-            <td><span class="term term-{{.Termination}}">{{.Termination}}</span></td>
-            <td><span class="outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
-              {{if .ConsentCMP}}<span class="cmp">{{.ConsentCMP}}</span>{{end}}</td>
-            <td class="num">{{.Requests}}</td>
-            <td class="num">{{.ThirdPartyDomains}}</td>
-            <td class="num {{if .PreConsentDomains}}warn{{end}}">{{.PreConsentDomains}}</td>
-          {{else}}
-            <td colspan="6" class="empty">never scanned</td>
-          {{end}}
-          <td>{{if severityNotable .Series.Severity}}<span class="sev sev-{{.Series.Severity}}">{{.Series.Severity}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-          <td>{{if .Series.HasBaseline}}approved{{else}}<span class="muted">none</span>{{end}}</td>
-          <td>
-            {{if .Series.Stale}}<span class="badge badge-stale" title="{{.Series.StaleReason}}">stale</span>{{end}}
-            {{if $page.AllowScan}}
-            <form method="post" action="/rescan/{{$target.Name}}/{{$mode}}" class="inline">
-              <input type="hidden" name="csrf" value="{{$page.CSRF}}">
-              <button type="submit">Scan now</button>
-            </form>
-            {{end}}
-          </td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
-  </section>
 {{end}}
 
 {{if .Jobs}}
