@@ -675,12 +675,19 @@ button:hover { border-color: var(--accent); }
 /* history and Scan now: secondary actions, so they stay out of the way
    until the tile is hovered — or, for a keyboard reader who cannot hover,
    until one of them has focus. Opacity rather than display/visibility, so
-   both stay reachable by Tab and by assistive tech the whole time. */
+   both stay reachable by Tab and by assistive tech the whole time.
+   Positioned out of flow so a tile with no badges reserves no space for
+   them — hidden or not, .watch-tile-foot would otherwise still be as tall
+   as this row, leaving a gap under the metrics line. Anchored to the
+   tile's own bottom-right corner, it overlays the metrics line when shown;
+   that overlap is deliberate rather than reserving a row for it. */
 .watch-tile-actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-left: auto;
+  position: absolute;
+  right: 0.7rem;
+  bottom: 0.55rem;
   opacity: 0;
 }
 
