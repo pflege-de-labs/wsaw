@@ -245,6 +245,12 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
   font-weight: normal;
 }
 
+.filter-n {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
 .filter-labels input {
   font-size: 0.9em;
   padding: 0.25rem 0.4rem;

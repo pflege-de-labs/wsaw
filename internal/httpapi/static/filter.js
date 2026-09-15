@@ -99,6 +99,50 @@
     return true;
   }
 
+  // targetsMatching counts the target sections with at least one row
+  // matching f — the unit a facet count reports in (Story 5.22, AC5 already
+  // counts targets this way; a per-option count uses the same unit so the
+  // two numbers on the page are never answering different questions).
+  function targetsMatching(f) {
+    var n = 0;
+
+    sections.forEach(function (section) {
+      var rows = section.querySelectorAll('tbody tr[data-severity]');
+      var matches = Array.prototype.some.call(rows, function (row) { return rowMatches(row, f); });
+
+      if (matches) {
+        n += 1;
+      }
+    });
+
+    return n;
+  }
+
+  // Each checkbox's own count previews what selecting *only* that value in
+  // its dimension would show, on top of whatever is already active in the
+  // other dimensions — the usual faceted-search convention, and the reason
+  // it is computed fresh on every apply() rather than once at load: a
+  // severity count must reflect an outcome filter already in effect, or it
+  // answers a question the reader did not ask (Story 5.22, per-option
+  // counts). A option that would leave nothing hidden behind it still gets
+  // an honest "(0)" rather than no count at all — absence is stated, not
+  // left for the reader to infer.
+  function updateFacetCounts(f) {
+    ['severity', 'outcome', 'mode'].forEach(function (dim) {
+      var els = panel.querySelectorAll('.filter-n[data-dim="' + dim + '"]');
+
+      Array.prototype.forEach.call(els, function (el) {
+        var only = {};
+        only[el.getAttribute('data-value')] = true;
+
+        var f2 = { severity: f.severity, outcome: f.outcome, mode: f.mode, label: f.label };
+        f2[dim] = only;
+
+        el.textContent = '(' + targetsMatching(f2) + ')';
+      });
+    });
+  }
+
   function apply() {
     var f = currentFilters();
     var visibleTargets = 0;
@@ -134,6 +178,7 @@
       resetButton.disabled = !anyActive(f);
     }
 
+    updateFacetCounts(f);
     updateURL(f);
   }
 

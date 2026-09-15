@@ -63,19 +63,19 @@
     <fieldset class="filter-group">
       <legend>Severity</legend>
       {{range filterSeverities}}
-      <label class="filter-option"><input type="checkbox" name="severity" value="{{.}}">{{.}}</label>
+      <label class="filter-option"><input type="checkbox" name="severity" value="{{.}}">{{.}} <span class="filter-n" data-dim="severity" data-value="{{.}}"></span></label>
       {{end}}
     </fieldset>
     <fieldset class="filter-group">
       <legend>Outcome</legend>
       {{range filterOutcomes}}
-      <label class="filter-option"><input type="checkbox" name="outcome" value="{{.}}">{{.}}</label>
+      <label class="filter-option"><input type="checkbox" name="outcome" value="{{.}}">{{.}} <span class="filter-n" data-dim="outcome" data-value="{{.}}"></span></label>
       {{end}}
     </fieldset>
     <fieldset class="filter-group">
       <legend>Mode</legend>
       {{range filterModeValues}}
-      <label class="filter-option"><input type="checkbox" name="mode" value="{{.}}">{{.}}</label>
+      <label class="filter-option"><input type="checkbox" name="mode" value="{{.}}">{{.}} <span class="filter-n" data-dim="mode" data-value="{{.}}"></span></label>
       {{end}}
     </fieldset>
     <div class="filter-group filter-labels">
