@@ -587,7 +587,11 @@ button:hover { border-color: var(--accent); }
 .watch-host { color: var(--muted); font-size: 0.8em; word-break: break-all; }
 
 .watch-tile {
-  background: var(--bg);
+  /* Named so .watch-tile-actions's rectangle (below) can match whichever of
+     these a tile is actually showing, rather than assuming the plain one. */
+  --tile-bg: var(--bg);
+
+  background: var(--tile-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.55rem 0.7rem;
@@ -610,12 +614,12 @@ button:hover { border-color: var(--accent); }
    critical-severity change against the series' baseline. */
 .watch-tile.has-critical {
   border-color: var(--crit);
-  background: color-mix(in srgb, var(--crit) 6%, transparent);
+  --tile-bg: color-mix(in srgb, var(--crit) 6%, var(--bg));
 }
 
 .watch-tile.is-running {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  --tile-bg: color-mix(in srgb, var(--accent) 6%, var(--bg));
 }
 
 .watch-tile.is-stale { border-color: var(--warn); }
@@ -679,8 +683,10 @@ button:hover { border-color: var(--accent); }
    Positioned out of flow so a tile with no badges reserves no space for
    them — hidden or not, .watch-tile-foot would otherwise still be as tall
    as this row, leaving a gap under the metrics line. Anchored to the
-   tile's own bottom-right corner, it overlays the metrics line when shown;
-   that overlap is deliberate rather than reserving a row for it. */
+   tile's own bottom-right corner, it overlays the metrics line when shown —
+   a small opaque rectangle in the tile's own --tile-bg (so it matches a
+   plain, critical, or running tile alike) rather than letting the metrics
+   text underneath show through it. */
 .watch-tile-actions {
   display: flex;
   align-items: center;
@@ -688,6 +694,10 @@ button:hover { border-color: var(--accent); }
   position: absolute;
   right: 0.7rem;
   bottom: 0.55rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--tile-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
   opacity: 0;
 }
 
