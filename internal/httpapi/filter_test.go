@@ -205,3 +205,29 @@ func TestNoFilterPanelWithoutTargets(t *testing.T) {
 		t.Error("a filter panel was rendered with no targets to filter")
 	}
 }
+
+// Each severity/outcome/mode checkbox carries a placeholder filter.js fills
+// in with how many targets that option currently matches, shown in
+// parentheses after the option. The server renders the empty placeholder
+// (never a number, since it has no idea which filters, if any, are
+// currently active in the reader's browser); the count itself is filter.js's
+// job, exercised in the jsdom-based verification described in Story 5.22's
+// commit rather than here.
+func TestFilterOptionsCarryACountPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	for _, want := range []string{
+		`<span class="filter-n" data-dim="severity" data-value="critical"></span>`,
+		`<span class="filter-n" data-dim="outcome" data-value="applied"></span>`,
+		`<span class="filter-n" data-dim="mode" data-value="reject"></span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("a filter option is missing its count placeholder: %s", want)
+		}
+	}
+}
