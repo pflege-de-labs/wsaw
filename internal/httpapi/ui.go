@@ -329,11 +329,10 @@ type dashboardData struct {
 	// what survived the filter: the page states both, because a watcher that
 	// reports "6 targets" while eight are configured has misrepresented
 	// itself.
-	Groups          []envGroup
-	Filter          string
-	Total           int
-	Shown           int
-	PreConsentHosts int
+	Groups []envGroup
+	Filter string
+	Total  int
+	Shown  int
 
 	// HostsOnly is the viewer's remembered choice to narrow every series'
 	// Severity to a host appearing, disappearing, or denied — set before

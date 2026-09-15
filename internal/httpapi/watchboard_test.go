@@ -180,30 +180,23 @@ func TestAFilterThatMatchesNothingSaysSo(t *testing.T) {
 	}
 }
 
-// The headline number: third-party hosts contacted before the consent
-// interaction, totalled across the series on screen. seed() makes exactly one
-// such request per scan.
-func TestTheHeaderTotalsPreConsentHosts(t *testing.T) {
+// A tile marks its own pre-consent host, in words and colour, even though
+// nothing sums it across the board (there is no header total — a sum of
+// PreConsentDomains across series double-counts a host that a target
+// contacts identically under more than one consent mode, which is not a
+// count of anything real) and it no longer colours the tile itself
+// (TestATileWithACriticalChangeIsMarkedAsOne covers what does).
+func TestATileMarksItsOwnPreConsentHost(t *testing.T) {
 	t.Parallel()
 
 	f := twoEnvs(t)
 
-	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
 	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	// "none" and "reject" agree here, so they fold into one displayed row and
-	// the board counts what it shows.
-	if !strings.Contains(html, `class="watch-count watch-pre is-set">1 pre-consent hosts`) {
-		t.Errorf("the board does not total the pre-consent hosts it is showing\n%s", html)
-	}
-
-	// The metrics line still marks it, in words as well as colour, even
-	// though a pre-consent host alone no longer colours the tile itself
-	// (TestATileWithACriticalChangeIsMarkedAsOne covers what does).
-	if !strings.Contains(html, "1 pre") {
-		t.Error("a tile with a pre-consent host does not carry the figure")
+	if !strings.Contains(html, `class="watch-pre-n is-set">1 pre`) {
+		t.Errorf("a tile with a pre-consent host does not carry the figure\n%s", html)
 	}
 }
 
@@ -431,16 +424,17 @@ func TestTheJSONAPIIgnoresTheHostsOnlyCookie(t *testing.T) {
 func TestZeroCountsAreNotFlagged(t *testing.T) {
 	t.Parallel()
 
-	f := twoEnvs(t)
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
 
-	f.seed("scan-clean", model.ConsentReject, time.Now(), func(r *model.Result) {
-		r.Requests = r.Requests[:1]
-	})
+	// A fresh scan for every configured mode, so nothing is stale.
+	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
+	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
+	f.seed("scan-accept", model.ConsentAccept, time.Now(), nil)
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if strings.Contains(html, `watch-pre is-set`) {
-		t.Error("a board with no pre-consent hosts flagged the count anyway")
+	if strings.Contains(html, `watch-stale is-set`) {
+		t.Error("a board with no stale series flagged the count anyway")
 	}
 }
 

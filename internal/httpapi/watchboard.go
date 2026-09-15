@@ -169,7 +169,6 @@ func (d *dashboardData) shapeWatchboard(r *http.Request) {
 	d.Filter = watchFilter(r)
 	d.Targets = filterTargets(d.Targets, d.Filter)
 	d.Shown = len(d.Targets)
-	d.PreConsentHosts = countPreConsent(d.Targets)
 	d.Groups = groupByLabel(d.Targets, watchLabel, collapsedEnvs(r))
 }
 
@@ -268,21 +267,6 @@ func targetHaystack(row targetRow) string {
 	}
 
 	return b.String()
-}
-
-// countPreConsent totals the third-party hosts contacted before the consent
-// interaction across every series shown. It is the board's headline number,
-// so it counts what is on screen rather than what is configured.
-func countPreConsent(rows []targetRow) int {
-	n := 0
-
-	for _, row := range rows {
-		for _, mr := range row.Rows {
-			n += mr.PreConsent()
-		}
-	}
-
-	return n
 }
 
 // groupByLabel groups targets by one label's value.

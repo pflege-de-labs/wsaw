@@ -486,7 +486,6 @@ button:hover { border-color: var(--accent); }
 /* A count is muted until it is non-zero: a board that shouts "0 stale" in
    red every day teaches the reader to stop looking at it. */
 .watch-count { color: var(--muted); }
-.watch-pre.is-set { color: var(--warn); font-weight: 600; }
 .watch-stale.is-set, .watch-notready.is-set { color: var(--bad); font-weight: 600; }
 .watch-running.is-set { color: var(--accent); font-weight: 600; }
 

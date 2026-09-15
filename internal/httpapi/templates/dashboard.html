@@ -11,7 +11,6 @@
 <div class="watch-head">
   <h1>{{.Shown}} targets watched</h1>
   <p class="watch-counts">
-    <span class="watch-count watch-pre{{if .PreConsentHosts}} is-set{{end}}">{{.PreConsentHosts}} pre-consent hosts</span>
     <span class="watch-count watch-stale{{if .Stale}} is-set{{end}}">{{.Stale}} stale series</span>
     {{if not .Tracked}}
       <span class="watch-count">activity not tracked</span>
