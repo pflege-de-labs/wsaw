@@ -69,6 +69,7 @@
         </div>
 
         {{range $t.Rows}}
+          {{$row := .}}
           {{$mode := .Series.Mode}}
           <div class="{{.TileClass}}"
                data-severity="{{.Series.Severity}}"
@@ -88,7 +89,7 @@
             {{with .Series.LastScan}}
               <div class="watch-outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</div>
               <div class="watch-metrics">
-                <span>{{.Requests}} req</span>
+                <span class="watch-req{{if $row.DeviatesFromBaseline}} is-set{{end}}">{{.Requests}} req</span>
                 <span>{{.ThirdPartyDomains}} 3p</span>
                 <span class="watch-pre-n{{if .PreConsentDomains}} is-set{{end}}">{{.PreConsentDomains}} pre</span>
                 <span class="term term-{{.Termination}}">{{.Termination}}</span>

@@ -117,6 +117,22 @@ func (r modeRow) HasCriticalChange() bool {
 	return r.Series.Severity == diff.SeverityCritical
 }
 
+// DeviatesFromBaseline reports whether the displayed scan differs from the
+// series' approved baseline.
+//
+// Rank() > 0 excludes both an empty Severity (the pair was not comparable at
+// all) and diff.SeverityInfo (comparable, but MaxSeverity's own zero value
+// for "no changes" — Report.MaxSeverity, diff.go) — neither is a deviation.
+//
+// And it is deliberately narrower than "there is any change at all": when no
+// baseline is set, Severity still gets computed by falling back to comparing
+// against the scan before this one (lastScanSeverity, api.go), which is a
+// different claim than "deviates from the baseline" — one this method only
+// makes when a baseline actually exists.
+func (r modeRow) DeviatesFromBaseline() bool {
+	return r.Series.HasBaseline && r.Series.Severity.Rank() > 0
+}
+
 // TileClass marks the states a tile renders differently: a critical change,
 // a scan in flight, a stale series. The words are on the tile too — colour
 // only reinforces them (Story 5.11, AC5's reasoning applied to the

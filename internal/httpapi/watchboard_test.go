@@ -237,6 +237,75 @@ func TestATileWithACriticalChangeIsMarkedAsOne(t *testing.T) {
 	}
 }
 
+// The request count is marked only when the displayed scan actually deviates
+// from an approved baseline.
+func TestTheRequestCountIsMarkedWhenTheScanDeviatesFromBaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The latest scan's default two requests differ from the baseline's one.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `class="watch-req is-set">2 req`) {
+		t.Errorf("a request count that deviates from the baseline is not marked as one\n%s", html)
+	}
+}
+
+// Without an approved baseline, Severity still gets computed by comparing
+// against the scan before this one (lastScanSeverity's own fallback) — but
+// that is not "deviates from the baseline", because there is no baseline.
+func TestTheRequestCountIsNotMarkedWithoutABaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	// No SetBaseline call. These two scans still differ from each other, so
+	// Severity's own fallback comparison finds a change.
+	f.seed("scan-earlier", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if strings.Contains(html, "watch-req is-set") {
+		t.Errorf("a request count was marked as deviating with no baseline set\n%s", html)
+	}
+}
+
+// A baseline that the latest scan still matches is not a deviation.
+func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentAccept, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentAccept, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same requests as the baseline: no changes at all.
+	f.seed("scan-latest", model.ConsentAccept, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if strings.Contains(html, "watch-req is-set") {
+		t.Errorf("a request count matching its baseline was marked as deviating\n%s", html)
+	}
+}
+
 // A clean board must not shout. Counts stay muted until they are non-zero,
 // because a page that reports "0 stale" in red every day teaches the reader
 // to stop looking at it.

@@ -637,6 +637,7 @@ button:hover { border-color: var(--accent); }
 
 .watch-metrics .term { border: none; padding: 0; margin-left: auto; }
 .watch-pre-n.is-set { color: var(--warn); font-weight: 700; }
+.watch-req.is-set { color: var(--warn); font-weight: 700; }
 
 .watch-tile-foot {
   display: flex;
