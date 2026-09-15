@@ -108,15 +108,21 @@
             {{end}}
 
             <div class="watch-tile-foot">
-              <a href="/targets/{{$t.Name}}/{{$mode}}">history</a>
               {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}
               {{if .Series.Stale}}<span class="badge badge-stale" title="{{.Series.StaleReason}}">stale</span>{{end}}
-              {{if $page.AllowScan}}
-              <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline">
-                <input type="hidden" name="csrf" value="{{$page.CSRF}}">
-                <button type="submit">Scan now</button>
-              </form>
-              {{end}}
+              {{/* Right-aligned, and hidden until the tile is hovered or one
+                   of them has focus — :focus-within, not just :hover, so a
+                   keyboard reader tabbing onto "history" or "Scan now" still
+                   sees it appear (wsaw.css). */}}
+              <div class="watch-tile-actions">
+                <a href="/targets/{{$t.Name}}/{{$mode}}">history</a>
+                {{if $page.AllowScan}}
+                <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline">
+                  <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+                  <button type="submit">Scan now</button>
+                </form>
+                {{end}}
+              </div>
             </div>
           </div>
         {{end}}

@@ -638,6 +638,7 @@ button:hover { border-color: var(--accent); }
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--fg);
+  text-decoration: none;
 }
 
 .watch-age::after { content: ""; position: absolute; inset: 0; }
@@ -670,6 +671,23 @@ button:hover { border-color: var(--accent); }
 /* Above the stretched age link (.watch-age::after), so the foot's own
    controls stay independently clickable instead of being swallowed by it. */
 .watch-tile-foot a, .watch-tile-foot button { position: relative; z-index: 1; }
+
+/* history and Scan now: secondary actions, so they stay out of the way
+   until the tile is hovered — or, for a keyboard reader who cannot hover,
+   until one of them has focus. Opacity rather than display/visibility, so
+   both stay reachable by Tab and by assistive tech the whole time. */
+.watch-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  opacity: 0;
+}
+
+.watch-tile:hover .watch-tile-actions,
+.watch-tile:focus-within .watch-tile-actions {
+  opacity: 1;
+}
 
 /* A row the script filtered out. Hidden rather than removed, so clearing the
    filter costs no request (Story 5.22, AC2). */
