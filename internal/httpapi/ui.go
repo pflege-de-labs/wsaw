@@ -373,6 +373,17 @@ type targetRow struct {
 type modeRow struct {
 	Label  string
 	Series SeriesView
+
+	// NextRun and LastRun are this series' schedule entry, or zero where the
+	// daemon has none. They are what the tile's time line and cycle bar are
+	// computed from (watchboard_cycle.go); the board derives no cadence of
+	// its own, so it cannot claim a rhythm the daemon is not keeping.
+	NextRun time.Time
+	LastRun time.Time
+
+	// Folded marks the "none / reject" row, which covers two mode columns
+	// and therefore keeps an inline mode label of its own.
+	Folded bool
 }
 
 // newTargetRow groups a TargetView's series into modeRows and rolls its
@@ -414,7 +425,7 @@ func modeRows(series []SeriesView) []modeRow {
 
 	switch {
 	case none != nil && reject != nil && sameOutcome(none.LastScan, reject.LastScan):
-		rows = append(rows, modeRow{Label: "none / reject", Series: *none})
+		rows = append(rows, modeRow{Label: "none / reject", Series: *none, Folded: true})
 	case none != nil && reject != nil:
 		// They disagree: both stay fully visible rather than picking one to
 		// show and burying the other, since the disagreement is itself the
@@ -488,8 +499,6 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 		data.Ready, data.Reason = s.deps.Metrics.Ready()
 	}
 
-	data.shapeWatchboard(r)
-
 	if s.deps.Daemon != nil {
 		for _, j := range s.deps.Daemon.Jobs() {
 			data.Jobs = append(data.Jobs, scheduleRow{
@@ -501,6 +510,9 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 			return data.Jobs[i].NextRun.Before(data.Jobs[k].NextRun)
 		})
 	}
+
+	data.attachSchedule()
+	data.shapeWatchboard(r)
 
 	s.renderPage(w, r, "dashboard.html", "wsaw", data, len(data.Running))
 }

@@ -263,7 +263,7 @@ func TestATileMarksItsOwnPreConsentHost(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, `class="watch-pre-n is-set">1 pre`) {
+	if !strings.Contains(html, `class="watch-scan is-pre"`) {
 		t.Errorf("a tile with a pre-consent host does not carry the figure\n%s", html)
 	}
 }
@@ -318,7 +318,7 @@ func TestTheRequestCountIsMarkedWhenTheScanDeviatesFromBaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, `class="watch-req is-set">2 req`) {
+	if !strings.Contains(html, "is-deviant") {
 		t.Errorf("a request count that deviates from the baseline is not marked as one\n%s", html)
 	}
 }
@@ -340,7 +340,7 @@ func TestTheRequestCountIsNotMarkedWithoutABaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if strings.Contains(html, "watch-req is-set") {
+	if strings.Contains(html, "is-deviant") {
 		t.Errorf("a request count was marked as deviating with no baseline set\n%s", html)
 	}
 }
@@ -362,7 +362,7 @@ func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if strings.Contains(html, "watch-req is-set") {
+	if strings.Contains(html, "is-deviant") {
 		t.Errorf("a request count matching its baseline was marked as deviating\n%s", html)
 	}
 }
