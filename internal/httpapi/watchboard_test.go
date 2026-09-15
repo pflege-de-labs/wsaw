@@ -199,9 +199,41 @@ func TestTheHeaderTotalsPreConsentHosts(t *testing.T) {
 		t.Errorf("the board does not total the pre-consent hosts it is showing\n%s", html)
 	}
 
-	// And the tile that carries it is marked, in words as well as colour.
-	if !strings.Contains(html, "has-pre") || !strings.Contains(html, "1 pre") {
-		t.Error("a tile with a pre-consent host is not marked as one")
+	// The metrics line still marks it, in words as well as colour, even
+	// though a pre-consent host alone no longer colours the tile itself
+	// (TestATileWithACriticalChangeIsMarkedAsOne covers what does).
+	if !strings.Contains(html, "1 pre") {
+		t.Error("a tile with a pre-consent host does not carry the figure")
+	}
+}
+
+// The one state a tile is allowed to draw the eye with by itself: at least
+// one critical-severity change against its baseline. A pre-consent host
+// alone, with nothing to compare against, must not trigger it.
+func TestATileWithACriticalChangeIsMarkedAsOne(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		// A clean baseline: no third party at all survived rejection.
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next scan finds a tracker that got through despite rejection —
+	// always rated critical (rules.go, forHostAdded) — and, per seed(), also
+	// a pre-consent request. TileClass must key off the former, not the
+	// latter.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("a tile with a critical change against its baseline is not marked as one\n%s", html)
 	}
 }
 

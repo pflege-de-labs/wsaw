@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 )
 
 // The target list as a watchboard.
@@ -17,8 +19,8 @@ import (
 //
 // The watchboard keeps every value the list already rendered and changes only
 // what size and position claim about it: one tile per series, the age large,
-// the pre-consent count the only thing on the row allowed to draw the eye on
-// its own. Grouping is by the "env" label, because that is the axis an
+// a critical-severity change the only thing on the row allowed to draw the
+// eye on its own. Grouping is by the "env" label, because that is the axis an
 // operator reads the list along — our own properties and someone else's are
 // not the same kind of finding.
 //
@@ -96,9 +98,8 @@ func (t watchTarget) Host() string {
 
 // PreConsent is how many third-party hosts this row's last scan contacted
 // before the consent interaction, or zero where there is no scan to report.
-//
-// A tile with a non-zero count is the only thing on the board that gets a
-// colour of its own, so this decides it.
+// It still marks the metrics line's "N pre" figure; TileClass no longer keys
+// off it directly.
 func (r modeRow) PreConsent() int {
 	if r.Series.LastScan == nil {
 		return 0
@@ -107,9 +108,18 @@ func (r modeRow) PreConsent() int {
 	return r.Series.LastScan.PreConsentDomains
 }
 
-// TileClass marks the states a tile renders differently: a pre-consent
-// finding, a scan in flight, a stale series. The words are on the tile too —
-// colour only reinforces them (Story 5.11, AC5's reasoning applied to the
+// HasCriticalChange reports whether the last scan's diff against its
+// baseline contains at least one critical-severity change. Severity is
+// already condensed to its worst outcome (SeriesView.Severity), and critical
+// is the top of that ranking, so "worst severity is critical" and "at least
+// one critical change" are the same fact — no separate count is needed.
+func (r modeRow) HasCriticalChange() bool {
+	return r.Series.Severity == diff.SeverityCritical
+}
+
+// TileClass marks the states a tile renders differently: a critical change,
+// a scan in flight, a stale series. The words are on the tile too — colour
+// only reinforces them (Story 5.11, AC5's reasoning applied to the
 // interface's own colour use).
 func (r modeRow) TileClass() string {
 	class := "watch-tile"
@@ -117,8 +127,8 @@ func (r modeRow) TileClass() string {
 	switch {
 	case len(r.Series.Running) > 0:
 		class += " is-running"
-	case r.PreConsent() > 0:
-		class += " has-pre"
+	case r.HasCriticalChange():
+		class += " has-critical"
 	case r.Series.Stale:
 		class += " is-stale"
 	}

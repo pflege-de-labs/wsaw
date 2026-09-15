@@ -589,11 +589,11 @@ button:hover { border-color: var(--accent); }
   min-width: 0;
 }
 
-/* The one state on the board allowed to draw the eye by itself: a third
-   party contacted before the consent interaction. */
-.watch-tile.has-pre {
-  border-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 6%, transparent);
+/* The one state on the board allowed to draw the eye by itself: at least one
+   critical-severity change against the series' baseline. */
+.watch-tile.has-critical {
+  border-color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 6%, transparent);
 }
 
 .watch-tile.is-running {
