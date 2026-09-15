@@ -509,7 +509,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC5: The web interface can be disabled entirely by configuration; the API remains usable without it.
 - AC6: Usable without JavaScript for the core read paths (target list, result view, diff view), degrading to plain server-rendered pages.
 
-### Story 5.8 — Dashboard and target overview (partly implemented: AC4's filter by label is covered by Story 5.23's substring filter; filter by severity and staleness, and sort, are not implemented — Story 5.22's severity/outcome/mode checkbox panel covered severity and outcome but was superseded by Story 5.23's watchboard redesign, AC4)
+### Story 5.8 — Dashboard and target overview (partly implemented: AC4's filter by label and severity is covered by Story 5.23's substring filter and Story 5.24's severity matching; filter by staleness, and sort, are not implemented, AC4)
 
 *As an Operator, I want a single screen showing the state of every target so that I can see at a glance whether wsaw is healthy and whether anything changed.*
 
@@ -750,7 +750,7 @@ The list this replaces answered "what is configured" well and "is anything wrong
 - AC11: Every no-JavaScript guarantee the list already had is preserved: the target list, the filter, the "hosts only" toggle, group collapse, and the scan tile's links and "Scan now" form all work as plain server-rendered forms, anchors and `<details>` with script disabled (Story 5.7 AC6). No inline `style` or `script` attribute is introduced anywhere in this story's markup — the CSP forbidding `unsafe-inline` still holds.
 - AC12: Regression coverage: grouping by label and its order, the unlabelled group, collapse remembered per browser and scoped to one group, server-side and client-side filtering, a critical change marking a tile and a pre-consent host alone not doing so, a request count marked only when it deviates from an actual baseline (not the previous-scan fallback) and only when a baseline is set, the "hosts only" toggle narrowing the same markings and the JSON API ignoring it, the target tile's badge present even with nothing to compare, and the host line's full-URL title.
 
-### Story 5.24 — Filter the target list by severity, from the same text box (not implemented)
+### Story 5.24 — Filter the target list by severity, from the same text box
 
 *As an Operator scanning the watchboard, I want to type a severity into the filter box already on the page and have it narrow the list to targets at that severity, so that finding the handful of targets that actually need me does not require a second control to learn.*
 

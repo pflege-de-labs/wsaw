@@ -230,20 +230,27 @@ func hostsOnly(r *http.Request) bool {
 
 // filterTargets keeps the targets a filter string matches.
 //
-// It matches the name, the URL and the labels — the three things written on
-// the row, so a reader can always see why something matched. Matching is
-// case-insensitive and by substring: "kneipp", "curabox.de/pflege" and
-// "env=prod" all work, and none of them is a syntax anybody has to learn.
+// It matches the name, the URL, the labels and the target's worst severity —
+// the things written on the row, so a reader can always see why something
+// matched. The filter is split on whitespace into tokens, and a target
+// matches when every token is a substring of its haystack, independently —
+// not necessarily contiguous, and not necessarily in the typed order. A
+// single-word query is unaffected: "kneipp", "curabox.de/pflege" and
+// "env=prod" all still work exactly as one substring test. What the
+// per-word split adds is combining a severity word with anything else —
+// "critical prod" finds a critical-severity target labelled prod, which a
+// single contiguous substring could not express reliably since severity and
+// label text rarely sit next to each other verbatim (Story 5.24, AC2).
 func filterTargets(rows []targetRow, filter string) []targetRow {
-	if filter == "" {
+	tokens := strings.Fields(strings.ToLower(filter))
+	if len(tokens) == 0 {
 		return rows
 	}
 
-	needle := strings.ToLower(filter)
 	out := make([]targetRow, 0, len(rows))
 
 	for _, row := range rows {
-		if strings.Contains(strings.ToLower(targetHaystack(row)), needle) {
+		if rowMatchesAllTokens(row, tokens) {
 			out = append(out, row)
 		}
 	}
@@ -251,13 +258,32 @@ func filterTargets(rows []targetRow, filter string) []targetRow {
 	return out
 }
 
-// targetHaystack is everything about a target the filter may match.
+// rowMatchesAllTokens reports whether every token is a substring of the
+// row's haystack, each independently.
+func rowMatchesAllTokens(row targetRow, tokens []string) bool {
+	haystack := strings.ToLower(targetHaystack(row))
+
+	for _, token := range tokens {
+		if !strings.Contains(haystack, token) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// targetHaystack is everything about a target the filter may match: name,
+// URL, labels, and its worst severity — the same word already shown on the
+// rail badge (targetRow.Severity), so what a reader sees on a tile is exactly
+// what they can type to find more like it (Story 5.24, AC3).
 func targetHaystack(row targetRow) string {
 	var b strings.Builder
 
 	b.WriteString(row.Name)
 	b.WriteString(" ")
 	b.WriteString(row.URL)
+	b.WriteString(" ")
+	b.WriteString(string(row.Severity))
 
 	for _, k := range sortedKeys(row.Labels) {
 		b.WriteString(" ")

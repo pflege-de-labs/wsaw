@@ -163,6 +163,74 @@ func TestTheFilterMatchesLabelsAndURLs(t *testing.T) {
 	}
 }
 
+// Story 5.24: the target's worst severity — the same word already shown on
+// the rail badge — is part of the same haystack the text filter already
+// searches, so typing it needs no separate control.
+func TestTheFilterMatchesSeverity(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// "site" (env=prod) picks up a critical change against its baseline;
+	// "partner" (env=iagfdk) has never been scanned and defaults to info.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=critical"))
+
+	if !strings.Contains(html, "showing 1/2") {
+		t.Errorf("filtering by severity did not match exactly the critical target\n%s", html)
+	}
+
+	if !strings.Contains(html, `href="/compare/site"`) {
+		t.Error("the severity filter hid the target it matches")
+	}
+
+	if strings.Contains(html, `href="/compare/partner"`) {
+		t.Error("the severity filter kept a target it does not match")
+	}
+}
+
+// Story 5.24, AC2: the filter splits on whitespace and requires every token
+// to match, independently — not as one contiguous phrase — so a severity
+// word can combine with a name/label/url word.
+func TestTheFilterCombinesTokensByAnd(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// "site" (env=prod) is critical; "partner" (env=iagfdk) is info.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	// Matches "site": critical, and labelled prod.
+	matching := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=critical%20prod"))
+	if !strings.Contains(matching, "showing 1/2") {
+		t.Errorf("a severity token combined with a matching label token did not narrow to one target\n%s", matching)
+	}
+
+	// "site" is critical but not labelled iagfdk, and "partner" is labelled
+	// iagfdk but not critical: neither token pair should match either target.
+	none := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=critical%20iagfdk"))
+	if !strings.Contains(none, "No target matches this filter") {
+		t.Errorf("a severity token combined with a non-matching label token matched something\n%s", none)
+	}
+}
+
 // Story 5.22, AC8's reasoning: a filter nobody can clear is worse than none.
 func TestAFilterThatMatchesNothingSaysSo(t *testing.T) {
 	t.Parallel()

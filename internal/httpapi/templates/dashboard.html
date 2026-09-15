@@ -33,7 +33,7 @@
     <input type="hidden" name="return" value="{{$page.RefreshTarget}}">
     <label for="watch-filter-input" class="sr-only">Filter</label>
     <input type="text" id="watch-filter-input" name="filter" value="{{.Filter}}"
-           placeholder="filter target, url or env" autocomplete="off">
+           placeholder="filter target, url, env or severity" autocomplete="off">
     {{/* Narrows every tile's notion of "changed" to a host appearing,
          disappearing, or denied — not an asset, script, cookie, status flip,
          or consent regression. Submits with the same form, so it works with
@@ -69,7 +69,7 @@
 
     {{range .Targets}}
       {{$t := .}}
-      <div class="watch-row" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
+      <div class="watch-row" data-severity="{{$t.Severity}}" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
         {{/* design_handoff_target_tile, option 4a: the badge is always shown
              (never gated on severity — info/low just read as muted), and the
              left border widens on hover as the tile's only interactive cue;
