@@ -88,7 +88,7 @@
     });
 
     if (shownEl) {
-      shownEl.textContent = 'showing ' + shown + ' of ' + total + ' targets';
+      shownEl.textContent = 'showing ' + shown + '/' + total;
     }
 
     setCookie(FILTER_COOKIE, input.value.trim());

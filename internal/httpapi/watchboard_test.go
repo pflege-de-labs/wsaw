@@ -136,7 +136,7 @@ func TestTheFilterIsAppliedServerSideFromTheCookie(t *testing.T) {
 
 	// A filtered board must say what it is not showing. A watcher that
 	// reports "1 target" while two are configured has misrepresented itself.
-	if !strings.Contains(html, "showing 1 of 2 targets") {
+	if !strings.Contains(html, "showing 1/2") {
 		t.Errorf("the filtered board does not state the configured total\n%s", html)
 	}
 
@@ -157,7 +157,7 @@ func TestTheFilterMatchesLabelsAndURLs(t *testing.T) {
 
 		html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter="+needle))
 
-		if !strings.Contains(html, "showing 1 of 2 targets") {
+		if !strings.Contains(html, "showing 1/2") {
 			t.Errorf("filtering by %q did not match exactly the partner target", needle)
 		}
 	}

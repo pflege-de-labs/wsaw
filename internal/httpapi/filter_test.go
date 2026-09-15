@@ -76,7 +76,7 @@ func TestDashboardStatesTheUnfilteredCount(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, "showing 1 of 1 targets") {
+	if !strings.Contains(html, "showing 1/1") {
 		t.Error("the page does not state its own unfiltered target count")
 	}
 }

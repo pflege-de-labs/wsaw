@@ -18,21 +18,27 @@
     {{else}}
       <span class="watch-count watch-running{{if .Running}} is-set{{end}}">{{len .Running}} running</span>
     {{end}}
-    <span class="watch-count {{if .Ready}}watch-ready{{else}}watch-notready is-set{{end}}">{{if .Ready}}ready{{else}}not ready — {{.Reason}}{{end}}</span>
+    {{/* Muted-until-it-matters, same reasoning as the counts above: a board
+         that says "ready" on every render teaches the reader to stop reading
+         it. Silence means ready; this only speaks up when it is not. */}}
+    {{if not .Ready}}<span class="watch-count watch-notready is-set">not ready — {{.Reason}}</span>{{end}}
   </p>
+  <span class="watch-asof" title="{{time $page.RenderedAt}}">as of {{clock $page.RenderedAt}} · {{$page.Refresh.Label}}</span>
   {{/* The filter is a plain input with a submit button: it works with
        JavaScript off (the choice is remembered in a cookie and applied on the
-       server), and watch.js upgrades it to filter as you type. */}}
+       server), and watch.js upgrades it to filter as you type. The label
+       stays for assistive tech but is visually hidden — the placeholder
+       carries the same information on screen. */}}
   <form method="post" action="/filter" class="watch-filter">
     <input type="hidden" name="csrf" value="{{$page.CSRF}}">
     <input type="hidden" name="return" value="{{$page.RefreshTarget}}">
-    <label for="watch-filter-input">Filter</label>
+    <label for="watch-filter-input" class="sr-only">Filter</label>
     <input type="text" id="watch-filter-input" name="filter" value="{{.Filter}}"
-           placeholder="target, url or env" autocomplete="off">
+           placeholder="filter target, url or env" autocomplete="off">
     <button type="submit">Apply</button>
     {{if .Filter}}<button type="submit" name="filter" value="" class="watch-filter-clear">Clear</button>{{end}}
   </form>
-  <p class="watch-shown" id="watch-shown" aria-live="polite">showing {{.Shown}} of {{.Total}} targets</p>
+  <p class="watch-shown" id="watch-shown" aria-live="polite">showing {{.Shown}}/{{.Total}}</p>
 </div>
 
 {{if not .Targets}}

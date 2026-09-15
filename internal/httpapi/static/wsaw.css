@@ -463,14 +463,23 @@ button:hover { border-color: var(--accent); }
  * palette under prefers-color-scheme with nothing further to maintain.
  */
 
-.watch-head { margin: 0.6rem 0 1.2rem; }
-.watch-head h1 { margin: 0 0 0.3rem; }
+/* One row: title, counts, freshness, filter, shown-count. Wraps under a
+   narrow viewport rather than truncating anything in it. */
+.watch-head {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 1.2rem;
+}
+
+.watch-head h1 { margin: 0; white-space: nowrap; }
 
 .watch-counts {
   display: flex;
   gap: 1.1rem;
   flex-wrap: wrap;
-  margin: 0 0 0.6rem;
+  margin: 0;
   font-variant-numeric: tabular-nums;
 }
 
@@ -481,10 +490,33 @@ button:hover { border-color: var(--accent); }
 .watch-stale.is-set, .watch-notready.is-set { color: var(--bad); font-weight: 600; }
 .watch-running.is-set { color: var(--accent); font-weight: 600; }
 
-.watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-.watch-filter label { color: var(--muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
+.watch-asof {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filter and shown-count sit at the row's far edge, separated from the
+   header's status cluster. */
+.watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-left: auto; }
 .watch-filter input[type="text"] { min-width: 16rem; }
-.watch-shown { color: var(--muted); font-size: 0.85em; margin: 0.4rem 0 0; }
+.watch-shown { color: var(--muted); font-size: 0.85em; margin: 0; white-space: nowrap; }
+
+/* Visually hidden but still reachable by assistive tech — the placeholder
+   carries the same information on screen, so the label would be redundant
+   clutter for a sighted reader. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* A group of targets. <summary> is the collapse control, so it works with
    JavaScript off; watch.js only remembers the state. */

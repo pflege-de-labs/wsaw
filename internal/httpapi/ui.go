@@ -40,18 +40,31 @@ func newUIRenderer() (*uiRenderer, error) {
 // uiFuncs are display helpers only. None of them produce raw HTML: every
 // value rendered originates from a scanned page, so html/template's
 // contextual escaping must stay in force (Story 5.11).
+// neverRendered is what an unset time.Time shows as everywhere on the page.
+const neverRendered = "never"
+
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
 		"time": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			return t.UTC().Format("2006-01-02 15:04:05 UTC")
 		},
+		// clock is the compact form of "time", for a spot on the page that has
+		// only room for the hour and minute; the full timestamp is still one
+		// hover away via the element's title.
+		"clock": func(t time.Time) string {
+			if t.IsZero() {
+				return neverRendered
+			}
+
+			return t.UTC().Format("15:04")
+		},
 		"ago": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			d := time.Since(t)
