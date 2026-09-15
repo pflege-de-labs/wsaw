@@ -595,7 +595,16 @@ button:hover { border-color: var(--accent); }
   flex-direction: column;
   gap: 0.3rem;
   min-width: 0;
+  position: relative;
 }
+
+/* The whole tile opens the scan it describes, not just the age. A tile also
+   holds its own "history" link and a "Scan now" button, and an <a> cannot
+   contain other interactive content — so instead of one wrapping link, the
+   existing age link's hit area is stretched over the tile (a positioned
+   ::after covering it via inset:0), and the other controls are raised above
+   it with z-index so they stay independently clickable. */
+.watch-tile:has(a.watch-age) { cursor: pointer; }
 
 /* The one state on the board allowed to draw the eye by itself: at least one
    critical-severity change against the series' baseline. */
@@ -631,6 +640,8 @@ button:hover { border-color: var(--accent); }
   color: var(--fg);
 }
 
+.watch-age::after { content: ""; position: absolute; inset: 0; }
+
 .watch-outcome { font-size: 1rem; font-weight: 600; }
 
 .watch-metrics {
@@ -655,6 +666,10 @@ button:hover { border-color: var(--accent); }
   font-size: 0.85em;
   margin-top: auto;
 }
+
+/* Above the stretched age link (.watch-age::after), so the foot's own
+   controls stay independently clickable instead of being swallowed by it. */
+.watch-tile-foot a, .watch-tile-foot button { position: relative; z-index: 1; }
 
 /* A row the script filtered out. Hidden rather than removed, so clearing the
    filter costs no request (Story 5.22, AC2). */
