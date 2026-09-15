@@ -64,11 +64,10 @@ func TestTheLastScanLinkSaysWhereItGoes(t *testing.T) {
 		t.Errorf("the link's accessible name is not descriptive: %q", label)
 	}
 
-	// AC5: the icon is decoration. The cell's own text carries the link, so
-	// the arrow must be hidden from assistive technology rather than read out.
-	if !strings.Contains(html, `class="open-icon" aria-hidden="true"`) {
-		t.Error("the link icon is not marked as decorative")
-	}
+	// AC5's decorative-icon check doesn't apply to the watchboard: the old
+	// table had a text cell plus a separate arrow icon needing
+	// aria-hidden="true"; the tile's link is just the age itself
+	// (.watch-age, dashboard.html) with no icon alongside it to hide.
 }
 
 // AC3: a series that has never been scanned has nothing to link to, and the

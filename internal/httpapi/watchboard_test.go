@@ -1,0 +1,501 @@
+package httpapi_test
+
+import (
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/secret"
+)
+
+// The target list is a watchboard: one tile per series, grouped by the "env"
+// label, with the scan age and the pre-consent count carrying the weight.
+// Grouping, the filter and the collapse are display decisions applied to the
+// TargetViews the dashboard already built, so these tests assert on the
+// rendered page and never on the JSON API, which is unchanged.
+
+// twoEnvs is a fixture with one target in each of two environments, which is
+// the smallest list that can be grouped wrongly.
+func twoEnvs(t *testing.T) *fixture {
+	t.Helper()
+
+	return newFixtureWith(t, httpapi.Options{WebUI: true}, nil, nil, func(d *httpapi.Deps) {
+		d.Targets = func() []config.Resolved {
+			return []config.Resolved{
+				{
+					Name:         "site",
+					URL:          "https://example.com/",
+					Labels:       map[string]string{"env": "prod"},
+					ConsentModes: []model.ConsentMode{model.ConsentNone, model.ConsentReject},
+				},
+				{
+					Name:         "partner",
+					URL:          "https://partner.example.net/de-de",
+					Labels:       map[string]string{"env": "iagfdk"},
+					ConsentModes: []model.ConsentMode{model.ConsentReject},
+				},
+			}
+		}
+	})
+}
+
+func TestTheBoardGroupsTargetsByTheirEnvLabel(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	for _, want := range []string{
+		`<span class="watch-env-label">prod</span>`,
+		`<span class="watch-env-label">iagfdk</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the board did not render a group for %s", want)
+		}
+	}
+
+	// Ordered by label value, so the list does not reshuffle between renders.
+	if strings.Index(html, ">iagfdk<") > strings.Index(html, ">prod<") {
+		t.Error("groups are not in label order")
+	}
+}
+
+// A target nobody gave an env is a configuration fact, not a rendering edge
+// case: it gets a named group rather than being folded into another one.
+func TestAnUnlabelledTargetIsGroupedUnderANamedGroup(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, "no env label") {
+		t.Error("a target with no env label was not grouped honestly")
+	}
+}
+
+// The core read paths must work with script off, so the group is a <details>
+// the browser collapses on its own — not a scripted toggle.
+func TestGroupsAreDetailsElementsAndOpenByDefault(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `<details class="watch-env" data-env="prod" open>`) {
+		t.Errorf("groups are not open <details> elements by default\n%s", html)
+	}
+
+	if !strings.Contains(html, "<summary>") {
+		t.Error("a group has no summary, so it cannot be collapsed without script")
+	}
+}
+
+// The collapse is the viewer's preference, remembered per browser exactly as
+// the refresh interval is — one viewer collapsing a group must not change
+// what anybody else sees.
+func TestACollapsedGroupIsRememberedPerBrowser(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_envs=prod"))
+
+	if !strings.Contains(html, `<details class="watch-env" data-env="prod">`) {
+		t.Errorf("a remembered collapsed group was rendered open\n%s", html)
+	}
+
+	if !strings.Contains(html, `<details class="watch-env" data-env="iagfdk" open>`) {
+		t.Error("collapsing one group collapsed another")
+	}
+}
+
+// The filter is applied on the server as well as in the script, so the
+// remembered preference means the same thing with JavaScript off.
+func TestTheFilterIsAppliedServerSideFromTheCookie(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=partner"))
+
+	if !strings.Contains(html, "partner.example.net") {
+		t.Error("the filter hid the target it matches")
+	}
+
+	if strings.Contains(html, `href="/compare/site"`) {
+		t.Error("a target that does not match the filter was still rendered")
+	}
+
+	// A filtered board must say what it is not showing. A watcher that
+	// reports "1 target" while two are configured has misrepresented itself.
+	if !strings.Contains(html, "showing 1/2") {
+		t.Errorf("the filtered board does not state the configured total\n%s", html)
+	}
+
+	// And the field shows the filter that is in force, rather than looking
+	// empty while quietly filtering.
+	if !strings.Contains(html, `value="partner"`) {
+		t.Error("the filter field does not echo the filter being applied")
+	}
+}
+
+// The filter matches what is written on the row — name, url and labels — so
+// a reader can always see why something matched.
+func TestTheFilterMatchesLabelsAndURLs(t *testing.T) {
+	t.Parallel()
+
+	for _, needle := range []string{"env%3Diagfdk", "example.net", "PARTNER"} {
+		f := twoEnvs(t)
+
+		html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter="+needle))
+
+		if !strings.Contains(html, "showing 1/2") {
+			t.Errorf("filtering by %q did not match exactly the partner target", needle)
+		}
+	}
+}
+
+// Story 5.22, AC8's reasoning: a filter nobody can clear is worse than none.
+func TestAFilterThatMatchesNothingSaysSo(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=nothing-matches-this"))
+
+	if !strings.Contains(html, "No target matches this filter") {
+		t.Error("an empty filtered board does not explain itself")
+	}
+
+	if !strings.Contains(html, "2 are configured") {
+		t.Error("an empty filtered board does not say how many targets exist")
+	}
+}
+
+// A tile marks its own pre-consent host, in words and colour, even though
+// nothing sums it across the board (there is no header total — a sum of
+// PreConsentDomains across series double-counts a host that a target
+// contacts identically under more than one consent mode, which is not a
+// count of anything real) and it no longer colours the tile itself
+// (TestATileWithACriticalChangeIsMarkedAsOne covers what does).
+func TestATileMarksItsOwnPreConsentHost(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `class="watch-pre-n is-set">1 pre`) {
+		t.Errorf("a tile with a pre-consent host does not carry the figure\n%s", html)
+	}
+}
+
+// The one state a tile is allowed to draw the eye with by itself: at least
+// one critical-severity change against its baseline. A pre-consent host
+// alone, with nothing to compare against, must not trigger it.
+func TestATileWithACriticalChangeIsMarkedAsOne(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		// A clean baseline: no third party at all survived rejection.
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next scan finds a tracker that got through despite rejection —
+	// always rated critical (rules.go, forHostAdded) — and, per seed(), also
+	// a pre-consent request. TileClass must key off the former, not the
+	// latter.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("a tile with a critical change against its baseline is not marked as one\n%s", html)
+	}
+}
+
+// The request count is marked only when the displayed scan actually deviates
+// from an approved baseline.
+func TestTheRequestCountIsMarkedWhenTheScanDeviatesFromBaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The latest scan's default two requests differ from the baseline's one.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `class="watch-req is-set">2 req`) {
+		t.Errorf("a request count that deviates from the baseline is not marked as one\n%s", html)
+	}
+}
+
+// Without an approved baseline, Severity still gets computed by comparing
+// against the scan before this one (lastScanSeverity's own fallback) — but
+// that is not "deviates from the baseline", because there is no baseline.
+func TestTheRequestCountIsNotMarkedWithoutABaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	// No SetBaseline call. These two scans still differ from each other, so
+	// Severity's own fallback comparison finds a change.
+	f.seed("scan-earlier", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if strings.Contains(html, "watch-req is-set") {
+		t.Errorf("a request count was marked as deviating with no baseline set\n%s", html)
+	}
+}
+
+// A baseline that the latest scan still matches is not a deviation.
+func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentAccept, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentAccept, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same requests as the baseline: no changes at all.
+	f.seed("scan-latest", model.ConsentAccept, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if strings.Contains(html, "watch-req is-set") {
+		t.Errorf("a request count matching its baseline was marked as deviating\n%s", html)
+	}
+}
+
+// With "hosts only" off (the default), a critical cookie change against the
+// baseline still marks the tile, same as any other critical change.
+func TestWithoutHostsOnlyACriticalCookieChangeMarksTheTile(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	// Identical requests in both scans: no host appears or disappears.
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A third-party cookie appearing under reject mode is critical
+	// (ThirdPartyCookieRejectMode) but is not a host-level change.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("a critical cookie change against the baseline did not mark the tile\n%s", html)
+	}
+}
+
+// "Hosts only" narrows a tile's notion of "changed" to a host appearing,
+// disappearing, or denied — a cookie change alone must stop marking it.
+func TestHostsOnlyDoesNotMarkATileForACookieChangeAlone(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+
+	if strings.Contains(html, "has-critical") {
+		t.Errorf("hosts-only still marked a tile for a cookie-only change\n%s", html)
+	}
+}
+
+// A genuine host-level change must still mark the tile with "hosts only" on
+// — the toggle narrows what counts, it does not turn marking off.
+func TestHostsOnlyStillMarksAGenuineHostChange(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tracker surviving rejection: HostAdded, critical.
+	f.seed("scan-latest", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+
+	if !strings.Contains(html, "has-critical") {
+		t.Errorf("hosts-only hid a genuine host-level critical change\n%s", html)
+	}
+}
+
+// The checkbox reflects the remembered preference either way.
+func TestTheHostsOnlyCheckboxReflectsTheRememberedPreference(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	on := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_hostsonly=1"))
+	if !strings.Contains(on, `id="watch-hostsonly-input" name="hostsonly" value="1" checked`) {
+		t.Errorf("the hosts-only checkbox did not reflect an enabled preference\n%s", on)
+	}
+
+	off := body(t, f.get("/", "Accept", "text/html"))
+	if strings.Contains(off, `id="watch-hostsonly-input" name="hostsonly" value="1" checked`) {
+		t.Errorf("the hosts-only checkbox was checked with no preference set\n%s", off)
+	}
+}
+
+// The JSON API is the product's real interface (Tenet 16) and must not
+// change shape because of an HTML-only viewer preference: a machine reading
+// severity off it must see the same value regardless of what a browser's
+// cookie jar happens to hold.
+func TestTheJSONAPIIgnoresTheHostsOnlyCookie(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), nil)
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	f.seed("scan-latest", model.ConsentReject, time.Now(), func(r *model.Result) {
+		r.Cookies = []model.Cookie{{Name: "session", Domain: "tracker.test", Party: model.ThirdParty}}
+	})
+
+	json := body(t, f.get("/api/v1/targets", "Cookie", "wsaw_hostsonly=1"))
+
+	if !strings.Contains(json, `"severity": "critical"`) {
+		t.Errorf("the JSON API's severity narrowed to hosts because of a cookie meant only for the HTML dashboard\n%s", json)
+	}
+}
+
+// A clean board must not shout. Counts stay muted until they are non-zero,
+// because a page that reports "0 stale" in red every day teaches the reader
+// to stop looking at it.
+func TestZeroCountsAreNotFlagged(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	// A fresh scan for every configured mode, so nothing is stale.
+	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
+	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
+	f.seed("scan-accept", model.ConsentAccept, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if strings.Contains(html, `watch-stale is-set`) {
+		t.Error("a board with no stale series flagged the count anyway")
+	}
+}
+
+// Every link the previous list offered still has to be on the board: a
+// redesign that loses the way into a scan has removed the feature it was
+// meant to surface.
+func TestTheBoardKeepsTheLinksTheListHad(t *testing.T) {
+	t.Parallel()
+
+	f := twoEnvs(t)
+
+	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	for _, want := range []string{
+		`href="/results/site/reject/scan-reject"`,
+		`href="/targets/site/reject"`,
+		`href="/compare/site"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the board is missing the link %s", want)
+		}
+	}
+}
+
+// Storing a filter is a write, so it carries CSRF protection and answers with
+// a redirect — the same treatment the refresh interval gets.
+func TestStoringAFilterRequiresCSRFAndRedirects(t *testing.T) {
+	t.Parallel()
+
+	f := newFixtureWith(t, httpapi.Options{Token: secret.Literal("s3cret"), WebUI: true}, nil, nil, func(d *httpapi.Deps) {
+		d.Targets = func() []config.Resolved {
+			return []config.Resolved{
+				{
+					Name:         "site",
+					URL:          "https://example.com/",
+					Labels:       map[string]string{"env": "prod"},
+					ConsentModes: []model.ConsentMode{model.ConsentNone, model.ConsentReject},
+				},
+				{
+					Name:         "partner",
+					URL:          "https://partner.example.net/de-de",
+					Labels:       map[string]string{"env": "iagfdk"},
+					ConsentModes: []model.ConsentMode{model.ConsentReject},
+				},
+			}
+		}
+	})
+
+	resp := f.postForm("/filter",
+		url.Values{"filter": {"partner"}, "return": {"/"}},
+		"Authorization", "Bearer s3cret")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("a filter POST without a CSRF token was accepted: %d", resp.StatusCode)
+	}
+
+	withToken := f.postForm("/filter",
+		url.Values{"filter": {"partner"}, "return": {"/"}, "csrf": {"s3cret"}},
+		"Authorization", "Bearer s3cret")
+	if withToken.StatusCode != http.StatusSeeOther {
+		t.Errorf("status = %d with a valid CSRF token: %s", withToken.StatusCode, body(t, withToken))
+	}
+}

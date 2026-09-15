@@ -113,9 +113,10 @@ func TestDashboardFlagsCriticalFindingsAgainstBaseline(t *testing.T) {
 	}
 }
 
-// A target with nothing notable to report must not carry a badge just
-// because a comparison was possible — the list should flag what needs a
-// look, not restate "clean" on every row.
+// A target with nothing notable to report must not be flagged as one just
+// because a comparison was possible — the badge itself is always on the
+// rail (design_handoff_target_tile, 4a), but it must read as quiet rather
+// than as a finding.
 func TestDashboardStaysQuietWhenNothingIsWrong(t *testing.T) {
 	t.Parallel()
 
@@ -134,5 +135,36 @@ func TestDashboardStaysQuietWhenNothingIsWrong(t *testing.T) {
 
 	if strings.Contains(html, `sev-critical`) || strings.Contains(html, `sev-high`) {
 		t.Error("an unchanged scan against its baseline was flagged as a finding")
+	}
+}
+
+// The rail's severity badge is always present — info and low read as a
+// quiet grey rather than disappearing outright, so a reader always sees the
+// exact word instead of having to infer "no badge means clean"
+// (design_handoff_target_tile, 4a).
+func TestTheRailBadgeIsAlwaysShown(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `class="watch-sev sev-info"`) {
+		t.Errorf("a target with nothing to compare does not carry an info badge\n%s", html)
+	}
+}
+
+// The host line truncates long URLs (CSS), so the full URL has to survive
+// somewhere a reader can still get at it: the title attribute
+// (design_handoff_target_tile, 4a).
+func TestTheRailHostCarriesTheFullURLAsATitle(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if !strings.Contains(html, `class="watch-host" title="https://example.com/"`) {
+		t.Errorf("the host line does not carry the full URL as a title\n%s", html)
 	}
 }

@@ -136,6 +136,32 @@ func (r *Report) MaxSeverity() Severity {
 	return highest
 }
 
+// MaxSeverityOf is MaxSeverity narrowed to the given change types, for a
+// caller that wants a smaller notion of "notable" than the full report — the
+// watchboard's per-viewer "hosts only" toggle, for one, which cares about a
+// host appearing or disappearing and not about an asset or cookie changing
+// under a host it already knows about.
+func (r *Report) MaxSeverityOf(types ...ChangeType) Severity {
+	allow := make(map[ChangeType]bool, len(types))
+	for _, t := range types {
+		allow[t] = true
+	}
+
+	highest := SeverityInfo
+
+	for _, c := range r.Changes {
+		if !allow[c.Type] {
+			continue
+		}
+
+		if c.Severity.Rank() > highest.Rank() {
+			highest = c.Severity
+		}
+	}
+
+	return highest
+}
+
 // HasFindingsAtLeast reports whether any change meets a threshold, which is
 // what the CI exit-code contract keys on.
 func (r *Report) HasFindingsAtLeast(threshold Severity) bool {

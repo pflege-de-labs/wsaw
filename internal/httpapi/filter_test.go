@@ -10,58 +10,31 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
-// Story 5.22: instant, client-side filtering of the target list. The actual
-// filtering runs in the browser (filter.js), which this package's tests do
-// not execute — matching how refresh.js is covered — so these assert what
-// the server must get right for that script to work: the row-level data it
-// filters on, the option values it offers, and that a no-JavaScript reader
-// gets the same target list as always (AC8).
+// Story 5.22 shipped per-dimension checkbox filtering (severity, outcome,
+// mode); the watchboard later replaced it with one substring filter over
+// name, URL and labels (watchboard.go, filterTargets — see
+// watchboard_test.go for that filter's own tests). What survives here is
+// what still applies to the current design: the row-level data any
+// client-side filtering would need, the Clear button as the one remaining
+// stand-in for the old reset control, and filter.js still being served even
+// though nothing on the current page has the ids it looks for.
 
-// AC1: filter controls exist for severity, outcome, mode and labels, and
-// offer the actual values the rest of the interface uses — never a set that
-// could drift from what a row can actually carry.
-func TestDashboardOffersEveryFilterDimension(t *testing.T) {
+// The Clear button is never a dead click for the same reason the old reset
+// control started disabled: it only exists when there is something to clear.
+func TestTheClearButtonOnlyAppearsWhenAFilterIsActive(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
 	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
 
-	html := body(t, f.get("/", "Accept", "text/html"))
-
-	for _, want := range []string{
-		`id="target-filters"`,
-		`<input type="checkbox" name="severity" value="critical">`,
-		`<input type="checkbox" name="severity" value="info">`,
-		`<input type="checkbox" name="outcome" value="applied">`,
-		`<input type="checkbox" name="outcome" value="necessary-only">`,
-		`<input type="checkbox" name="mode" value="none">`,
-		`<input type="checkbox" name="mode" value="reject">`,
-		`<input type="checkbox" name="mode" value="accept">`,
-		`id="filter-label"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("filter panel is missing %s", want)
-		}
-	}
-}
-
-// AC6: a single reset control exists and starts disabled, since a page that
-// just loaded has no active filter to clear — it is never a dead click, but
-// it also never starts live for nothing to do.
-func TestDashboardResetButtonStartsDisabled(t *testing.T) {
-	t.Parallel()
-
-	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
-	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
-
-	html := body(t, f.get("/", "Accept", "text/html"))
-
-	if !strings.Contains(html, `id="filter-reset"`) {
-		t.Fatal("no reset-all control on the dashboard")
+	unfiltered := body(t, f.get("/", "Accept", "text/html"))
+	if strings.Contains(unfiltered, `class="watch-filter-clear"`) {
+		t.Error("the Clear button is present with nothing filtered yet")
 	}
 
-	if !strings.Contains(html, `id="filter-reset" class="filter-reset" disabled`) {
-		t.Error("reset-all did not start disabled with nothing filtered yet")
+	filtered := body(t, f.get("/", "Accept", "text/html", "Cookie", "wsaw_filter=site"))
+	if !strings.Contains(filtered, `class="watch-filter-clear"`) {
+		t.Error("the Clear button did not appear once a filter was in force")
 	}
 }
 
@@ -76,7 +49,7 @@ func TestDashboardStatesTheUnfilteredCount(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, "showing 1 of 1 targets") {
+	if !strings.Contains(html, "showing 1/1") {
 		t.Error("the page does not state its own unfiltered target count")
 	}
 }
@@ -142,27 +115,6 @@ func TestNeverScannedRowCarriesEmptyFilterData(t *testing.T) {
 	}
 }
 
-// AC8: with no JavaScript, the panel must not be left sitting on the page,
-// inert and confusing — it starts absent, and filter.js is the only thing
-// that ever reveals it. The full, unfiltered target list still renders
-// exactly as it always has (Story 5.7, AC6).
-func TestFilterPanelStartsHiddenForNoJavaScript(t *testing.T) {
-	t.Parallel()
-
-	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
-	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
-
-	html := body(t, f.get("/", "Accept", "text/html"))
-
-	if !strings.Contains(html, `id="target-filters" hidden`) {
-		t.Error("the filter panel is not hidden by default")
-	}
-
-	if !strings.Contains(html, `href="/results/site/reject/scan-1"`) {
-		t.Error("the underlying target list did not render without JavaScript")
-	}
-}
-
 // AC2: filter.js is the enhancement, and it is only ever a static file the
 // browser fetches — nothing about applying a filter is a server round-trip.
 func TestFilterScriptIsServedAndLinked(t *testing.T) {
@@ -203,31 +155,5 @@ func TestNoFilterPanelWithoutTargets(t *testing.T) {
 
 	if strings.Contains(html, `id="target-filters"`) {
 		t.Error("a filter panel was rendered with no targets to filter")
-	}
-}
-
-// Each severity/outcome/mode checkbox carries a placeholder filter.js fills
-// in with how many targets that option currently matches, shown in
-// parentheses after the option. The server renders the empty placeholder
-// (never a number, since it has no idea which filters, if any, are
-// currently active in the reader's browser); the count itself is filter.js's
-// job, exercised in the jsdom-based verification described in Story 5.22's
-// commit rather than here.
-func TestFilterOptionsCarryACountPlaceholder(t *testing.T) {
-	t.Parallel()
-
-	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
-	f.seed("scan-1", model.ConsentReject, time.Now(), nil)
-
-	html := body(t, f.get("/", "Accept", "text/html"))
-
-	for _, want := range []string{
-		`<span class="filter-n" data-dim="severity" data-value="critical"></span>`,
-		`<span class="filter-n" data-dim="outcome" data-value="applied"></span>`,
-		`<span class="filter-n" data-dim="mode" data-value="reject"></span>`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("a filter option is missing its count placeholder: %s", want)
-		}
 	}
 }

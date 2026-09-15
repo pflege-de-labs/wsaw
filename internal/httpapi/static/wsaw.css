@@ -456,3 +456,304 @@ button:hover { border-color: var(--accent); }
 
 .target { margin-bottom: 1.2rem; }
 .target h2 .sev { margin: 0 0.5rem; vertical-align: middle; }
+
+/* The target list as a watchboard. Appended to internal/httpapi/static/wsaw.css.
+ *
+ * Every colour here is an existing token, so the board inherits the dark
+ * palette under prefers-color-scheme with nothing further to maintain.
+ */
+
+/* One row: title, counts, freshness, filter, shown-count. Wraps under a
+   narrow viewport rather than truncating anything in it. */
+.watch-head {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 1.2rem;
+}
+
+.watch-head h1 { margin: 0; white-space: nowrap; }
+
+.watch-counts {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A count is muted until it is non-zero: a board that shouts "0 stale" in
+   red every day teaches the reader to stop looking at it. */
+.watch-count { color: var(--muted); }
+.watch-stale.is-set, .watch-notready.is-set { color: var(--bad); font-weight: 600; }
+.watch-running.is-set { color: var(--accent); font-weight: 600; }
+
+.watch-asof {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filter and shown-count sit at the row's far edge, separated from the
+   header's status cluster. */
+.watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-left: auto; }
+.watch-filter input[type="text"] { min-width: 16rem; }
+.watch-hostsonly {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.watch-shown { color: var(--muted); font-size: 0.85em; margin: 0; white-space: nowrap; }
+
+/* Visually hidden but still reachable by assistive tech — the placeholder
+   carries the same information on screen, so the label would be redundant
+   clutter for a sighted reader. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* A group of targets. <summary> is the collapse control, so it works with
+   JavaScript off; watch.js only remembers the state. */
+.watch-env { margin: 0 0 1.2rem; }
+
+.watch-env > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.watch-env-label {
+  font-weight: 600;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.watch-env-n { color: var(--muted); font-size: 0.8em; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+.watch-row {
+  display: grid;
+  grid-template-columns: 15rem repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  align-items: stretch;
+}
+
+/* Narrow viewports: the rail sits above its tiles rather than squeezing four
+   columns into a phone. */
+@media (max-width: 60rem) {
+  .watch-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+.watch-rail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 0;
+  transition: border-left-width 0.12s ease;
+}
+
+/* The rail's only interactive cue: the left border widens on hover. Nothing
+   else moves — the extra 8px comes out of the padding box, not the grid
+   track, so the tile's outer width stays fixed (design_handoff_target_tile). */
+.watch-rail:hover { border-left-width: 12px; }
+
+/* The rail's left edge is the target's worst finding. The badge next to the
+   name says it in words too — the colour must never be the only carrier. */
+.watch-rail.sev-info, .watch-rail.sev-low { border-left-color: var(--muted); }
+.watch-rail.sev-medium { border-left-color: var(--warn); }
+.watch-rail.sev-high { border-left-color: var(--bad); }
+.watch-rail.sev-critical { border-left-color: var(--crit); }
+
+.watch-name-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+.watch-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Always shown, unlike the old notable-only badge: text carries the exact
+   severity at every level, colour intensity carries how much it matters —
+   info/low stay a quiet grey rather than disappearing outright. Its own
+   class rather than the shared .sev used elsewhere (result.html's plain
+   coloured-text badge is untouched; this is a solid pill, scoped to the
+   target tile only). */
+.watch-sev {
+  flex: none;
+  margin-left: auto;
+  font: 700 0.62rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 0.34rem;
+  border-radius: 3px;
+  color: #fff;
+}
+
+.watch-sev.sev-info, .watch-sev.sev-low { background: var(--muted); }
+.watch-sev.sev-medium { background: var(--warn); }
+.watch-sev.sev-high { background: var(--bad); }
+.watch-sev.sev-critical { background: var(--crit); }
+
+.watch-host {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.watch-tile {
+  /* Named so .watch-tile-actions's rectangle (below) can match whichever of
+     these a tile is actually showing, rather than assuming the plain one. */
+  --tile-bg: var(--bg);
+
+  background: var(--tile-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  position: relative;
+}
+
+/* The whole tile opens the scan it describes, not just the age. A tile also
+   holds its own "history" link and a "Scan now" button, and an <a> cannot
+   contain other interactive content — so instead of one wrapping link, the
+   existing age link's hit area is stretched over the tile (a positioned
+   ::after covering it via inset:0), and the other controls are raised above
+   it with z-index so they stay independently clickable. */
+.watch-tile:has(a.watch-age) { cursor: pointer; }
+
+/* The one state on the board allowed to draw the eye by itself: at least one
+   critical-severity change against the series' baseline. */
+.watch-tile.has-critical {
+  border-color: var(--crit);
+  --tile-bg: color-mix(in srgb, var(--crit) 6%, var(--bg));
+}
+
+.watch-tile.is-running {
+  border-color: var(--accent);
+  --tile-bg: color-mix(in srgb, var(--accent) 6%, var(--bg));
+}
+
+.watch-tile.is-stale { border-color: var(--warn); }
+
+.watch-tile-top { display: flex; align-items: baseline; gap: 0.5rem; }
+
+.watch-mode {
+  font-weight: 600;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.watch-age {
+  margin-left: auto;
+  font-size: 1.35rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.watch-age::after { content: ""; position: absolute; inset: 0; }
+
+.watch-outcome { font-size: 1rem; font-weight: 600; }
+
+.watch-metrics {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.watch-metrics .term { border: none; padding: 0; margin-left: auto; }
+.watch-pre-n.is-set { color: var(--warn); font-weight: 700; }
+.watch-req.is-set { color: var(--warn); font-weight: 700; }
+
+.watch-tile-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  margin-top: auto;
+}
+
+/* Above the stretched age link (.watch-age::after), so the foot's own
+   controls stay independently clickable instead of being swallowed by it. */
+.watch-tile-foot a, .watch-tile-foot button { position: relative; z-index: 1; }
+
+/* history and Scan now: secondary actions, so they stay out of the way
+   until the tile is hovered — or, for a keyboard reader who cannot hover,
+   until one of them has focus. Opacity rather than display/visibility, so
+   both stay reachable by Tab and by assistive tech the whole time.
+   Positioned out of flow so a tile with no badges reserves no space for
+   them — hidden or not, .watch-tile-foot would otherwise still be as tall
+   as this row, leaving a gap under the metrics line. Anchored to the
+   tile's own bottom-right corner, it overlays the metrics line when shown —
+   a small opaque rectangle in the tile's own --tile-bg (so it matches a
+   plain, critical, or running tile alike) rather than letting the metrics
+   text underneath show through it. */
+.watch-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: absolute;
+  right: 0.7rem;
+  bottom: 0.55rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--tile-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.watch-tile:hover .watch-tile-actions,
+.watch-tile:focus-within .watch-tile-actions {
+  opacity: 1;
+}
+
+/* A row the script filtered out. Hidden rather than removed, so clearing the
+   filter costs no request (Story 5.22, AC2). */
+.watch-row[hidden], .watch-env[hidden] { display: none; }

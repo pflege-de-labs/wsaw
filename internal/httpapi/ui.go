@@ -40,18 +40,31 @@ func newUIRenderer() (*uiRenderer, error) {
 // uiFuncs are display helpers only. None of them produce raw HTML: every
 // value rendered originates from a scanned page, so html/template's
 // contextual escaping must stay in force (Story 5.11).
+// neverRendered is what an unset time.Time shows as everywhere on the page.
+const neverRendered = "never"
+
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
 		"time": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			return t.UTC().Format("2006-01-02 15:04:05 UTC")
 		},
+		// clock is the compact form of "time", for a spot on the page that has
+		// only room for the hour and minute; the full timestamp is still one
+		// hover away via the element's title.
+		"clock": func(t time.Time) string {
+			if t.IsZero() {
+				return neverRendered
+			}
+
+			return t.UTC().Format("15:04")
+		},
 		"ago": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			d := time.Since(t)
@@ -94,13 +107,6 @@ func uiFuncs() template.FuncMap {
 		},
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
-		},
-		// severityNotable decides whether the target list's compact badge
-		// shows at all. "info" and "low" stay quiet: a list built to be
-		// scanned at a glance should flag what needs a look, not restate
-		// "clean" on every row (Story 5.8, AC1).
-		"severityNotable": func(s diff.Severity) bool {
-			return s != "" && s.AtLeast(diff.SeverityMedium)
 		},
 		"add": func(a, b int) int { return a + b },
 		// filterSeverities, filterOutcomes and filterModes enumerate the
@@ -159,6 +165,7 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
 
 	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
+	s.mux.HandleFunc("POST /filter", s.handleUIFilter)
 
 	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
 	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
@@ -311,6 +318,20 @@ type dashboardData struct {
 	Reason  string
 	Jobs    []scheduleRow
 
+	// The board's display shape. Total is what is configured and Shown is
+	// what survived the filter: the page states both, because a watcher that
+	// reports "6 targets" while eight are configured has misrepresented
+	// itself.
+	Groups []envGroup
+	Filter string
+	Total  int
+	Shown  int
+
+	// HostsOnly is the viewer's remembered choice to narrow every series'
+	// Severity to a host appearing, disappearing, or denied — set before
+	// targetViews runs, not filtered afterwards (watchboard.go, hostsOnly).
+	HostsOnly bool
+
 	// Running is every scan in flight, across all targets, so the dashboard
 	// answers "is wsaw doing anything right now" without drilling in
 	// (Story 5.12).
@@ -340,7 +361,9 @@ type targetRow struct {
 
 	// Severity is the worst Severity across the target's series, condensed
 	// to a single per-target badge (Story 5.8, AC1: "open findings by
-	// severity").
+	// severity"). Never empty: newTargetRow defaults it to SeverityInfo, so
+	// the rail's badge always has a real word to show rather than needing a
+	// separate no-scans-yet case (design_handoff_target_tile).
 	Severity diff.Severity
 }
 
@@ -361,6 +384,10 @@ func newTargetRow(v TargetView) targetRow {
 		if sv.Severity.Rank() > row.Severity.Rank() {
 			row.Severity = sv.Severity
 		}
+	}
+
+	if row.Severity == "" {
+		row.Severity = diff.SeverityInfo
 	}
 
 	return row
@@ -438,13 +465,14 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Ready:   true,
-		Reason:  "readiness is not tracked",
-		Running: s.running(),
-		Tracked: s.deps.Running != nil,
+		Ready:     true,
+		Reason:    "readiness is not tracked",
+		Running:   s.running(),
+		Tracked:   s.deps.Running != nil,
+		HostsOnly: hostsOnly(r),
 	}
 
-	for _, v := range s.targetViews() {
+	for _, v := range s.targetViews(data.HostsOnly) {
 		data.Targets = append(data.Targets, newTargetRow(v))
 	}
 
@@ -459,6 +487,8 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Metrics != nil {
 		data.Ready, data.Reason = s.deps.Metrics.Ready()
 	}
+
+	data.shapeWatchboard(r)
 
 	if s.deps.Daemon != nil {
 		for _, j := range s.deps.Daemon.Jobs() {
