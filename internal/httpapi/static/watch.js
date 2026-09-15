@@ -67,21 +67,40 @@
   var rows = Array.prototype.slice.call(document.querySelectorAll('.watch-row'));
   var total = rows.length;
 
-  // The same haystack the server matches on: name, url and labels, all of
-  // which are visible on the row, so a reader can see why it matched.
+  // The same haystack the server matches on: name, url, labels and the
+  // target's worst severity, all of which are visible on the row, so a
+  // reader can see why it matched (Story 5.24, AC1).
   function haystack(row) {
     var rail = row.querySelector('.watch-rail');
     var labels = row.getAttribute('data-labels') || '';
+    var severity = row.getAttribute('data-severity') || '';
 
-    return ((rail ? rail.textContent : '') + ' ' + labels).toLowerCase();
+    return ((rail ? rail.textContent : '') + ' ' + labels + ' ' + severity).toLowerCase();
+  }
+
+  // A target matches when every whitespace-separated token in the typed
+  // filter is a substring of its haystack, independently — not necessarily
+  // contiguous. A single-word query is unaffected; this is what lets a
+  // severity word combine with a name/label/url word, e.g. "critical prod"
+  // (Story 5.24, AC2 — must stay identical to filterTargets/watchboard.go).
+  function rowMatchesAllTokens(row, tokens) {
+    var hay = haystack(row);
+
+    for (var i = 0; i < tokens.length; i++) {
+      if (hay.indexOf(tokens[i]) === -1) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function apply() {
-    var needle = input.value.trim().toLowerCase();
+    var tokens = input.value.trim().toLowerCase().split(/\s+/).filter(function (t) { return t !== ''; });
     var shown = 0;
 
     rows.forEach(function (row) {
-      var match = needle === '' || haystack(row).indexOf(needle) !== -1;
+      var match = tokens.length === 0 || rowMatchesAllTokens(row, tokens);
 
       row.hidden = !match;
 
