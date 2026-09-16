@@ -656,7 +656,6 @@ button:hover { border-color: var(--accent); }
    existing age link's hit area is stretched over the tile (a positioned
    ::after covering it via inset:0), and the other controls are raised above
    it with z-index so they stay independently clickable. */
-.watch-tile:has(a.watch-age) { cursor: pointer; }
 
 /* The one state on the board allowed to draw the eye by itself: at least one
    critical-severity change against the series' baseline. */
@@ -672,44 +671,12 @@ button:hover { border-color: var(--accent); }
 
 .watch-tile.is-stale { border-color: var(--warn); }
 
-.watch-tile-top { display: flex; align-items: baseline; gap: 0.5rem; }
 
-.watch-mode {
-  font-weight: 600;
-  font-size: 0.75em;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
 
-.watch-age {
-  margin-left: auto;
-  font-size: 1.35rem;
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg);
-  text-decoration: none;
-}
 
-.watch-age::after { content: ""; position: absolute; inset: 0; }
 
-.watch-outcome { font-size: 1rem; font-weight: 600; }
 
-.watch-metrics {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  font-size: 0.85em;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
 
-.watch-metrics .term { border: none; padding: 0; margin-left: auto; }
-.watch-pre-n.is-set { color: var(--warn); font-weight: 700; }
-.watch-req.is-set { color: var(--warn); font-weight: 700; }
 
 .watch-tile-foot {
   display: flex;
@@ -757,3 +724,106 @@ button:hover { border-color: var(--accent); }
 /* A row the script filtered out. Hidden rather than removed, so clearing the
    filter costs no request (Story 5.22, AC2). */
 .watch-row[hidden], .watch-env[hidden] { display: none; }
+
+/* The consent mode, once per column instead of once per tile. Eight targets
+   and three modes wrote the same three words twenty-four times; the column
+   header says each one once, and the tile spends that line on the figures
+   that differ. */
+.watch-modes {
+  display: grid;
+  grid-template-columns: 15rem repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.1rem;
+}
+
+.watch-modes .watch-mode-col {
+  font: 600 0.72rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0 0.2rem;
+}
+
+@media (max-width: 60rem) {
+  .watch-modes { display: none; }
+}
+
+/* A folded "none / reject" tile covers two of those columns, so it spans
+   them and keeps its own inline label — the column header above it no longer
+   describes it on its own. */
+.watch-tile.is-folded { grid-column: span 2; }
+
+.watch-tile-mode {
+  font: 600 0.68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* The tile's title line: the request figures. They are what a reader
+   compares between modes and between renders, so they get the tile's
+   largest type — and the whole tile opens the scan they came from. */
+.watch-scan {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.watch-scan::after { content: ""; position: absolute; inset: 0; }
+.watch-scan.is-pre, .watch-scan.is-deviant { color: var(--warn); }
+
+/* Outcome on the left, termination on the right, one line. */
+.watch-tile-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.watch-tile-status .term { border: none; padding: 0; margin-left: auto; }
+
+/* The time line, directly above the bar it describes: age left, next scan
+   right, so the two ends of the interval sit at the two ends of the track. */
+.watch-tile-time {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.watch-tile-time .watch-next { margin-left: auto; }
+.watch-tile-time .watch-next.is-overdue { color: var(--bad); font-weight: 600; }
+
+/* How far through the current interval the board is. A second reading of the
+   two words above it, never the only carrier (Story 5.11). */
+.watch-cycle {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: auto;
+}
+
+/* width:0 until cycle.js sets it from data-percent — an inline "width: N%"
+   style attribute would be silently dropped by the page's CSP (style-src, no
+   unsafe-inline; server.go), so this is also the correct no-JS state: an
+   empty bar rather than one that always reads full. */
+.watch-cycle-fill { height: 100%; width: 0; background: var(--muted); }
+.watch-cycle-fill.is-running { background: var(--accent); }
+.watch-cycle-fill.is-overdue { background: var(--bad); }
+
+/* REPLACE — the age is no longer the tile's headline, so it stops being
+   1.35rem and stops carrying the tile's hit area (.watch-scan does now).
+   Delete the old .watch-age, .watch-age::after, .watch-tile-top, .watch-mode
+   and .watch-outcome rules and the `:has(a.watch-age)` selector; these are
+   their replacements. */
+.watch-tile:has(a.watch-scan) { cursor: pointer; }

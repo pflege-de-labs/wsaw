@@ -58,6 +58,7 @@
 {{end}}
 
 {{range .Groups}}
+  {{$group := .}}
   {{/* <details> rather than a scripted toggle: collapsing works with
        JavaScript off, and watch.js only adds remembering it. The summary
        carries the group's size so a collapsed group can still be judged. */}}
@@ -67,9 +68,18 @@
       <span class="watch-env-n">{{.Count}}</span>
     </summary>
 
+    {{/* The consent mode is a column, not a tile field: it is the same three
+         words on every row, and stating it once per column gives each tile
+         its top line back for the figures that actually differ
+         (design option 6a). */}}
+    <div class="watch-modes" aria-hidden="true">
+      <span></span>
+      {{range .ModeColumns}}<span class="watch-mode-col">{{.}}</span>{{end}}
+    </div>
+
     {{range .Targets}}
       {{$t := .}}
-      <div class="watch-row" data-severity="{{$t.Severity}}" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
+      <div class="watch-row" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
         {{/* design_handoff_target_tile, option 4a: the badge is always shown
              (never gated on severity — info/low just read as muted), and the
              left border widens on hover as the tile's only interactive cue;
@@ -85,33 +95,41 @@
         {{range $t.Rows}}
           {{$row := .}}
           {{$mode := .Series.Mode}}
-          <div class="{{.TileClass}}"
+          <div class="{{.TileClass}}{{if .Folded}} is-folded{{end}}"
                data-severity="{{.Series.Severity}}"
                data-outcome="{{rowOutcome .Series}}"
                data-modes="{{rowModes .Label}}">
-            <div class="watch-tile-top">
-              <span class="watch-mode">{{.Label}}</span>
+
+            {{/* Title line: the request figures, and the tile's hit area —
+                 the whole tile opens the scan these came from. A folded
+                 row keeps an inline mode label, since the column header
+                 above it describes two columns it spans. */}}
+            {{with .Series.LastScan}}
+              <a class="watch-scan{{if .PreConsentDomains}} is-pre{{end}}{{if $row.DeviatesFromBaseline}} is-deviant{{end}}"
+                 href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
+                 title="{{time .StartedAt}}"
+                 aria-label="Open the last scan of {{$t.Name}} in {{$mode}} mode, {{.ScanID}}: {{.Requests}} requests, {{.ThirdPartyDomains}} third-party domains, {{.PreConsentDomains}} pre-consent">{{.Requests}} req · {{.ThirdPartyDomains}} 3p · {{.PreConsentDomains}} pre</a>
+            {{else}}
+              <span class="watch-scan muted">no observation yet</span>
+            {{end}}
+            {{if .Folded}}<span class="watch-tile-mode">{{.Label}}</span>{{end}}
+
+            <div class="watch-tile-status">
               {{with .Series.LastScan}}
-                <a class="watch-age" href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
-                   title="{{time .StartedAt}}"
-                   aria-label="Open the last scan of {{$t.Name}} in {{$mode}} mode, {{.ScanID}}">{{ago .StartedAt}}</a>
+                <span class="outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
+                <span class="term term-{{.Termination}}">{{.Termination}}</span>
               {{else}}
-                <span class="watch-age muted">never</span>
+                <span class="muted">never scanned</span>
               {{end}}
             </div>
 
-            {{with .Series.LastScan}}
-              <div class="watch-outcome outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</div>
-              <div class="watch-metrics">
-                <span class="watch-req{{if $row.DeviatesFromBaseline}} is-set{{end}}">{{.Requests}} req</span>
-                <span>{{.ThirdPartyDomains}} 3p</span>
-                <span class="watch-pre-n{{if .PreConsentDomains}} is-set{{end}}">{{.PreConsentDomains}} pre</span>
-                <span class="term term-{{.Termination}}">{{.Termination}}</span>
-              </div>
-            {{else}}
-              <div class="watch-outcome muted">never scanned</div>
-              <div class="watch-metrics"><span class="muted">no observation yet</span></div>
-            {{end}}
+            {{/* Age and time to next scan: the two ends of the interval, at
+                 the two ends of the line, immediately above the bar that
+                 measures it. Both come from the daemon's own schedule. */}}
+            <div class="watch-tile-time">
+              <span class="watch-age">{{$row.AgeLabel}}</span>
+              <span class="watch-next{{if $row.Overdue}} is-overdue{{end}}">{{$row.NextLabel}}</span>
+            </div>
 
             <div class="watch-tile-foot">
               {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}
@@ -130,6 +148,18 @@
                 {{end}}
               </div>
             </div>
+
+            {{/* data-percent, not a "width: N%" inline style: the page's CSP
+                 (server.go) sets style-src with no unsafe-inline, which
+                 silently drops inline style attributes — the div would keep
+                 its CSS default width instead of failing loudly. cycle.js
+                 reads the attribute and sets .style.width itself, which the
+                 CSSOM path isn't subject to style-src at all. */}}
+            {{if $row.Scheduled}}
+              <div class="watch-cycle" title="{{$row.AgeLabel}}, {{$row.NextLabel}}">
+                <div class="{{$row.CycleClass}}" data-percent="{{$row.CyclePercent}}"></div>
+              </div>
+            {{end}}
           </div>
         {{end}}
       </div>

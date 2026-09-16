@@ -86,6 +86,29 @@ func (g envGroup) Count() string {
 	return plural(len(g.Targets), "target") + " · " + plural(series, "series")
 }
 
+// ModeColumns is the group's consent modes in the order its tiles appear, so
+// the column header above them names each one once. A folded "none / reject"
+// row contributes both of its modes, because the tile spans both columns.
+func (g envGroup) ModeColumns() []string {
+	var (
+		seen = map[string]bool{}
+		out  []string
+	)
+
+	for _, t := range g.Targets {
+		for _, r := range t.Rows {
+			for _, mode := range strings.Split(r.Label, "/") {
+				if mode = strings.TrimSpace(mode); mode != "" && !seen[mode] {
+					seen[mode] = true
+					out = append(out, mode)
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 // watchTarget is one target as the board draws it.
 type watchTarget struct {
 	targetRow
