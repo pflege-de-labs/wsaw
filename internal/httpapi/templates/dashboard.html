@@ -149,9 +149,15 @@
               </div>
             </div>
 
+            {{/* data-percent, not a "width: N%" inline style: the page's CSP
+                 (server.go) sets style-src with no unsafe-inline, which
+                 silently drops inline style attributes — the div would keep
+                 its CSS default width instead of failing loudly. cycle.js
+                 reads the attribute and sets .style.width itself, which the
+                 CSSOM path isn't subject to style-src at all. */}}
             {{if $row.Scheduled}}
               <div class="watch-cycle" title="{{$row.AgeLabel}}, {{$row.NextLabel}}">
-                <div class="{{$row.CycleClass}}" style="width: {{$row.CyclePercent}}%"></div>
+                <div class="{{$row.CycleClass}}" data-percent="{{$row.CyclePercent}}"></div>
               </div>
             {{end}}
           </div>

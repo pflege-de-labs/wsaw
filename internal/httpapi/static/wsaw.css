@@ -813,7 +813,11 @@ button:hover { border-color: var(--accent); }
   margin-top: auto;
 }
 
-.watch-cycle-fill { height: 100%; background: var(--muted); }
+/* width:0 until cycle.js sets it from data-percent — an inline "width: N%"
+   style attribute would be silently dropped by the page's CSP (style-src, no
+   unsafe-inline; server.go), so this is also the correct no-JS state: an
+   empty bar rather than one that always reads full. */
+.watch-cycle-fill { height: 100%; width: 0; background: var(--muted); }
 .watch-cycle-fill.is-running { background: var(--accent); }
 .watch-cycle-fill.is-overdue { background: var(--bad); }
 

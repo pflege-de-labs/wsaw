@@ -4,11 +4,15 @@ package httpapi
 // since modeRow and dashboardData are unexported.
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/store"
@@ -271,4 +275,64 @@ func TestModeColumns(t *testing.T) {
 			t.Errorf("ModeColumns() = %v, want [accept]", got)
 		}
 	})
+}
+
+// The cycle bar's width must never be an inline "style" attribute: the
+// page's Content-Security-Policy sets style-src with no unsafe-inline
+// (server.go), which drops inline style attributes silently rather than
+// failing loudly — every bar would render at its CSS default width
+// (previously 100%, indistinguishable from a series that is actually due)
+// regardless of its real percentage. cycle.js sets the width from a
+// data-percent attribute instead, through the CSSOM, which style-src does
+// not govern.
+func TestCycleBarHasNoInlineStyleAttribute(t *testing.T) {
+	t.Parallel()
+
+	ui, err := newUIRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	row := modeRow{
+		Label: "accept",
+		Series: SeriesView{
+			Mode:     model.ConsentAccept,
+			LastScan: &store.Summary{StartedAt: now.Add(-30 * time.Minute)},
+		},
+		NextRun: now.Add(30 * time.Minute),
+	}
+
+	if !row.Scheduled() {
+		t.Fatal("test row must be scheduled, or the bar never renders at all")
+	}
+
+	target := targetRow{
+		TargetView: TargetView{Name: "site", URL: "https://example.com"},
+		Rows:       []modeRow{row},
+		Severity:   diff.SeverityInfo,
+	}
+
+	p := page{
+		Data: dashboardData{
+			Targets: []targetRow{target},
+			Groups:  []envGroup{{Label: "env", Targets: []watchTarget{{targetRow: target}}}},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := ui.tmpl.ExecuteTemplate(&buf, "dashboard.html", p); err != nil {
+		t.Fatal(err)
+	}
+
+	html := buf.String()
+
+	if strings.Contains(html, `style="width`) {
+		t.Errorf("dashboard.html has an inline width style, which the page's CSP silently drops\n%s", html)
+	}
+
+	want := `data-percent="` + strconv.Itoa(row.CyclePercent()) + `"`
+	if !strings.Contains(html, want) {
+		t.Errorf("dashboard.html does not carry %s\n%s", want, html)
+	}
 }
