@@ -75,12 +75,6 @@
   tick();
   window.setInterval(tick, 1000);
 
-  if (seconds <= 0) {
-    // Auto-refresh is off. The age still counts up, because knowing how old
-    // the page is matters just as much when nothing is going to change it.
-    return;
-  }
-
   var timer = null;
 
   function refresh() {
@@ -112,6 +106,51 @@
       window.clearTimeout(timer);
       timer = null;
     }
+  }
+
+  // The one hook this file exports (Story 5.26, AC7).
+  //
+  // A scan started without reloading the page leaves the page unaware that
+  // anything is running, so it never picks up the server's own "a scan is in
+  // flight, refresh every ten seconds" fallback. scan.js asks for that here
+  // rather than owning a second timer of its own, so there stays exactly one
+  // thing in this interface that decides when the page reloads.
+  //
+  // A viewer who turned refreshing off is not overridden: they asked the page
+  // to hold still, and the scan they started is visible on it either way.
+  window.wsaw = window.wsaw || {};
+
+  window.wsaw.refreshIn = function (delaySeconds) {
+    if (el.getAttribute('data-refresh-chose-off') === '1') {
+      return false;
+    }
+
+    if (!(delaySeconds > 0)) {
+      return false;
+    }
+
+    cancel();
+
+    timer = window.setTimeout(function () {
+      timer = null;
+
+      if (document.hidden) {
+        // Nobody is looking; the visibility handler refreshes on return.
+        return;
+      }
+
+      refresh();
+    }, delaySeconds * 1000);
+
+    return true;
+  };
+
+  if (seconds <= 0) {
+    // Auto-refresh is off. The age still counts up, because knowing how old
+    // the page is matters just as much when nothing is going to change it,
+    // and refreshIn above still works: "no interval in force" is not the
+    // same answer as "the viewer said no".
+    return;
   }
 
   document.addEventListener('visibilitychange', function () {

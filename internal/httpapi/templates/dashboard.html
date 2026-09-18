@@ -141,8 +141,16 @@
               <div class="watch-tile-actions">
                 <a href="/targets/{{$t.Name}}/{{$mode}}">history</a>
                 {{if $page.AllowScan}}
-                <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline">
+                {{/* from: the page this press was made on, so the 303 that
+                     answers a script-off press lands back on the board
+                     instead of on the target's history page (Story 5.26,
+                     AC1). It is the refresh target — the current path
+                     without the flash parameters — so the reader does not
+                     return to a page still showing a message about
+                     something that happened before this press. */}}
+                <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline scan-form">
                   <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+                  <input type="hidden" name="from" value="{{$page.RefreshTarget}}">
                   <button type="submit">Scan now</button>
                 </form>
                 {{end}}
