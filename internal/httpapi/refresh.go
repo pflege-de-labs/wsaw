@@ -105,6 +105,16 @@ func (s refreshSetting) Seconds() int { return int(s.Interval.Seconds()) }
 // Enabled reports whether the page will refresh itself.
 func (s refreshSetting) Enabled() bool { return s.Interval > 0 }
 
+// ChoseOff reports a viewer who turned refreshing off themselves, as against
+// a page that simply has no interval in force.
+//
+// The difference matters to the script that starts a scan without reloading
+// the page (Story 5.26): it re-arms the refresh so the scan it just started
+// becomes visible, and an explicit "off" is the one answer it must not
+// override — the same precedence refreshFor already gives that choice over a
+// running scan.
+func (s refreshSetting) ChoseOff() bool { return s.HasChosen && s.Chosen <= 0 }
+
 // Label describes the setting in the words the page shows.
 func (s refreshSetting) Label() string {
 	if s.Interval <= 0 {

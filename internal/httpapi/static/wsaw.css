@@ -293,6 +293,13 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
   border-bottom: 1px solid var(--border);
 }
 
+/* The slots are always in the document so a message written into one after
+   load is announced (layout.html, Story 5.26). An empty one takes no space
+   and draws no border: a page with nothing to say looks as it always did. */
+.flash:empty {
+  display: none;
+}
+
 .flash-ok { background: color-mix(in srgb, var(--ok) 12%, transparent); }
 .flash-error { background: color-mix(in srgb, var(--bad) 12%, transparent); }
 

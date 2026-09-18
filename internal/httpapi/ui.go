@@ -1043,13 +1043,13 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if allowed, reason := s.writeAllowed(); !allowed {
-		s.uiRedirectError(w, r, "/", reason)
+		s.rescanRefused(w, r, "/", reason, http.StatusForbidden)
 
 		return
 	}
 
 	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
-		s.uiRedirectError(w, r, "/", "ad-hoc scanning is disabled")
+		s.rescanRefused(w, r, "/", "ad-hoc scanning is disabled", http.StatusForbidden)
 
 		return
 	}
@@ -1060,16 +1060,25 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.isConfiguredTarget(target, mode) {
-		s.uiRedirectError(w, r, "/", "no such target and consent mode is configured")
+		s.rescanRefused(w, r, "/",
+			"no such target and consent mode is configured", http.StatusNotFound)
 
 		return
 	}
 
-	dest := "/targets/" + target + "/" + string(mode)
+	// Back to the page the button was pressed on, which the form says
+	// (Story 5.26, AC1). A press on the watchboard returns to the board; a
+	// press with nothing to say returns to the target's history page, as
+	// every press did before that story.
+	dest := rescanReturn(r.FormValue("from"), target, mode)
 
 	if len(runningFor(s.running(), target, mode)) > 0 {
-		s.uiRedirectError(w, r, dest,
-			"A scan of this target and consent mode is already running. Its progress is shown below.")
+		// Worded for both destinations: "shown below" was true only of the
+		// history page this used to be the one way back to (AC3).
+		s.rescanRefused(w, r, dest,
+			"A scan of this target and consent mode is already running. "+
+				"It appears as pending until it finishes.",
+			http.StatusConflict)
 
 		return
 	}
@@ -1094,8 +1103,10 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.uiRedirectOK(w, r, dest,
-		"Scan started. It appears as pending below and this page refreshes until it finishes.")
+	// Named, because a board shows many targets and the reader has to know
+	// which of them they just started (AC3).
+	s.rescanStarted(w, r, dest,
+		"Scan started for "+target+" ("+string(mode)+"). It appears as pending until it finishes.")
 }
 
 // adHocScanBudget bounds a scan started from the web interface. It is generous
