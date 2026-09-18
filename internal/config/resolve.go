@@ -107,6 +107,31 @@ func (c *Config) ResolveTargets(reg *secret.Registry) ([]Resolved, error) {
 	return out, nil
 }
 
+// ResolveAdHocTarget resolves a target that is not in the configuration file:
+// a URL somebody typed into the web interface (Story 5.27).
+//
+// It is the resolution every configured target gets, minus the
+// credential-bearing defaults. defaults.basicAuthUser,
+// defaults.basicAuthPassword and defaults.extraHeaders exist so that wsaw can
+// reach the operator's own sites; sending them to an address somebody typed
+// would hand those credentials to whoever typed it.
+func (c *Config) ResolveAdHocTarget(
+	name, rawURL string, mode model.ConsentMode, reg *secret.Registry,
+) (Resolved, error) {
+	t := &Target{Name: name, URL: rawURL, ConsentModes: []model.ConsentMode{mode}}
+
+	r, err := c.resolveTarget(t, reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	r.BasicAuthUser = secret.Value{}
+	r.BasicAuthPassword = secret.Value{}
+	r.ExtraHeaders = nil
+
+	return r, nil
+}
+
 //nolint:gocognit // a wide struct of independent overrides; splitting it would obscure the mapping
 func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error) {
 	d := c.Defaults

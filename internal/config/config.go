@@ -388,6 +388,56 @@ type API struct {
 	ReadOnly bool `yaml:"readOnly,omitempty"`
 	// AllowAdHocScan permits triggering scans through the API.
 	AllowAdHocScan *bool `yaml:"allowAdHocScan,omitempty"`
+
+	// AdHocURLs lets a reader scan a URL that is not in the target list, by
+	// typing it into the web interface (Story 5.27). Off by default: it turns
+	// wsaw into a service that fetches an address somebody else chose.
+	AdHocURLs AdHocURLs `yaml:"adHocUrls,omitempty"`
+}
+
+// AdHocURLs configures scanning a URL that nobody put in the configuration
+// file (Story 5.27).
+type AdHocURLs struct {
+	// Enabled turns the feature on. Everything else here is a bound on it.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// ConsentModes are the modes the form offers. Empty means the modes
+	// defaults.consentModes gives every other target.
+	ConsentModes []model.ConsentMode `yaml:"consentModes,omitempty"`
+
+	// MaxPerHour bounds how many such scans may be started in a rolling hour,
+	// across everybody using this wsaw. Zero is the default; a negative value
+	// is refused rather than read as "unlimited", because that is not a thing
+	// this setting can say.
+	MaxPerHour int `yaml:"maxPerHour,omitempty"`
+
+	// AllowPrivateHosts permits URLs whose host resolves to an address that
+	// is not on the public internet: loopback, the private ranges,
+	// link-local, and the cloud metadata service with them. Off by default,
+	// and worth leaving off anywhere this interface is reachable by somebody
+	// who is not the operator.
+	AllowPrivateHosts bool `yaml:"allowPrivateHosts,omitempty"`
+}
+
+// DefaultAdHocMaxPerHour is the rolling-hour budget a typed URL scan gets when
+// none is configured. Generous for a person working through a handful of
+// sites, and low enough that wsaw cannot be pointed at somebody else's
+// infrastructure as a load generator (Tenet 17).
+const DefaultAdHocMaxPerHour = 20
+
+// Limit reports the rolling-hour budget for typed URL scans.
+func (a AdHocURLs) Limit() int {
+	if a.MaxPerHour > 0 {
+		return a.MaxPerHour
+	}
+
+	return DefaultAdHocMaxPerHour
+}
+
+// AdHocModes reports the consent modes the URL form offers, which fall back to
+// the ones every other target gets.
+func (c *Config) AdHocModes() []model.ConsentMode {
+	return firstModes(c.API.AdHocURLs.ConsentModes, c.Defaults.ConsentModes)
 }
 
 // Share configures result sharing by expiring link (Story 5.19).

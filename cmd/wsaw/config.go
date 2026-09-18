@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/pflege-de-labs/wsaw/internal/adhoc"
 	"github.com/pflege-de-labs/wsaw/internal/app"
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -141,32 +142,17 @@ func (c *configFlags) addAdHocTargets(cfg *config.Config) error {
 
 // adHocName derives a stable name from a URL so that repeated one-shot runs
 // of the same URL share history, rather than starting fresh each time.
+//
+// The derivation itself lives in package adhoc, because the web interface
+// derives the same name from the same address: a URL scanned from the form
+// and the same URL passed to --url belong in one series, not two
+// (Story 5.27).
 func adHocName(rawURL string, index int) string {
-	trimmed := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
-	trimmed = strings.TrimSuffix(trimmed, "/")
-
-	var b strings.Builder
-
-	for _, r := range trimmed {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
+	if name := adhoc.Name(rawURL); name != "" {
+		return name
 	}
 
-	name := strings.Trim(b.String(), "-.")
-	if name == "" {
-		return fmt.Sprintf("target-%d", index+1)
-	}
-
-	const maxName = 80
-	if len(name) > maxName {
-		name = name[:maxName]
-	}
-
-	return name
+	return fmt.Sprintf("target-%d", index+1)
 }
 
 func (c *configFlags) applyOverrides(cfg *config.Config) {

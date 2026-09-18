@@ -26,6 +26,7 @@ const (
 	fieldReason  = "reason"
 	fieldRunning = "running"
 	fieldReady   = "ready"
+	fieldError   = "error"
 )
 
 func (s *Server) routes() {
@@ -48,6 +49,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/baseline/{target}/{mode}", s.handleSetBaseline)
 	s.mux.HandleFunc("DELETE /api/v1/baseline/{target}/{mode}", s.handleDeleteBaseline)
 	s.mux.HandleFunc("POST /api/v1/scan/{target}/{mode}", s.handleTriggerScan)
+	s.mux.HandleFunc("POST /api/v1/scan-url", s.handleScanURL)
 
 	s.shareRoutes()
 
@@ -692,7 +694,7 @@ func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
 	// because the caller learns that the work is already under way.
 	if live := runningFor(s.running(), target, mode); len(live) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":      "a scan of this target and consent mode is already running",
+			fieldError:   "a scan of this target and consent mode is already running",
 			fieldRunning: live,
 		})
 
@@ -803,7 +805,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]any{"error": msg})
+	writeJSON(w, status, map[string]any{fieldError: msg})
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

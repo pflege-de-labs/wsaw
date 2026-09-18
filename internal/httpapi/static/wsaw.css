@@ -448,6 +448,22 @@ button:hover { border-color: var(--accent); }
   max-width: 22rem;
 }
 
+/* The typed-URL form. Wider than the login form because an address is long,
+   and laid out in one column so the field, the mode and the button read in
+   the order they are used. */
+.scan-url {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 34rem;
+}
+
+.scan-url label { color: var(--muted); }
+.scan-url button { align-self: flex-start; }
+
+.scan-url-limits { margin-top: 1rem; padding-left: 1.1rem; }
+.scan-url-limits li { margin: 0.2rem 0; }
+
 /* Comparison table */
 
 .compare td { text-align: center; }

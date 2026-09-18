@@ -288,6 +288,30 @@ api:
   readOnly: false
   allowAdHocScan: true
 
+  # Scanning a URL that is not in the list above, typed into the web interface
+  # (Story 5.27). Its own switch, not a consequence of allowAdHocScan: that one
+  # lets a reader rescan a target you configured, this one lets them choose the
+  # address.
+  #
+  # Off by default, and worth thinking about before turning on: with it,
+  # anybody who can reach the interface decides what this machine fetches. The
+  # address is admitted first — http or https, no embedded credentials, and a
+  # host that resolves to the public internet — and the credentials in
+  # defaults.basicAuth* and defaults.extraHeaders are never sent to it.
+  adHocUrls:
+    # Settings alongside enabled: false are refused, because a file that
+    # carries them reads as though the form were there. Uncomment together.
+    enabled: false
+    # The modes the form offers. Unset means defaults.consentModes.
+    # consentModes: [reject, accept]
+    # A budget for the whole deployment, not per caller: the limit is there to
+    # protect the sites being scanned, which do not care who asked (default 20).
+    # maxPerHour: 20
+    # Allows loopback, private, link-local and metadata addresses. Only for a
+    # deployment that means "scan our own staging", and only where the
+    # interface is not reachable by anybody else.
+    # allowPrivateHosts: false
+
   # Sharing one result by an expiring link, so a colleague or an auditor can
   # read the evidence without being given this token (Story 5.19).
   #
