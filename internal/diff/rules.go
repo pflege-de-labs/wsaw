@@ -153,6 +153,11 @@ type SeverityRules struct {
 	FirstPartyCookieAdded      Severity `yaml:"firstPartyCookieAdded,omitempty"`
 	CookieRemoved              Severity `yaml:"cookieRemoved,omitempty"`
 
+	ThirdPartyStorageRejectMode Severity `yaml:"thirdPartyStorageRejectMode,omitempty"`
+	ThirdPartyStorageAdded      Severity `yaml:"thirdPartyStorageAdded,omitempty"`
+	FirstPartyStorageAdded      Severity `yaml:"firstPartyStorageAdded,omitempty"`
+	StorageRemoved              Severity `yaml:"storageRemoved,omitempty"`
+
 	StatusBecameError Severity `yaml:"statusBecameError,omitempty"`
 	StatusChanged     Severity `yaml:"statusChanged,omitempty"`
 
@@ -188,6 +193,15 @@ func DefaultSeverityRules() SeverityRules {
 		ThirdPartyCookieAdded:      SeverityMedium,
 		FirstPartyCookieAdded:      SeverityLow,
 		CookieRemoved:              SeverityInfo,
+
+		// Web Storage is ranked with cookies, not below them: a third party
+		// that keeps an identifier in localStorage after a rejection has done
+		// the same thing as one that sets a cookie, and the storage is the
+		// half a cookie-only view misses (Story 2.9).
+		ThirdPartyStorageRejectMode: SeverityCritical,
+		ThirdPartyStorageAdded:      SeverityMedium,
+		FirstPartyStorageAdded:      SeverityLow,
+		StorageRemoved:              SeverityInfo,
 
 		StatusBecameError: SeverityMedium,
 		StatusChanged:     SeverityLow,
@@ -231,6 +245,11 @@ func (s SeverityRules) withDefaults() SeverityRules {
 		ThirdPartyCookieAdded:      fill(s.ThirdPartyCookieAdded, defaults.ThirdPartyCookieAdded),
 		FirstPartyCookieAdded:      fill(s.FirstPartyCookieAdded, defaults.FirstPartyCookieAdded),
 		CookieRemoved:              fill(s.CookieRemoved, defaults.CookieRemoved),
+
+		ThirdPartyStorageRejectMode: fill(s.ThirdPartyStorageRejectMode, defaults.ThirdPartyStorageRejectMode),
+		ThirdPartyStorageAdded:      fill(s.ThirdPartyStorageAdded, defaults.ThirdPartyStorageAdded),
+		FirstPartyStorageAdded:      fill(s.FirstPartyStorageAdded, defaults.FirstPartyStorageAdded),
+		StorageRemoved:              fill(s.StorageRemoved, defaults.StorageRemoved),
 
 		StatusBecameError: fill(s.StatusBecameError, defaults.StatusBecameError),
 		StatusChanged:     fill(s.StatusChanged, defaults.StatusChanged),
@@ -294,6 +313,18 @@ func (s SeverityRules) forCookieAdded(mode model.ConsentMode, party model.Party)
 	}
 
 	return s.ThirdPartyCookieAdded
+}
+
+func (s SeverityRules) forStorageAdded(mode model.ConsentMode, party model.Party) Severity {
+	if party != model.ThirdParty {
+		return s.FirstPartyStorageAdded
+	}
+
+	if mode == model.ConsentReject {
+		return s.ThirdPartyStorageRejectMode
+	}
+
+	return s.ThirdPartyStorageAdded
 }
 
 func (s SeverityRules) forStatusChanged(before, after int) Severity {

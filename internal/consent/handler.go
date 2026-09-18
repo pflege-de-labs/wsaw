@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,6 +74,13 @@ type Options struct {
 	// cannot consume the scan's entire budget.
 	TotalTimeout time.Duration
 
+	// BannerWait bounds how long wsaw waits for a consent banner to appear
+	// before concluding there is none. An application-rendered banner is
+	// mounted after hydration or on an idle callback, so checking once, the
+	// instant the page goes idle, reports "no CMP" for a site that does have
+	// one (Story 2.9, AC3).
+	BannerWait time.Duration
+
 	// AllowHeuristic permits the label-guessing fallback. On by default via
 	// New; turning it off means unknown banners are reported rather than
 	// guessed at.
@@ -97,6 +105,9 @@ type Options struct {
 const (
 	DefaultStepTimeout  = 10 * time.Second
 	DefaultTotalTimeout = 30 * time.Second
+	// DefaultBannerWait is short on purpose: it is spent only on pages where
+	// nothing has been found yet, and it is paid once per scan.
+	DefaultBannerWait = 5 * time.Second
 )
 
 func (o *Options) withDefaults() Options {
@@ -108,6 +119,10 @@ func (o *Options) withDefaults() Options {
 
 	if out.TotalTimeout <= 0 {
 		out.TotalTimeout = DefaultTotalTimeout
+	}
+
+	if out.BannerWait <= 0 {
+		out.BannerWait = DefaultBannerWait
 	}
 
 	if out.OnFailure == "" {
@@ -160,6 +175,23 @@ func Apply(ctx context.Context, rawOpts Options) (model.Consent, error) {
 
 type handler struct {
 	opts Options
+
+	// banner is what the page showed before anything was clicked, and
+	// storageBefore is what it had already stored. Both are taken once, up
+	// front, because both are evidence about the state wsaw found rather than
+	// the state it produced (Story 2.9).
+	banner        bannerSummary
+	storageBefore map[string]int
+}
+
+// bannerSummary is __wsawConsentSummary's answer: page-controlled text,
+// treated as data.
+type bannerSummary struct {
+	Found    bool     `json:"found"`
+	Element  string   `json:"element"`
+	Heading  string   `json:"heading"`
+	Text     string   `json:"text"`
+	Controls []string `json:"controls"`
 }
 
 func (h *handler) apply(ctx context.Context) (model.Consent, error) {
@@ -172,12 +204,18 @@ func (h *handler) apply(ctx context.Context) (model.Consent, error) {
 
 	probe := h.probe(ctx)
 
+	// A banner that has not been rendered yet is not an absent banner, so
+	// wait for one before anything concludes there is none (Story 2.9, AC3).
+	// A page carrying a TCF API has already answered the question.
+	h.banner = h.awaitBanner(ctx, probe)
+	h.storageBefore = h.storageSnapshot(ctx)
+
 	// The TCF API is tried first: it is documented, version-stable, and
 	// reports back what the CMP recorded.
 	if probe.TCF {
 		consent, done := h.applyTCF(ctx, probe)
 		if done {
-			return consent, nil
+			return h.decorate(ctx, consent), nil
 		}
 
 		// TCF was present but could not be driven; fall through to rules and
@@ -194,7 +232,120 @@ func (h *handler) apply(ctx context.Context) (model.Consent, error) {
 		}
 	}
 
-	return consent, nil
+	return h.decorate(ctx, consent), nil
+}
+
+// decorate adds the evidence that is about the page rather than about the
+// interaction: what the banner said, and what the interaction wrote to Web
+// Storage. It runs on every path, including the ones that gave up.
+func (h *handler) decorate(ctx context.Context, consent model.Consent) model.Consent {
+	if consent.Kind == "" {
+		consent.Kind = model.CMPKindNone
+		if h.banner.Found {
+			consent.Kind = model.CMPKindBespoke
+		}
+	}
+
+	if h.banner.Found && consent.BannerHeading == "" {
+		consent.BannerHeading = h.banner.Heading
+	}
+
+	if consent.InteractedAt != nil {
+		consent.StorageKeys = h.storageWrites(ctx)
+	}
+
+	return consent
+}
+
+// awaitBanner polls for a consent container until one appears or the wait
+// runs out. The poll is cheap and the deadline is small; a page that has no
+// banner pays it once (Story 2.9, AC3).
+func (h *handler) awaitBanner(ctx context.Context, probe probeResult) bannerSummary {
+	summary := h.bannerSummary(ctx)
+	if summary.Found || probe.TCF || h.opts.BannerWait <= 0 {
+		return summary
+	}
+
+	const poll = 250 * time.Millisecond
+
+	waitCtx, cancel := context.WithTimeout(ctx, h.opts.BannerWait)
+	defer cancel()
+
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			return summary
+		case <-ticker.C:
+		}
+
+		if s := h.bannerSummary(waitCtx); s.Found {
+			return s
+		}
+	}
+}
+
+func (h *handler) bannerSummary(ctx context.Context) bannerSummary {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var out bannerSummary
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawConsentSummary()", &out)); err != nil {
+		h.opts.Logger.Debug("consent banner summary failed", "error", err)
+	}
+
+	return out
+}
+
+// storageSnapshot reads Web Storage key names and value lengths. Values are
+// never read out of the page: a length is enough to tell that a key changed,
+// and the value itself may be personal data (NFR §4).
+func (h *handler) storageSnapshot(ctx context.Context) map[string]int {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	out := map[string]int{}
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawStorageSnapshot()", &out)); err != nil {
+		h.opts.Logger.Debug("consent storage snapshot failed", "error", err)
+
+		return nil
+	}
+
+	return out
+}
+
+// storageWrites names the keys this interaction created or changed. It is the
+// only trace a site leaves when it keeps its consent state outside cookies.
+func (h *handler) storageWrites(ctx context.Context) []string {
+	return h.diffStorage(h.storageSnapshot(ctx))
+}
+
+// diffStorage names the keys that appeared or changed length since the
+// snapshot taken before the interaction. A key that was already there with
+// the same value is not evidence of anything this scan did — the same
+// reasoning __wsawCmpPrior applies to a CMP's own consent state.
+func (h *handler) diffStorage(after map[string]int) []string {
+	if len(after) == 0 {
+		return nil
+	}
+
+	var written []string
+
+	for key, length := range after {
+		if before, existed := h.storageBefore[key]; existed && before == length {
+			continue
+		}
+
+		written = append(written, key)
+	}
+
+	sort.Strings(written)
+
+	return written
 }
 
 func (h *handler) injectHelpers(ctx context.Context) error {
@@ -263,6 +414,7 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 			Reason:    "TCF API call failed: " + err.Error(),
 			CMP:       CMPTCF,
 			Detection: DetectionTCF,
+			Kind:      model.CMPKindVendor,
 		}, false
 	}
 
@@ -271,6 +423,9 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 		Detection: DetectionTCF,
 		Mechanism: MechanismTCF,
 		TCString:  out.TCString,
+		// A TCF API is a CMP product by definition, whatever the banner
+		// around it looks like (Story 2.9, AC1).
+		Kind: model.CMPKindVendor,
 	}
 
 	if id := numString(out.CMPID); id != "" {
@@ -320,7 +475,11 @@ func (h *handler) readGPP(ctx context.Context) string {
 func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Consent {
 	candidates := h.opts.Rules.Candidates(h.opts.Host, h.opts.Domain)
 
-	var attempted []string
+	var (
+		attempted  []string
+		stale      []string
+		lastReason string
+	)
 
 	for _, rule := range candidates {
 		if rule.Heuristic && !h.opts.AllowHeuristic {
@@ -347,6 +506,14 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		}
 
 		if !matched {
+			// A host-scoped rule that does not match the host it was written
+			// for is the way a rule quietly stops working: the site was
+			// redesigned, the selector moved, and nothing says so. Record it
+			// (Story 2.9, AC6).
+			if len(rule.Hosts) > 0 {
+				stale = append(stale, rule.Name)
+			}
+
 			continue
 		}
 
@@ -376,7 +543,13 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 
 		switch consent.Outcome {
 		case model.OutcomeApplied, model.OutcomeUnverified, model.OutcomeBannerVisible, model.OutcomeNecessaryOnly:
+			consent.StaleHostRules = stale
+
 			return consent
+		}
+
+		if consent.Reason != "" {
+			lastReason = consent.Reason
 		}
 
 		// A rule that detected but failed is worth reporting if nothing else
@@ -388,25 +561,82 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 
 	if probe.TCF {
 		return model.Consent{
-			Outcome:   model.OutcomeFailed,
-			Reason:    "a TCF CMP is present but could not be driven, and no rule matched",
-			CMP:       CMPTCF,
-			Detection: DetectionTCF,
+			Outcome:        model.OutcomeFailed,
+			Reason:         "a TCF CMP is present but could not be driven, and no rule matched",
+			CMP:            CMPTCF,
+			Detection:      DetectionTCF,
+			Kind:           model.CMPKindVendor,
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
 		}
 	}
 
 	if len(attempted) > 0 {
+		reason := "rules matched but none completed: " + strings.Join(attempted, ", ")
+		// The rule's own reason says what actually went wrong — a step that
+		// found nothing, a verification that reported the banner still
+		// standing. Dropping it for a list of names throws away the one
+		// sentence a reader can act on (Story 2.9, AC4).
+		reason = appendReason(reason, lastReason)
+
+		return model.Consent{
+			Outcome:        model.OutcomeFailed,
+			Reason:         reason,
+			Kind:           kindForBanner(h.banner.Found),
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
+		}
+	}
+
+	// A banner is on the page and nothing wsaw knows matched it. That is a
+	// failure to handle a CMP, not an absence of one: reporting it as
+	// "not-needed" would tell a reviewer the site never asked for consent
+	// (Story 2.9, AC1).
+	if h.banner.Found {
 		return model.Consent{
 			Outcome: model.OutcomeFailed,
-			Reason:  "rules matched but none completed: " + strings.Join(attempted, ", "),
+			Reason: "a consent banner is present but no rule matched it; " +
+				"the recorded traffic is pre-consent traffic, whatever mode was requested",
+			Kind:           model.CMPKindBespoke,
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
 		}
 	}
 
 	// No CMP at all is a legitimate, common outcome and must not read as an
 	// error: many pages simply have no banner.
 	return model.Consent{
-		Outcome: model.OutcomeNotNeeded,
-		Reason:  "no consent management platform detected",
+		Outcome:        model.OutcomeNotNeeded,
+		Reason:         "no consent management platform detected",
+		Kind:           model.CMPKindNone,
+		StaleHostRules: stale,
+	}
+}
+
+// kindForBanner classifies a page that no vendor rule claimed. "Bespoke" is
+// the honest reading of a banner no vendor fingerprint matched: it may be a
+// CMP wsaw does not know, and the result says only what was observed.
+func kindForBanner(found bool) model.CMPKind {
+	if found {
+		return model.CMPKindBespoke
+	}
+
+	return model.CMPKindNone
+}
+
+// diagnostic turns the banner summary into the record AC4 asks for: which
+// element matched, what it said, and which controls it offered. It is the
+// difference between "none completed" and a reader knowing which rule to
+// write next.
+func (h *handler) diagnostic() *model.ConsentDiagnostic {
+	if !h.banner.Found {
+		return nil
+	}
+
+	return &model.ConsentDiagnostic{
+		Element:  h.banner.Element,
+		Text:     h.banner.Text,
+		Controls: h.banner.Controls,
 	}
 }
 
@@ -453,6 +683,7 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) (model
 		Detection: "rule:" + rule.Name,
 		Mechanism: mechanismFor(rule, steps),
 		Heuristic: rule.Heuristic,
+		Kind:      ruleKind(rule),
 	}
 
 	allOptional := true
@@ -504,8 +735,25 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) (model
 
 	// Verification decides between "applied" and "unverified". A rule with no
 	// verify expression can never claim to be verified, which is the honest
-	// default (Story 2.5).
+	// default (Story 2.5) — unless the page itself left evidence. A site that
+	// keeps its consent state in Web Storage records the choice there and
+	// nowhere else, and a storage write plus a banner that is gone is the
+	// same pair of facts a consent cookie plus a dismissed dialog provides
+	// (Story 2.9, AC5 and AC8).
 	if rule.Verify == "" {
+		if written := h.storageWrites(ctx); len(written) > 0 {
+			consent.StorageKeys = written
+
+			if gone, gerr := h.bannerGone(ctx, rule); gerr == nil && gone {
+				consent.Outcome = model.OutcomeApplied
+				consent.Reason = fmt.Sprintf(
+					"rule %q ran and defines no verification; the choice was recorded in Web Storage (%s) and the banner is gone",
+					rule.Name, strings.Join(written, ", "))
+
+				return consent, true
+			}
+		}
+
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but defines no verification", rule.Name)
 
@@ -555,6 +803,7 @@ func (h *handler) runNecessaryOnly(ctx context.Context, rule Rule) model.Consent
 		Detection: "rule:" + rule.Name,
 		Mechanism: mechanismFor(rule, steps),
 		Heuristic: rule.Heuristic,
+		Kind:      ruleKind(rule),
 	}
 
 	h.interacted()
@@ -1003,6 +1252,17 @@ func mechanismFor(rule Rule, steps []Action) string {
 	}
 
 	return MechanismSelector
+}
+
+// ruleKind reports what the matched rule proves about the page. A vendor rule
+// identifies a product; a host rule or a label guess proves only that a
+// consent UI is there (Story 2.9, AC1).
+func ruleKind(rule Rule) model.CMPKind {
+	if rule.Vendor != "" {
+		return model.CMPKindVendor
+	}
+
+	return model.CMPKindBespoke
 }
 
 func ruleCMPName(rule Rule) string {

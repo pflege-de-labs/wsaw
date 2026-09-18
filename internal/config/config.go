@@ -76,7 +76,12 @@ type Target struct {
 	MaxRequests    int      `yaml:"maxRequests,omitempty"`
 	MaxBytes       int64    `yaml:"maxBytes,omitempty"`
 	DwellAfterLoad Duration `yaml:"dwellAfterLoad,omitempty"`
-	ScrollToBottom *bool    `yaml:"scrollToBottom,omitempty"`
+	// ConsentBannerWait bounds how long wsaw waits for a consent banner to
+	// appear before concluding the page has none. Sites that render their
+	// banner from application code mount it after hydration, so a single
+	// check the instant the page goes idle misses it (Story 2.9).
+	ConsentBannerWait Duration `yaml:"consentBannerWait,omitempty"`
+	ScrollToBottom    *bool    `yaml:"scrollToBottom,omitempty"`
 
 	// Browser context.
 	ViewportWidth  int      `yaml:"viewportWidth,omitempty"`
@@ -357,6 +362,9 @@ type Consent struct {
 	OnFailure    string   `yaml:"onFailure,omitempty"`
 	StepTimeout  Duration `yaml:"stepTimeout,omitempty"`
 	TotalTimeout Duration `yaml:"totalTimeout,omitempty"`
+	// BannerWait is the deployment-wide default for how long to wait for a
+	// banner to appear; a target may override it.
+	BannerWait Duration `yaml:"bannerWait,omitempty"`
 }
 
 // API configures the HTTP interface and web UI.

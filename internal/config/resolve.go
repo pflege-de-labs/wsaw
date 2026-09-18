@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/capture"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
@@ -50,7 +51,10 @@ type Resolved struct {
 	MaxRequests    int
 	MaxBytes       int64
 	DwellAfterLoad time.Duration
-	ScrollToBottom bool
+	// ConsentBannerWait bounds the wait for a banner to appear before the
+	// scan concludes the page has none.
+	ConsentBannerWait time.Duration
+	ScrollToBottom    bool
 
 	ViewportWidth  int
 	ViewportHeight int
@@ -124,21 +128,23 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 		MaxRequests:       firstInt(t.MaxRequests, d.MaxRequests, capture.DefaultMaxRequests),
 		MaxBytes:          firstInt64(t.MaxBytes, d.MaxBytes, capture.DefaultMaxBytes),
 		DwellAfterLoad:    firstDuration(t.DwellAfterLoad, d.DwellAfterLoad, 0),
-		ScrollToBottom:    firstBool(t.ScrollToBottom, d.ScrollToBottom, false),
-		ViewportWidth:     firstInt(t.ViewportWidth, d.ViewportWidth, 1280),
-		ViewportHeight:    firstInt(t.ViewportHeight, d.ViewportHeight, 800),
-		DeviceScale:       firstFloat(t.DeviceScale, d.DeviceScale, 1),
-		Mobile:            firstBool(t.Mobile, d.Mobile, false),
-		UserAgent:         firstString(t.UserAgent, d.UserAgent),
-		AcceptLanguage:    firstString(t.AcceptLanguage, d.AcceptLanguage),
-		Timezone:          firstString(t.Timezone, d.Timezone),
-		Proxy:             firstString(t.Proxy, d.Proxy),
-		WarmCache:         firstBool(t.WarmCache, d.WarmCache, false),
-		Screenshots:       firstBool(t.Screenshots, d.Screenshots, false),
-		StoreBodies:       firstBool(t.StoreBodies, d.StoreBodies, false),
-		Robots:            firstRobots(t.Robots, d.Robots),
-		MinInterval:       firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
-		Jitter:            firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
+		ConsentBannerWait: firstDuration(t.ConsentBannerWait, d.ConsentBannerWait,
+			c.Consent.BannerWait.Or(consent.DefaultBannerWait)),
+		ScrollToBottom: firstBool(t.ScrollToBottom, d.ScrollToBottom, false),
+		ViewportWidth:  firstInt(t.ViewportWidth, d.ViewportWidth, 1280),
+		ViewportHeight: firstInt(t.ViewportHeight, d.ViewportHeight, 800),
+		DeviceScale:    firstFloat(t.DeviceScale, d.DeviceScale, 1),
+		Mobile:         firstBool(t.Mobile, d.Mobile, false),
+		UserAgent:      firstString(t.UserAgent, d.UserAgent),
+		AcceptLanguage: firstString(t.AcceptLanguage, d.AcceptLanguage),
+		Timezone:       firstString(t.Timezone, d.Timezone),
+		Proxy:          firstString(t.Proxy, d.Proxy),
+		WarmCache:      firstBool(t.WarmCache, d.WarmCache, false),
+		Screenshots:    firstBool(t.Screenshots, d.Screenshots, false),
+		StoreBodies:    firstBool(t.StoreBodies, d.StoreBodies, false),
+		Robots:         firstRobots(t.Robots, d.Robots),
+		MinInterval:    firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
+		Jitter:         firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
 		Retry: retry.Policy{
 			Attempts:   firstInt(t.RetryAttempts, d.RetryAttempts, DefaultRetryAttempts),
 			Backoff:    firstDuration(t.RetryBackoff, d.RetryBackoff, DefaultRetryBackoff),
@@ -349,12 +355,19 @@ func mergeSeverity(global, defaults, target diff.SeverityRules) diff.SeverityRul
 		ThirdPartyCookieAdded:      pick(global.ThirdPartyCookieAdded, defaults.ThirdPartyCookieAdded, target.ThirdPartyCookieAdded),
 		FirstPartyCookieAdded:      pick(global.FirstPartyCookieAdded, defaults.FirstPartyCookieAdded, target.FirstPartyCookieAdded),
 		CookieRemoved:              pick(global.CookieRemoved, defaults.CookieRemoved, target.CookieRemoved),
-		StatusBecameError:          pick(global.StatusBecameError, defaults.StatusBecameError, target.StatusBecameError),
-		StatusChanged:              pick(global.StatusChanged, defaults.StatusChanged, target.StatusChanged),
-		ConsentChanged:             pick(global.ConsentChanged, defaults.ConsentChanged, target.ConsentChanged),
-		ConsentDegraded:            pick(global.ConsentDegraded, defaults.ConsentDegraded, target.ConsentDegraded),
-		DeniedHost:                 pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
-		ScanDegraded:               pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
+		ThirdPartyStorageRejectMode: pick(global.ThirdPartyStorageRejectMode, defaults.ThirdPartyStorageRejectMode,
+			target.ThirdPartyStorageRejectMode),
+		ThirdPartyStorageAdded: pick(global.ThirdPartyStorageAdded, defaults.ThirdPartyStorageAdded,
+			target.ThirdPartyStorageAdded),
+		FirstPartyStorageAdded: pick(global.FirstPartyStorageAdded, defaults.FirstPartyStorageAdded,
+			target.FirstPartyStorageAdded),
+		StorageRemoved:    pick(global.StorageRemoved, defaults.StorageRemoved, target.StorageRemoved),
+		StatusBecameError: pick(global.StatusBecameError, defaults.StatusBecameError, target.StatusBecameError),
+		StatusChanged:     pick(global.StatusChanged, defaults.StatusChanged, target.StatusChanged),
+		ConsentChanged:    pick(global.ConsentChanged, defaults.ConsentChanged, target.ConsentChanged),
+		ConsentDegraded:   pick(global.ConsentDegraded, defaults.ConsentDegraded, target.ConsentDegraded),
+		DeniedHost:        pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
+		ScanDegraded:      pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
 	}
 }
 
