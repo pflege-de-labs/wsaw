@@ -161,7 +161,9 @@ rules:
 wsaw rules test --rules my-rules.yaml https://www.example.com/
 ```
 
-A rule without a `verify` expression can never report `applied`, only `unverified`. That is deliberate.
+A rule without a `verify` expression can never report `applied`, only `unverified` — unless the page itself left evidence. A site that keeps its consent state in Web Storage records the choice there and nowhere else, and a storage write plus a banner that is gone is the same pair of facts a consent cookie plus a dismissed dialog provides.
+
+A rule written for one site binds to what survives that site's next deploy: visible text, `role` and `aria-*`, an author-written `id` or `data-` attribute. Never to class names a bundler generated — those change on every build, and a rule that quietly stops matching is worse than no rule. Where a host-scoped rule no longer matches the host it was written for, wsaw records it as stale in the result and as a warning on the scan.
 
 `verify` proves the CMP recorded the choice; it does not prove the banner closed — a vendor API commonly records consent without ever running the banner's own dismiss handler. When `verify` passes but the banner is still on screen, wsaw retries the rule's click steps with a fuller pointer/mouse event sequence and, failing that, the generic label-matching fallback, before giving up and reporting `banner-visible` rather than `applied`. A rule can name its own banner-gone check with `dismissed`; left unset, wsaw falls back to the same "does anything banner-shaped remain" heuristic the label-matching fallback uses.
 
@@ -171,8 +173,17 @@ Two fields decide whether anything else on the page can be believed:
 
 - **`termination`** — `idle` means the page went quiet on its own. `timeout`, `request-cap` or `byte-cap` mean the list may be incomplete. `error` or `skipped` mean it is not a result at all.
 - **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), `banner-visible` (the CMP recorded the choice, but the banner stayed on screen even after a fallback click), or `failed`.
+- **`consent.cmpKind`** — `vendor` (a CMP product was identified), `bespoke` (a consent UI is present and no vendor matched it: the site's own banner, as far as wsaw can tell) or `none` (no consent UI was found). Only `none` licenses reading a result as a page that never asks for consent. A banner wsaw could not drive is recorded as `bespoke` with a `diagnostic` naming the element, its text and the labels of the controls it offered — which is what writing the missing rule needs.
+
+Not every banner is rendered with the page. An application-rendered one is mounted after hydration or on an idle callback, so wsaw waits for one to appear before concluding there is none; `consent.bannerWait` sets that wait, and `consentBannerWait` overrides it per target.
 
 Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Third-party hosts in the pre-interaction phase of a `reject`-mode scan are the headline compliance finding.
+
+**"Zero third parties" is a narrower claim than it looks.** Analytics reverse-proxied onto the site's own domain — a collector on `hog.example.com`, a server-side tag container on `t.example.com` — is first-party by registrable domain and never appears in a third-party count. The report names the first-party hosts contacted before the consent interaction for exactly that reason; read them before reading a clean third-party count as "nothing happened".
+
+### Cookies are half the picture
+
+Consent state and analytics identifiers live in `localStorage` on a large class of sites: one that writes `localStorage["cookie-accepted"]` sets no cookie at all. Each scan records Web Storage per origin — key names, value digests and lengths, never values — and the diff reports keys appearing and disappearing the way it reports cookies. A third-party key written in `reject` mode is ranked with a third-party cookie, not below it.
 
 A missing script digest always carries a `bodyUnavailable` reason. wsaw never reports a script as unchanged because it could not read it.
 

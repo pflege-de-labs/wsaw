@@ -46,6 +46,15 @@ type Action struct {
 }
 
 // Rule handles one CMP, or one site's bespoke banner.
+//
+// A rule written for a single site binds to what survives that site's next
+// deploy: visible text, role and aria attributes, an author-written id or
+// data- attribute, the shape of the element. It must not bind to class names
+// a build tool generated or to positional paths — on a bundled front end
+// those change with every release, and a rule that quietly stops matching is
+// worse than no rule at all, because nothing says so. Where a rule is
+// host-scoped and its host no longer matches, wsaw records it as stale
+// (Story 2.9, AC6).
 type Rule struct {
 	// Name identifies the rule in results and logs.
 	Name string `yaml:"name"`

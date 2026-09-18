@@ -340,6 +340,7 @@ func (s *Scanner) consentHook(target config.Resolved, mode model.ConsentMode, lo
 			Domain:         domain,
 			StepTimeout:    s.opts.ConsentStepTimeout,
 			TotalTimeout:   s.opts.ConsentTotalTimeout,
+			BannerWait:     target.ConsentBannerWait,
 			AllowHeuristic: s.opts.AllowHeuristicConsent,
 			OnFailure:      s.opts.ConsentOnFailure,
 			Screenshot:     cctx.Screenshot,

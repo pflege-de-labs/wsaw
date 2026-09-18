@@ -27,6 +27,8 @@ const (
 	ScriptChanged  ChangeType = "script-changed"
 	CookieAdded    ChangeType = "cookie-added"
 	CookieRemoved  ChangeType = "cookie-removed"
+	StorageAdded   ChangeType = "storage-added"
+	StorageRemoved ChangeType = "storage-removed"
 	StatusChanged  ChangeType = "status-changed"
 	ConsentChanged ChangeType = "consent-changed"
 	DeniedHost     ChangeType = "denied-host"
@@ -226,6 +228,7 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 	d.compareAssets()
 	d.compareScripts()
 	d.compareCookies()
+	d.compareStorage()
 	d.compareStatuses()
 	d.compareConsent()
 	d.flagDeniedHosts()
@@ -593,6 +596,58 @@ func (d *differ) compareCookies() {
 			Party:    c.Party,
 			Before:   c.Name,
 			Detail:   fmt.Sprintf("cookie %q for %s is no longer set", c.Name, c.Domain),
+		})
+	}
+}
+
+func storageKey(e model.StorageEntry) string {
+	return e.Origin + "|" + string(e.Area) + ":" + e.Key
+}
+
+// compareStorage reports Web Storage keys appearing and disappearing, for the
+// same reason cookies are compared: a key written on a site that stores its
+// identifiers outside cookies is the change a cookie diff cannot see (Story
+// 2.9, AC5).
+func (d *differ) compareStorage() {
+	before := make(map[string]model.StorageEntry, len(d.baseline.Storage))
+	for _, e := range d.baseline.Storage {
+		before[storageKey(e)] = e
+	}
+
+	after := make(map[string]model.StorageEntry, len(d.current.Storage))
+	for _, e := range d.current.Storage {
+		after[storageKey(e)] = e
+	}
+
+	for key, e := range after {
+		if _, existed := before[key]; existed {
+			continue
+		}
+
+		d.add(Change{
+			Type:     StorageAdded,
+			Severity: d.rules.Severity.forStorageAdded(d.current.ConsentMode, e.Party),
+			Subject:  key,
+			Party:    e.Party,
+			After:    e.Key,
+			Detail: fmt.Sprintf("new %s %sStorage key %q for %s",
+				e.Party, e.Area, e.Key, e.Origin),
+		})
+	}
+
+	for key, e := range before {
+		if _, still := after[key]; still {
+			continue
+		}
+
+		d.add(Change{
+			Type:     StorageRemoved,
+			Severity: d.rules.Severity.StorageRemoved,
+			Subject:  key,
+			Party:    e.Party,
+			Before:   e.Key,
+			Detail: fmt.Sprintf("%sStorage key %q for %s is no longer set",
+				e.Area, e.Key, e.Origin),
 		})
 	}
 }

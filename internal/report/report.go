@@ -122,6 +122,7 @@ func WriteMarkdown(w io.Writer, res *model.Result, rep *diff.Report) error {
 	writeCounts(&b, res)
 	writeHosts(&b, res)
 	writeCookies(&b, res)
+	writeStorage(&b, res)
 	writeDiff(&b, rep)
 	writeEnvironment(&b, res)
 
@@ -173,7 +174,21 @@ func writeConsent(b *strings.Builder, res *model.Result) {
 
 	b.WriteString("\n")
 
-	if c.CMP != "" {
+	switch {
+	case c.Kind == model.CMPKindBespoke:
+		// A banner nobody recognized is not an absent banner, and the report
+		// must not let the two read the same (Story 2.9, AC1). It also is not
+		// a vendor: whatever the matching rule called itself, no product was
+		// identified here, and the line says so before it says anything else.
+		b.WriteString("- **CMP:** no vendor identified — the page has a consent banner of its own")
+
+		if c.Detection != "" {
+			fmt.Fprintf(b, ", matched by `%s`", c.Detection)
+		}
+
+		b.WriteString("\n")
+
+	case c.CMP != "":
 		fmt.Fprintf(b, "- **CMP:** %s", c.CMP)
 
 		if c.CMPVersion != "" {
@@ -181,8 +196,17 @@ func writeConsent(b *strings.Builder, res *model.Result) {
 		}
 
 		fmt.Fprintf(b, ", detected via `%s`\n", c.Detection)
-	} else {
-		b.WriteString("- **CMP:** none detected\n")
+
+	default:
+		b.WriteString("- **CMP:** none detected — no consent banner was found on the page\n")
+	}
+
+	if c.BannerHeading != "" {
+		fmt.Fprintf(b, "- **Banner:** %s\n", escapePipes(c.BannerHeading))
+	}
+
+	if len(c.StorageKeys) != 0 {
+		fmt.Fprintf(b, "- **Recorded in Web Storage:** `%s`\n", strings.Join(c.StorageKeys, "`, `"))
 	}
 
 	if c.Mechanism != "" {
@@ -205,6 +229,29 @@ func writeConsent(b *strings.Builder, res *model.Result) {
 		fmt.Fprintf(b, "- **GPP string:** `%s`\n", c.GPPString)
 	}
 
+	for _, name := range c.StaleHostRules {
+		fmt.Fprintf(b, "- **Stale rule:** `%s` is written for this host but no longer matches it\n", name)
+	}
+
+	if d := c.Diagnostic; d != nil {
+		// What was found, what it said, and what it offered: the three things
+		// a rule author needs in order to write the rule that was missing
+		// (Story 2.9, AC4).
+		b.WriteString("- **Banner found but not handled:**\n")
+
+		if d.Element != "" {
+			fmt.Fprintf(b, "  - element: `%s`\n", d.Element)
+		}
+
+		if d.Text != "" {
+			fmt.Fprintf(b, "  - text: %s\n", escapePipes(d.Text))
+		}
+
+		if len(d.Controls) != 0 {
+			fmt.Fprintf(b, "  - controls: `%s`\n", strings.Join(d.Controls, "`, `"))
+		}
+	}
+
 	b.WriteString("\n")
 }
 
@@ -215,6 +262,8 @@ func writePreConsent(b *strings.Builder, res *model.Result) {
 
 	if len(domains) == 0 {
 		b.WriteString("None.\n\n")
+
+		writePreConsentFirstParty(b, res)
 
 		return
 	}
@@ -231,6 +280,8 @@ func writePreConsent(b *strings.Builder, res *model.Result) {
 
 	b.WriteString("\n")
 
+	writePreConsentFirstParty(b, res)
+
 	if res.ConsentMode == model.ConsentReject {
 		post := res.ThirdPartyDomains(model.PhasePost)
 		if len(post) > 0 {
@@ -243,6 +294,30 @@ func writePreConsent(b *strings.Builder, res *model.Result) {
 			b.WriteString("\n")
 		}
 	}
+}
+
+// writePreConsentFirstParty lists the site's own hosts contacted before the
+// interaction. "No third parties" is a narrower claim than it looks: a
+// tracker reverse-proxied onto the site's own domain — analytics on
+// `hog.example.com`, a server-side tag container on `t.example.com` — is
+// first-party by registrable domain and vanishes from a third-party
+// summary. Naming the hosts does not classify them; it stops the report from
+// implying that nothing was contacted (Story 2.9, AC7).
+func writePreConsentFirstParty(b *strings.Builder, res *model.Result) {
+	hosts := res.FirstPartyHosts(model.PhasePre)
+	if len(hosts) == 0 {
+		return
+	}
+
+	b.WriteString("### First-party hosts contacted before any consent interaction\n\n")
+	b.WriteString("These are the site's own hosts. A self-hosted or reverse-proxied analytics endpoint " +
+		"appears here rather than above, so check them before reading the count above as \"nothing happened\".\n\n")
+
+	for _, h := range hosts {
+		fmt.Fprintf(b, "- `%s`\n", h)
+	}
+
+	b.WriteString("\n")
 }
 
 func writeCounts(b *strings.Builder, res *model.Result) {
@@ -303,6 +378,23 @@ func writeCookies(b *strings.Builder, res *model.Result) {
 	}
 
 	b.WriteString("\nCookie values are not stored; only a digest and length are kept.\n\n")
+}
+
+func writeStorage(b *strings.Builder, res *model.Result) {
+	if len(res.Storage) == 0 {
+		return
+	}
+
+	b.WriteString("## Web storage\n\n")
+	b.WriteString("| Origin | Area | Key | Party | Value length |\n")
+	b.WriteString("|---|---|---|---|---|\n")
+
+	for _, e := range res.Storage {
+		fmt.Fprintf(b, "| `%s` | %s | `%s` | %s | %d |\n",
+			e.Origin, e.Area, escapePipes(e.Key), e.Party, e.ValueLength)
+	}
+
+	b.WriteString("\nStorage values are not stored; only a digest and length are kept.\n\n")
 }
 
 func writeDiff(b *strings.Builder, rep *diff.Report) {

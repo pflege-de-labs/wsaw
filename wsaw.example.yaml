@@ -257,6 +257,10 @@ detection:
   # Severities only need listing where you disagree with the defaults.
   severity:
     firstPartyAssetAdded: info
+    # Web Storage is ranked with cookies: a third party keeping an identifier
+    # in localStorage after a rejection has done what a third-party cookie
+    # does.
+    thirdPartyStorageRejectMode: critical
 
 consent:
   # Extra rule packs, applied after the shipped ones. A higher priority in
@@ -267,6 +271,12 @@ consent:
   # "flag" keeps the result and records the failure; "fail" makes a failed
   # banner interaction a scan error.
   onFailure: flag
+  # How long to wait for a banner to appear before concluding the page has
+  # none. A banner rendered by the site's own application code is mounted
+  # after hydration, so a single check the instant the page goes idle reports
+  # "no CMP" for a site that does have one. Override per target with
+  # `consentBannerWait`.
+  bannerWait: 5s
 
 api:
   enabled: true

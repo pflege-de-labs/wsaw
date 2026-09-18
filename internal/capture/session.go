@@ -258,6 +258,15 @@ func (s *session) execute(hooks Hooks) error {
 		// interaction is a finding, not a lost scan.
 		s.res.Consent = consent
 
+		// A rule written for this host that no longer matches it is how a
+		// rule stops working unnoticed, so it is surfaced as a warning a
+		// reader sees rather than a field they have to go looking for
+		// (Story 2.9, AC6).
+		for _, name := range consent.StaleHostRules {
+			s.rec.addWarning(fmt.Sprintf(
+				"consent rule %q is scoped to this host but did not match it; the site may have changed", name))
+		}
+
 		// Whether the hook itself acted, read before the backstop below makes
 		// the answer yes for every scan. Only the hook's own call means the
 		// page was touched.
@@ -835,6 +844,7 @@ func (s *session) finish(runErr error) {
 	s.mu.Unlock()
 
 	s.collectCookies()
+	s.collectStorage()
 	s.collectFinalURL()
 
 	s.res.FinishedAt = time.Now()
