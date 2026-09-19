@@ -154,10 +154,7 @@ targets:
     url: https://example.com/
 `)
 
-	r, err := cfg.ResolveAdHocTarget("example.org", "https://example.org/", model.ConsentAccept, nil)
-	if err != nil {
-		t.Fatalf("ResolveAdHocTarget: %v", err)
-	}
+	r := cfg.ResolveAdHocTarget("example.org", "https://example.org/", model.ConsentAccept)
 
 	if r.Name != "example.org" || r.URL != "https://example.org/" {
 		t.Errorf("resolved %q at %q, want the name and URL it was given", r.Name, r.URL)
@@ -193,10 +190,7 @@ targets:
     url: https://example.com/
 `)
 
-	r, err := cfg.ResolveAdHocTarget("example.org", "https://example.org/", model.ConsentReject, nil)
-	if err != nil {
-		t.Fatalf("ResolveAdHocTarget: %v", err)
-	}
+	r := cfg.ResolveAdHocTarget("example.org", "https://example.org/", model.ConsentReject)
 
 	if r.BasicAuthUser.IsSet() || r.BasicAuthPassword.IsSet() {
 		t.Error("a typed URL was resolved with the deployment's basic auth credentials")
@@ -215,5 +209,33 @@ targets:
 
 	if !targets[0].BasicAuthUser.IsSet() || len(targets[0].ExtraHeaders) != 1 {
 		t.Error("the configured target lost the defaults it is supposed to have")
+	}
+}
+
+// A credential reference is not read on the typed-URL path at all, so an
+// unresolvable one neither refuses the scan nor reports the reference — the
+// name of an environment variable or the path of a key file is itself worth
+// keeping out of a message that reaches whoever typed the address.
+func TestResolveAdHocTargetReadsNoCredentialReference(t *testing.T) {
+	t.Parallel()
+
+	cfg := parse(t, `
+defaults:
+  basicAuthPassword: ${env:WSAW_DEFINITELY_NOT_SET}
+targets:
+  - name: site
+    url: https://example.com/
+`)
+
+	r := cfg.ResolveAdHocTarget("example.org", "https://example.org/", model.ConsentReject)
+
+	if r.BasicAuthPassword.IsSet() {
+		t.Error("a typed URL was resolved with a credential")
+	}
+
+	// The configured target still fails at load, which is where a missing
+	// environment variable belongs.
+	if _, err := cfg.ResolveTargets(nil); err == nil {
+		t.Error("ResolveTargets accepted an unresolvable credential reference")
 	}
 }

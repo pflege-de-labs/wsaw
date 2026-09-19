@@ -115,25 +115,48 @@ func (c *Config) ResolveTargets(reg *secret.Registry) ([]Resolved, error) {
 // defaults.basicAuthPassword and defaults.extraHeaders exist so that wsaw can
 // reach the operator's own sites; sending them to an address somebody typed
 // would hand those credentials to whoever typed it.
-func (c *Config) ResolveAdHocTarget(
-	name, rawURL string, mode model.ConsentMode, reg *secret.Registry,
-) (Resolved, error) {
+//
+// Those references are not resolved and then dropped: they are never read on
+// this path at all, so it takes no secret registry and cannot fail. Resolving
+// them here would put the reference — an environment variable's name, a key
+// file's path — into an error that this path reports to whoever typed the
+// URL, which is a second way to leak a credential the scan was never going to
+// send.
+func (c *Config) ResolveAdHocTarget(name, rawURL string, mode model.ConsentMode) Resolved {
 	t := &Target{Name: name, URL: rawURL, ConsentModes: []model.ConsentMode{mode}}
 
-	r, err := c.resolveTarget(t, reg)
+	return c.resolveTargetFields(t)
+}
+
+func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error) {
+	r := c.resolveTargetFields(t)
+	d := c.Defaults
+
+	headers, err := resolveHeaders(d.ExtraHeaders, t.ExtraHeaders, reg)
 	if err != nil {
 		return Resolved{}, err
 	}
 
-	r.BasicAuthUser = secret.Value{}
-	r.BasicAuthPassword = secret.Value{}
-	r.ExtraHeaders = nil
+	r.ExtraHeaders = headers
+
+	r.BasicAuthUser, err = resolveSecret(firstString(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	r.BasicAuthPassword, err = resolveSecret(firstString(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
+	if err != nil {
+		return Resolved{}, err
+	}
 
 	return r, nil
 }
 
+// resolveTargetFields applies defaults to everything that is not a credential.
+// It reads no secret reference, so it cannot fail.
+//
 //nolint:gocognit // a wide struct of independent overrides; splitting it would obscure the mapping
-func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error) {
+func (c *Config) resolveTargetFields(t *Target) Resolved {
 	d := c.Defaults
 
 	r := Resolved{
@@ -200,24 +223,7 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 	r.Allow = diff.NewHostList(concat(c.Detection.AllowHosts, d.AllowHosts, t.AllowHosts))
 	r.Deny = diff.NewHostList(concat(c.Detection.DenyHosts, d.DenyHosts, t.DenyHosts))
 
-	headers, err := resolveHeaders(d.ExtraHeaders, t.ExtraHeaders, reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	r.ExtraHeaders = headers
-
-	r.BasicAuthUser, err = resolveSecret(firstString(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	r.BasicAuthPassword, err = resolveSecret(firstString(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	return r, nil
+	return r
 }
 
 func resolveHeaders(defaults, overrides map[string]string, reg *secret.Registry) (map[string]secret.Value, error) {

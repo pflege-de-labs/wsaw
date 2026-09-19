@@ -79,10 +79,7 @@ func (a *App) adHocTarget(ctx context.Context, rawURL string, mode model.Consent
 		return config.Resolved{}, err
 	}
 
-	t, err := a.Config.ResolveAdHocTarget(name, rawURL, mode, a.Secrets)
-	if err != nil {
-		return config.Resolved{}, err
-	}
+	t := a.Config.ResolveAdHocTarget(name, rawURL, mode)
 
 	if err := a.adHocCooldown(t, mode); err != nil {
 		return config.Resolved{}, err
