@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"errors"
 	"fmt"
@@ -1137,12 +1138,29 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.FormValue("token") != s.opts.Token.Reveal() {
+	// Bounded before the comparison, so guessing is limited by the window
+	// rather than only by the token's entropy. This is the one endpoint
+	// reachable without any prior credential, which is why it gets the same
+	// per-address treatment the one-time link already has (Story 5.21, AC9).
+	if !s.failLimiter.allow(r.RemoteAddr) {
+		s.uiRedirectError(w, r, "/login", "too many sign-in attempts; try again shortly")
+
+		return
+	}
+
+	// Constant-time comparison, for the same reason the bearer check uses
+	// one: a timing oracle on the form path would let the token be recovered
+	// byte by byte.
+	if subtle.ConstantTimeCompare([]byte(r.FormValue("token")), []byte(s.opts.Token.Reveal())) != 1 {
 		// No detail about why: a login form should not help enumerate.
 		s.uiRedirectError(w, r, "/login", "invalid token")
 
 		return
 	}
+
+	// A successful login costs no window entry, so signing in cannot lock
+	// a legitimate caller out.
+	s.failLimiter.forget(r.RemoteAddr)
 
 	s.setSessionCookie(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)

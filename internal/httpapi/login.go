@@ -96,20 +96,51 @@ const (
 	otpRedeemMax    = 20
 )
 
+// loginFailWindow and loginFailMax bound wrong-token submissions to the
+// login form per source address. The form is the one endpoint reachable
+// without any prior credential, so guessing the standing token there is
+// bounded by more than the token's own entropy — the same reasoning as the
+// one-time-link limiter above. Only failures are counted: a successful
+// login costs no window entry, so signing in cannot lock a legitimate
+// caller out.
+const (
+	loginFailWindow = time.Minute
+	loginFailMax    = 20
+)
+
 // otpLimiter is a plain per-address sliding window.
 type otpLimiter struct {
 	mu   sync.Mutex
 	hits map[string][]time.Time
+
+	// window and max are the limiter's own policy, set at construction so
+	// the one-time-link limiter and the login-form limiter can differ
+	// without the sliding-window logic being written twice.
+	window time.Duration
+	max    int
 }
 
 func newOTPLimiter() *otpLimiter {
-	return &otpLimiter{hits: make(map[string][]time.Time)}
+	return &otpLimiter{
+		hits:   make(map[string][]time.Time),
+		window: otpRedeemWindow,
+		max:    otpRedeemMax,
+	}
+}
+
+// newLoginLimiter bounds failed login-form submissions per source address.
+func newLoginLimiter() *otpLimiter {
+	return &otpLimiter{
+		hits:   make(map[string][]time.Time),
+		window: loginFailWindow,
+		max:    loginFailMax,
+	}
 }
 
 func (l *otpLimiter) allow(remoteAddr string) bool {
 	host := hostOf(remoteAddr)
 	now := time.Now()
-	cutoff := now.Add(-otpRedeemWindow)
+	cutoff := now.Add(-l.window)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -122,7 +153,7 @@ func (l *otpLimiter) allow(remoteAddr string) bool {
 		}
 	}
 
-	if len(kept) >= otpRedeemMax {
+	if len(kept) >= l.max {
 		l.hits[host] = kept
 
 		return false
@@ -131,6 +162,18 @@ func (l *otpLimiter) allow(remoteAddr string) bool {
 	l.hits[host] = append(kept, now)
 
 	return true
+}
+
+// forget drops an address's window. A successful login is not a failure,
+// so it must not count towards the login form's budget even though the
+// check ran before the comparison could know the answer.
+func (l *otpLimiter) forget(remoteAddr string) {
+	host := hostOf(remoteAddr)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	delete(l.hits, host)
 }
 
 func hostOf(remoteAddr string) string {

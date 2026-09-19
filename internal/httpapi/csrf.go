@@ -22,8 +22,11 @@ func (s *Server) csrfToken() string {
 	return s.opts.Token.Reveal()
 }
 
-// checkCSRF verifies a state-changing form submission. It also requires the
-// request to look like a same-origin form post.
+// checkCSRF verifies a state-changing form submission. The defence is the
+// token comparison plus the cookie's SameSite=Strict: a cross-site form
+// post cannot carry the session cookie, so it cannot present a matching
+// token, and the CSP's lack of unsafe-inline means no script context exists
+// to read one for an attacker either.
 func (s *Server) checkCSRF(w http.ResponseWriter, r *http.Request) bool {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form submission", http.StatusBadRequest)

@@ -129,7 +129,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # Pinned for the same reason the lint and licence versions are: a
+        # floating tool can change a gate's verdict without anything in
+        # this repository changing.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   licenses:
     name: dependency licenses

@@ -289,7 +289,7 @@ Both are served by the same process and the same port; the web interface is a cl
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
 
-That token also protects the loopback case, which means normally typing it into a login form. `wsaw ui` skips that: it reads the token from the same config file the daemon runs with — which an operator running the command can already read — and opens the browser at a one-time sign-in link instead of the plain address:
+That token also protects the loopback case, which means normally typing it into a login form. Wrong-token submissions to that form are rate-limited per source address, so guessing the token through it is bounded by more than the token's own entropy. `wsaw ui` skips the form entirely: it reads the token from the same config file the daemon runs with — which an operator running the command can already read — and opens the browser at a one-time sign-in link instead of the plain address:
 
 ```
 wsaw ui                # opens the browser, already signed in

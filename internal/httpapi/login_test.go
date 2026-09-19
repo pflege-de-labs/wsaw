@@ -7,6 +7,8 @@ package httpapi_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/pflege-de-labs/wsaw/internal/httpapi"
@@ -175,5 +177,74 @@ func TestMintRouteAbsentWithoutWebUI(t *testing.T) {
 	resp := f.postNoBody("/api/v1/ui/login-token", "Authorization", "Bearer s3cret")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 when the web interface is off", resp.StatusCode)
+	}
+}
+
+// The login form is the one endpoint reachable without any prior
+// credential, so wrong-token submissions are bounded per source address —
+// the same reasoning that rate-limits the one-time link (Story 5.21, AC9).
+// The window's exact size is the internal limiter test's business; this one
+// asserts the behaviour an attacker or an operator would see.
+func TestLoginFormRateLimitsWrongTokens(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{Token: secret.Literal("s3cret"), WebUI: true}, nil)
+
+	// Wrong guesses until the limit fires. Each in-budget guess is answered
+	// with the ordinary redirect, so the refusal that ends the loop is the
+	// limit's and not the token check's.
+	const attemptCeiling = 100
+
+	limited := false
+
+	for range attemptCeiling {
+		resp := f.postForm("/login", url.Values{"token": {"wrong"}})
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("a wrong guess = %d, want a redirect", resp.StatusCode)
+		}
+
+		if strings.Contains(resp.Header.Get("Location"), "too+many+sign-in+attempts") {
+			limited = true
+
+			break
+		}
+	}
+
+	if !limited {
+		t.Fatalf("%d wrong guesses were never rate-limited", attemptCeiling)
+	}
+
+	// The window is exhausted for this address, so a further attempt is
+	// refused even when it guesses correctly: the limit bounds attempts,
+	// not responses, and the wrong guesses must not have been free.
+	refused := f.postForm("/login", url.Values{"token": {"s3cret"}})
+	if loc := refused.Header.Get("Location"); !strings.Contains(loc, "too+many+sign-in+attempts") {
+		t.Errorf("a correct token after the limit redirected to %q, want the rate-limit refusal", loc)
+	}
+
+	if len(refused.Cookies()) != 0 {
+		t.Error("a refused sign-in set a session cookie anyway")
+	}
+}
+
+// A successful sign-in must not count towards the failure window, or a
+// browser that signs in normally could exhaust its own budget and find
+// itself locked out one guess later.
+func TestSuccessfulLoginsAreNotRateLimited(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{Token: secret.Literal("s3cret"), WebUI: true}, nil)
+
+	// Well past any plausible failure budget, so a counted success would
+	// exhaust the window partway through the loop.
+	for range 100 {
+		resp := f.postForm("/login", url.Values{"token": {"s3cret"}})
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("correct login = %d, want the usual redirect", resp.StatusCode)
+		}
+
+		if len(resp.Cookies()) != 1 {
+			t.Fatal("a correct login did not set the session cookie")
+		}
 	}
 }

@@ -359,6 +359,9 @@ func (s *Server) handleSharedResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The page carries the token in its own links, so it must not sit in a
+	// cache — the same reason the minted-link page sets no-store (AC11).
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if err := s.ui.tmpl.ExecuteTemplate(w, "shared.html", data); err != nil {

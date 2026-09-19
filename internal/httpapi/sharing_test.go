@@ -143,6 +143,12 @@ func TestASharedResultOpensWithoutTheAPIToken(t *testing.T) {
 	if !strings.Contains(html, "read only") || !strings.Contains(html, "expires") {
 		t.Error("the page does not say that it is a shared, expiring view")
 	}
+
+	// AC11: the page's own links carry the token, so it must not sit in a
+	// cache — the same reason the minted-link page is no-store.
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store on a page whose links hold a credential", got)
+	}
 }
 
 // AC8: the result and nothing that would navigate out of it.

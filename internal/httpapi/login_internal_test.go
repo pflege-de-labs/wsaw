@@ -119,6 +119,39 @@ func TestOTPLimiterBoundsAttemptsPerAddress(t *testing.T) {
 	}
 }
 
+// The login form's limiter is a second instance of the same sliding window
+// with its own budget, so exhausting one does not touch the other — and a
+// successful sign-in forgets the address's window entirely.
+func TestLoginLimiterHasItsOwnBudgetAndForgetsOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	login := newLoginLimiter()
+	redeem := newOTPLimiter()
+	addr := "127.0.0.1:5555"
+
+	for range loginFailMax {
+		if !login.allow(addr) {
+			t.Fatal("an in-budget attempt was blocked")
+		}
+	}
+
+	if login.allow(addr) {
+		t.Error("an attempt beyond the login limit should be blocked")
+	}
+
+	// The one-time-link limiter shares nothing with the exhausted one.
+	if !redeem.allow(addr) {
+		t.Error("the link limiter was affected by the login limiter's exhaustion")
+	}
+
+	// Forgetting clears the window: the next attempt starts fresh.
+	login.forget(addr)
+
+	if !login.allow(addr) {
+		t.Error("an attempt after a forgotten window was blocked")
+	}
+}
+
 func TestIsLoopback(t *testing.T) {
 	t.Parallel()
 

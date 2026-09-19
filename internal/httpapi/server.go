@@ -118,6 +118,14 @@ type Server struct {
 	// that reach them are conditional.
 	otp          *otpStore
 	loginLimiter *otpLimiter
+
+	// failLimiter bounds wrong-token submissions to the login form, which
+	// is the one endpoint reachable without any prior credential. A second
+	// instance rather than a shared window: one-time-link redemptions and
+	// failed password guesses are different events with different costs,
+	// and one shared counter would let a browser that signs in normally
+	// exhaust the other's budget.
+	failLimiter *otpLimiter
 }
 
 // New builds the server.
@@ -148,6 +156,7 @@ func New(opts Options, deps Deps) (*Server, error) {
 		mux:          http.NewServeMux(),
 		otp:          newOTPStore(),
 		loginLimiter: newOTPLimiter(),
+		failLimiter:  newLoginLimiter(),
 	}
 
 	if opts.WebUI {
