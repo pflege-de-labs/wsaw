@@ -1,0 +1,50 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+{{$data := .}}
+
+<h1>Scan a URL</h1>
+
+{{/* One field and one choice. This page exists for the address that is not
+     worth adding to the target list — a site somebody was just asked about —
+     so it asks for nothing else and keeps whatever it is given nowhere but in
+     the result it produces (Story 5.27). */}}
+<form method="post" action="/scan" class="scan-url">
+  <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+
+  <label for="scan-url-input">Address</label>
+  <input type="url" id="scan-url-input" name="url" value="{{.URL}}"
+         placeholder="https://example.com/" autocomplete="off" spellcheck="false" required autofocus>
+
+  <label for="scan-url-mode">Consent mode</label>
+  <select id="scan-url-mode" name="mode">
+    {{range .Modes}}
+    <option value="{{.}}"{{if eq . $data.Mode}} selected{{end}}>{{.}}</option>
+    {{end}}
+  </select>
+
+  <button type="submit">Scan</button>
+</form>
+
+<p class="muted">
+  The scan runs once, now. Its result is stored like any other, under a name
+  derived from the address, so scanning the same address again is compared
+  with this one.
+</p>
+
+{{/* What this wsaw will and will not do with what is typed, said on the page
+     rather than left in a configuration file the reader may not have. */}}
+<ul class="scan-url-limits muted">
+  <li>{{.Remaining}} of {{.PerHour}} scans left in this hour, for everybody using this wsaw.</li>
+  {{if .AllowPrivateHosts}}
+  <li>Addresses inside this deployment's own network are allowed here.</li>
+  {{else}}
+  <li>Only addresses on the public internet are accepted: loopback, private and
+      link-local addresses are refused.</li>
+  {{end}}
+  <li>The site's robots policy applies, and so does the minimum interval
+      between two scans of the same address.</li>
+</ul>
+
+{{end}}
+{{template "foot" $page}}

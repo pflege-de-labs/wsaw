@@ -440,6 +440,8 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		allowAdHoc = *a.Config.API.AllowAdHocScan
 	}
 
+	adHoc := a.Config.API.AdHocURLs
+
 	return httpapi.New(httpapi.Options{
 		Listen:         a.Config.API.Listen,
 		Token:          token,
@@ -448,17 +450,25 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		WebUI:          webUI,
 		ReadOnly:       a.Config.API.ReadOnly,
 		AllowAdHocScan: allowAdHoc,
-		Share:          signer,
-		ShareBaseURL:   a.Config.API.Share.BaseURL,
-		RefreshDefault: a.Config.API.RefreshInterval.Duration(),
-		MetricsEnabled: a.Config.Metrics.Enabled,
-		MetricsPath:    a.Config.Metrics.Path,
-		Version:        a.Version,
+		// Typed URLs are their own switch, not a consequence of ad-hoc
+		// scanning being on: one lets a reader rescan a target somebody
+		// configured, the other lets them choose the address (Story 5.27).
+		AllowURLScan:        adHoc.Enabled,
+		URLScanModes:        a.Config.AdHocModes(),
+		URLScanPerHour:      adHoc.Limit(),
+		URLScanPrivateHosts: adHoc.AllowPrivateHosts,
+		Share:               signer,
+		ShareBaseURL:        a.Config.API.Share.BaseURL,
+		RefreshDefault:      a.Config.API.RefreshInterval.Duration(),
+		MetricsEnabled:      a.Config.Metrics.Enabled,
+		MetricsPath:         a.Config.Metrics.Path,
+		Version:             a.Version,
 	}, httpapi.Deps{
 		Store:      a.Store,
 		Metrics:    a.Metrics,
 		Daemon:     d,
 		Trigger:    a,
+		URLScanner: a,
 		Rules:      a.Rules,
 		Logger:     a.Logger,
 		Targets:    targets,

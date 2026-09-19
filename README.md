@@ -341,6 +341,64 @@ a second scan of a target and consent mode that is already scanning is refused
 (`409`) rather than queued, because two concurrent scans of one series would
 produce two results for the same moment and double the load on the scanned site.
 
+### Scanning a URL that is not a target
+
+Sometimes the question is about one site, once, and it is not worth a line in
+the configuration file. With `api.adHocUrls.enabled`, the interface grows a
+**Scan a URL** page: type an address, pick a consent mode, get a result.
+
+```yaml
+api:
+  enabled: true
+  adHocUrls:
+    enabled: true          # off by default
+    # consentModes: [reject, accept]   # default: defaults.consentModes
+    # maxPerHour: 20                   # whole deployment, rolling hour
+    # allowPrivateHosts: false         # see below
+```
+
+The same thing over the API, for a client that wants the result rather than a
+page:
+
+```sh
+curl -X POST http://127.0.0.1:8712/api/v1/scan-url \
+  -H 'Authorization: Bearer '"$WSAW_API_TOKEN" \
+  -d '{"url": "https://example.com/", "consentMode": "reject"}'
+```
+
+The result is stored like any other, under a name derived from the address —
+the same name `wsaw scan --url` derives — so scanning the same address twice
+gives you a diff, and an address scanned from the command line and from the
+form share one history. The watchboard still lists the configured targets:
+typing a URL creates history, not a watched target.
+
+**This is a switch worth understanding before you flip it.** On, whoever can
+reach the interface decides what this machine fetches, which is the shape of a
+server-side request forgery. So:
+
+- The address is admitted before a browser sees it: http or https only, no
+  embedded credentials, and a host that resolves **entirely** to public
+  internet addresses. Loopback (by literal or by the name `localhost`), the
+  private ranges, link-local — the cloud metadata service with it —
+  unique-local, carrier-grade NAT and the other special-purpose ranges are all
+  refused, and a name whose answers include one of them is refused rather than
+  left to pick which address the browser reaches. `allowPrivateHosts: true`
+  turns that off, for a deployment that means "scan our own staging" and knows
+  who can reach the page.
+- The credentials in `defaults.basicAuthUser`, `defaults.basicAuthPassword`
+  and `defaults.extraHeaders` are **not** sent to a typed address. They exist
+  to reach your own sites; sending them to an address somebody typed would
+  hand them to whoever typed it.
+- Everything else is bounded the way a scheduled scan is: the deployment's own
+  budget of scans per hour, the `minInterval` floor between two scans of the
+  same address, the robots policy, and the refusal to run two scans of one
+  series at once.
+- It needs the web interface and is refused in read-only mode, and a
+  configuration that says otherwise is refused at load rather than ignored.
+
+A scan started this way is labelled `typed-url` in the running list, so an
+operator can tell an address somebody typed from a target somebody configured.
+
 ## When a scan fails
 
 A scan that produced no usable observation is retried:

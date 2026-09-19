@@ -85,6 +85,7 @@ func (c *Config) Validate() error {
 	c.validateDetection(add)
 	c.validateConsent(add)
 	c.validateAPI(add)
+	c.validateAdHocURLs(add)
 	c.validateAPIRefresh(add)
 	c.validateShare(add)
 	c.validateNotifiers(add)
@@ -488,6 +489,57 @@ func (c *Config) validateAPI(add addFunc) {
 			"listen address %q is not loopback but no token is set; remote exposure requires authentication",
 			c.API.Listen)
 	}
+}
+
+// validateAdHocURLs refuses a typed-URL configuration that cannot do what it
+// says (Story 5.27).
+//
+// Each of these is a setting an operator wrote meaning something, which wsaw
+// would otherwise ignore in silence: a feature switched on behind a switched
+// off server, a write action in a read-only deployment, a mode that does not
+// exist, a budget that is not a number of scans.
+func (c *Config) validateAdHocURLs(add addFunc) {
+	ah := c.API.AdHocURLs
+
+	if !ah.Enabled {
+		if len(ah.ConsentModes) > 0 || ah.MaxPerHour != 0 || ah.AllowPrivateHosts {
+			add(0, "api.adHocUrls.enabled",
+				"settings are present but scanning typed URLs is off; set enabled: true or remove them")
+		}
+
+		return
+	}
+
+	if !c.API.Enabled {
+		add(0, "api.adHocUrls.enabled", "needs api.enabled: the form is part of the web interface")
+	}
+
+	if c.API.ReadOnly {
+		add(0, "api.adHocUrls.enabled",
+			"cannot be used with api.readOnly: starting a scan is a write action, and a read-only "+
+				"deployment refuses it")
+	}
+
+	if webUIOff(c.API.WebUI) {
+		add(0, "api.adHocUrls.enabled", "needs api.webui: the form is a page in the web interface")
+	}
+
+	for _, m := range ah.ConsentModes {
+		if !m.Valid() {
+			add(0, "api.adHocUrls.consentModes", "%q is not a valid consent mode", string(m))
+		}
+	}
+
+	if ah.MaxPerHour < 0 {
+		add(0, "api.adHocUrls.maxPerHour",
+			"must not be negative; leave it unset for the default of %d", DefaultAdHocMaxPerHour)
+	}
+}
+
+// webUIOff reports whether the web interface was explicitly turned off. Unset
+// means on, which is what the server does with it.
+func webUIOff(webUI *bool) bool {
+	return webUI != nil && !*webUI
 }
 
 func isRemoteListen(listen string) bool {

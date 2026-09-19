@@ -169,15 +169,21 @@ func (s *Server) uiRoutes() {
 
 	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
 	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
+
+	s.mux.HandleFunc("GET "+urlScanPath, s.handleUIScanURL)
+	s.mux.HandleFunc("POST "+urlScanPath, s.handleUIScanURLSubmit)
 }
 
 // page is the data every template receives.
 type page struct {
-	Title      string
-	Version    string
-	ReadOnly   bool
-	AllowScan  bool
-	ConfigPath string
+	Title     string
+	Version   string
+	ReadOnly  bool
+	AllowScan bool
+	// AllowURLScan offers the page where an address that is not a configured
+	// target is typed in (Story 5.27).
+	AllowURLScan bool
+	ConfigPath   string
 	// ShareEnabled offers the button that mints a link to one result
 	// (Story 5.19). Off unless sharing is configured, so the interface never
 	// shows an action that would fail.
@@ -237,6 +243,7 @@ func (s *Server) renderWith(
 		Version:      s.opts.Version,
 		ReadOnly:     s.opts.ReadOnly,
 		AllowScan:    s.opts.AllowAdHocScan && !s.opts.ReadOnly,
+		AllowURLScan: s.urlScanEnabled(),
 		ConfigPath:   s.deps.ConfigPath,
 		ShareEnabled: s.sharingEnabled(),
 		CSRF:         s.csrfToken(),
