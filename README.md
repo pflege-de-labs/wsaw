@@ -459,6 +459,57 @@ This is not the store's retry (`store.maxAttempts`), which retries a database
 operation *inside* a scan. They are configured separately and neither implies
 the other.
 
+### When a scan never goes quiet
+
+A scan ends when the network has been quiet for `idleQuiet`, and some trackers
+make sure it never is. A time-on-site beacon exists to keep reporting while
+nobody does anything: Taboola's fires every 10 seconds for as long as the tab
+is open, which against a 10s quiet window restarts the wait a fraction before
+it elapses. The page went quiet at 14s, the scan ends on its hard timeout at
+90s, and the result is marked truncated over eight repetitions of one beacon.
+Raising the timeout cannot help — the heartbeat has no end — and the outcome
+turns into a coin toss, `idle` on one run and `timeout` on the next.
+
+So idle detection does not wait for them:
+
+```yaml
+capture:
+  useDefaultBeacons: true   # the shipped list; the default
+  beacons:
+    - host: telemetry.example.net
+    - host: analytics.example.com   # a host that also serves scripts
+      urlPattern: '/collect'        # is matched by path, never wholesale
+```
+
+A rule matches on a host, on a regular expression over the URL, or on both
+together — and both must then match. Host patterns work like allow and deny
+lists: an exact host, a bare domain covering its subdomains, or a leading
+`*.`. Rules add up rather than replace, so a target's own session ping goes on
+the target:
+
+```yaml
+targets:
+  - name: app
+    url: https://app.example.com/
+    beacons:
+      - host: app.example.com
+        urlPattern: '/api/session/ping'
+```
+
+The shipped list covers the periodic beacons known to hold scans open —
+Taboola, Outbrain, Clarity, GA4, Matomo, New Relic, Datadog, Sentry,
+FullStory, Hotjar, Chartbeat and a few more — and every entry names an
+endpoint that exists to receive telemetry. Where a vendor serves its script
+from the same host, the rule is scoped by path: excluding a *script* from idle
+detection would end the scan before the assets that script loads were ever
+requested. `useDefaultBeacons: false` declines the list entirely.
+
+Nothing is filtered out of the result. A beacon is recorded like any other
+request — URL, timing, status, party, initiator — and counts against
+`maxRequests` and `maxBytes`; it carries `beacon: true` so a reader can see
+which requests the scan chose not to wait for. Only the moment the scan stops
+changes.
+
 ### When a scan half-fails
 
 A scan can finish on schedule, terminate `idle`, and still be missing a tenth

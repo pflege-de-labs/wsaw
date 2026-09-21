@@ -33,7 +33,7 @@ func newTestRecorder(t *testing.T) *recorder {
 	}
 
 	return newRecorder(time.Now(), cl, n, []string{"script"}, 100, 1<<20, DefaultStallAfter,
-		DefaultMaxBodyBytes, false, nil)
+		DefaultMaxBodyBytes, false, nil, Beacons{})
 }
 
 func mono(offset time.Duration) *cdp.MonotonicTime {
@@ -198,7 +198,7 @@ func TestRecorderRequestCapIsRecordedNotIgnored(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 3, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 3, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil, Beacons{})
 
 	for i := range 10 {
 		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeXHR))
@@ -218,7 +218,7 @@ func TestRecorderByteCap(t *testing.T) {
 
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
-	r := newRecorder(time.Now(), cl, n, nil, 100, 1000, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 1000, DefaultStallAfter, DefaultMaxBodyBytes, false, nil, Beacons{})
 
 	r.requestWillBeSent(willBeSent("1", "https://example.com/big", "GET", network.ResourceTypeOther))
 	r.loadingFinished(&network.EventLoadingFinished{RequestID: "1", EncodedDataLength: 2000, Timestamp: mono(0)})
@@ -311,7 +311,7 @@ func TestRecorderExtractsDataURIBody(t *testing.T) {
 	payload := []byte("a small embedded png, pretend")
 	encoded := base64.StdEncoding.EncodeToString(payload)
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, false, nil, Beacons{})
 	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
 
 	got := r.requests()[0]
@@ -363,7 +363,7 @@ func TestRecorderStoresDataURIBody(t *testing.T) {
 		return "ref-123", nil
 	}
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, true, sink)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, DefaultMaxBodyBytes, true, sink, Beacons{})
 	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
 
 	got := r.requests()[0]
@@ -390,7 +390,7 @@ func TestRecorderCapsDataURIBody(t *testing.T) {
 	payload := make([]byte, 100)
 	encoded := base64.StdEncoding.EncodeToString(payload)
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, 10, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, DefaultStallAfter, 10, false, nil, Beacons{})
 	r.requestWillBeSent(willBeSent("1", "data:image/png;base64,"+encoded, "GET", network.ResourceTypeImage))
 
 	got := r.requests()[0]
@@ -649,7 +649,7 @@ func TestStalledRequestsDoNotBlockIdle(t *testing.T) {
 
 	const stallAfter = 50 * time.Millisecond
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, stallAfter, DefaultMaxBodyBytes, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, stallAfter, DefaultMaxBodyBytes, false, nil, Beacons{})
 
 	// An iframe document that never reports completion.
 	r.requestWillBeSent(willBeSent("1", "https://widget.test/frame.html", "GET", network.ResourceTypeDocument))
@@ -682,7 +682,7 @@ func TestFreshRequestsStillBlockIdle(t *testing.T) {
 	cl, _ := classify.New("https://example.com/", nil)
 	n, _ := normalize.New(normalize.Rules{})
 
-	r := newRecorder(time.Now(), cl, n, nil, 100, 0, time.Hour, DefaultMaxBodyBytes, false, nil)
+	r := newRecorder(time.Now(), cl, n, nil, 100, 0, time.Hour, DefaultMaxBodyBytes, false, nil, Beacons{})
 
 	for i := range 3 {
 		r.requestWillBeSent(willBeSent(string(rune('a'+i)), "https://example.com/x", "GET", network.ResourceTypeScript))

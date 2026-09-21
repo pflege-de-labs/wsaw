@@ -359,6 +359,13 @@ type Request struct {
 	// leave the browser.
 	NonNetwork bool `json:"nonNetwork,omitempty"`
 
+	// Beacon marks a request a configured rule excluded from idle detection
+	// (Story 1.10). It was recorded in full; the scan simply did not wait for
+	// it, because a heartbeat repeats for as long as the page is open. The
+	// flag is here so a reader can tell which requests the scan declined to
+	// wait for.
+	Beacon bool `json:"beacon,omitempty"`
+
 	// RedirectFrom is the URL this request was redirected from, if any.
 	RedirectFrom string `json:"redirectFrom,omitempty"`
 	// RedirectTo is the Location target when this request was itself a

@@ -59,6 +59,10 @@ type recorder struct {
 	// counting towards network idle.
 	stallAfter time.Duration
 
+	// beacons matches requests that never count towards network idle,
+	// because their stream has no end to wait for (Story 1.10).
+	beacons Beacons
+
 	totalBytes  int64
 	maxRequests int
 	maxBytes    int64
@@ -101,7 +105,7 @@ type record struct {
 	observedAt time.Time
 }
 
-func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64, stallAfter time.Duration, maxBodyBytes int64, storeBodies bool, bodySink BodySink) *recorder {
+func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64, stallAfter time.Duration, maxBodyBytes int64, storeBodies bool, bodySink BodySink, beacons Beacons) *recorder {
 	types := make(map[string]struct{}, len(hashTypes))
 	for _, t := range hashTypes {
 		types[t] = struct{}{}
@@ -116,6 +120,7 @@ func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalize
 		maxRequests:  maxRequests,
 		maxBytes:     maxBytes,
 		stallAfter:   stallAfter,
+		beacons:      beacons,
 		maxBodyBytes: maxBodyBytes,
 		storeBodies:  storeBodies,
 		bodySink:     bodySink,
@@ -244,7 +249,10 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 			r.applyResponseLocked(prev, ev.RedirectResponse)
 			prev.req.RedirectTo = ev.Request.URL
 			prev.finished = true
-			r.inflightDoneLocked()
+
+			if !prev.req.Beacon {
+				r.inflightDoneLocked()
+			}
 		}
 	}
 
@@ -281,6 +289,7 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 			Phase:         r.phase,
 			NonNetwork:    isNonNetwork(ev.Request.URL),
 			Initiator:     convertInitiator(ev.Initiator),
+			Beacon:        r.beacons.Matches(ev.Request.URL, host.Host),
 			Timing:        model.Timing{StartOffset: r.offset(monotonic(ev.Timestamp))},
 		},
 	}
@@ -307,7 +316,12 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 
 	r.records = append(r.records, rec)
 	r.current[ev.RequestID] = rec
-	r.inflight++
+
+	// A beacon is recorded like any other request but never counted towards
+	// idle: waiting for a heartbeat means waiting until the budget runs out.
+	if !rec.req.Beacon {
+		r.inflight++
+	}
 
 	r.mu.Unlock()
 }
@@ -374,7 +388,11 @@ func (r *recorder) loadingFinished(ev *network.EventLoadingFinished) {
 	}
 
 	wantBody := rec.wantBody
-	r.inflightDoneLocked()
+
+	if !rec.req.Beacon {
+		r.inflightDoneLocked()
+	}
+
 	r.mu.Unlock()
 
 	if wantBody {
@@ -419,7 +437,10 @@ func (r *recorder) loadingFailed(ev *network.EventLoadingFailed) {
 	}
 
 	rec.finished = true
-	r.inflightDoneLocked()
+
+	if !rec.req.Beacon {
+		r.inflightDoneLocked()
+	}
 }
 
 func (r *recorder) servedFromCache(ev *network.EventRequestServedFromCache) {
@@ -581,7 +602,7 @@ func (r *recorder) activeInflightLocked(now time.Time) int {
 	active := 0
 
 	for _, rec := range r.records {
-		if rec.finished {
+		if rec.finished || rec.req.Beacon {
 			continue
 		}
 
