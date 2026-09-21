@@ -520,6 +520,15 @@ type Summary struct {
 	PreConsentDomains int `json:"preConsentDomains"`
 }
 
+// Summarize derives a Summary from a result in memory, without going near
+// the store. The watchboard's deviation figures compare a scan against its
+// baseline on the same three counts a listing shows (Story 5.28, AC6), and
+// deriving those counts a second time in the HTTP layer is how a board comes
+// to disagree with the scan page it links to.
+func Summarize(res *model.Result) Summary {
+	return summarize(res)
+}
+
 func summarize(res *model.Result) Summary {
 	return Summary{
 		ScanID:            res.ScanID,

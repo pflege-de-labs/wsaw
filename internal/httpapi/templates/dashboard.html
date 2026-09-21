@@ -100,15 +100,21 @@
                data-outcome="{{rowOutcome .Series}}"
                data-modes="{{rowModes .Label}}">
 
-            {{/* Title line: the request figures, and the tile's hit area —
-                 the whole tile opens the scan these came from. A folded
-                 row keeps an inline mode label, since the column header
-                 above it describes two columns it spans. */}}
+            {{/* Title line: how this scan deviates from the one it is
+                 compared against, and the tile's hit area — the whole tile
+                 opens the scan the figures came from. The absolute counts
+                 are in the title and the accessible name, one hover or one
+                 screen reader away (Story 5.28). The qualifier says what
+                 the deviation is measured against, because "no change"
+                 against an approved baseline and "no change" against an
+                 unreviewed scan are different claims. A folded row keeps an
+                 inline mode label, since the column header above it
+                 describes two columns it spans. */}}
             {{with .Series.LastScan}}
-              <a class="watch-scan{{if .PreConsentDomains}} is-pre{{end}}{{if $row.DeviatesFromBaseline}} is-deviant{{end}}"
+              <a class="watch-scan{{if .PreConsentDomains}} is-pre{{end}}{{if $row.DeviatesFromBaseline}} is-deviant{{end}}{{if $row.NoChange}} is-quiet{{end}}"
                  href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
-                 title="{{time .StartedAt}}"
-                 aria-label="Open the last scan of {{$t.Name}} in {{$mode}} mode, {{.ScanID}}: {{.Requests}} requests, {{.ThirdPartyDomains}} third-party domains, {{.PreConsentDomains}} pre-consent">{{.Requests}} req · {{.ThirdPartyDomains}} 3p · {{.PreConsentDomains}} pre</a>
+                 title="{{$row.ScanAria $t.Name}} — started {{time .StartedAt}}"
+                 aria-label="{{$row.ScanAria $t.Name}}">{{$row.DeltaLabel}}{{with $row.StateLabel}} <span class="watch-scan-base">{{.}}</span>{{end}}</a>
             {{else}}
               <span class="watch-scan muted">no observation yet</span>
             {{end}}

@@ -783,9 +783,11 @@ button:hover { border-color: var(--accent); }
   color: var(--muted);
 }
 
-/* The tile's title line: the request figures. They are what a reader
-   compares between modes and between renders, so they get the tile's
-   largest type — and the whole tile opens the scan they came from. */
+/* The tile's title line: how the last scan deviates from what it is compared
+   against. The deviation is what differs between renders — three absolute
+   counts are the same three numbers every render of a site that has not
+   moved — so it gets the tile's largest type, and the whole tile opens the
+   scan it came from (Story 5.28). */
 .watch-scan {
   font-size: 0.95rem;
   font-weight: 600;
@@ -797,7 +799,25 @@ button:hover { border-color: var(--accent); }
 }
 
 .watch-scan::after { content: ""; position: absolute; inset: 0; }
+
+/* A scan that moved nothing and found nothing recedes: the board's job is to
+   be quiet until something needs a reader. Declared before the marked states
+   so a pre-consent or deviating tile keeps its warning colour whatever the
+   counts did. */
+.watch-scan.is-quiet { color: var(--muted); font-weight: 500; }
+
 .watch-scan.is-pre, .watch-scan.is-deviant { color: var(--warn); }
+
+/* What the deviation is measured against — smaller and quieter than the
+   figures, but never absent: a deviation without its base is not actionable. */
+.watch-scan-base {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap;
+}
 
 /* Outcome on the left, termination on the right, one line. */
 .watch-tile-status {
