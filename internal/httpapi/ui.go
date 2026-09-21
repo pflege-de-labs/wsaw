@@ -490,7 +490,10 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 		HostsOnly: hostsOnly(r),
 	}
 
-	for _, v := range s.targetViews(data.HostsOnly) {
+	// Tile: the board ranks a scan's changes by what a board is for, not by
+	// the notifier's rules (Story 5.30). The JSON API keeps the engine's own
+	// severity for the same comparison (Tenet 16).
+	for _, v := range s.targetViews(severityView{HostsOnly: data.HostsOnly, Tile: true}) {
 		data.Targets = append(data.Targets, newTargetRow(v))
 	}
 

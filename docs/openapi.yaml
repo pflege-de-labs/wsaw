@@ -525,6 +525,17 @@ components:
                 type: boolean
                 description: True when the series has never been scanned, its last scan failed, or its last scan is older than the configured threshold.
               staleReason: {type: string}
+              severity:
+                type: string
+                enum: [info, low, medium, high, critical]
+                description: >
+                  The worst change in the last scan's comparison, ranked by
+                  the diff engine's own severity rules — the same ranking the
+                  notifier and the CI exit code use. Absent where there was
+                  nothing to compare. The HTML watchboard re-ranks the same
+                  comparison for display, so a tile can read info where this
+                  field says high; this field is the machine-readable one and
+                  does not follow the board.
               comparedTo: {$ref: "#/components/schemas/Comparison"}
 
     Comparison:

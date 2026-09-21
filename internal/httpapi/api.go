@@ -147,6 +147,12 @@ type SeriesView struct {
 	// Empty when there is nothing to compare: no scan yet, or the pair
 	// could not be compared (diff.Report.Comparable is false, e.g. a
 	// series' first-ever scan).
+	//
+	// Ranked by the diff engine for every consumer of this type but one: the
+	// HTML watchboard re-ranks the same comparison around what a board is
+	// for (Story 5.30, severityView in tile_severity.go), so a tile can read
+	// info where the JSON API reports high. What this field serializes never
+	// follows the board (Tenet 16).
 	Severity diff.Severity `json:"severity,omitempty"`
 
 	// ComparedTo names the scan Severity was computed against and carries
@@ -226,11 +232,12 @@ func runningFor(all []scanner.Running, target string, mode model.ConsentMode) []
 var hostChangeTypes = []diff.ChangeType{diff.HostAdded, diff.HostRemoved, diff.DeniedHost}
 
 // targetViews builds the dashboard's and the JSON API's shared view model.
-// hostsOnly narrows each series' Severity to hostChangeTypes; the JSON API
-// always passes false; only the HTML dashboard's per-viewer toggle (Tenet 15)
-// ever passes true, since Severity is otherwise the same machine-readable
-// value for both (Tenet 16).
-func (s *Server) targetViews(hostsOnly bool) []TargetView {
+// view decides how each series' Severity is ranked: the JSON API passes the
+// zero value and gets the diff engine's own severity, machine-readable and
+// unchanged (Tenet 16), while the HTML dashboard passes its per-viewer
+// "hosts only" toggle (Tenet 15) and the watchboard's own ranking (Story
+// 5.29, severityView in tile_severity.go).
+func (s *Server) targetViews(ranking severityView) []TargetView {
 	var out []TargetView
 
 	if s.deps.Targets == nil {
@@ -259,7 +266,7 @@ func (s *Server) targetViews(hostsOnly bool) []TargetView {
 			sv.HasBaseline = err == nil
 
 			if sv.LastScan != nil {
-				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, hostsOnly)
+				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, ranking)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -288,7 +295,13 @@ func (s *Server) targetViews(hostsOnly bool) []TargetView {
 // in hand here and nowhere else, so describing it costs nothing, where asking
 // for it again from the watchboard would cost a second load per series
 // (Story 5.28, AC6).
-func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline, hostsOnly bool) (diff.Severity, *ComparisonView) {
+func (s *Server) lastScanSeverity(
+	target string,
+	mode model.ConsentMode,
+	scanID string,
+	baseline *store.Baseline,
+	view severityView,
+) (diff.Severity, *ComparisonView) {
 	res, err := s.deps.Store.GetResult(target, mode, scanID)
 	if err != nil {
 		return "", nil
@@ -325,11 +338,7 @@ func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID 
 		return "", cmp
 	}
 
-	if hostsOnly {
-		return rep.MaxSeverityOf(hostChangeTypes...), cmp
-	}
-
-	return rep.MaxSeverity(), cmp
+	return seriesSeverity(rep, mode, view), cmp
 }
 
 // staleness decides whether a series should be flagged. Never-scanned and
@@ -357,7 +366,7 @@ func staleness(last *store.Summary, now time.Time, maxAge time.Duration) (bool, 
 func (s *Server) handleTargets(w http.ResponseWriter, _ *http.Request) {
 	// Always the full severity: the "hosts only" toggle is an HTML dashboard
 	// display preference, not a property of the result (Tenet 16).
-	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews(false)})
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews(severityView{})})
 }
 
 // handleRunning reports the scans in flight. "tracked" distinguishes a daemon
