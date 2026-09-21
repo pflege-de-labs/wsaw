@@ -502,6 +502,25 @@ Compression is an encoding of the stored file, not a change to what an artifact 
 - AC10: What it saved is observable. For every artifact it writes, the store reports the bytes it was handed and the bytes that reached the disk, and both are exposed as metrics, so "is this worth it on my data" is a query rather than a guess (Tenet 8). A deduplicated write reports nothing, because nothing was written.
 - AC11: Tested: a compressible body round-trips and is smaller on disk; an incompressible artifact is stored raw; an artifact written by the previous version still reads and still deduplicates; a truncated member, a wrong-digest member and an oversized one are refused with the reference named; `StatArtifact` reports the same size for both forms; and with the setting off, writes are raw while reads of compressed artifacts still work.
 
+### Story 4.9 — Compress the artifacts already on disk
+
+*As an Operator, I want one command that compresses the artifact directory I already have, so that the saving in Story 4.8 applies to the history I have been keeping and not only to what I capture from now on.*
+
+Story 4.8 deliberately rewrites nothing: an artifact already on disk is read where it lies, forever, because a store that quietly rewrites evidence on upgrade is a store whose evidence nobody can reason about. That is the right default and the wrong end state for an installation with two years of stored bodies, where the saving is entirely in what has already been captured. So the rewrite becomes a command an operator runs deliberately, at a time they choose, rather than a migration that happens to them during a restart.
+
+The risk this story has to handle is that it is the one operation in wsaw that modifies stored evidence. It is bounded by content addressing: an artifact's reference is the digest of its bytes, so a rewrite is verifiable rather than trusted — the command can prove it wrote the same evidence back before it removes anything.
+
+- AC1: `wsaw artifacts compress` walks the configured artifact directory and stores compressed every artifact that compresses, by the same rule a fresh write uses (Story 4.8, AC1). An artifact that is already compressed, or that gzip does not make meaningfully smaller, is left exactly as it is.
+- AC2: References do not change, so nothing else has to. No result is read, rewritten, or even opened: the reference names the artifact's content, and this command changes only how that content is packed (Story 4.8, AC2).
+- AC3: Every rewrite is verified before anything is removed. The compressed file is written, read back, inflated, and checked against the digest in the artifact's own name; only then is the original deleted. Evidence is not replaced on the assumption that a write worked.
+- AC4: The order of operations keeps every artifact readable throughout. The compressed form is created before the raw form is removed, so a reader — the web interface, a share link, an export — finds one of the two at every instant, and the command is safe to run while wsaw is scanning.
+- AC5: Interrupting it is safe and resuming it is free. The work is per artifact and idempotent, so a cancelled run leaves a directory that is half compressed and wholly readable, and running it again finishes the job without redoing what it already did.
+- AC6: A file that is not a wsaw artifact is not touched. The directory is walked, but only names that are a content address are candidates, and a file whose contents do not hash to its own name is reported and skipped rather than rewritten — a corrupt artifact is a finding, not something to repack.
+- AC7: `--dry-run` reports exactly what a real run would do, including the bytes it would save, and writes nothing. An operator deciding whether to spend an hour of I/O on this should not have to spend it first.
+- AC8: The run reports what it did: artifacts scanned, compressed, left alone and why, bytes before and after, and every problem it hit, by reference. A command that rewrites evidence and prints "done" is not accountable for what it did.
+- AC9: It respects the same cancellation contract as everything else — SIGTERM stops it between artifacts, with the summary of the work completed so far.
+- AC10: Tested: a directory of compressible, incompressible, already-compressed, foreign and corrupt files produces the right counts and the right files on disk; every artifact reads back identically through the store afterwards; a dry run changes nothing; a second run is a no-op; and cancellation stops the walk without losing an artifact.
+
 ---
 
 # Epic 5 — Reporting, Export, Alerting & Web Interface
