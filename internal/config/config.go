@@ -174,10 +174,12 @@ type Browser struct {
 	// directory, so one scan per browser means one cookie jar per scan.
 	//
 	// Raising it trades that guarantee for fewer browser launches. wsaw still
-	// clears cookies and storage between scans and records that the browser
-	// was reused in every affected result, but a site can persist state in
-	// ways a clear does not reach. Raise it only where throughput matters
-	// more than the consent comparison.
+	// clears the cookie jar, the cache, and quota storage — localStorage,
+	// IndexedDB, service workers, cache storage — for every origin a scan
+	// touched, and records that the browser was reused in every affected
+	// result, but a site can persist state in ways a clear does not reach.
+	// Raise it only where throughput matters more than the consent
+	// comparison.
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`
 }
