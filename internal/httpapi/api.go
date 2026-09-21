@@ -148,6 +148,51 @@ type SeriesView struct {
 	// could not be compared (diff.Report.Comparable is false, e.g. a
 	// series' first-ever scan).
 	Severity diff.Severity `json:"severity,omitempty"`
+
+	// ComparedTo names the scan Severity was computed against and carries
+	// its three counts, so a reader — or the watchboard, which leads with
+	// the deviation rather than the totals (Story 5.28) — can say what the
+	// last scan changed and against what. Nil where there was nothing to
+	// compare against at all.
+	//
+	// Additive, and derived from documents targetViews already loads: an
+	// API client subtracting two numbers still gets both (Tenet 16).
+	ComparedTo *ComparisonView `json:"comparedTo,omitempty"`
+}
+
+// ComparisonBase is which scan a series' Severity was computed against. The
+// distinction is not cosmetic: "unchanged against the baseline somebody
+// approved" and "unchanged against yesterday's scan, which nobody has
+// looked at" are different claims, and a view that renders them identically
+// has inferred an approval that does not exist (Tenet 5).
+type ComparisonBase string
+
+// The bases lastScanSeverity picks between, in its own order of preference.
+const (
+	// BaseApproved is the series' approved baseline.
+	BaseApproved ComparisonBase = "baseline"
+	// BasePrevious is the scan before the shown one, used where no baseline
+	// is set.
+	BasePrevious ComparisonBase = "previous"
+)
+
+// ComparisonView is the scan a series' last scan was compared against.
+type ComparisonView struct {
+	Base ComparisonBase `json:"base"`
+
+	// ScanID identifies it, so the deviation can be traced to two documents.
+	ScanID string `json:"scanId"`
+
+	// Comparable is diff.Report.Comparable: false where the pair could not
+	// be compared at all (an errored or skipped scan on either side), which
+	// must never render as "nothing changed".
+	Comparable bool `json:"comparable"`
+
+	// The base scan's own counts, derived by store.Summarize so they cannot
+	// drift from the figures a listing or the scan page shows.
+	Requests          int `json:"requests"`
+	ThirdPartyDomains int `json:"thirdPartyDomains"`
+	PreConsentDomains int `json:"preConsentDomains"`
 }
 
 // running returns the in-flight scans, or nil when activity is not tracked.
@@ -214,7 +259,7 @@ func (s *Server) targetViews(hostsOnly bool) []TargetView {
 			sv.HasBaseline = err == nil
 
 			if sv.LastScan != nil {
-				sv.Severity = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, hostsOnly)
+				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, hostsOnly)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -238,30 +283,53 @@ func (s *Server) targetViews(hostsOnly bool) []TargetView {
 // trade — store.ListResults's own doc comment already accepts a full parse
 // per row so a summary can never drift from the document it describes, and
 // a severity flag on the target list is worth the same price.
-func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline, hostsOnly bool) diff.Severity {
+//
+// It also returns what it compared against, summarized. The base document is
+// in hand here and nowhere else, so describing it costs nothing, where asking
+// for it again from the watchboard would cost a second load per series
+// (Story 5.28, AC6).
+func (s *Server) lastScanSeverity(target string, mode model.ConsentMode, scanID string, baseline *store.Baseline, hostsOnly bool) (diff.Severity, *ComparisonView) {
 	res, err := s.deps.Store.GetResult(target, mode, scanID)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 
-	var baseRes *model.Result
+	var (
+		baseRes *model.Result
+		base    ComparisonBase
+	)
 
 	if baseline != nil {
-		baseRes = baseline.Result
+		baseRes, base = baseline.Result, BaseApproved
 	} else if prev, err := s.deps.Store.PreviousResult(target, mode, scanID); err == nil {
-		baseRes = prev
+		baseRes, base = prev, BasePrevious
 	}
 
 	rep := diff.Compare(baseRes, res, diff.Options{})
+
+	var cmp *ComparisonView
+
+	if baseRes != nil {
+		sum := store.Summarize(baseRes)
+		cmp = &ComparisonView{
+			Base:              base,
+			ScanID:            sum.ScanID,
+			Comparable:        rep.Comparable,
+			Requests:          sum.Requests,
+			ThirdPartyDomains: sum.ThirdPartyDomains,
+			PreConsentDomains: sum.PreConsentDomains,
+		}
+	}
+
 	if !rep.Comparable {
-		return ""
+		return "", cmp
 	}
 
 	if hostsOnly {
-		return rep.MaxSeverityOf(hostChangeTypes...)
+		return rep.MaxSeverityOf(hostChangeTypes...), cmp
 	}
 
-	return rep.MaxSeverity()
+	return rep.MaxSeverity(), cmp
 }
 
 // staleness decides whether a series should be flagged. Never-scanned and

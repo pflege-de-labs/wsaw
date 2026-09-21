@@ -525,6 +525,28 @@ components:
                 type: boolean
                 description: True when the series has never been scanned, its last scan failed, or its last scan is older than the configured threshold.
               staleReason: {type: string}
+              comparedTo: {$ref: "#/components/schemas/Comparison"}
+
+    Comparison:
+      type: object
+      description: >
+        The scan a series' severity was computed against: the approved
+        baseline, or the scan before the last one where no baseline is set.
+        Absent where there was nothing to compare against at all. The counts
+        are the base scan's own, so a client can state a deviation without
+        fetching the document; lastScan stays absolute either way.
+      properties:
+        base:
+          type: string
+          enum: [baseline, previous]
+          description: Which scan the comparison used. "previous" is the fallback where no baseline is approved, and is a weaker claim than "baseline".
+        scanId: {type: string}
+        comparable:
+          type: boolean
+          description: False where the pair could not be compared at all, e.g. an errored or skipped scan on either side. Never the same as "nothing changed".
+        requests: {type: integer}
+        thirdPartyDomains: {type: integer}
+        preConsentDomains: {type: integer}
 
     RunningScan:
       type: object
