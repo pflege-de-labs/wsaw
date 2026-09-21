@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -417,6 +418,10 @@ func (s *Store) pruneTx(ctx context.Context, now time.Time, r Retention) (PruneS
 
 // PutArtifact stores an evidence file and returns its reference. Artifacts
 // are content-addressed, so storing the same screenshot twice costs one copy.
+//
+// The reference is the digest of the bytes handed in, never of the bytes
+// written: an artifact may be stored gzipped, and how it is packed on disk is
+// not part of what it is (Story 4.8, AC2).
 func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 	if s.artifactDir == "" {
 		return "", errors.New("artifact storage is not configured")
@@ -430,15 +435,50 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 		return "", fmt.Errorf("creating artifact directory: %w", err)
 	}
 
-	if _, err := os.Stat(path); err == nil {
+	// Either form counts as stored. An installation upgraded into
+	// compression must not write a compressed copy of everything it already
+	// holds uncompressed, and one that turned compression off must not write
+	// a raw copy of everything it holds compressed (Story 4.8, AC5).
+	if artifactExists(path) || artifactExists(path+compressedSuffix) {
 		return ref, nil
 	}
 
-	// Written via a temporary file and renamed, so a crash never leaves a
-	// half-written artifact that a reader would treat as evidence.
+	stored := data
+
+	if s.compressArtifacts {
+		if packed, worth := compressArtifact(data); worth {
+			stored = packed
+			path += compressedSuffix
+		}
+	}
+
+	if err := writeArtifactFile(path, stored); err != nil {
+		return "", err
+	}
+
+	if s.onArtifactStored != nil {
+		s.onArtifactStored(kind, int64(len(data)), int64(len(stored)))
+	}
+
+	return ref, nil
+}
+
+// artifactExists reports whether a stored artifact is already on disk. An
+// error other than absence — an unreadable directory — is left for the write
+// to report, where it carries the operation that hit it.
+func artifactExists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
+}
+
+// writeArtifactFile writes an artifact's bytes via a temporary file and a
+// rename, so a crash never leaves a half-written artifact that a reader would
+// treat as evidence.
+func writeArtifactFile(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".wsaw-artifact-*")
 	if err != nil {
-		return "", fmt.Errorf("creating temporary artifact file: %w", err)
+		return fmt.Errorf("creating temporary artifact file: %w", err)
 	}
 
 	defer func() {
@@ -448,24 +488,24 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 
-		return "", fmt.Errorf("setting artifact permissions: %w", err)
+		return fmt.Errorf("setting artifact permissions: %w", err)
 	}
 
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 
-		return "", fmt.Errorf("writing artifact: %w", err)
+		return fmt.Errorf("writing artifact: %w", err)
 	}
 
 	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("closing artifact: %w", err)
+		return fmt.Errorf("closing artifact: %w", err)
 	}
 
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return "", fmt.Errorf("finalizing artifact: %w", err)
+		return fmt.Errorf("finalizing artifact: %w", err)
 	}
 
-	return ref, nil
+	return nil
 }
 
 // StatArtifact reports an artifact's size without reading it.
@@ -473,6 +513,10 @@ func (s *Store) PutArtifact(kind string, data []byte) (string, error) {
 // It exists so the interface can tell "this evidence has been pruned" from
 // "this evidence is here" without loading a megabyte of PNG to find out
 // (Story 5.17, AC3).
+//
+// The size is the artifact's own, not the stored file's. A reader is being
+// told how much evidence there is, and that answer must not change because
+// the bytes were packed differently (Story 4.8, AC7).
 func (s *Store) StatArtifact(ref string) (int64, error) {
 	if s.artifactDir == "" {
 		return 0, errors.New("artifact storage is not configured")
@@ -484,6 +528,15 @@ func (s *Store) StatArtifact(ref string) (int64, error) {
 	}
 
 	info, err := os.Stat(path)
+	if err == nil {
+		return info.Size(), nil
+	}
+
+	if !os.IsNotExist(err) {
+		return 0, fmt.Errorf("reading artifact %s: %w", ref, err)
+	}
+
+	size, err := statCompressedArtifact(path + compressedSuffix)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
@@ -492,7 +545,38 @@ func (s *Store) StatArtifact(ref string) (int64, error) {
 		return 0, fmt.Errorf("reading artifact %s: %w", ref, err)
 	}
 
-	return info.Size(), nil
+	return size, nil
+}
+
+// statCompressedArtifact reads the uncompressed size out of a gzip member's
+// trailer, which is four bytes at the end of the file rather than a whole
+// inflation.
+func statCompressedArtifact(path string) (int64, error) {
+	f, err := os.Open(path) //nolint:gosec // path is confined to artifactDir by artifactPath
+	if err != nil {
+		return 0, err
+	}
+
+	defer func() {
+		_ = f.Close()
+	}()
+
+	trailer := make([]byte, 4)
+
+	if _, err := f.Seek(-int64(len(trailer)), io.SeekEnd); err != nil {
+		return 0, fmt.Errorf("seeking to the artifact trailer: %w", err)
+	}
+
+	if _, err := io.ReadFull(f, trailer); err != nil {
+		return 0, fmt.Errorf("reading the artifact trailer: %w", err)
+	}
+
+	size, ok := gzipSize(trailer)
+	if !ok {
+		return 0, errors.New("artifact trailer is truncated")
+	}
+
+	return size, nil
 }
 
 // artifactPath resolves a reference to a path inside the artifact directory.
@@ -514,6 +598,10 @@ func (s *Store) artifactPath(ref string) (string, error) {
 
 // GetArtifact reads a stored artifact. The reference is validated so that a
 // crafted path cannot escape the artifact directory.
+//
+// Whether an artifact is stored compressed is the store's business and no
+// caller's: both forms come back as the bytes that were handed to
+// PutArtifact (Story 4.8, AC4).
 func (s *Store) GetArtifact(ref string) ([]byte, error) {
 	if s.artifactDir == "" {
 		return nil, errors.New("artifact storage is not configured")
@@ -525,6 +613,15 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 	}
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is confined to artifactDir by artifactPath
+	if err == nil {
+		return data, nil
+	}
+
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("reading artifact %s: %w", ref, err)
+	}
+
+	stored, err := os.ReadFile(path + compressedSuffix) //nolint:gosec // path is confined to artifactDir by artifactPath
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("artifact %s: %w", ref, ErrNotFound)
@@ -533,5 +630,5 @@ func (s *Store) GetArtifact(ref string) ([]byte, error) {
 		return nil, fmt.Errorf("reading artifact %s: %w", ref, err)
 	}
 
-	return data, nil
+	return decompressArtifact(ref, stored, s.maxArtifactBytes)
 }

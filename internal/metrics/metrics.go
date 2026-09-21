@@ -36,6 +36,12 @@ type Registry struct {
 
 	browserRestarts int64
 	notifyFailures  int64
+
+	// artifactBytes is what the store was handed, artifactStoredBytes what
+	// it wrote. Together they report what compression saved (Story 4.8).
+	artifactBytes       int64
+	artifactStoredBytes int64
+
 	storeRetries    int64
 	scanRetries     int64
 	retriesExceeded int64
@@ -159,6 +165,21 @@ func (r *Registry) StoreRetried() {
 	defer r.mu.Unlock()
 
 	r.storeRetries++
+}
+
+// ArtifactStored records one artifact written to storage: the bytes handed
+// to the store, and the bytes that reached the disk.
+//
+// The pair is what makes compression measurable instead of assumed — the
+// ratio between them is the answer to "is this worth it on my data", and it
+// differs per installation because it is a property of the sites being
+// scanned (Story 4.8, AC10).
+func (r *Registry) ArtifactStored(original, stored int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.artifactBytes += original
+	r.artifactStoredBytes += stored
 }
 
 // ScanRetried counts a scan that had to be tried again, and
@@ -296,6 +317,8 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
 	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
 	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
+	writeGaugeValue(&b, "wsaw_artifact_bytes_total", "Artifact bytes handed to the store, before compression.", float64(r.artifactBytes))
+	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total", "Artifact bytes actually written to storage.", float64(r.artifactStoredBytes))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))

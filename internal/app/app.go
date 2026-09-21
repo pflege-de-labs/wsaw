@@ -164,11 +164,13 @@ func (a *App) openStore() error {
 	}
 
 	st, err := store.Open(store.Options{
-		Path:         path,
-		ArtifactDir:  artifacts,
-		MaxAttempts:  a.Config.Store.MaxAttempts,
-		RetryBackoff: a.Config.Store.RetryBackoff.Duration(),
-		OnRetry:      a.logStoreRetry,
+		Path:                path,
+		ArtifactDir:         artifacts,
+		ArtifactCompression: a.Config.Store.ArtifactCompression(),
+		MaxAttempts:         a.Config.Store.MaxAttempts,
+		RetryBackoff:        a.Config.Store.RetryBackoff.Duration(),
+		OnRetry:             a.logStoreRetry,
+		OnArtifactStored:    a.countArtifact,
 	})
 	if err != nil {
 		return err
@@ -208,15 +210,17 @@ func (a *App) openServerStore() error {
 	}
 
 	st, err := store.Open(store.Options{
-		Driver:          a.Config.Store.StoreDriver(),
-		DSN:             dsn,
-		ArtifactDir:     artifacts,
-		MaxOpenConns:    a.Config.Store.MaxOpenConns,
-		MaxIdleConns:    a.Config.Store.MaxIdleConns,
-		ConnMaxLifetime: a.Config.Store.ConnMaxLifetime.Duration(),
-		MaxAttempts:     a.Config.Store.MaxAttempts,
-		RetryBackoff:    a.Config.Store.RetryBackoff.Duration(),
-		OnRetry:         a.logStoreRetry,
+		Driver:              a.Config.Store.StoreDriver(),
+		DSN:                 dsn,
+		ArtifactDir:         artifacts,
+		ArtifactCompression: a.Config.Store.ArtifactCompression(),
+		MaxOpenConns:        a.Config.Store.MaxOpenConns,
+		MaxIdleConns:        a.Config.Store.MaxIdleConns,
+		ConnMaxLifetime:     a.Config.Store.ConnMaxLifetime.Duration(),
+		MaxAttempts:         a.Config.Store.MaxAttempts,
+		RetryBackoff:        a.Config.Store.RetryBackoff.Duration(),
+		OnRetry:             a.logStoreRetry,
+		OnArtifactStored:    a.countArtifact,
 	})
 	if err != nil {
 		return err
@@ -233,6 +237,13 @@ func (a *App) openServerStore() error {
 	)
 
 	return nil
+}
+
+// countArtifact records what one stored artifact cost, so what compression
+// saved is a query against wsaw's own metrics rather than a claim in the
+// documentation (Story 4.8, AC10).
+func (a *App) countArtifact(_ string, original, stored int64) {
+	a.Metrics.ArtifactStored(original, stored)
 }
 
 // logStoreRetry makes a retry visible. A database that is flapping while

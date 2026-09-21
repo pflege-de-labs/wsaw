@@ -684,6 +684,15 @@ store:
 
 The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots and stored bodies stay on disk whichever driver is used: they do not belong in a row.
 
+Those artifacts are stored gzipped where that makes them smaller, which is most stored bodies — they are scripts, stylesheets and JSON — and no screenshot, since a PNG is already compressed and wsaw keeps it as Chrome produced it. A compressed artifact is an ordinary gzip file named `kind/sha256hex.gz`, so the directory stays readable with `zcat` and without wsaw, and the reference in a result is unchanged: it is the digest of the evidence, not of the file holding it. Reading is transparent, both forms are always readable, and nothing is migrated — artifacts written before this stay where they are.
+
+```yaml
+store:
+  compressArtifacts: true   # the default; false stores artifacts as captured
+```
+
+`wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total` report what it saved on your data, which depends on the sites you scan.
+
 The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread.
 
 A server database is reached over a network, so a transient failure — a restart, a failover, a deadlock — is retried:
