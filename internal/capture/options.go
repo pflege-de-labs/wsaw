@@ -75,6 +75,11 @@ type Options struct {
 	// stops waiting for it. Zero means DefaultStallAfter.
 	StallAfter time.Duration
 
+	// Beacons name the requests idle detection never waits for, because they
+	// repeat for as long as the page is open (Story 1.10). They are recorded
+	// like any other request; only the decision to stop is affected.
+	Beacons []Beacon
+
 	// ConsentBudget is how long the consent hook may take. Capture reserves
 	// it out of HardTimeout so that a page which never reaches network idle
 	// cannot consume the whole scan before the banner is ever touched.

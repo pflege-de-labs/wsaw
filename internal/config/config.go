@@ -28,6 +28,7 @@ type Config struct {
 
 	Targets []Target `yaml:"targets"`
 
+	Capture   Capture    `yaml:"capture"`
 	Browser   Browser    `yaml:"browser"`
 	Store     Store      `yaml:"store"`
 	Scheduler Scheduler  `yaml:"scheduler"`
@@ -82,6 +83,10 @@ type Target struct {
 	// check the instant the page goes idle misses it (Story 2.9).
 	ConsentBannerWait Duration `yaml:"consentBannerWait,omitempty"`
 	ScrollToBottom    *bool    `yaml:"scrollToBottom,omitempty"`
+	// Beacons are this target's own periodic requests, added to the global
+	// list. A site's own session ping belongs here rather than in the shared
+	// list (Story 1.10).
+	Beacons []Beacon `yaml:"beacons,omitempty"`
 
 	// Browser context.
 	ViewportWidth  int      `yaml:"viewportWidth,omitempty"`
@@ -298,6 +303,34 @@ type Normalize struct {
 
 	// UseDefaultDropParams adds the shipped list of noise parameters.
 	UseDefaultDropParams *bool `yaml:"useDefaultDropParams,omitempty"`
+}
+
+// Capture configures the scan budget's shared parts.
+type Capture struct {
+	// Beacons name requests that repeat for as long as the page is open, so
+	// idle detection must not wait for them (Story 1.10). They are recorded
+	// in full either way; only the moment the scan stops changes.
+	Beacons []Beacon `yaml:"beacons,omitempty"`
+
+	// UseDefaultBeacons adds the shipped list of known periodic beacons.
+	// Opt-out rather than opt-in: without it the first scan of an ordinary
+	// commercial site runs to its hard timeout and reports a truncation that
+	// says nothing about the site.
+	UseDefaultBeacons *bool `yaml:"useDefaultBeacons,omitempty"`
+}
+
+// Beacon matches requests that must not hold a scan open.
+//
+// A rule may name a host, a URL pattern, or both — both must then match. A
+// host that also serves scripts is matched by path, never wholesale: dropping
+// a script from idle accounting would end the scan before the assets it loads
+// were requested.
+type Beacon struct {
+	// Host is a host pattern: an exact host, a bare domain that also covers
+	// its subdomains, or a leading "*." wildcard.
+	Host string `yaml:"host,omitempty"`
+	// URLPattern is a regular expression matched against the raw URL.
+	URLPattern string `yaml:"urlPattern,omitempty"`
 }
 
 // BodyIdentity extracts a stable identifier out of a response body.

@@ -56,6 +56,11 @@ type Resolved struct {
 	ConsentBannerWait time.Duration
 	ScrollToBottom    bool
 
+	// Beacons are the requests idle detection must not wait for: the shipped
+	// list unless it was opted out of, plus the global and per-target rules
+	// (Story 1.10).
+	Beacons []capture.Beacon
+
 	ViewportWidth  int
 	ViewportHeight int
 	DeviceScale    float64
@@ -179,6 +184,7 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 		ConsentBannerWait: firstDuration(t.ConsentBannerWait, d.ConsentBannerWait,
 			c.Consent.BannerWait.Or(consent.DefaultBannerWait)),
 		ScrollToBottom: firstBool(t.ScrollToBottom, d.ScrollToBottom, false),
+		Beacons:        c.beaconRules(t),
 		ViewportWidth:  firstInt(t.ViewportWidth, d.ViewportWidth, 1280),
 		ViewportHeight: firstInt(t.ViewportHeight, d.ViewportHeight, 800),
 		DeviceScale:    firstFloat(t.DeviceScale, d.DeviceScale, 1),
@@ -400,6 +406,30 @@ func mergeSeverity(global, defaults, target diff.SeverityRules) diff.SeverityRul
 		DeniedHost:        pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
 		ScanDegraded:      pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
 	}
+}
+
+// beaconRules collects every rule that applies to a target, in the order the
+// shipped defaults, the global list and the target's own additions were
+// written. Rules add up rather than replace: a site's own session ping is
+// expressible per target without restating the shared list.
+func (c *Config) beaconRules(t *Target) []capture.Beacon {
+	var out []capture.Beacon
+
+	// The shipped list is opt-out rather than opt-in: without it the first
+	// scan of an ordinary commercial site ends on its hard timeout, and a
+	// truncated result that says nothing about the site teaches an operator
+	// to ignore the outcome.
+	if c.Capture.UseDefaultBeacons == nil || *c.Capture.UseDefaultBeacons {
+		out = append(out, capture.DefaultBeacons...)
+	}
+
+	for _, list := range [][]Beacon{c.Capture.Beacons, c.Defaults.Beacons, t.Beacons} {
+		for _, b := range list {
+			out = append(out, capture.Beacon{Host: b.Host, URLPattern: b.URLPattern})
+		}
+	}
+
+	return out
 }
 
 func concat(lists ...[]string) []string {

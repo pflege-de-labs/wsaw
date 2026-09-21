@@ -82,6 +82,7 @@ func (c *Config) Validate() error {
 	c.validateTargets(add)
 	c.validateScheduler(add)
 	c.validateNormalize(add)
+	c.validateCapture(add)
 	c.validateDetection(add)
 	c.validateConsent(add)
 	c.validateAPI(add)
@@ -135,11 +136,13 @@ func (c *Config) validateTargets(add addFunc) {
 		}
 
 		validateSeverityRules(t.Severity, t.line, field+".severity", add)
+		validateBeacons(t.Beacons, t.line, field+".beacons", add)
 	}
 
 	// Defaults are validated for the parts that make sense globally.
 	c.validateTargetModes(&c.Defaults, "defaults", add)
 	c.validateTargetSchedule(&c.Defaults, "defaults", add)
+	validateBeacons(c.Defaults.Beacons, c.Defaults.line, "defaults.beacons", add)
 
 	if c.Defaults.Robots != "" && c.Defaults.Robots != RobotsIgnore && c.Defaults.Robots != RobotsRespect {
 		add(c.Defaults.line, "defaults.robots", "%q is not a valid policy; use \"ignore\" or \"respect\"", c.Defaults.Robots)
@@ -404,6 +407,35 @@ func (c *Config) validateBodyIdentities(add addFunc) {
 			add(0, field+".extract",
 				"%q has %d capturing groups; exactly one is required, and it is the identity",
 				id.Extract, got)
+		}
+	}
+}
+
+func (c *Config) validateCapture(add addFunc) {
+	validateBeacons(c.Capture.Beacons, 0, "capture.beacons", add)
+}
+
+// validateBeacons refuses a rule that would not do what it says. A rule with
+// neither a host nor a pattern would match every request and end every scan
+// the moment the page stopped for a breath, and a pattern that does not
+// compile would be discovered at scan time, where it costs a scan rather than
+// a restart.
+func validateBeacons(beacons []Beacon, line int, field string, add addFunc) {
+	for i, b := range beacons {
+		at := fmt.Sprintf("%s[%d]", field, i)
+
+		if b.Host == "" && b.URLPattern == "" {
+			add(line, at, "needs a host, a urlPattern, or both")
+
+			continue
+		}
+
+		if b.URLPattern == "" {
+			continue
+		}
+
+		if _, err := regexp.Compile(b.URLPattern); err != nil {
+			add(line, at+".urlPattern", "%q is not a valid regular expression: %v", b.URLPattern, err)
 		}
 	}
 }

@@ -88,6 +88,31 @@ targets:
     # Kept for its history and baseline rather than deleted.
     disabled: true
 
+capture:
+  # Requests that must not hold a scan open.
+  #
+  # A time-on-site tracker keeps reporting for as long as the tab is open, so
+  # the network never goes quiet for idleQuiet and the scan ends on its hard
+  # timeout with nothing left to observe. Beacons are recorded like every
+  # other request — they carry "beacon": true in the result — and simply not
+  # waited for.
+  #
+  # The shipped list covers the vendors known to do this (Taboola, Outbrain,
+  # Clarity, GA4, Matomo, New Relic, Datadog, Sentry, FullStory, Hotjar,
+  # Chartbeat and a few more). Set this to false to decline it.
+  useDefaultBeacons: true
+  beacons:
+    # An exact host, a bare domain covering its subdomains, or a "*." wildcard.
+    - host: telemetry.example.net
+    # A host that also serves scripts is matched by path, never wholesale:
+    # dropping a script from idle detection would end the scan before the
+    # assets that script loads were ever requested.
+    - host: analytics.example.com
+      urlPattern: '/collect'
+    # A rule may be a pattern alone, for an endpoint that appears on many
+    # hosts — a self-hosted analytics endpoint on the site's own origin.
+    - urlPattern: '/(matomo|piwik)\.php(\?|$)'
+
 browser:
   # Where the browser runs.
   #

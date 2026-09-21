@@ -59,6 +59,14 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 		return nil, fmt.Errorf("capture: %w", err)
 	}
 
+	// Configuration validation rejects a malformed rule at load, with its
+	// line; compiling here keeps the rules data all the way down and means a
+	// rule built any other way is still refused rather than ignored.
+	beacons, err := CompileBeacons(opts.Beacons)
+	if err != nil {
+		return nil, fmt.Errorf("capture: %w", err)
+	}
+
 	start := time.Now()
 
 	res := &model.Result{
@@ -84,7 +92,7 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 
 	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes,
 		opts.MaxRequests, opts.MaxBytes, opts.StallAfter,
-		opts.MaxBodyBytes, opts.StoreBodies, opts.BodySink)
+		opts.MaxBodyBytes, opts.StoreBodies, opts.BodySink, beacons)
 
 	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
 

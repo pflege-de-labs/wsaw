@@ -397,6 +397,10 @@
           "type": "boolean",
           "description": "data:, blob: and similar. Recorded, but nothing left the browser."
         },
+        "beacon": {
+          "type": "boolean",
+          "description": "A configured rule excluded this request from idle detection: it repeats for as long as the page is open, so the scan recorded it without waiting for it."
+        },
         "redirectFrom": {
           "type": "string"
         },
