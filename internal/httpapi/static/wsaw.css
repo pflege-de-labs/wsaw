@@ -338,6 +338,46 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .sev-high { color: var(--bad); font-weight: 600; }
 .sev-critical { color: var(--crit); font-weight: 700; border-color: var(--crit); }
 
+/* The Changes summary: one line that counts a scan's changes by family and
+   filters by them (Story 5.29). The chips are links, so they keep a link's
+   focus ring and keyboard behaviour; only the active one is filled in, and a
+   family with nothing in it renders as a muted, unclickable zero. */
+
+.change-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.change-summary .chip {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.85em;
+  white-space: nowrap;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.change-summary .chip-total { font-weight: 600; }
+.change-summary a.chip:hover { border-color: var(--accent); }
+
+.change-summary .chip.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 600;
+}
+
+.change-summary .chip.is-zero { color: var(--muted); }
+
+/* Rows the active family excludes. Stated here because a bare `hidden`
+   attribute loses to the table's own display rules in some browsers, and a
+   change that is meant to be filtered out must not be left on the page. */
+.changes tr[hidden] { display: none; }
+
 .term-idle { color: var(--ok); }
 .term-timeout, .term-request-cap, .term-byte-cap { color: var(--warn); }
 .term-error, .term-skipped { color: var(--bad); }

@@ -117,7 +117,7 @@
 </section>
 
 {{if .Diff}}
-<section>
+<section id="changes">
   <h2>Changes</h2>
   {{if not .Diff.Comparable}}
     <p class="empty">No comparison was possible: {{.Diff.Reason}}</p>
@@ -125,11 +125,37 @@
     <p class="empty">No changes against the baseline.
       {{if .Diff.Suppressed}}{{.Diff.Suppressed}} change(s) were suppressed by the allow list.{{end}}</p>
   {{else}}
-    <table>
+    {{$c := .Changes}}
+    {{/* One line that says what the scan found and filters it (Story 5.29).
+         The counts are the control: a reader who has just read "4 hosts"
+         clicks that number rather than hunting for a separate widget. Each
+         chip is a plain link carrying the same filter the server applies, so
+         the section works with script off, and changes.js only makes it
+         instant. */}}
+    <p class="change-summary" id="change-summary">
+      <a class="chip chip-total{{if not $c.Filtered}} is-on{{end}}" href="{{$c.AllHref}}"
+         data-kind=""{{if not $c.Filtered}} aria-current="true"{{end}}>{{$c.Total}} change{{if ne $c.Total 1}}s{{end}}</a>
+      {{- range $c.Facets}}
+        {{- if .Count}}
+      <a class="chip chip-{{.Kind}}{{if .On}} is-on{{end}}" href="{{.Href}}"
+         data-kind="{{.Kind}}"{{if .On}} aria-current="true"{{end}}>{{.Count}} {{.Label}}</a>
+        {{- else}}
+        {{- /* A facet with nothing in it is stated, not offered: the zero is
+               information, and a link that would hide every row is not. */}}
+      <span class="chip is-zero" data-kind="{{.Kind}}">0 {{.Label}}</span>
+        {{- end}}
+      {{- end}}
+      {{/* Across every change, never only the visible ones: a filter must
+           not be able to talk a critical finding off this line (Tenet 5). */}}
+      <span class="sev {{sevclass $c.Worst}}">worst {{$c.Worst}}</span>
+      {{if $c.Suppressed}}<span class="muted">{{$c.Suppressed}} suppressed</span>{{end}}
+    </p>
+
+    <table class="changes" id="changes-table">
       <thead><tr><th>Severity</th><th>Change</th><th>Subject</th><th>Detail</th></tr></thead>
       <tbody>
-      {{range .Diff.Changes}}
-        <tr>
+      {{range $c.Rows}}
+        <tr data-kind="{{.Kind}}"{{if .Hidden}} hidden{{end}}>
           <td><span class="sev {{sevclass .Severity}}">{{.Severity}}</span></td>
           <td>{{.Type}}</td>
           <td class="wrap"><code>{{.Subject}}</code></td>

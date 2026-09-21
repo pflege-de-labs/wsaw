@@ -660,6 +660,12 @@ type resultData struct {
 	Hosts  []model.HostSummary
 	Counts map[string]int
 
+	// Changes is the Diff grouped into the hosts / requests / other families
+	// the section's summary line counts and its chips filter by
+	// (Story 5.29). It is display state derived from Diff, never a second
+	// source of truth about what changed.
+	Changes changesView
+
 	// Screenshots are the scan's evidence images, before and after the
 	// consent interaction (Story 5.17).
 	Screenshots []screenshotView
@@ -869,6 +875,13 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 		FilterType:  r.URL.Query().Get("type"),
 		FilterParty: r.URL.Query().Get("party"),
 		FilterPhase: r.URL.Query().Get("phase"),
+	}
+
+	// The diff is grouped for display only: the report itself is untouched,
+	// and the section renders every row it holds whatever the filter says
+	// (Story 5.29).
+	if data.Diff != nil {
+		data.Changes = newChangesView(data.Diff, r.URL.Query())
 	}
 
 	for i := range res.Requests {
