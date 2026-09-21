@@ -380,6 +380,21 @@ func (s *session) prepare() error {
 	// it is what keeps a deliberately reused browser honest.
 	actions = append(actions, network.ClearBrowserCookies())
 
+	// The cookie jar is only half of where a decision is kept. CCM19 records
+	// its answer in localStorage and leaves no cookie at all, so a reused
+	// browser that had already answered once rendered no banner on the next
+	// scan and the site's entire tracking stack was recorded as pre-consent
+	// traffic — the finding this product exists to make, manufactured by wsaw
+	// itself (Story 1.5, AC1).
+	//
+	// Quota storage is named one origin at a time; Chrome has no call that
+	// wipes it wholesale. The origin about to be scanned is the one that can
+	// be named up front, and clearStorage wipes every origin the scan actually
+	// reached once it ends.
+	if origin := originOf(s.opts.URL); origin != "" {
+		actions = append(actions, storage.ClearDataForOrigin(origin, string(storage.TypeAll)))
+	}
+
 	if !s.opts.WarmCache {
 		// Cold cache is the default: it is what makes two scans comparable
 		// and what an unprimed visitor actually experiences.
@@ -844,8 +859,13 @@ func (s *session) finish(runErr error) {
 	s.mu.Unlock()
 
 	s.collectCookies()
-	s.collectStorage()
+	origins := s.collectStorage()
 	s.collectFinalURL()
+
+	// Only once every collector has read what the page left behind: the wipe
+	// is for the next scan on this browser, never at the expense of this
+	// scan's evidence.
+	s.clearStorage(origins)
 
 	s.res.FinishedAt = time.Now()
 	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)

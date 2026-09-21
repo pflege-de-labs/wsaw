@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -37,7 +38,10 @@ const maxStorageEntries = 500
 // page, because the page is hostile input: a script that redefines
 // window.localStorage can lie to an injected snippet, and cannot lie to the
 // browser (NFR §4).
-func (s *session) collectStorage() {
+//
+// It returns the origins it walked, which is the set clearStorage has to wipe
+// for the next scan on a reused browser to start from nothing.
+func (s *session) collectStorage() []string {
 	const storageTimeout = 10 * time.Second
 
 	// A fresh context: the run context may already be done, and the storage
@@ -47,11 +51,12 @@ func (s *session) collectStorage() {
 
 	cl, err := classify.New(s.opts.URL, s.opts.FirstPartyDomains)
 	if err != nil {
-		return
+		return nil
 	}
 
 	var (
 		entries   []model.StorageEntry
+		origins   []string
 		truncated bool
 	)
 
@@ -79,6 +84,8 @@ func (s *session) collectStorage() {
 				continue
 			}
 
+			origins = append(origins, origin)
+
 			party := cl.Classify(origin).Party
 
 			for _, area := range []model.StorageArea{model.StorageLocal, model.StorageSession} {
@@ -103,7 +110,7 @@ func (s *session) collectStorage() {
 	if err != nil {
 		s.res.Warnings = append(s.res.Warnings, "web storage could not be read: "+s.scrub(err.Error()))
 
-		return
+		return origins
 	}
 
 	if truncated {
@@ -113,6 +120,8 @@ func (s *session) collectStorage() {
 
 	sortStorage(entries)
 	s.res.Storage = entries
+
+	return origins
 }
 
 // storageRead is one area of one frame's storage: what to read and how much
@@ -223,4 +232,80 @@ func sortStorage(entries []model.StorageEntry) {
 
 		return entries[i].Key < entries[j].Key
 	})
+}
+
+// clearStorage wipes quota storage — localStorage, IndexedDB, service
+// workers, cache storage — for every origin this scan reached, so a browser
+// that serves another scan hands it nothing to inherit (Story 1.5, AC1).
+//
+// It runs after the result has been assembled: what the page stored is
+// evidence and is recorded first. The origins come from the frame tree
+// collectStorage walked, plus the requested and final URLs, because those two
+// differ whenever a site redirects — and the origin a redirect lands on is
+// exactly where a site keeps the consent decision that must not carry over.
+//
+// A wipe that fails is recorded as a warning rather than an error: the scan
+// itself is complete and correct, and the risk it leaves behind belongs to
+// the next one, whose result already says whether its browser was reused.
+func (s *session) clearStorage(origins []string) {
+	const clearTimeout = 10 * time.Second
+
+	seen := make(map[string]struct{}, len(origins)+2)
+	targets := make([]string, 0, len(origins)+2)
+
+	for _, raw := range append(origins, s.opts.URL, s.res.FinalURL) {
+		origin := originOf(raw)
+		if origin == "" {
+			continue
+		}
+
+		if _, dup := seen[origin]; dup {
+			continue
+		}
+
+		seen[origin] = struct{}{}
+		targets = append(targets, origin)
+	}
+
+	if len(targets) == 0 {
+		return
+	}
+
+	// A fresh context, as for the collectors: the run context may already be
+	// done, and this is precisely when the wipe matters most.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.runCtx), clearTimeout)
+	defer cancel()
+
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		for _, origin := range targets {
+			if err := storage.ClearDataForOrigin(origin, string(storage.TypeAll)).Do(ctx); err != nil {
+				return fmt.Errorf("clearing storage for %s: %w", origin, err)
+			}
+		}
+
+		return nil
+	}))
+	if err != nil {
+		s.res.Warnings = append(s.res.Warnings,
+			"web storage could not be cleared after the scan; a reused browser may carry it into the next one: "+
+				s.scrub(err.Error()))
+	}
+}
+
+// originOf returns the scheme://host[:port] form Chrome's storage calls take,
+// or "" for anything without one — an opaque origin, a data: URL, a value the
+// page controls. A frame's security origin is already in that form; a URL is
+// not, so both paths go through here.
+func originOf(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+
+	return u.Scheme + "://" + u.Host
 }
