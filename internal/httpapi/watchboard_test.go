@@ -248,12 +248,16 @@ func TestAFilterThatMatchesNothingSaysSo(t *testing.T) {
 	}
 }
 
-// A tile marks its own pre-consent host, in words and colour, even though
-// nothing sums it across the board (there is no header total — a sum of
-// PreConsentDomains across series double-counts a host that a target
-// contacts identically under more than one consent mode, which is not a
-// count of anything real) and it no longer colours the tile itself
-// (TestATileWithACriticalChangeIsMarkedAsOne covers what does).
+// A tile marks its own pre-consent host, even though nothing sums it across
+// the board (there is no header total — a sum of PreConsentDomains across
+// series double-counts a host that a target contacts identically under more
+// than one consent mode, which is not a count of anything real) and it no
+// longer colours the tile itself (TestATileWithACriticalChangeIsMarkedAsOne
+// covers what does).
+//
+// The marking is the class and the "pre" figure in the headline's own text,
+// not a colour: the headline's colour is the severity of what changed, and a
+// pre-consent count that has not moved since the last scan is not a change.
 func TestATileMarksItsOwnPreConsentHost(t *testing.T) {
 	t.Parallel()
 
@@ -298,9 +302,10 @@ func TestATileWithACriticalChangeIsMarkedAsOne(t *testing.T) {
 	}
 }
 
-// The request count is marked only when the displayed scan actually deviates
-// from an approved baseline.
-func TestTheRequestCountIsMarkedWhenTheScanDeviatesFromBaseline(t *testing.T) {
+// The headline is coloured by the severity of what changed. A third-party
+// host appearing in reject mode is the board's own critical, so the headline
+// carries the critical tone rather than a generic "something moved" one.
+func TestTheHeadlineCarriesTheSeverityOfWhatChanged(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
@@ -318,15 +323,17 @@ func TestTheRequestCountIsMarkedWhenTheScanDeviatesFromBaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, "is-deviant") {
-		t.Errorf("a request count that deviates from the baseline is not marked as one\n%s", html)
+	if !strings.Contains(html, `class="watch-scan sev-critical`) {
+		t.Errorf("the headline does not carry the severity of the change\n%s", html)
 	}
 }
 
-// Without an approved baseline, Severity still gets computed by comparing
-// against the scan before this one (lastScanSeverity's own fallback) — but
-// that is not "deviates from the baseline", because there is no baseline.
-func TestTheRequestCountIsNotMarkedWithoutABaseline(t *testing.T) {
+// Colour follows the severity, not the base it was computed against. Without
+// an approved baseline Severity still gets computed against the scan before
+// this one (lastScanSeverity's own fallback), and a finding there is as real
+// to a reader as one against a baseline — the qualifier beside the headline
+// is what says which base it is ("vs last scan").
+func TestTheHeadlineIsColouredForAFallbackComparisonToo(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
@@ -340,13 +347,13 @@ func TestTheRequestCountIsNotMarkedWithoutABaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if strings.Contains(html, "is-deviant") {
-		t.Errorf("a request count was marked as deviating with no baseline set\n%s", html)
+	if !strings.Contains(html, `class="watch-scan sev-critical`) {
+		t.Errorf("a finding against the previous scan left the headline uncoloured\n%s", html)
 	}
 }
 
-// A baseline that the latest scan still matches is not a deviation.
-func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
+// A baseline the latest scan still matches ranks info, and info recedes.
+func TestTheHeadlineIsQuietWhenTheScanMatchesBaseline(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
@@ -362,8 +369,14 @@ func TestTheRequestCountIsNotMarkedWhenTheScanMatchesBaseline(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if strings.Contains(html, "is-deviant") {
-		t.Errorf("a request count matching its baseline was marked as deviating\n%s", html)
+	if !strings.Contains(html, `class="watch-scan sev-info`) {
+		t.Errorf("an unchanged scan's headline is not ranked info\n%s", html)
+	}
+
+	for _, marked := range []string{"sev-medium", "sev-high", "sev-critical"} {
+		if strings.Contains(html, `class="watch-scan `+marked) {
+			t.Errorf("an unchanged scan's headline carries %s\n%s", marked, html)
+		}
 	}
 }
 

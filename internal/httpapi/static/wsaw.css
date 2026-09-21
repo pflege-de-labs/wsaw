@@ -840,13 +840,25 @@ button:hover { border-color: var(--accent); }
 
 .watch-scan::after { content: ""; position: absolute; inset: 0; }
 
-/* A scan that moved nothing and found nothing recedes: the board's job is to
-   be quiet until something needs a reader. Declared before the marked states
-   so a pre-consent or deviating tile keeps its warning colour whatever the
-   counts did. */
-.watch-scan.is-quiet { color: var(--muted); font-weight: 500; }
+/* The headline is coloured by the severity of what changed, and by nothing
+   else — the same palette the rail, the badge and every severity elsewhere
+   use, so one colour means one thing across the page. A deviation that ranks
+   info ("+3 req", an asset re-deployed under a new hash) is as quiet as "no
+   change": it is a number the reader has already read on the line, not a
+   finding. These override .watch-scan's own colour by sharing its specificity
+   and coming later in the file.
 
-.watch-scan.is-pre, .watch-scan.is-deviant { color: var(--warn); }
+   Colour is never the only carrier: the figures say what moved, the severity
+   badge on the rail names the rank, and .is-pre still marks a pre-consent
+   tile for the cues that are not this line (Story 5.11, AC5). */
+.watch-scan.sev-info, .watch-scan.sev-low { color: var(--muted); }
+.watch-scan.sev-medium { color: var(--warn); }
+.watch-scan.sev-high { color: var(--bad); }
+.watch-scan.sev-critical { color: var(--crit); }
+
+/* A scan that moved nothing and found nothing recedes further still: the
+   board's job is to be quiet until something needs a reader. */
+.watch-scan.is-quiet { color: var(--muted); font-weight: 500; }
 
 /* What the deviation is measured against — smaller and quieter than the
    figures, but never absent: a deviation without its base is not actionable. */

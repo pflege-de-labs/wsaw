@@ -224,3 +224,37 @@ func signed(n int) string {
 
 	return "+" + strconv.Itoa(n)
 }
+
+// ScanClass is the headline anchor's class list: the tile's hit area, plus
+// the severity the headline is coloured by.
+//
+// Colour follows the severity of what changed, and nothing else. It used to
+// follow the shown scan's absolute pre-consent count, which marked a tile
+// orange for a site that had not moved at all — the reader was handed a
+// warning colour for a figure that was the same on the previous render and
+// the one before that. A count-shaped deviation ("+3 req") ranks info and now
+// reads as quietly as "no change" does, because a board that colours for
+// every asset hash is a board nobody reads (Story 5.30's reasoning applied to
+// the headline's colour).
+//
+// The pre-consent fact keeps its is-pre class — it is the hook that marks
+// which tiles contacted a third party before consent — but the fact itself is
+// carried where it belongs, in the headline's own "pre" figure and in the
+// scan's accessible name, not in a colour the reader cannot act on.
+func (r modeRow) ScanClass() string {
+	class := "watch-scan"
+
+	if s := r.Series.Severity; s != "" {
+		class += " sev-" + string(s)
+	}
+
+	if last := r.Series.LastScan; last != nil && last.PreConsentDomains > 0 {
+		class += " is-pre"
+	}
+
+	if r.NoChange() {
+		class += " is-quiet"
+	}
+
+	return class
+}
