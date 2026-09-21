@@ -398,7 +398,7 @@ Persist scan results and turn a stream of scans into meaningful change events.
 
 **Goal:** answer "what is new, gone, or changed since last time?" for every target and consent mode.
 
-**Scope:** result store, its SQL dialects and drivers, retention, baseline/approved-state model, normalization rules (URL canonicalization, cache-buster and session-ID stripping), diff engine, script content hashing (SRI-style digests), allow/deny host lists, change event model, flap suppression.
+**Scope:** result store, its SQL dialects and drivers, artifact storage and how it is encoded on disk, retention, baseline/approved-state model, normalization rules (URL canonicalization, cache-buster and session-ID stripping), diff engine, script content hashing (SRI-style digests), allow/deny host lists, change event model, flap suppression.
 
 **Out of scope:** long-term analytics warehouse, UI.
 
@@ -481,6 +481,26 @@ Story 4.6 made the driver the seam. It did not make the SQL portable: the schema
 - AC7: A lost connection is survivable. The daemon does not exit because the database restarted, it has a configurable retry for database operations.
 - AC8: The documentation states what a server database does and does not buy. It removes the volume and the file lock. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and duplicate every scheduled scan.
 - AC9: The README contains examples to configure MySQL, Postgres and SQLite.
+
+### Story 4.8 — Store artifacts compressed
+
+*As an Operator, I want stored evidence compressed on disk so that a long history of bodies and screenshots costs what the evidence is worth rather than what its uncompressed form happens to be.*
+
+Artifacts are the largest thing wsaw writes and the only part that grows without a bound the database imposes. Stored bodies dominate it, and they are text — JavaScript, CSS, HTML, JSON — which is exactly what compresses: a tracker's bundle is 400 KB on disk and under a quarter of that gzipped, and content addressing means one copy per distinct digest, so a site that ships a new build every week accumulates every build. Screenshots are PNG and already compressed; gzipping them buys nothing and would cost CPU on every read forever.
+
+Compression is an encoding of the stored file, not a change to what an artifact is. The reference stays the SHA-256 of the artifact's own bytes, so content addressing, deduplication, the `BodySHA256` a result already records, and every reference inside every result already written keep their meaning, and there is nothing to migrate. Evidence is immutable (Tenet 4); how it is spelled on disk is not part of the evidence.
+
+- AC1: An artifact is compressed when compressing it is worth it and stored as-is when it is not. The decision is made per artifact from the result of compressing it — a PNG that gzip makes no smaller is stored raw — never from a list of kinds or content types, which would be wrong the first time a site serves something the list did not anticipate.
+- AC2: The reference is unchanged: `kind/sha256hex` over the **uncompressed** bytes. A result written before this story names the same artifacts after it, the same content still costs one copy, and the digest a reader verifies is still the digest of what they receive.
+- AC3: A compressed artifact is self-describing on disk. Its name says so (`kind/sha256hex.gz`) and its bytes are an ordinary gzip member, so the artifact directory stays readable with `zcat` and without wsaw. Evidence that only the tool that wrote it can open is worse evidence.
+- AC4: Reading is transparent and covers both forms. `GetArtifact` returns the original bytes whether the stored file is compressed or not, so the API, share links, the inlined bodies of a JSON export and the CLI are unchanged. Artifacts written before this story keep being read where they lie: nothing rewrites, moves, or re-digests a file that is already on disk.
+- AC5: Writing stays crash-safe and idempotent — a temporary file and a rename, as today — and an artifact already stored in **either** form is not written a second time. An upgraded installation must not accumulate a compressed copy of everything it already has.
+- AC6: Inflation is bounded and checked. A stored artifact holds a hostile page's bytes and lives in a directory anything on the host can write to, so it is untrusted input on the way back in: the decompressed size is capped rather than trusted, and what comes out is verified against the digest the reference names. A file that does not match is an error that names the artifact, never bytes served as evidence they are not (Tenet 5, and the rule that a failed observation never looks like a clean result).
+- AC7: `StatArtifact` keeps reporting the artifact's own size, not the stored file's. It exists so the interface can say how large a piece of evidence is and whether it is still there (Story 5.17, AC3), and that number must not change because of how the bytes are packed. It stays a stat-level operation and does not inflate an artifact to answer.
+- AC8: `store.compressArtifacts` turns it off, and the default is on. An operator whose filesystem compresses already, or who wants the files exactly as the browser produced them, sets one key; everyone else gets smaller directories without having to learn that this story happened. Turning it off stops writing compressed artifacts; it never stops reading them.
+- AC9: Compression is standard library only (`compress/gzip`). Better ratios are available from a dependency, and the artifact directory is not where a tool that exists to detect supply-chain change spends its dependency budget (Tenet 19).
+- AC10: What it saved is observable. For every artifact it writes, the store reports the bytes it was handed and the bytes that reached the disk, and both are exposed as metrics, so "is this worth it on my data" is a query rather than a guess (Tenet 8). A deduplicated write reports nothing, because nothing was written.
+- AC11: Tested: a compressible body round-trips and is smaller on disk; an incompressible artifact is stored raw; an artifact written by the previous version still reads and still deduplicates; a truncated member, a wrong-digest member and an oversized one are refused with the reference named; `StatArtifact` reports the same size for both forms; and with the setting off, writes are raw while reads of compressed artifacts still work.
 
 ---
 
