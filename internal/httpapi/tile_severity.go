@@ -100,7 +100,7 @@ func tileSeverity(c diff.Change, mode model.ConsentMode) diff.Severity {
 // accept mode the visitor agreed to be tracked, so a new vendor is an expected
 // consequence wherever in the page it fires, and the pre-consent fact stays on
 // the tile as its "pre" figure and its is-pre marking rather than as a rank
-// (Story 5.30, AC5).
+// or a colour (Story 5.30, AC5).
 //
 // none ranks with reject, because "the visitor never agreed" and "the visitor
 // refused" are both a third party contacted without consent.

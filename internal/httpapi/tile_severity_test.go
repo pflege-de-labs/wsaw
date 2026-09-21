@@ -78,7 +78,7 @@ func TestAPreConsentHostInAcceptModeStaysMarkedPreWithoutMarkingTheTile(t *testi
 		t.Errorf("a pre-consent host in accept mode marked the tile\n%s", html)
 	}
 
-	if !strings.Contains(html, `class="watch-scan is-pre"`) {
+	if !strings.Contains(html, `class="watch-scan sev-info is-pre"`) {
 		t.Errorf("the pre-consent marking was lost with the severity\n%s", html)
 	}
 }
@@ -134,8 +134,10 @@ func TestAssetChurnLeavesTheTileAtInfo(t *testing.T) {
 				t.Errorf("asset churn did not rank info on the board\n%s", html)
 			}
 
-			if strings.Contains(html, "is-deviant") {
-				t.Errorf("asset churn was reported as deviating from the baseline\n%s", html)
+			// And the headline it colours: info is the quiet tone, so
+			// "+1 req" reads as quietly as "no change" does.
+			if !strings.Contains(html, `class="watch-scan sev-info`) {
+				t.Errorf("asset churn coloured the headline as a finding\n%s", html)
 			}
 		})
 	}

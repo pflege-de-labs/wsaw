@@ -82,10 +82,10 @@ func TestTheTileNamesThePreviousScanWhenThereIsNoBaseline(t *testing.T) {
 		t.Errorf("a fallback comparison is rendered as though it were a baseline\n%s", page)
 	}
 
-	// The same counts moved, but the marking still requires a real baseline
-	// (Story 5.23, AC7 — unchanged by this story).
-	if strings.Contains(page, "is-deviant") {
-		t.Error("the previous-scan fallback marked the headline as deviating from a baseline")
+	// The qualifier is what distinguishes the two bases; the colour is the
+	// severity either way, so this must not claim the headline is uncoloured.
+	if !strings.Contains(page, `class="watch-scan sev-`) {
+		t.Errorf("the fallback comparison's headline carries no severity class\n%s", page)
 	}
 }
 

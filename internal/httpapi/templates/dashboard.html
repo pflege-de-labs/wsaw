@@ -111,7 +111,7 @@
                  inline mode label, since the column header above it
                  describes two columns it spans. */}}
             {{with .Series.LastScan}}
-              <a class="watch-scan{{if .PreConsentDomains}} is-pre{{end}}{{if $row.DeviatesFromBaseline}} is-deviant{{end}}{{if $row.NoChange}} is-quiet{{end}}"
+              <a class="{{$row.ScanClass}}"
                  href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
                  title="{{$row.ScanAria $t.Name}} — started {{time .StartedAt}}"
                  aria-label="{{$row.ScanAria $t.Name}}">{{$row.DeltaLabel}}{{with $row.StateLabel}} <span class="watch-scan-base">{{.}}</span>{{end}}</a>
