@@ -332,6 +332,20 @@ honest anchor for a tab left open an hour, and it says why it holds still
 rather than reading as though refreshing were broken. Reloading it yourself
 works as it always did.
 
+The board marks a tile for the one question a board can answer at a glance:
+**did a third party appear in a scan where the visitor had agreed to
+nothing.** A third-party host the site did not contact before is critical in
+`reject` and `none` mode, and unremarkable in `accept` mode, where the visitor
+agreed to be tracked. Request counts, added or removed assets, a script whose
+bytes changed, and a third party the site stopped contacting all rank `info`
+on the board — a live site re-deploys its bundles most days, and a board where
+every tile is marked is a board nobody reads. Cookies, storage, consent
+regressions, denied hosts and degraded scans keep their usual severity, and so
+does everything outside the board: `GET /api/v1/targets`, the notifier and the
+CI exit code all keep reporting the diff engine's own ranking for the same
+scan, so a tile reading `info` and an API reporting `high` are the same
+comparison seen through two questions.
+
 Scans in flight are shown as they happen: a `pending` row on the target page, a
 list on the dashboard, and `GET /api/v1/running` for anything else. A running
 scan exists in no stored result — the store only learns of a scan when it ends —
