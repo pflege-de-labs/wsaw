@@ -102,6 +102,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw debug <url>` | One scan, verbose, for authoring consent rules |
 | `wsaw rules list` / `rules test <url>` | Inspect consent rules, or test them against a live page |
 | `wsaw config` | Print the *resolved* configuration, or `--check` to validate |
+| `wsaw artifacts compress` | Compress the artifacts already on disk, in place |
 | `wsaw prune` | Apply retention once; `--dry-run` shows what it would delete |
 | `wsaw share` | Mint an expiring link to one scan result |
 | `wsaw ui` | Open the web interface in a browser, already signed in |
@@ -684,6 +685,25 @@ store:
 ```
 
 The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings. Screenshots and stored bodies stay on disk whichever driver is used: they do not belong in a row.
+
+Those artifacts are stored gzipped where that makes them smaller, which is most stored bodies — they are scripts, stylesheets and JSON — and no screenshot, since a PNG is already compressed and wsaw keeps it as Chrome produced it. A compressed artifact is an ordinary gzip file named `kind/sha256hex.gz`, so the directory stays readable with `zcat` and without wsaw, and the reference in a result is unchanged: it is the digest of the evidence, not of the file holding it. Reading is transparent, both forms are always readable, and nothing is migrated — artifacts written before this stay where they are.
+
+```yaml
+store:
+  compressArtifacts: true   # the default; false stores artifacts as captured
+```
+
+`wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total` report what it saved on your data, which depends on the sites you scan.
+
+Artifacts stored before this existed are read where they lie and are never rewritten behind your back. To apply the saving to a directory you already have, ask for it:
+
+```sh
+wsaw artifacts compress --dry-run   # what it would do, and what it would save
+wsaw artifacts compress             # do it, printing a summary that adds up
+wsaw artifacts compress --verbose   # and name every artifact as it goes
+```
+
+It writes the compressed form, reads it back, and checks it against the digest in the artifact's own name before removing the original — so a rewrite is verified rather than assumed, and every artifact stays readable in one form or the other throughout, which makes the command safe to run while wsaw is scanning. Interrupting it leaves a half-compressed, wholly readable directory, and running it again picks up where it stopped. A file that is not a wsaw artifact, or one whose contents no longer hash to its own name, is reported and left exactly as it is: a corrupt artifact is a finding, not something to repack.
 
 The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread.
 

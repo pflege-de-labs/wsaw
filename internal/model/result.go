@@ -507,7 +507,7 @@ func (r *Result) Truncated() bool { return r.Termination.Truncated() }
 // It is on the reason rather than only on the result because retention has to
 // rank a scan it has not read: the results table carries the termination as a
 // column, and reading every document back to decide what to prune would cost
-// the whole store (Story 4.8, AC5).
+// the whole store (Story 4.10, AC5).
 func (t TerminationReason) Truncated() bool {
 	switch t {
 	case TermTimeout, TermRequestCap, TermByteCap:

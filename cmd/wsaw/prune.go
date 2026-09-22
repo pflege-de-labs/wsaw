@@ -12,7 +12,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
-// cmdPrune applies retention once, outside the daemon (Story 4.8, AC10).
+// cmdPrune applies retention once, outside the daemon (Story 4.10, AC10).
 //
 // It exists mostly for its dry run. A retention policy is retroactive — the
 // first prune after an edit applies the new policy to everything already

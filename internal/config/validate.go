@@ -357,7 +357,7 @@ func (c *Config) validateScheduler(add addFunc) {
 	validateKeep(c, add)
 }
 
-// validateKeep checks the thinning retention policy (Story 4.8).
+// validateKeep checks the thinning retention policy (Story 4.10).
 //
 // Two of its rules exist because the failure they prevent is silent: a policy
 // that keeps nothing would delete a whole history on the next prune, and a

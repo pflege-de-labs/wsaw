@@ -13,7 +13,7 @@ import (
 // Retention bounds how much history is kept.
 //
 // It carries either the two blunt bounds wsaw has always had, or a thinning
-// Keep policy that replaces them (Story 4.8). The two forms are never mixed:
+// Keep policy that replaces them (Story 4.10). The two forms are never mixed:
 // a bound that quietly cut into a policy designed to keep a year of monthly
 // scans would defeat the policy without saying so.
 type Retention struct {
@@ -102,7 +102,7 @@ const (
 // candidate is one stored result as retention sees it: the index columns and
 // nothing else. The document is never read to decide what to prune — a store
 // holding a year of scans would have to be loaded in full to answer a
-// question three columns already answer (Story 4.8, AC5).
+// question three columns already answer (Story 4.10, AC5).
 type candidate struct {
 	ScanID      string
 	StartedAt   time.Time
@@ -385,7 +385,7 @@ const pruneBatch = 200
 // PrunePlan reports what a prune would do, without deleting anything.
 //
 // Deleting evidence is irreversible and a policy change is retroactive, so
-// the plan exists to be read before the first run applies it (Story 4.8,
+// the plan exists to be read before the first run applies it (Story 4.10,
 // AC10). It reports every series, including those it would not touch.
 func (s *Store) PrunePlan(now time.Time, r Retention) ([]SeriesPlan, error) {
 	if !r.Active() {

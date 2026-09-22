@@ -203,6 +203,15 @@ store:
   # they land next to where the sqlite file would have been.
   artifactDir: ""
 
+  # Artifacts are stored gzipped where that makes them smaller — most bodies,
+  # which are text, and no screenshot, since a PNG is already compressed. The
+  # file is an ordinary gzip member named kind/sha256hex.gz, so the directory
+  # stays readable with zcat, and the reference in a result is unchanged: it
+  # is the digest of the evidence, not of the file holding it. Set this to
+  # false to store artifacts exactly as captured; both forms stay readable
+  # either way, so nothing is stranded by changing it.
+  compressArtifacts: true
+
   # Retention, the blunt form: drop anything older than maxAge, and keep at
   # most maxPerSeries scans of each target and consent mode. Both cut at a
   # line, so a target scanned four times a day fills 200 scans in seven weeks

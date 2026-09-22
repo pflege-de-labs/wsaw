@@ -398,7 +398,7 @@ Persist scan results and turn a stream of scans into meaningful change events.
 
 **Goal:** answer "what is new, gone, or changed since last time?" for every target and consent mode.
 
-**Scope:** result store, its SQL dialects and drivers, retention, baseline/approved-state model, normalization rules (URL canonicalization, cache-buster and session-ID stripping), diff engine, script content hashing (SRI-style digests), allow/deny host lists, change event model, flap suppression.
+**Scope:** result store, its SQL dialects and drivers, artifact storage and how it is encoded on disk, retention, baseline/approved-state model, normalization rules (URL canonicalization, cache-buster and session-ID stripping), diff engine, script content hashing (SRI-style digests), allow/deny host lists, change event model, flap suppression.
 
 **Out of scope:** long-term analytics warehouse, UI.
 
@@ -482,7 +482,46 @@ Story 4.6 made the driver the seam. It did not make the SQL portable: the schema
 - AC8: The documentation states what a server database does and does not buy. It removes the volume and the file lock. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and duplicate every scheduled scan.
 - AC9: The README contains examples to configure MySQL, Postgres and SQLite.
 
-### Story 4.8 — Retention thins history the way restic does, and never keeps a broken scan over a good one
+### Story 4.8 — Store artifacts compressed
+
+*As an Operator, I want stored evidence compressed on disk so that a long history of bodies and screenshots costs what the evidence is worth rather than what its uncompressed form happens to be.*
+
+Artifacts are the largest thing wsaw writes and the only part that grows without a bound the database imposes. Stored bodies dominate it, and they are text — JavaScript, CSS, HTML, JSON — which is exactly what compresses: a tracker's bundle is 400 KB on disk and under a quarter of that gzipped, and content addressing means one copy per distinct digest, so a site that ships a new build every week accumulates every build. Screenshots are PNG and already compressed; gzipping them buys nothing and would cost CPU on every read forever.
+
+Compression is an encoding of the stored file, not a change to what an artifact is. The reference stays the SHA-256 of the artifact's own bytes, so content addressing, deduplication, the `BodySHA256` a result already records, and every reference inside every result already written keep their meaning, and there is nothing to migrate. Evidence is immutable (Tenet 4); how it is spelled on disk is not part of the evidence.
+
+- AC1: An artifact is compressed when compressing it is worth it and stored as-is when it is not. The decision is made per artifact from the result of compressing it — a PNG that gzip makes no smaller is stored raw — never from a list of kinds or content types, which would be wrong the first time a site serves something the list did not anticipate.
+- AC2: The reference is unchanged: `kind/sha256hex` over the **uncompressed** bytes. A result written before this story names the same artifacts after it, the same content still costs one copy, and the digest a reader verifies is still the digest of what they receive.
+- AC3: A compressed artifact is self-describing on disk. Its name says so (`kind/sha256hex.gz`) and its bytes are an ordinary gzip member, so the artifact directory stays readable with `zcat` and without wsaw. Evidence that only the tool that wrote it can open is worse evidence.
+- AC4: Reading is transparent and covers both forms. `GetArtifact` returns the original bytes whether the stored file is compressed or not, so the API, share links, the inlined bodies of a JSON export and the CLI are unchanged. Artifacts written before this story keep being read where they lie: nothing rewrites, moves, or re-digests a file that is already on disk.
+- AC5: Writing stays crash-safe and idempotent — a temporary file and a rename, as today — and an artifact already stored in **either** form is not written a second time. An upgraded installation must not accumulate a compressed copy of everything it already has.
+- AC6: Inflation is bounded and checked. A stored artifact holds a hostile page's bytes and lives in a directory anything on the host can write to, so it is untrusted input on the way back in: the decompressed size is capped rather than trusted, and what comes out is verified against the digest the reference names. A file that does not match is an error that names the artifact, never bytes served as evidence they are not (Tenet 5, and the rule that a failed observation never looks like a clean result).
+- AC7: `StatArtifact` keeps reporting the artifact's own size, not the stored file's. It exists so the interface can say how large a piece of evidence is and whether it is still there (Story 5.17, AC3), and that number must not change because of how the bytes are packed. It stays a stat-level operation and does not inflate an artifact to answer.
+- AC8: `store.compressArtifacts` turns it off, and the default is on. An operator whose filesystem compresses already, or who wants the files exactly as the browser produced them, sets one key; everyone else gets smaller directories without having to learn that this story happened. Turning it off stops writing compressed artifacts; it never stops reading them.
+- AC9: Compression is standard library only (`compress/gzip`). Better ratios are available from a dependency, and the artifact directory is not where a tool that exists to detect supply-chain change spends its dependency budget (Tenet 19).
+- AC10: What it saved is observable. For every artifact it writes, the store reports the bytes it was handed and the bytes that reached the disk, and both are exposed as metrics, so "is this worth it on my data" is a query rather than a guess (Tenet 8). A deduplicated write reports nothing, because nothing was written.
+- AC11: Tested: a compressible body round-trips and is smaller on disk; an incompressible artifact is stored raw; an artifact written by the previous version still reads and still deduplicates; a truncated member, a wrong-digest member and an oversized one are refused with the reference named; `StatArtifact` reports the same size for both forms; and with the setting off, writes are raw while reads of compressed artifacts still work.
+
+### Story 4.9 — Compress the artifacts already on disk
+
+*As an Operator, I want one command that compresses the artifact directory I already have, so that the saving in Story 4.8 applies to the history I have been keeping and not only to what I capture from now on.*
+
+Story 4.8 deliberately rewrites nothing: an artifact already on disk is read where it lies, forever, because a store that quietly rewrites evidence on upgrade is a store whose evidence nobody can reason about. That is the right default and the wrong end state for an installation with two years of stored bodies, where the saving is entirely in what has already been captured. So the rewrite becomes a command an operator runs deliberately, at a time they choose, rather than a migration that happens to them during a restart.
+
+The risk this story has to handle is that it is the one operation in wsaw that modifies stored evidence. It is bounded by content addressing: an artifact's reference is the digest of its bytes, so a rewrite is verifiable rather than trusted — the command can prove it wrote the same evidence back before it removes anything.
+
+- AC1: `wsaw artifacts compress` walks the configured artifact directory and stores compressed every artifact that compresses, by the same rule a fresh write uses (Story 4.8, AC1). An artifact that is already compressed, or that gzip does not make meaningfully smaller, is left exactly as it is.
+- AC2: References do not change, so nothing else has to. No result is read, rewritten, or even opened: the reference names the artifact's content, and this command changes only how that content is packed (Story 4.8, AC2).
+- AC3: Every rewrite is verified before anything is removed. The compressed file is written, read back, inflated, and checked against the digest in the artifact's own name; only then is the original deleted. Evidence is not replaced on the assumption that a write worked.
+- AC4: The order of operations keeps every artifact readable throughout. The compressed form is created before the raw form is removed, so a reader — the web interface, a share link, an export — finds one of the two at every instant, and the command is safe to run while wsaw is scanning.
+- AC5: Interrupting it is safe and resuming it is free. The work is per artifact and idempotent, so a cancelled run leaves a directory that is half compressed and wholly readable, and running it again finishes the job without redoing what it already did.
+- AC6: A file that is not a wsaw artifact is not touched. The directory is walked, but only names that are a content address are candidates, and a file whose contents do not hash to its own name is reported and skipped rather than rewritten — a corrupt artifact is a finding, not something to repack.
+- AC7: `--dry-run` reports exactly what a real run would do, including the bytes it would save, and writes nothing. An operator deciding whether to spend an hour of I/O on this should not have to spend it first.
+- AC8: The run reports what it did: artifacts scanned, compressed, left alone and why, bytes before and after, and every problem it hit, by reference. A command that rewrites evidence and prints "done" is not accountable for what it did.
+- AC9: It respects the same cancellation contract as everything else — SIGTERM stops it between artifacts, with the summary of the work completed so far.
+- AC10: Tested: a directory of compressible, incompressible, already-compressed, foreign and corrupt files produces the right counts and the right files on disk; every artifact reads back identically through the store afterwards; a dry run changes nothing; a second run is a no-op; and cancellation stops the walk without losing an artifact.
+
+### Story 4.10 — Retention thins history the way restic does, and never keeps a broken scan over a good one
 
 *As an Operator, I want retention expressed as "keep this many hourly, daily, weekly, monthly and yearly scans", so that a year of evidence costs a bounded number of results instead of forcing a choice between keeping everything and losing last spring.*
 

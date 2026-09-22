@@ -46,7 +46,7 @@ type Config struct {
 	// legacyRetention names the superseded retention keys the file actually
 	// contained. It cannot be read off the struct: maxPerSeries carries a
 	// shipped default, so a zero value there means "not written down" and a
-	// non-zero one does not mean "written down" (Story 4.8, AC7).
+	// non-zero one does not mean "written down" (Story 4.10, AC7).
 	legacyRetention []string
 }
 
@@ -247,14 +247,20 @@ type Store struct {
 	// that.
 	RetryBackoff Duration `yaml:"retryBackoff,omitempty"`
 
-	Path         string   `yaml:"path,omitempty"`
-	ArtifactDir  string   `yaml:"artifactDir,omitempty"`
+	Path        string `yaml:"path,omitempty"`
+	ArtifactDir string `yaml:"artifactDir,omitempty"`
+	// CompressArtifacts stores screenshots and bodies gzipped where that
+	// makes them smaller. On unless set to false; reading is unaffected
+	// either way, so it can be turned off without stranding anything
+	// already written (Story 4.8).
+	CompressArtifacts *bool `yaml:"compressArtifacts,omitempty"`
+
 	OutputDir    string   `yaml:"outputDir,omitempty"`
 	MaxAge       Duration `yaml:"maxAge,omitempty"`
 	MaxPerSeries int      `yaml:"maxPerSeries,omitempty"`
 
 	// Keep replaces MaxAge and MaxPerSeries with a thinning policy: dense
-	// recent history, one scan per period further back (Story 4.8). The two
+	// recent history, one scan per period further back (Story 4.10). The two
 	// forms are never combined, because a count limit left over from an
 	// older file would quietly defeat a policy asked to keep five years.
 	Keep *Keep `yaml:"keep,omitempty"`
@@ -326,6 +332,16 @@ func (k Keep) location() (*time.Location, error) {
 func (k Keep) Empty() bool {
 	return k.Last <= 0 && k.Within <= 0 &&
 		k.Hourly <= 0 && k.Daily <= 0 && k.Weekly <= 0 && k.Monthly <= 0 && k.Yearly <= 0
+}
+
+// ArtifactCompression returns the store's artifact compression mode, which is
+// on unless it was explicitly turned off.
+func (s Store) ArtifactCompression() string {
+	if s.CompressArtifacts != nil && !*s.CompressArtifacts {
+		return store.CompressionNone
+	}
+
+	return store.CompressionGzip
 }
 
 // StoreDriver returns the configured driver, defaulting to SQLite.
