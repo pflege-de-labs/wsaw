@@ -1,0 +1,9 @@
+%{ if letsencrypt_email != "" ~}
+{
+	email ${letsencrypt_email}
+}
+
+%{ endif ~}
+${domain_name} {
+	reverse_proxy 127.0.0.1:${wsaw_port}
+}

@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "[stub podman] $*" >&2
+exit 0

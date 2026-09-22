@@ -1,0 +1,20 @@
+#!/bin/bash
+# Stands in for the real AWS CLI inside the smoke test container, which has
+# no real AWS account behind it. Placed ahead of the real thing on PATH, so
+# user_data.sh's own `command -v aws` check finds this instead of installing
+# the genuine CLI — the genuine installer is well-trodden AWS documentation
+# and not what this test exists to catch bugs in.
+echo "[stub aws] $*" >&2
+
+case "$1 $2" in
+"ssm get-parameter")
+  echo "TEST-SECRET-VALUE"
+  ;;
+"s3 cp")
+  # user_data.sh calls: aws s3 cp <src> <dest> --region <region>
+  printf '#!/bin/sh\necho fake-wsaw-binary\n' >"$4"
+  chmod +x "$4"
+  ;;
+esac
+
+exit 0

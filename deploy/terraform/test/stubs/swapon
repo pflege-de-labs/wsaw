@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "[stub swapon] $*" >&2
+exit 0
