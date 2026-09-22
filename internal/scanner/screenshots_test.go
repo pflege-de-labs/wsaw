@@ -39,7 +39,7 @@ func newScannerWithArtifacts(t *testing.T, info browser.Info, resolverRules stri
 
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{Path: dir + "/wsaw.db", ArtifactDir: dir + "/artifacts"})
+	st, err := store.Open(t.Context(), store.Options{Path: dir + "/wsaw.db", ArtifactDir: dir + "/artifacts"})
 	if err != nil {
 		t.Fatal(err)
 	}

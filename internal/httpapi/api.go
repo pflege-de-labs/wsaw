@@ -1,13 +1,12 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/diff"
@@ -80,9 +79,18 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := s.deps.Store.Ping(storeCtx); err != nil {
+		// The class goes in the body and the detail goes to the log. This
+		// endpoint answers every caller when no API token is configured, which
+		// is the default, and the store's own account of the failure names the
+		// artifact bucket or the directory it used to be — a deployment's
+		// filesystem layout is not something to publish to whoever can reach
+		// the port (Tenet 19). An operator gets the whole error in the log
+		// line beside it.
+		s.deps.Logger.Warn("readiness: the store is not reachable", "error", err)
+
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			fieldReady:  false,
-			fieldReason: err.Error(),
+			fieldReason: storeReadinessReason(err),
 		})
 
 		return
@@ -108,6 +116,26 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		fieldReason:    reason,
 		"staleTargets": stale,
 	})
+}
+
+// storeReadinessReason names which half of the store is not answering, and
+// nothing else.
+//
+// Which half is worth publishing: it is the difference between a database
+// outage and a bucket outage, and it tells an operator or an orchestrator
+// where to look without naming a path, a host or a bucket. Anything the store
+// could not classify reads as the store as a whole.
+func storeReadinessReason(err error) string {
+	switch {
+	case errors.Is(err, store.ErrBucketUnreachable):
+		return store.ErrBucketUnreachable.Error()
+
+	case errors.Is(err, store.ErrDatabaseUnreachable):
+		return store.ErrDatabaseUnreachable.Error()
+
+	default:
+		return "the result store is not reachable"
+	}
 }
 
 // TargetView is a target plus its current state, which is what the dashboard
@@ -247,6 +275,8 @@ func (s *Server) targetViews(ranking severityView) []TargetView {
 	now := time.Now()
 	live := s.running()
 
+	var failed storeReadFailures
+
 	for _, t := range s.deps.Targets() {
 		view := TargetView{
 			Name:         t.Name,
@@ -258,12 +288,31 @@ func (s *Server) targetViews(ranking severityView) []TargetView {
 		for _, mode := range t.ConsentModes {
 			sv := SeriesView{Mode: mode}
 
-			if summaries, err := s.deps.Store.ListResults(t.Name, mode, 1); err == nil && len(summaries) > 0 {
+			summaries, err := s.deps.Store.ListResults(t.Name, mode, 1)
+
+			switch {
+			case err != nil:
+				failed.note("last scan", t.Name, mode, err)
+			case len(summaries) > 0:
 				sv.LastScan = &summaries[0]
 			}
 
+			// The whole baseline, not merely whether there is one: the
+			// severity this page ranks by is computed against the approved
+			// result, so the document is needed here anyway and HasBaseline
+			// would be a second read (Story 5.30).
+			//
+			// A store that cannot answer leaves the badge off, exactly as a
+			// failed read did before — but it says so now, see
+			// storeReadFailures for why that is not the same as ignoring it.
 			baseline, err := s.deps.Store.GetBaseline(t.Name, mode)
-			sv.HasBaseline = err == nil
+
+			switch {
+			case err == nil:
+				sv.HasBaseline = true
+			case !errors.Is(err, store.ErrNotFound):
+				failed.note("baseline", t.Name, mode, err)
+			}
 
 			if sv.LastScan != nil {
 				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, ranking)
@@ -278,7 +327,48 @@ func (s *Server) targetViews(ranking severityView) []TargetView {
 		out = append(out, view)
 	}
 
+	failed.log(s.deps.Logger)
+
 	return out
+}
+
+// storeReadFailures collects the reads of the targets page that the store could
+// not answer, so that the page reports them once rather than per series.
+//
+// The page is built from one small read per series, and a store that cannot
+// answer them renders a target list on which nothing has ever been scanned and
+// nothing has ever been approved — which is what a deployment that has genuinely
+// approved nothing looks like (Tenet 5). The reads are local rows and a failure
+// is close to unthinkable, which is exactly why one would be reported nowhere
+// if it were not reported here: an operator comparing a screenshot against the
+// truth would have no line in the log to explain the difference.
+//
+// One line per render and not one per series, for the reason noSigning and
+// signingWarned exist: a bucket that is failing fails every series of every
+// target, and a hundred identical Warn lines per page view buries the rest of
+// the log. The count is what says how wide the failure is, and the first error
+// is what says what it was.
+type storeReadFailures struct {
+	count int
+	what  string
+	first error
+}
+
+func (f *storeReadFailures) note(what, target string, mode model.ConsentMode, err error) {
+	f.count++
+
+	if f.first == nil {
+		f.first, f.what = err, what+" of "+target+"/"+string(mode)
+	}
+}
+
+func (f *storeReadFailures) log(logger *slog.Logger) {
+	if f.count == 0 {
+		return
+	}
+
+	logger.Warn("the store could not answer what the targets page shows, so some series are rendered as never scanned and never approved",
+		"reads", f.count, "first", f.what, "error", f.first)
 }
 
 // lastScanSeverity is Story 5.8 AC1's "open findings by severity", computed
@@ -473,117 +563,6 @@ func (s *Server) bodyLoader(r *http.Request) report.BodyLoader {
 	}
 }
 
-// handleArtifact serves a stored body or screenshot.
-//
-// Without this route a stored artifact was unreachable: capture wrote it, the
-// result named it, and nothing could read it back. The reference is validated
-// by the store, which confines it to the artifact directory (Tenet 9).
-//
-// How it comes back depends on what it is, and the distinction is the whole
-// of Story 5.17's AC5. A response body *is* the scanned page's bytes, so it
-// is served as an opaque attachment and never as anything a browser will
-// render — rendering it on wsaw's own origin would hand a hostile page a
-// same-origin script context. A screenshot is a PNG that Chrome produced
-// under wsaw's control: the page influenced its pixels, not its bytes, so it
-// may be shown as an image. As an image and nothing else.
-func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
-	ref := r.PathValue("ref")
-	if ref == "" {
-		writeJSONError(w, http.StatusBadRequest, "an artifact reference is required")
-
-		return
-	}
-
-	s.serveArtifact(w, r, ref)
-}
-
-// serveArtifact writes one stored artifact with the headers its kind
-// deserves. It is shared by the authenticated route and by the share-link
-// route, so a shared reader cannot be served bytes under weaker headers than
-// an operator would get.
-func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, ref string) {
-	data, err := s.deps.Store.GetArtifact(ref)
-	if err != nil {
-		writeStoreError(w, err)
-
-		return
-	}
-
-	// Two independent conditions, deliberately. The kind comes from wsaw's own
-	// code rather than from a page, and the magic bytes are the file itself:
-	// requiring both means a response body cannot be served as an image even
-	// if some future caller passed a reference that claimed to be one.
-	inline := !wantsDownload(r) && isScreenshotRef(ref) && isPNG(data)
-
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if inline {
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Content-Disposition", `inline; filename="`+safeArtifactFilename(ref, "png")+`"`)
-		// An image and nothing else: no script, no styles, no subresources,
-		// whatever a browser might otherwise try to do with these bytes.
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox")
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+safeArtifactFilename(ref, "bin")+`"`)
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
-	}
-
-	// #nosec G705 -- a body's bytes are page-controlled, which is why the
-	// headers above make them inert: an opaque type, an attachment
-	// disposition, nosniff, and a sandbox policy. A screenshot is wsaw's own
-	// PNG and is served as an image with an equally strict policy. The
-	// analyser sees the taint and not the mitigation; the tests in
-	// bodies_test.go and screenshots_test.go see the mitigation.
-	if _, err := w.Write(data); err != nil {
-		s.deps.Logger.Error("writing artifact", "error", err)
-	}
-}
-
-// wantsDownload reports whether the caller asked for the file rather than a
-// rendering of it, so a screenshot can still be saved as evidence.
-func wantsDownload(r *http.Request) bool {
-	switch r.URL.Query().Get("download") {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
-// isScreenshotRef reports whether a reference names a screenshot. The kind is
-// the first path segment and is written by wsaw, never by a scanned page.
-func isScreenshotRef(ref string) bool {
-	kind, _, ok := strings.Cut(ref, "/")
-
-	return ok && strings.HasPrefix(kind, "screenshot")
-}
-
-// isPNG checks the file's own magic bytes, so what is served as an image is
-// an image regardless of what its reference claimed.
-func isPNG(data []byte) bool {
-	return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
-}
-
-// safeArtifactFilename builds a download name from a reference. References
-// are content-addressed — a kind and a hex digest — but the value still
-// arrives from the request, so it is reduced to characters that cannot break
-// the header.
-func safeArtifactFilename(ref, ext string) string {
-	out := make([]rune, 0, len(ref))
-
-	for _, r := range ref {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			out = append(out, r)
-		default:
-			out = append(out, '-')
-		}
-	}
-
-	return "wsaw-" + string(out) + "." + ext
-}
-
 func (s *Server) handleResultHAR(w http.ResponseWriter, r *http.Request) {
 	res, ok := s.loadResult(w, r)
 	if !ok {
@@ -632,16 +611,42 @@ func (s *Server) handleResultMarkdown(w http.ResponseWriter, r *http.Request) {
 
 // diffFor compares a result against its baseline, falling back to the
 // previous scan.
+//
+// The one failure it does not shrug off is a previous result whose document
+// has left the bucket. Treating that as "there is nothing earlier" would render
+// the page a first-ever scan renders, and a reader would have no way to know
+// that a comparison was owed and could not be made (Story 8.2, AC5; Tenet 5).
 func (s *Server) diffFor(res *model.Result) *diff.Report {
-	var baseline *model.Result
+	var (
+		baseline *model.Result
+		gone     bool
+	)
 
 	if b, err := s.deps.Store.GetBaseline(res.Target, res.ConsentMode); err == nil {
 		baseline = b.Result
-	} else if prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID); err == nil {
-		baseline = prev
+	} else {
+		prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID)
+
+		switch {
+		case err == nil:
+			baseline = prev
+
+		case errors.Is(err, store.ErrEvidenceGone):
+			gone = true
+
+			s.deps.Logger.Error("the result this one should be compared against names evidence the artifact bucket no longer holds",
+				"target", res.Target, "consent_mode", string(res.ConsentMode),
+				"scan_id", res.ScanID, "error", err)
+		}
 	}
 
-	return diff.Compare(baseline, res, diff.Options{})
+	rep := diff.Compare(baseline, res, diff.Options{})
+
+	if gone {
+		rep.Reason = diff.ReasonEvidenceGone
+	}
+
+	return rep
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
@@ -886,13 +891,21 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
 
-		return
-	}
+	case errors.Is(err, store.ErrEvidenceGone):
+		// 410 rather than 404 or 500. The scan is in the index, so "there is no
+		// such result" would be untrue; wsaw is working, so a server error
+		// would be untrue as well. What happened is that the evidence this
+		// result names has been deleted, and Gone is the answer that says so
+		// (Story 8.2, AC5).
+		writeJSONError(w, http.StatusGone, err.Error())
 
-	writeJSONError(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // safeFilename builds a download filename from data that ultimately comes

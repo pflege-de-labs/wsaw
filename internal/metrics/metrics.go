@@ -37,16 +37,24 @@ type Registry struct {
 	browserRestarts int64
 	notifyFailures  int64
 
-	// artifactBytes is what the store was handed, artifactStoredBytes what
+	// artifactBytesIn is what the store was handed, artifactStoredBytes what
 	// it wrote. Together they report what compression saved (Story 4.8).
-	artifactBytes       int64
+	artifactBytesIn     int64
 	artifactStoredBytes int64
 
 	storeRetries    int64
-	resultsPruned   int64
 	scanRetries     int64
 	retriesExceeded int64
 	notifySent      int64
+
+	// What retention reclaimed. The bytes matter as much as the counts: a
+	// bucket that now holds every scan's document is the largest thing wsaw
+	// owns, and whether retention is actually shrinking it is only visible
+	// from outside (Story 8.5, AC5).
+	resultsPruned      int64
+	artifactsDeleted   int64
+	artifactBytesFreed int64
+	artifactDeleteErr  int64
 
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
@@ -193,7 +201,7 @@ func (r *Registry) ArtifactStored(original, stored int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.artifactBytes += original
+	r.artifactBytesIn += original
 	r.artifactStoredBytes += stored
 }
 
@@ -216,6 +224,38 @@ func (r *Registry) ScanRetriesExhausted() {
 	defer r.mu.Unlock()
 
 	r.retriesExceeded++
+}
+
+// Pruned records what one retention run removed: rows dropped from the
+// history, artifacts deleted from the bucket, and the bytes that reclaimed.
+//
+// Retention is the only thing that ever removes anything from the bucket, so
+// these three are how an operator tells a store that is being kept in bounds
+// from one that is quietly growing (Story 8.5, AC5).
+func (r *Registry) Pruned(results, artifacts int, bytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.resultsPruned += int64(results)
+	r.artifactsDeleted += int64(artifacts)
+	r.artifactBytesFreed += bytes
+}
+
+// ArtifactDeletionsFailed counts artifacts a bucket refused to delete.
+//
+// A failed deletion does not fail the prune — the key is left for the next
+// sweep (AC4) — which is exactly why it needs a counter: without one, a bucket
+// that has stopped accepting deletes looks like a bucket with nothing to
+// delete.
+func (r *Registry) ArtifactDeletionsFailed(n int) {
+	if n <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.artifactDeleteErr += int64(n)
 }
 
 // SetQueueDepth records how many scans are waiting.
@@ -333,8 +373,17 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", float64(r.resultsPruned))
 	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
 	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
-	writeGaugeValue(&b, "wsaw_artifact_bytes_total", "Artifact bytes handed to the store, before compression.", float64(r.artifactBytes))
-	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total", "Artifact bytes actually written to storage.", float64(r.artifactStoredBytes))
+	writeGaugeValue(&b, "wsaw_artifacts_deleted_total",
+		"Artifacts deleted from the bucket because no stored result referenced them any more.",
+		float64(r.artifactsDeleted))
+	writeGaugeValue(&b, "wsaw_artifact_bytes_freed_total", "Bytes reclaimed from the artifact bucket by retention.",
+		float64(r.artifactBytesFreed))
+	writeGaugeValue(&b, "wsaw_artifact_deletions_failed_total",
+		"Artifact deletions the bucket refused, left for the next sweep.", float64(r.artifactDeleteErr))
+	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
+		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
+	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
+		"Artifact bytes actually written to the bucket.", float64(r.artifactStoredBytes))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))

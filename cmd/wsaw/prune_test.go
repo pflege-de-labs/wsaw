@@ -31,7 +31,7 @@ func writeRetentionConfig(t *testing.T, storeBlock string) string {
 func storedScanIDs(t *testing.T, path string) []string {
 	t.Helper()
 
-	st, err := store.Open(store.Options{Path: path, ArtifactDir: filepath.Join(filepath.Dir(path), "artifacts")})
+	st, err := store.Open(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(filepath.Dir(path), "artifacts")})
 	if err != nil {
 		t.Fatalf("opening the store: %v", err)
 	}

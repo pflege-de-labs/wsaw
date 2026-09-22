@@ -126,7 +126,7 @@ func TestAdHocCooldownIsSkippedWithoutAMinimumInterval(t *testing.T) {
 	}
 }
 
-func seedResult(t *testing.T, st *store.Store, target string, mode model.ConsentMode, at time.Time) {
+func seedResult(t *testing.T, st store.Store, target string, mode model.ConsentMode, at time.Time) {
 	t.Helper()
 
 	res := &model.Result{

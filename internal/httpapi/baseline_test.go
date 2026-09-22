@@ -151,7 +151,7 @@ func TestABaselineWhoseResultWasPrunedIsNotLinked(t *testing.T) {
 	approve(t, f, model.ConsentReject, ids[0])
 
 	// Retention keeps the newest scan only; the baseline's own result goes.
-	if _, err := f.store.Prune(time.Now(), store.Retention{MaxPerSeries: 1}); err != nil {
+	if _, err := f.store.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 1}); err != nil {
 		t.Fatal(err)
 	}
 

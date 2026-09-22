@@ -18,7 +18,7 @@ import (
 // that reads as "nothing to report" when the truth is "cannot tell" (Tenet
 // 5).
 //
-// Deps.Store is a concrete *store.Store rather than an interface, so closing
+// Deps.Store is a concrete store.Store rather than an interface, so closing
 // it is the injection point available. Every read then fails with "sql:
 // database is closed", which is exactly the shape of a store that is down.
 

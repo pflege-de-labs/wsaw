@@ -298,7 +298,7 @@ func TestLastScanWithNoStoreReportsUnknown(t *testing.T) {
 func TestLastScanOnAStoreErrorReportsUnknownRatherThanFailing(t *testing.T) {
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{
+	st, err := store.Open(t.Context(), store.Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
 		ArtifactDir: filepath.Join(dir, "artifacts"),
 	})
@@ -507,7 +507,7 @@ func TestOpenStoreDefaultsPathAndArtifactDir(t *testing.T) {
 
 	a := &App{Config: config.New(), Logger: discardLogger(), Metrics: metrics.New("test")}
 
-	if err := a.openStore(); err != nil {
+	if err := a.openStore(t.Context()); err != nil {
 		t.Fatalf("openStore: %v", err)
 	}
 
@@ -525,7 +525,7 @@ func TestOpenStoreFailsOnAnUnusablePath(t *testing.T) {
 
 	a := &App{Config: cfg, Logger: discardLogger(), Metrics: metrics.New("test")}
 
-	if err := a.openStore(); err == nil {
+	if err := a.openStore(t.Context()); err == nil {
 		t.Fatal("openStore accepted a path that is a directory")
 	}
 }
@@ -537,7 +537,7 @@ func TestOpenServerStoreFailsOnAnUnresolvableDSN(t *testing.T) {
 
 	a := &App{Config: cfg, Logger: discardLogger(), Metrics: metrics.New("test"), Secrets: &secret.Registry{}}
 
-	err := a.openStore()
+	err := a.openStore(t.Context())
 	if err == nil {
 		t.Fatal("openStore accepted a DSN it could not resolve")
 	}
@@ -557,7 +557,7 @@ func TestOpenServerStoreRegistersTheDSNAsASecretEvenWhenOpenFails(t *testing.T) 
 
 	// The connection itself will fail (nothing is listening), but the DSN
 	// must already be registered for redaction by the time that happens.
-	_ = a.openStore()
+	_ = a.openStore(t.Context())
 
 	if scrubbed := secrets.Scrub("dsn was postgres://user:s3cret@127.0.0.1:1/db"); strings.Contains(scrubbed, "s3cret") {
 		t.Errorf("the DSN was not registered for redaction: %q", scrubbed)
@@ -651,7 +651,7 @@ func TestNewUnwindsTheStoreWhenRuleLoadingFails(t *testing.T) {
 
 	// The store New opened before rule-loading failed must not be left open:
 	// re-opening the same path must succeed rather than finding it locked.
-	st, openErr := store.Open(store.Options{
+	st, openErr := store.Open(t.Context(), store.Options{
 		Path:        cfg.Store.Path,
 		ArtifactDir: filepath.Join(filepath.Dir(cfg.Store.Path), "artifacts"),
 	})

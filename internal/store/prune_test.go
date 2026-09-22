@@ -18,7 +18,7 @@ func terminated(id string, at time.Time, term model.TerminationReason) *model.Re
 	return res
 }
 
-func storedIDs(t *testing.T, s *store.Store) []string {
+func storedIDs(t *testing.T, s store.Store) []string {
 	t.Helper()
 
 	got, err := s.ListResults("site", model.ConsentReject, 0)
@@ -53,7 +53,7 @@ func TestPruneKeepPolicyThinsHistory(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(now, store.Retention{Keep: &store.Keep{Daily: 2, Weekly: 3, Location: time.UTC}})
+	stats, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Daily: 2, Weekly: 3, Location: time.UTC}})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPruneKeepsTheUsableScanOfADay(t *testing.T) {
 		}
 	}
 
-	if _, err := s.Prune(now, store.Retention{Keep: &store.Keep{Daily: 1, Location: time.UTC}}); err != nil {
+	if _, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Daily: 1, Location: time.UTC}}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
@@ -124,16 +124,16 @@ func TestPrunePlanDeletesNothing(t *testing.T) {
 		}
 	}
 
-	plans, err := s.PrunePlan(now, store.Retention{Keep: &store.Keep{Last: 2}})
+	stats, err := s.PlanPrune(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 2}})
 	if err != nil {
-		t.Fatalf("PrunePlan: %v", err)
+		t.Fatalf("PlanPrune: %v", err)
 	}
 
-	if len(plans) != 1 {
-		t.Fatalf("planned %d series, want 1", len(plans))
+	if len(stats.Plans) != 1 {
+		t.Fatalf("planned %d series, want 1", len(stats.Plans))
 	}
 
-	plan := plans[0]
+	plan := stats.Plans[0]
 	if plan.Kept() != 2 || plan.Deleted() != 3 {
 		t.Errorf("plan keeps %d and deletes %d, want 2 and 3", plan.Kept(), plan.Deleted())
 	}
@@ -166,13 +166,13 @@ func TestPruneIsIdempotent(t *testing.T) {
 
 	r := store.Retention{Keep: &store.Keep{Last: 1, Daily: 2, Location: time.UTC}}
 
-	if _, err := s.Prune(now, r); err != nil {
+	if _, err := s.Prune(t.Context(), now, r); err != nil {
 		t.Fatalf("first Prune: %v", err)
 	}
 
 	first := storedIDs(t, s)
 
-	stats, err := s.Prune(now, r)
+	stats, err := s.Prune(t.Context(), now, r)
 	if err != nil {
 		t.Fatalf("second Prune: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestPruneDeletesInBatches(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(now, store.Retention{Keep: &store.Keep{Last: 1}})
+	stats, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 1}})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestPruneKeepsEverySeriesSeparate(t *testing.T) {
 		}
 	}
 
-	if _, err := s.Prune(now, store.Retention{Keep: &store.Keep{Last: 1}}); err != nil {
+	if _, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 1}}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
