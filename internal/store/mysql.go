@@ -96,29 +96,6 @@ func (mysqlDialect) upsert(_, update []string) string {
 	return " as new on duplicate key update " + strings.Join(sets, ", ")
 }
 
-// pruneByCount cannot use the portable form. MySQL refuses to select from the
-// table a DELETE targets (error 1093), and its optimizer merges a derived
-// table back into the outer query unless something blocks it. A multi-table
-// DELETE against a joined derived table is the form that does not depend on
-// optimizer behaviour.
-func (mysqlDialect) pruneByCount() string {
-	return `
-		delete r from results r
-		join (
-			select target, consent_mode, scan_id from (
-				select target, consent_mode, scan_id, row_number() over (
-					partition by target, consent_mode
-					order by started_at desc, scan_id desc
-				) as row_rank
-				from results
-			) as ranked
-			where row_rank > ?
-		) as doomed
-		on  r.target       = doomed.target
-		and r.consent_mode = doomed.consent_mode
-		and r.scan_id      = doomed.scan_id`
-}
-
 // migrations mirror the SQLite schema, with the three MySQL-specific choices
 // this dialect exists to make.
 func (mysqlDialect) migrations() [][]string {

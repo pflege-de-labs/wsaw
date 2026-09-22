@@ -71,8 +71,6 @@ type dialect interface {
 	ddlIsTransactional() bool
 	// upsert builds the tail of an insert that overwrites an existing row.
 	upsert(conflict, update []string) string
-	// pruneByCount deletes all but the newest keep results per series.
-	pruneByCount() string
 	// isTransient reports whether an error is worth another attempt: a
 	// dropped connection, a restarted server, a deadlock. A constraint
 	// violation or a malformed statement is not, and retrying one only makes
@@ -198,21 +196,3 @@ var (
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{"scan_id", "approved_at", "document"}
 )
-
-// pruneByCountPortable deletes all but the newest keep results per series,
-// identified by primary key rather than by any physical row identifier.
-//
-// SQLite has rowid and PostgreSQL has ctid, but neither is the same concept
-// and MySQL has neither. The primary key is the identity the schema already
-// declares, so ranking on it works everywhere and needs no dialect at all.
-const pruneByCountPortable = `
-	delete from results where (target, consent_mode, scan_id) in (
-		select target, consent_mode, scan_id from (
-			select target, consent_mode, scan_id, row_number() over (
-				partition by target, consent_mode
-				order by started_at desc, scan_id desc
-			) as row_rank
-			from results
-		) as ranked
-		where row_rank > ?
-	)`

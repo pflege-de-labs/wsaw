@@ -499,13 +499,28 @@ func (r *Result) OK() bool {
 
 // Truncated reports whether capture stopped before the page went idle, which
 // means the asset list may be incomplete.
-func (r *Result) Truncated() bool {
-	switch r.Termination {
+func (r *Result) Truncated() bool { return r.Termination.Truncated() }
+
+// Truncated reports whether this termination means capture stopped before the
+// page went idle.
+//
+// It is on the reason rather than only on the result because retention has to
+// rank a scan it has not read: the results table carries the termination as a
+// column, and reading every document back to decide what to prune would cost
+// the whole store (Story 4.10, AC5).
+func (t TerminationReason) Truncated() bool {
+	switch t {
 	case TermTimeout, TermRequestCap, TermByteCap:
 		return true
 	default:
 		return false
 	}
+}
+
+// Failed reports whether this termination means no asset list was produced at
+// all, as opposed to one that may be short.
+func (t TerminationReason) Failed() bool {
+	return t == TermError || t == TermSkipped
 }
 
 // captureFailures are the Chrome network errors that mean wsaw failed to

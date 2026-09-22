@@ -75,6 +75,9 @@ func run(ctx context.Context, args []string) int {
 	case "artifacts":
 		err = cmdArtifacts(ctx, rest)
 
+	case "prune":
+		err = cmdPrune(ctx, rest)
+
 	case "share":
 		err = cmdShare(ctx, rest)
 
@@ -130,6 +133,7 @@ Commands:
   rules          Inspect or test consent rules
   config         Validate and print the effective configuration
   artifacts      Operate on stored evidence: artifacts compress
+  prune          Apply retention once; --dry-run shows what it would delete
   share          Mint an expiring link to one scan result
   ui             Open the web interface in a browser, already signed in
   version        Print build information

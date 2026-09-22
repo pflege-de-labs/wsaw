@@ -603,12 +603,27 @@ func (a *App) RunningScans() []scanner.Running {
 	return a.Scanner.Running()
 }
 
-// Retention returns the configured retention policy.
-func (a *App) Retention() store.Retention {
+// Retention returns the configured retention policy: the thinning policy
+// where one is configured, and the two bounds it replaces otherwise.
+//
+// The timezone has already been validated at load time, so a policy that
+// cannot be resolved here means the config was built in Go. Rather than guess
+// a zone — which would cut days in the wrong place and delete the wrong
+// scans — the error is returned and the caller declines to prune.
+func (a *App) Retention() (store.Retention, error) {
+	if k := a.Config.Store.Keep; k != nil {
+		policy, err := k.Policy()
+		if err != nil {
+			return store.Retention{}, fmt.Errorf("store.keep: %w", err)
+		}
+
+		return store.Retention{Keep: &policy}, nil
+	}
+
 	return store.Retention{
 		MaxAge:       a.Config.Store.MaxAge.Duration(),
 		MaxPerSeries: a.Config.Store.MaxPerSeries,
-	}
+	}, nil
 }
 
 // closeAfterFailedStart unwinds a partial startup. The original error is what
@@ -709,8 +724,14 @@ func DefaultConfigPaths() []string {
 // for months grows without bound (NFR §1); with it, retention is observable
 // because every prune is logged.
 func (a *App) PruneLoop(ctx context.Context) {
-	retention := a.Retention()
-	if retention.MaxAge <= 0 && retention.MaxPerSeries <= 0 {
+	retention, err := a.Retention()
+	if err != nil {
+		a.Logger.Error("retention is not usable; no history will be pruned", "error", err)
+
+		return
+	}
+
+	if !retention.Active() {
 		return
 	}
 
@@ -726,15 +747,38 @@ func (a *App) PruneLoop(ctx context.Context) {
 
 		case now := <-ticker.C:
 			stats, err := a.Store.Prune(now, retention)
+
+			// Stats are reported even on failure: a prune that deleted a
+			// thousand results and then lost the database deleted them, and
+			// a log line that says nothing would be the quiet lie Tenet 5
+			// forbids.
+			a.recordPrune(stats)
+
 			if err != nil {
-				a.Logger.Error("pruning old results failed", "error", err)
+				a.Logger.Error("pruning old results failed",
+					"error", err, "results_deleted", stats.ResultsDeleted)
 
 				continue
 			}
 
 			if stats.ResultsDeleted > 0 {
-				a.Logger.Info("pruned old results", "results_deleted", stats.ResultsDeleted)
+				a.Logger.Info("pruned old results",
+					"results_deleted", stats.ResultsDeleted,
+					"results_kept", stats.ResultsKept,
+					"series_pruned", stats.SeriesPruned,
+					"oldest_kept", stats.OldestKept.Format(time.RFC3339))
 			}
 		}
 	}
+}
+
+// recordPrune counts what a prune removed. A retention policy that is
+// suddenly deleting far more than usual is the kind of change an operator
+// wants to see on a graph rather than to discover in a missing history.
+func (a *App) recordPrune(stats store.PruneStats) {
+	if a.Metrics == nil || stats.ResultsDeleted == 0 {
+		return
+	}
+
+	a.Metrics.ResultsPruned(stats.ResultsDeleted)
 }

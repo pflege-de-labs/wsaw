@@ -212,8 +212,44 @@ store:
   # either way, so nothing is stranded by changing it.
   compressArtifacts: true
 
+  # Retention, the blunt form: drop anything older than maxAge, and keep at
+  # most maxPerSeries scans of each target and consent mode. Both cut at a
+  # line, so a target scanned four times a day fills 200 scans in seven weeks
+  # and the age limit never gets to fire.
   maxAge: 2160h  # 90 days; Go duration units, so hours
   maxPerSeries: 200
+
+  # Retention, the thinning form, in the terms restic's forget uses. It
+  # replaces maxAge and maxPerSeries — configuring both is an error rather
+  # than a precedence to remember, so delete the two lines above when you
+  # enable this.
+  #
+  # Every rule only keeps, so they combine by union and adding one can never
+  # shrink what is stored. Each of hourly/daily/weekly/monthly/yearly keeps
+  # one scan in each of the newest N periods that hold a scan at all, and the
+  # scan it keeps is the most usable one in that period, not simply the
+  # newest: a day whose last scan hit the hard timeout keeps the day's clean
+  # scan instead, so a year-old record does not read like a quiet day. A
+  # period holding nothing but failures still keeps one — that wsaw tried and
+  # what came of it is evidence too.
+  #
+  # A policy made only of counts never empties a series; "within" is an
+  # explicit age limit and may.
+  #
+  # keep:
+  #   last: 10        # the newest 10 scans, whenever they ran
+  #   within: 72h     # everything from the last three days
+  #   hourly: 24
+  #   daily: 14
+  #   weekly: 8
+  #   monthly: 12
+  #   yearly: 3
+  #   timezone: Europe/Berlin  # where a day begins; empty uses the host zone
+  #
+  # A policy change applies to everything already stored the next time wsaw
+  # prunes, and deleting evidence cannot be undone:
+  #
+  #   wsaw prune --dry-run --all
   writeReport: false
   writeHar: false
 

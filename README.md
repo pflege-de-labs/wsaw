@@ -103,6 +103,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw rules list` / `rules test <url>` | Inspect consent rules, or test them against a live page |
 | `wsaw config` | Print the *resolved* configuration, or `--check` to validate |
 | `wsaw artifacts compress` | Compress the artifacts already on disk, in place |
+| `wsaw prune` | Apply retention once; `--dry-run` shows what it would delete |
 | `wsaw share` | Mint an expiring link to one scan result |
 | `wsaw ui` | Open the web interface in a browser, already signed in |
 | `wsaw version` | Build information |
@@ -715,6 +716,54 @@ store:
 ```
 
 A permanent failure, such as a constraint violation, is never retried: that would only make it slower and hide the cause. Every retry is logged and counted as `wsaw_store_retries_total`, because a database that flaps while each scan quietly succeeds on the second attempt is worth knowing about before it becomes an outage.
+
+### How long results are kept
+
+Retention has two forms. The blunt one draws a line and drops everything past it:
+
+```yaml
+store:
+  maxAge: 2160h      # 90 days
+  maxPerSeries: 200  # newest 200 scans of each target and consent mode
+```
+
+That is enough for one target scanned nightly and wrong for anything busier: four scans a day fill 200 in seven weeks, so the age limit never fires and the scan that would show when a tracker first appeared is the one that goes.
+
+The thinning form keeps a history that gets sparser with age, the way `restic forget` does:
+
+```yaml
+store:
+  keep:
+    last: 10        # the newest 10 scans, whenever they ran
+    within: 72h     # everything from the last three days
+    hourly: 24
+    daily: 14
+    weekly: 8
+    monthly: 12
+    yearly: 3
+    timezone: Europe/Berlin  # where a day begins; empty uses the host zone
+```
+
+`keep` **replaces** `maxAge` and `maxPerSeries`. Configuring both is a startup error rather than a precedence to remember — a count limit left over from an older file would cut a policy asked to keep five years back to a few hundred scans, and it would do it silently.
+
+Three things are worth knowing about how it decides:
+
+- **Rules only keep.** They combine by union, so adding `yearly: 5` can never shrink what is stored. Each of `hourly` through `yearly` keeps one scan in each of the newest N periods that hold a scan at all; empty periods are not counted, so `monthly: 12` means twelve months that were scanned, not the last twelve months on the calendar.
+- **A period keeps its most usable scan, not simply its newest.** A scan that ran to idle beats one cut short by the clock or a cap, which in turn beats one that errored or was skipped. A day whose 23:50 scan hit the hard timeout keeps the day's clean 06:00 scan instead — otherwise the record left a year later reads like a quiet day rather than like a failed observation. A period holding nothing but failures still keeps one: that wsaw tried, and what came of it, is evidence too.
+- **A policy of counts alone never empties a series.** `within` and `maxAge` are explicit age limits and may: captured data can itself be personal data, so an operator who says "keep 30 days" is taken at their word.
+
+Retention runs hourly in the daemon, and every prune is logged and counted as `wsaw_results_pruned_total`. A policy change applies to everything already stored the next time it runs, so there is a dry run:
+
+```console
+$ wsaw prune --dry-run --all
+site  reject  3 kept, 41 to delete
+  2026-03-20T09:12:04Z  scan-a3f  idle     keep (last)
+  2026-03-19T09:11:58Z  scan-91c  timeout  delete
+  …
+would delete 41 result(s), keep 3; nothing was deleted
+```
+
+Without `--dry-run` the same command applies the policy once, outside the daemon. Baselines are never pruned — an approved baseline holds its own copy of the result, so history can expire without changing what "expected" means. Artifacts (screenshots, stored bodies) are not reclaimed yet; that is Story 8.5.
 
 Two things a server database does **not** do. It does not make wsaw multi-node: two instances sharing one database would still disagree about baselines and would duplicate every scheduled scan. And it makes the store a network dependency, so readiness fails when the database is unreachable — a wsaw that cannot record what it observed is not ready, however healthy its browser is.
 

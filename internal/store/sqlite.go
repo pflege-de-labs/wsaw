@@ -66,8 +66,6 @@ func (sqliteDialect) upsert(conflict, update []string) string {
 	return upsertExcluded(conflict, update)
 }
 
-func (sqliteDialect) pruneByCount() string { return pruneByCountPortable }
-
 // migrations are applied in order; the index plus one is the schema version.
 // Forward only: a migration that has shipped is never edited, because an
 // existing store has already applied it.

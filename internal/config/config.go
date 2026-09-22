@@ -42,6 +42,12 @@ type Config struct {
 
 	// path records where the config came from, for reload and error messages.
 	path string
+
+	// legacyRetention names the superseded retention keys the file actually
+	// contained. It cannot be read off the struct: maxPerSeries carries a
+	// shipped default, so a zero value there means "not written down" and a
+	// non-zero one does not mean "written down" (Story 4.10, AC7).
+	legacyRetention []string
 }
 
 // Target is one URL to watch, or the set of defaults for all of them.
@@ -253,12 +259,79 @@ type Store struct {
 	MaxAge       Duration `yaml:"maxAge,omitempty"`
 	MaxPerSeries int      `yaml:"maxPerSeries,omitempty"`
 
+	// Keep replaces MaxAge and MaxPerSeries with a thinning policy: dense
+	// recent history, one scan per period further back (Story 4.10). The two
+	// forms are never combined, because a count limit left over from an
+	// older file would quietly defeat a policy asked to keep five years.
+	Keep *Keep `yaml:"keep,omitempty"`
+
 	// WriteJSONL mirrors results to newline-delimited JSON files.
 	WriteJSONL bool `yaml:"writeJsonl,omitempty"`
 	// WriteHAR emits a HAR file per scan. Off by default because of size.
 	WriteHAR bool `yaml:"writeHar,omitempty"`
 	// WriteReport emits a Markdown report per scan.
 	WriteReport bool `yaml:"writeReport,omitempty"`
+}
+
+// Keep is a retention policy in the terms restic's forget command uses: keep
+// the best scan in each of the newest N hours, days, weeks, months and years.
+//
+// Every field only keeps. Adding a rule can never shrink what is stored.
+type Keep struct {
+	// Last keeps the newest N scans of a series whenever they ran; Within
+	// keeps everything younger than a duration.
+	Last   int      `yaml:"last,omitempty"`
+	Within Duration `yaml:"within,omitempty"`
+
+	Hourly  int `yaml:"hourly,omitempty"`
+	Daily   int `yaml:"daily,omitempty"`
+	Weekly  int `yaml:"weekly,omitempty"`
+	Monthly int `yaml:"monthly,omitempty"`
+	Yearly  int `yaml:"yearly,omitempty"`
+
+	// Timezone is the IANA zone the periods are cut in, so that "daily"
+	// means the operator's day. Empty uses the host's local zone.
+	Timezone string `yaml:"timezone,omitempty"`
+}
+
+// Policy converts the configured policy into the store's own, resolving the
+// timezone. The zone is validated at load time, so a failure here means the
+// config was built in Go rather than parsed.
+func (k Keep) Policy() (store.Keep, error) {
+	loc, err := k.location()
+	if err != nil {
+		return store.Keep{}, err
+	}
+
+	return store.Keep{
+		Last:     k.Last,
+		Within:   k.Within.Duration(),
+		Hourly:   k.Hourly,
+		Daily:    k.Daily,
+		Weekly:   k.Weekly,
+		Monthly:  k.Monthly,
+		Yearly:   k.Yearly,
+		Location: loc,
+	}, nil
+}
+
+func (k Keep) location() (*time.Location, error) {
+	if k.Timezone == "" {
+		return time.Local, nil
+	}
+
+	loc, err := time.LoadLocation(k.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a known IANA time zone: %w", k.Timezone, err)
+	}
+
+	return loc, nil
+}
+
+// Empty reports whether the policy would keep nothing at all.
+func (k Keep) Empty() bool {
+	return k.Last <= 0 && k.Within <= 0 &&
+		k.Hourly <= 0 && k.Daily <= 0 && k.Weekly <= 0 && k.Monthly <= 0 && k.Yearly <= 0
 }
 
 // ArtifactCompression returns the store's artifact compression mode, which is
@@ -750,11 +823,59 @@ func Parse(b []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	cfg.legacyRetention = legacyRetentionKeys(b)
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// legacyRetentionKeys reports which of store.maxAge and store.maxPerSeries
+// the file names, in the order they appear.
+//
+// It reads the document a second time rather than hooking the decoder,
+// because a custom unmarshaler on Store would lose the strict field checking
+// that makes a misspelled key an error instead of a silent no-op.
+func legacyRetentionKeys(b []byte) []string {
+	var doc yaml.Node
+
+	if err := yaml.Unmarshal(b, &doc); err != nil || len(doc.Content) == 0 {
+		// A file that does not parse never reaches validation, and one with
+		// no document has no keys to find.
+		return nil
+	}
+
+	storeNode := mappingValue(doc.Content[0], "store")
+	if storeNode == nil {
+		return nil
+	}
+
+	var found []string
+
+	for _, key := range []string{"maxAge", "maxPerSeries"} {
+		if mappingValue(storeNode, key) != nil {
+			found = append(found, "store."+key)
+		}
+	}
+
+	return found
+}
+
+// mappingValue returns the value node for a key of a YAML mapping, or nil.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+
+	return nil
 }
 
 // New returns a config with the shipped defaults applied.
