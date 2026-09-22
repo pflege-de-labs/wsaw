@@ -402,7 +402,7 @@ func TestBodyLoaderIsAbsentWithoutAStore(t *testing.T) {
 func TestBodyLoaderResolvesStoredBodies(t *testing.T) {
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{
+	st, err := store.Open(t.Context(), store.Options{
 		Path:        filepath.Join(dir, "wsaw.db"),
 		ArtifactDir: filepath.Join(dir, "artifacts"),
 	})

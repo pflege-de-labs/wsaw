@@ -57,20 +57,26 @@ func cmdPrune(ctx context.Context, args []string) error {
 	now := time.Now()
 
 	if *dryRun {
-		plans, err := a.Store.PrunePlan(now, retention)
+		stats, err := a.Store.PlanPrune(ctx, now, retention)
 		if err != nil {
 			return err
 		}
 
-		return printPrunePlan(os.Stdout, plans, *verbose)
+		return printPrunePlan(os.Stdout, stats.Plans, *verbose)
 	}
 
-	stats, err := a.Store.Prune(now, retention)
+	stats, err := a.Store.Prune(ctx, now, retention)
 
 	// What a partial prune managed to delete is reported before its error:
 	// those results are gone either way, and a bare failure would hide it.
-	fmt.Printf("deleted %d result(s) across %d series, kept %d\n",
-		stats.ResultsDeleted, stats.SeriesPruned, stats.ResultsKept)
+	//
+	// The bytes are here because pruning reclaims evidence from the bucket as
+	// well as rows now (Story 8.5): a policy that deleted a thousand results
+	// and freed nothing is a policy whose evidence something else still names,
+	// and that is worth seeing. "wsaw store prune" reports the whole account.
+	fmt.Printf("deleted %d result(s) across %d series, kept %d; reclaimed %d artifact(s), %d bytes\n",
+		stats.ResultsDeleted, stats.SeriesPruned, stats.ResultsKept,
+		stats.ArtifactsDeleted, stats.BytesFreed)
 
 	return err
 }

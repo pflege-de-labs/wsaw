@@ -24,7 +24,7 @@ func cmdArtifacts(ctx context.Context, args []string) error {
 	}
 }
 
-// cmdArtifactsCompress compresses the artifacts already on disk (Story 4.9).
+// cmdArtifactsCompress compresses the artifacts already in the bucket (Story 4.9).
 //
 // New artifacts are compressed as they are written, and nothing rewrites what
 // is already stored, because an upgrade that quietly rewrites evidence is an
@@ -59,7 +59,7 @@ func cmdArtifactsCompress(ctx context.Context, args []string) error {
 	opts := store.CompactOptions{
 		DryRun: *dryRun,
 		// Problems are printed as they happen rather than collected: a run
-		// over a large directory takes a while, and an operator watching it
+		// over a large bucket takes a while, and an operator watching it
 		// should learn about a corrupt artifact then, not at the end.
 		OnProblem: func(ref string, err error) {
 			fmt.Fprintf(os.Stderr, "skipped %s: %v\n", ref, err)

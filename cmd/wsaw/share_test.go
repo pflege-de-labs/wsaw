@@ -22,7 +22,7 @@ const shareKey = "0123456789abcdef0123456789abcdef"
 func seedStore(t *testing.T, path string, scanIDs ...string) {
 	t.Helper()
 
-	st, err := store.Open(store.Options{
+	st, err := store.Open(t.Context(), store.Options{
 		Path:        path,
 		ArtifactDir: filepath.Join(filepath.Dir(path), "artifacts"),
 	})
@@ -94,7 +94,7 @@ func TestLoadShareTargetResolvesLatest(t *testing.T) {
 
 	seedStore(t, path, "scan-1", "scan-2")
 
-	st, err := store.Open(store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
+	st, err := store.Open(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestLoadShareTargetReportsWhatIsMissing(t *testing.T) {
 
 	seedStore(t, path, "scan-1")
 
-	st, err := store.Open(store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
+	st, err := store.Open(t.Context(), store.Options{Path: path, ArtifactDir: filepath.Join(dir, "artifacts")})
 	if err != nil {
 		t.Fatal(err)
 	}

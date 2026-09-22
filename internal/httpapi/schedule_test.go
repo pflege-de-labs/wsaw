@@ -31,7 +31,7 @@ func TestScheduleIsSortedByNextRun(t *testing.T) {
 
 	dir := t.TempDir()
 
-	st, err := store.Open(store.Options{
+	st, err := store.Open(t.Context(), store.Options{
 		Path:        dir + "/wsaw.db",
 		ArtifactDir: dir + "/artifacts",
 	})

@@ -21,7 +21,7 @@ import (
 // It is SQLite-only on purpose: artifacts are files whichever driver is in
 // use, so running these against a server database would test the same code
 // twice and need a server to do it.
-func artifactStore(t *testing.T, opts store.Options) (*store.Store, string) {
+func artifactStore(t *testing.T, opts store.Options) (store.Store, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -30,7 +30,7 @@ func artifactStore(t *testing.T, opts store.Options) (*store.Store, string) {
 	opts.Path = filepath.Join(dir, "wsaw.db")
 	opts.ArtifactDir = artifacts
 
-	s, err := store.Open(opts)
+	s, err := store.Open(t.Context(), opts)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -183,8 +183,8 @@ func TestArtifactStoredBeforeCompressionStillReads(t *testing.T) {
 		t.Error("a pre-compression artifact did not read back unchanged")
 	}
 
-	if size, err := s.StatArtifact(ref); err != nil || size != int64(len(body)) {
-		t.Errorf("StatArtifact = %d, %v; want %d", size, err, len(body))
+	if info, err := s.StatArtifact(t.Context(), ref); err != nil || info.Size != int64(len(body)) {
+		t.Errorf("StatArtifact = %d, %v; want %d", info.Size, err, len(body))
 	}
 
 	again, err := s.PutArtifact("body", body)
@@ -254,13 +254,13 @@ func TestStatArtifactReportsTheArtifactSize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	size, err := s.StatArtifact(ref)
+	info, err := s.StatArtifact(t.Context(), ref)
 	if err != nil {
 		t.Fatalf("StatArtifact: %v", err)
 	}
 
-	if size != int64(len(body)) {
-		t.Errorf("StatArtifact = %d, want the artifact's own size %d", size, len(body))
+	if info.Size != int64(len(body)) {
+		t.Errorf("StatArtifact = %d, want the artifact's own size %d", info.Size, len(body))
 	}
 }
 
@@ -285,7 +285,7 @@ func TestMissingCompressedArtifactIsNotFound(t *testing.T) {
 		t.Errorf("GetArtifact after pruning = %v, want ErrNotFound", err)
 	}
 
-	if _, err := s.StatArtifact(ref); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.StatArtifact(t.Context(), ref); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("StatArtifact after pruning = %v, want ErrNotFound", err)
 	}
 }
@@ -420,7 +420,7 @@ func TestUnknownCompressionIsRefused(t *testing.T) {
 
 	dir := t.TempDir()
 
-	s, err := store.Open(store.Options{
+	s, err := store.Open(t.Context(), store.Options{
 		Path:                filepath.Join(dir, "wsaw.db"),
 		ArtifactDir:         filepath.Join(dir, "artifacts"),
 		ArtifactCompression: "zstd",

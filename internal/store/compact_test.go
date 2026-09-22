@@ -115,8 +115,8 @@ func TestCompactArtifactsCompressesWhatIsWorthIt(t *testing.T) {
 			t.Errorf("artifact %s did not survive compaction", ref)
 		}
 
-		if size, err := s.StatArtifact(ref); err != nil || size != int64(len(want)) {
-			t.Errorf("StatArtifact(%s) = %d, %v; want %d", ref, size, err, len(want))
+		if info, err := s.StatArtifact(t.Context(), ref); err != nil || info.Size != int64(len(want)) {
+			t.Errorf("StatArtifact(%s) = %d, %v; want %d", ref, info.Size, err, len(want))
 		}
 	}
 }

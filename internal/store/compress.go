@@ -52,6 +52,10 @@ const defaultMaxArtifactBytes = 256 << 20
 // errArtifactTooLarge reports a stored artifact that inflates past the cap.
 var errArtifactTooLarge = errors.New("decompressed artifact exceeds the size cap")
 
+// errArtifactTruncated reports a stored gzip member too short to carry the
+// trailer its own size is read from.
+var errArtifactTruncated = errors.New("stored artifact is truncated")
+
 // compressArtifact gzips data, and reports whether the result is worth
 // storing instead of the original.
 func compressArtifact(data []byte) ([]byte, bool) {
@@ -92,7 +96,10 @@ func compressArtifact(data []byte) ([]byte, bool) {
 func decompressArtifact(ref string, stored []byte, maxBytes int64) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(stored))
 	if err != nil {
-		return nil, fmt.Errorf("reading artifact %s: %w", ref, err)
+		// Present and not what it claims to be, which is corruption rather
+		// than absence: the key is there, and what is under it is not the
+		// artifact (Story 8.2, AC6).
+		return nil, fmt.Errorf("artifact %s does not decompress: %w: %w", ref, ErrCorrupt, err)
 	}
 
 	defer func() {
@@ -103,7 +110,7 @@ func decompressArtifact(ref string, stored []byte, maxBytes int64) ([]byte, erro
 	// artifact that is exactly as large as the cap allows.
 	data, err := io.ReadAll(io.LimitReader(zr, maxBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading artifact %s: %w", ref, err)
+		return nil, fmt.Errorf("artifact %s does not decompress: %w: %w", ref, ErrCorrupt, err)
 	}
 
 	if int64(len(data)) > maxBytes {
@@ -137,7 +144,11 @@ func verifyArtifactDigest(ref string, data []byte) error {
 
 // errArtifactDigestMismatch reports stored bytes that are not the artifact
 // their reference names.
-var errArtifactDigestMismatch = errors.New("stored bytes do not match the reference's digest")
+//
+// It wraps ErrCorrupt because that is what it is from every caller's point of
+// view: the object is present and is not the evidence (Story 8.2, AC6). The
+// sentinel underneath stays, so a test can name the specific failure.
+var errArtifactDigestMismatch = fmt.Errorf("%w: stored bytes do not match the reference's digest", ErrCorrupt)
 
 // gzipSize reads the uncompressed size a gzip member declares in its trailer.
 //
