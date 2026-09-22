@@ -229,7 +229,7 @@ func assertBucketHolds(t *testing.T, location string, kept, pruned *model.Result
 	defer func() { _ = bucket.Close() }()
 
 	for _, shot := range kept.Screenshots {
-		found, err := bucket.Exists(t.Context(), shot.Ref)
+		found, err := storedInEitherForm(t, bucket, shot.Ref)
 		if err != nil || !found {
 			t.Errorf("the surviving scan's screenshot %s is not in the bucket: %v", shot.Ref, err)
 		}
@@ -244,7 +244,7 @@ func assertBucketHolds(t *testing.T, location string, kept, pruned *model.Result
 			continue
 		}
 
-		found, err := bucket.Exists(t.Context(), shot.Ref)
+		found, err := storedInEitherForm(t, bucket, shot.Ref)
 		if err != nil {
 			t.Errorf("asking the bucket about %s: %v", shot.Ref, err)
 
@@ -255,6 +255,30 @@ func assertBucketHolds(t *testing.T, location string, kept, pruned *model.Result
 			t.Errorf("the pruned scan's screenshot %s is still in the bucket", shot.Ref)
 		}
 	}
+}
+
+// storedInEitherForm asks the bucket about an artifact rather than about a key.
+//
+// A reference names the evidence and the object holding it may be the packed
+// spelling (Story 4.8, AC2) — which a screenshot of a simple fixture page
+// really can be, PNG or not, when the image is flat enough for gzip to earn its
+// ratio. Asking for the bare key alone would make this test's verdict depend on
+// how compressible the fixture happens to render.
+func storedInEitherForm(t *testing.T, b *blob.Bucket, ref string) (bool, error) {
+	t.Helper()
+
+	for _, key := range []string{ref, ref + ".gz"} {
+		found, err := b.Exists(t.Context(), key)
+		if err != nil {
+			return false, err
+		}
+
+		if found {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // sharedWith reports whether the kept result names the same object.
