@@ -123,14 +123,23 @@ func TestBeaconAccountingLeavesRealRequestsAlone(t *testing.T) {
 // Taboola's time-on-site beacon repeats every 10s against a 10s quiet window,
 // so the window is restarted a fraction before it ever elapses and the scan
 // runs to its hard timeout with nothing left to observe. The same shape,
-// scaled down: a beacon every 40ms against a 100ms quiet window.
+// scaled down.
+//
+// The fixture's beacon is a goroutine, so the ratio between the two durations
+// is what the test really rests on: the network is only "never quiet" for as
+// long as that goroutine keeps being scheduled. At one beacon per 40ms against
+// a 100ms window, two missed wake-ups were a real quiet window, and a loaded
+// CI machine produced exactly that — settle returned at 1.9945s of a 2s budget
+// because the fixture stalled at the end, and the case that asserts the bug
+// reproduces failed. Twenty-five beacons per window means a slip has to last
+// the whole window to be mistaken for silence.
 func TestSettleEndsWhileABeaconKeepsFiring(t *testing.T) {
 	t.Parallel()
 
 	const (
-		quiet    = 100 * time.Millisecond
-		interval = 40 * time.Millisecond
-		budget   = 2 * time.Second
+		quiet    = 500 * time.Millisecond
+		interval = 20 * time.Millisecond
+		budget   = 3 * time.Second
 	)
 
 	for _, tc := range []struct {
@@ -138,6 +147,9 @@ func TestSettleEndsWhileABeaconKeepsFiring(t *testing.T) {
 		rules     []Beacon
 		wantIdle  bool
 		wantAfter time.Duration
+		// minHeld is how long settle must stay blocked for the beacon to
+		// count as having held the scan open.
+		minHeld time.Duration
 	}{
 		{
 			name:      "with the rule configured",
@@ -149,6 +161,7 @@ func TestSettleEndsWhileABeaconKeepsFiring(t *testing.T) {
 			name:     "without it, the way the bug behaved",
 			rules:    nil,
 			wantIdle: false,
+			minHeld:  2 * budget / 3,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -195,13 +208,19 @@ func TestSettleEndsWhileABeaconKeepsFiring(t *testing.T) {
 			s.settle(ctx)
 			elapsed := time.Since(start)
 
+			// What the unconfigured case is about is that settle kept
+			// waiting, not that the context won the last millisecond of the
+			// race: a run that blocked for four quiet windows has reproduced
+			// the bug whether or not the deadline had formally expired. The
+			// regression it guards against returns in about one window.
 			switch {
 			case tc.wantIdle && ctx.Err() != nil:
 				t.Errorf("settle ran out the whole budget (%v); the beacon still held the scan open", elapsed)
 			case tc.wantIdle && elapsed > tc.wantAfter:
 				t.Errorf("settle took %v, want it to end within %v of the page going quiet", elapsed, tc.wantAfter)
-			case !tc.wantIdle && ctx.Err() == nil:
-				t.Errorf("settle returned after %v with the beacon still firing and no rule to exclude it", elapsed)
+			case !tc.wantIdle && elapsed < tc.minHeld:
+				t.Errorf("settle returned after %v with the beacon still firing and no rule to exclude it; want it held for at least %v",
+					elapsed, tc.minHeld)
 			}
 		})
 	}
