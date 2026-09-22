@@ -153,6 +153,15 @@ type Deps struct {
 	// reload is reflected without restarting the server.
 	Targets func() []config.Resolved
 
+	// Retention reads the configured retention policy, the same way a prune
+	// or a sweep does (app.App.Retention). A function for the same reason
+	// Targets is: the history page's estimate (Story 5.31, AC8) must show
+	// the policy that is actually in force, not the one that was in force
+	// when the server started. Nil is treated as "retention is not usable" —
+	// the same failure app.PruneLoop already logs and declines to act on —
+	// rather than the estimate silently claiming the series is unbounded.
+	Retention func() (store.Retention, error)
+
 	// Running returns the scans in flight. Optional: without it the interface
 	// says that activity is not tracked rather than that nothing is running,
 	// because those are different claims (Tenet 5).
