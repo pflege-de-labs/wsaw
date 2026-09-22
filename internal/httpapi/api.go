@@ -35,6 +35,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/targets", s.handleTargets)
 	s.mux.HandleFunc("GET /api/v1/running", s.handleRunning)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}", s.handleResults)
+	s.mux.HandleFunc("GET /api/v1/storage", s.handleStorageAPI)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}", s.handleResult)
 	s.mux.HandleFunc("GET /api/v1/results/{target}/{mode}/{scan}/har", s.handleResultHAR)
 	s.mux.HandleFunc("GET /api/v1/artifacts/{ref...}", s.handleArtifact)

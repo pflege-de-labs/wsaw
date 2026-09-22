@@ -313,6 +313,30 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 
 .panel-muted { color: var(--muted); }
 
+/* Storage dashboard (Story 5.32): the two maintenance panels side by side on
+   a wide viewport, stacked on a narrow one — the same responsive rule every
+   other multi-column layout on this interface already follows. */
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.8rem;
+}
+
+.panels .panel { margin: 0; }
+
+/* A chart's own SVG already carries its axis labels and values; this only
+   keeps it from overflowing a narrow viewport (the one exception the
+   no-horizontal-scroll rule allows is a diagram, and this stays inside its
+   own box rather than needing it). */
+.chart {
+  margin: 0.8rem 0;
+  max-width: 100%;
+}
+
+.chart svg { display: block; max-width: 100%; height: auto; }
+
+.note.warn { color: var(--warn); }
+
 /* Badges */
 
 .badge, .sev, .term, .outcome, .party, .phase, .type, .label {

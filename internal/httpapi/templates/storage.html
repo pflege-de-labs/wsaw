@@ -1,0 +1,139 @@
+{{template "head" .}}
+{{$page := .}}
+{{with .Data}}
+
+<h1>Storage</h1>
+
+{{if not .Available}}
+<div class="panel panel-muted">
+  This store cannot report storage figures: the dashboard's reads need the SQL index directly, and this
+  deployment's store does not offer one.
+</div>
+{{else}}
+
+<p class="lead">
+  Snapshot taken {{time .SnapshotAt}}. <a href="/storage?recompute=1">Recompute now</a>.
+</p>
+
+<div class="panel">
+  <strong>{{bytes .GrandTotalBytes}}</strong> referenced across {{len .Rows}} series, on the
+  <strong>{{.Driver}}</strong> store, evidence in <code>{{.ArtifactLocation}}</code>.
+  {{/* AC3: what the index knows is referenced, not a claim about the bucket itself — only a sweep's own
+       bucket-wide listing can answer that, and it is never run on a schedule or from this page. */}}
+  <p class="note">This total is what the index currently references, not a listing of the bucket itself.</p>
+  {{if .SweepFoundExtra}}
+  <p class="note warn">The last sweep found protected or foreign objects this total does not include —
+    see the sweep panel below.</p>
+  {{end}}
+</div>
+
+<h2>Storage by series</h2>
+
+{{if .Rows}}
+<div class="chart">{{.SeriesChart}}</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Series</th>
+      <th class="num">Scans</th>
+      <th>Oldest</th>
+      <th>Newest</th>
+      <th class="num">Document</th>
+      <th class="num">Artifacts</th>
+      <th class="num">Total</th>
+      <th class="num">Share</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Rows}}
+    <tr>
+      <td><a href="/targets/{{.Series.Target}}/{{.Series.Mode}}">{{.Series.Target}}</a>
+        <span class="mode">{{.Series.Mode}}</span></td>
+      <td class="num">{{.Count}}</td>
+      <td title="{{time .Oldest}}">{{ago .Oldest}}</td>
+      <td title="{{time .Newest}}">{{ago .Newest}}</td>
+      <td class="num">{{bytes .DocumentBytes}}</td>
+      <td class="num">{{bytes .ArtifactBytes}}</td>
+      <td class="num">{{bytes .TotalBytes}}</td>
+      <td class="num">{{printf "%.1f%%" .SharePercent}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p class="note">Artifacts are content-addressed: evidence shared by more than one scan is charged to each
+  series that references it here, even though the bucket stores it once (the same note the history page
+  gives for one series' own scans).</p>
+{{else}}
+<p class="empty">Nothing is stored yet.</p>
+{{end}}
+
+{{if .GrowthChart}}
+<h2>Growth over time</h2>
+<p class="note">Stored bytes by month, for the scans still stored today — a month retention has already
+  thinned reads as small, which is retention working, not a quiet month.</p>
+<div class="chart">{{.GrowthChart}}</div>
+{{end}}
+
+{{if .PruneBytesChart}}
+<h2>What pruning removed</h2>
+<div class="chart">{{.PruneBytesChart}}</div>
+<div class="chart">{{.PruneResultsChart}}</div>
+{{end}}
+
+<h2>Retention</h2>
+
+<div class="panels">
+  <div class="panel">
+    <h3>Last prune</h3>
+    {{with .LastPrune}}
+    {{if not .Available}}
+    <p class="muted">This store cannot report maintenance history.</p>
+    {{else if not .Found}}
+    <p class="muted">{{.Reason}}.</p>
+    {{else}}
+    <p>
+      Ran {{time .StartedAt}} ({{.Trigger}}), took {{dur .Duration}}.
+      {{if .Error}}<span class="error-detail">Failed: {{.Error}}</span>{{end}}
+    </p>
+    <ul>
+      <li>{{.ResultsDeleted}} result(s) deleted, {{.ResultsKept}} kept, {{.SeriesPruned}} series pruned</li>
+      <li>oldest result still kept: {{if .OldestKept.IsZero}}none{{else}}{{time .OldestKept}}{{end}}</li>
+      <li>{{.ArtifactsDeleted}} artifact(s) deleted, {{bytes .BytesFreed}} freed</li>
+    </ul>
+    {{end}}
+    {{end}}
+  </div>
+
+  <div class="panel">
+    <h3>Last sweep</h3>
+    {{with .LastSweep}}
+    {{if not .Available}}
+    <p class="muted">This store cannot report maintenance history.</p>
+    {{else if not .Found}}
+    <p class="muted">{{.Reason}}.</p>
+    {{else}}
+    <p>
+      Ran {{time .StartedAt}} ({{.Trigger}}), took {{dur .Duration}}.
+      {{if .Error}}<span class="error-detail">Failed: {{.Error}}</span>{{end}}
+    </p>
+    <ul>
+      <li>{{.ArtifactsScanned}} artifact(s) scanned, {{bytes .BytesScanned}}</li>
+      <li>{{.ArtifactsDeleted}} deleted, {{bytes .BytesFreed}} freed</li>
+      <li>{{.ArtifactsProtected}} protected, {{.ArtifactsFailed}} deletions refused,
+        {{.ForeignObjects}} foreign object(s)</li>
+    </ul>
+    {{end}}
+    {{end}}
+  </div>
+</div>
+
+{{/* AC11: no prune button, no sweep button. Evidence is deleted by a policy an operator versioned or a
+     command they typed, not a click on the page that just told them how much it would free. */}}
+<p class="note">This page deletes nothing. Apply retention with <code>wsaw prune</code>, or collect
+  unreferenced evidence with <code>wsaw store sweep</code>.</p>
+
+{{end}}
+{{end}}
+{{template "foot" $page}}

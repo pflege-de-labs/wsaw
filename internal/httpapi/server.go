@@ -115,6 +115,11 @@ type Options struct {
 type Store interface {
 	Ping(ctx context.Context) error
 
+	// Driver names which kind of store this is, for the storage dashboard's
+	// header (Story 5.32, AC3) — the same figure "wsaw store migrate" and
+	// every store log line already report.
+	Driver() string
+
 	ListResults(target string, mode model.ConsentMode, limit int) ([]store.Summary, error)
 	HasResult(target string, mode model.ConsentMode, scanID string) (bool, error)
 	GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
@@ -167,6 +172,26 @@ type Deps struct {
 	// because those are different claims (Tenet 5).
 	Running func() []scanner.Running
 
+	// The four collaborators the storage dashboard reads (Story 5.32) and
+	// nothing else does. Functions rather than a widened Store, for the
+	// reason Story 4.11, AC6 keeps the maintenance-run readers off the Store
+	// seam in the first place: this page is their one consumer, and it
+	// declares the narrow interface it needs instead of asking every store
+	// to answer questions only a SQL index can. Populated from a type
+	// assertion against the concrete *store.SQL wherever the server is
+	// built (cmd/wsaw/run.go); nil on a store that is not one, and the
+	// dashboard says so rather than reporting zeroes (Tenet 5).
+	SeriesStorage      func(ctx context.Context) ([]store.SeriesStorage, error)
+	MonthlyStorage     func(ctx context.Context, since time.Time) ([]store.MonthlyBytes, error)
+	LastMaintenanceRun func(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
+	MaintenanceRuns    func(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)
+
+	// ArtifactLocation names where the evidence bucket is, redacted the same
+	// way a log line or a command's own report already is
+	// (store.Options.ArtifactLocation) — shown in the storage dashboard's
+	// header (AC3).
+	ArtifactLocation string
+
 	// ConfigPath is shown in the UI so a write action can say where a
 	// file-based change belongs.
 	ConfigPath string
@@ -199,6 +224,12 @@ type Server struct {
 	// that reach them are conditional.
 	otp          *otpStore
 	loginLimiter *otpLimiter
+
+	// storage caches the one snapshot the storage dashboard serves (Story
+	// 5.32, AC10): its figures come from an aggregate query over every
+	// stored result, which a wall display polling every few seconds must
+	// not redo on every view.
+	storage storageCache
 }
 
 // New builds the server.

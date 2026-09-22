@@ -44,6 +44,27 @@ func newUIRenderer() (*uiRenderer, error) {
 // neverRendered is what an unset time.Time shows as everywhere on the page.
 const neverRendered = "never"
 
+// formatBytes is the human units every size on the interface uses — the
+// template func below and the storage dashboard's inline SVG (Story 5.32,
+// AC9) both call it, so a bar's own text label can never disagree with the
+// number beside it.
+func formatBytes(n int64) string {
+	const unit = 1024
+
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+
+	div, exp := int64(unit), 0
+
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+}
+
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
 		"time": func(t time.Time) string {
@@ -90,22 +111,7 @@ func uiFuncs() template.FuncMap {
 		"since": func(t time.Time) string {
 			return time.Since(t).Round(time.Second).String()
 		},
-		"bytes": func(n int64) string {
-			const unit = 1024
-
-			if n < unit {
-				return fmt.Sprintf("%d B", n)
-			}
-
-			div, exp := int64(unit), 0
-
-			for m := n / unit; m >= unit; m /= unit {
-				div *= unit
-				exp++
-			}
-
-			return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
-		},
+		"bytes": formatBytes,
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},
@@ -168,6 +174,7 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /results/{target}/{mode}/{scan}", s.handleUIResult)
 	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
+	s.mux.HandleFunc("GET /storage", s.handleUIStorage)
 
 	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
 	s.mux.HandleFunc("POST /filter", s.handleUIFilter)
