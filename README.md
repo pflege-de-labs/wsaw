@@ -109,9 +109,39 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw store prune` | Apply retention and reclaim the artifacts it orphans; `--dry-run` lists them |
 | `wsaw store sweep` | Delete artifacts nothing references any more; `--dry-run` lists them |
 | `wsaw store rebuild-index` | Rebuild the index from the documents in the bucket; `--verify` checks it and exits non-zero on drift |
+| `wsaw artifacts compress` | Compress the artifacts already in the bucket, in place |
+| `wsaw prune` | Apply retention once; `--dry-run` shows what it would delete |
+| `wsaw share` | Mint an expiring link to one scan result |
+| `wsaw ui` | Open the web interface in a browser, already signed in |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
+
+It reloads the **target list** and nothing else, and that is a promise it keeps
+out loud. Every other section became a browser pool, a normalizer, an HTTP
+server, a store handle or a scheduler when the process started, and a running
+daemon cannot swap those out from under in-flight scans. So a `SIGHUP` whose
+file also moved one of those settings is **refused**, naming what moved:
+
+```
+reload rejected, keeping the running configuration
+  error="detection.degradedFailureRatio, normalize.bodyIdentity cannot change
+  without a restart; the running configuration is unchanged. Restart wsaw to
+  apply them"
+```
+
+The refusal is the point. Adopting the half a reload can apply and logging
+"configuration reloaded" would leave you believing the rest had taken effect
+too — the same shape of defect as a broken scan that reads as a clean site.
+Reverting the offending line and signalling again reloads normally; nothing is
+sticky.
+
+What a reload does apply: `targets`, `defaults`, per-target overrides,
+`detection.severity`, `detection.allowHosts`, `detection.denyHosts`, and the
+schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`).
+Everything else needs a restart. A setting added to wsaw later is
+non-reloadable until someone deliberately says otherwise, so the failure mode
+for new configuration is a loud refusal rather than a silent no-op.
 
 ## Consent handling
 
@@ -140,16 +170,29 @@ rules:
 wsaw rules test --rules my-rules.yaml https://www.example.com/
 ```
 
-A rule without a `verify` expression can never report `applied`, only `unverified`. That is deliberate.
+A rule without a `verify` expression can never report `applied`, only `unverified` — unless the page itself left evidence. A site that keeps its consent state in Web Storage records the choice there and nowhere else, and a storage write plus a banner that is gone is the same pair of facts a consent cookie plus a dismissed dialog provides.
+
+A rule written for one site binds to what survives that site's next deploy: visible text, `role` and `aria-*`, an author-written `id` or `data-` attribute. Never to class names a bundler generated — those change on every build, and a rule that quietly stops matching is worse than no rule. Where a host-scoped rule no longer matches the host it was written for, wsaw records it as stale in the result and as a warning on the scan.
+
+`verify` proves the CMP recorded the choice; it does not prove the banner closed — a vendor API commonly records consent without ever running the banner's own dismiss handler. When `verify` passes but the banner is still on screen, wsaw retries the rule's click steps with a fuller pointer/mouse event sequence and, failing that, the generic label-matching fallback, before giving up and reporting `banner-visible` rather than `applied`. A rule can name its own banner-gone check with `dismissed`; left unset, wsaw falls back to the same "does anything banner-shaped remain" heuristic the label-matching fallback uses.
 
 ## Reading a result
 
 Two fields decide whether anything else on the page can be believed:
 
 - **`termination`** — `idle` means the page went quiet on its own. `timeout`, `request-cap` or `byte-cap` mean the list may be incomplete. `error` or `skipped` mean it is not a result at all.
-- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), or `failed`.
+- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), `banner-visible` (the CMP recorded the choice, but the banner stayed on screen even after a fallback click), or `failed`.
+- **`consent.cmpKind`** — `vendor` (a CMP product was identified), `bespoke` (a consent UI is present and no vendor matched it: the site's own banner, as far as wsaw can tell) or `none` (no consent UI was found). Only `none` licenses reading a result as a page that never asks for consent. A banner wsaw could not drive is recorded as `bespoke` with a `diagnostic` naming the element, its text and the labels of the controls it offered — which is what writing the missing rule needs.
+
+Not every banner is rendered with the page. An application-rendered one is mounted after hydration or on an idle callback, so wsaw waits for one to appear before concluding there is none; `consent.bannerWait` sets that wait, and `consentBannerWait` overrides it per target.
 
 Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Third-party hosts in the pre-interaction phase of a `reject`-mode scan are the headline compliance finding.
+
+**"Zero third parties" is a narrower claim than it looks.** Analytics reverse-proxied onto the site's own domain — a collector on `hog.example.com`, a server-side tag container on `t.example.com` — is first-party by registrable domain and never appears in a third-party count. The report names the first-party hosts contacted before the consent interaction for exactly that reason; read them before reading a clean third-party count as "nothing happened".
+
+### Cookies are half the picture
+
+Consent state and analytics identifiers live in `localStorage` on a large class of sites: one that writes `localStorage["cookie-accepted"]` sets no cookie at all. Each scan records Web Storage per origin — key names, value digests and lengths, never values — and the diff reports keys appearing and disappearing the way it reports cookies. A third-party key written in `reject` mode is ranked with a third-party cookie, not below it.
 
 A missing script digest always carries a `bodyUnavailable` reason. wsaw never reports a script as unchanged because it could not read it.
 
@@ -217,6 +260,36 @@ note in the HAR — because a short body and a truncated one are different
 facts. Bodies can contain personal data, so `storeBodies` is off by default
 and retention applies to them as it does to everything else.
 
+#### Scripts that rewrite themselves
+
+A digest answers "did these bytes change", which is the right question for
+almost every script and the wrong one for a few. A Google Tag Manager
+container folds experiment flags into every response: two fetches of the same
+*published* container can differ by a handful of tokens out of a hundred
+thousand, and hashing them reports `script-changed` on nearly every scan —
+which buries the one publish that mattered.
+
+The container states its own version, so compare that instead:
+
+```yaml
+normalize:
+  bodyIdentity:
+    - urlPattern: 'googletagmanager\.com/gtm\.js'
+      extract: '"version":"(\d+)"'
+      label: GTM container version
+```
+
+`extract` needs exactly one capturing group, and the group is the identity;
+a rule that cannot produce one is rejected at load rather than failing
+silently on every scan. The change then reads *GTM container version changed
+from 231 to 232* instead of printing two hashes.
+
+The digest is still recorded next to it, so a reader can always see what was
+hashed. If a rule matches the URL but the body does not carry the identity,
+the script counts as **not comparable** rather than unchanged — the same
+treatment as a missing digest, because a false "unchanged" is the worse answer
+for a supply-chain check.
+
 The result schema is published at [`docs/result.schema.json`](docs/result.schema.json) and the HTTP API at [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Web interface and API
@@ -224,6 +297,15 @@ The result schema is published at [`docs/result.schema.json`](docs/result.schema
 Both are served by the same process and the same port; the web interface is a client of the public API and has no privileged path into the store. Assets are embedded in the binary, so there is nothing to deploy alongside it and no Node toolchain to build it.
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
+
+That token also protects the loopback case, which means normally typing it into a login form. `wsaw ui` skips that: it reads the token from the same config file the daemon runs with — which an operator running the command can already read — and opens the browser at a one-time sign-in link instead of the plain address:
+
+```
+wsaw ui                # opens the browser, already signed in
+wsaw ui --print        # prints the link instead, e.g. to open over SSH
+```
+
+The link is minted by the running daemon on request, is good for one redemption, expires in seconds, and never carries the standing token anywhere a browser keeps history — only the one-time link does, and it is worthless to anyone the moment it is used or the moment it expires, whichever comes first.
 
 The dashboard refreshes itself, so it can be left on a screen and still be
 worth looking at:
@@ -259,6 +341,20 @@ honest anchor for a tab left open an hour, and it says why it holds still
 rather than reading as though refreshing were broken. Reloading it yourself
 works as it always did.
 
+The board marks a tile for the one question a board can answer at a glance:
+**did a third party appear in a scan where the visitor had agreed to
+nothing.** A third-party host the site did not contact before is critical in
+`reject` and `none` mode, and unremarkable in `accept` mode, where the visitor
+agreed to be tracked. Request counts, added or removed assets, a script whose
+bytes changed, and a third party the site stopped contacting all rank `info`
+on the board — a live site re-deploys its bundles most days, and a board where
+every tile is marked is a board nobody reads. Cookies, storage, consent
+regressions, denied hosts and degraded scans keep their usual severity, and so
+does everything outside the board: `GET /api/v1/targets`, the notifier and the
+CI exit code all keep reporting the diff engine's own ranking for the same
+scan, so a tile reading `info` and an API reporting `high` are the same
+comparison seen through two questions.
+
 Scans in flight are shown as they happen: a `pending` row on the target page, a
 list on the dashboard, and `GET /api/v1/running` for anything else. A running
 scan exists in no stored result — the store only learns of a scan when it ends —
@@ -267,6 +363,64 @@ running scan reload themselves; pages with nothing running stay still. Starting
 a second scan of a target and consent mode that is already scanning is refused
 (`409`) rather than queued, because two concurrent scans of one series would
 produce two results for the same moment and double the load on the scanned site.
+
+### Scanning a URL that is not a target
+
+Sometimes the question is about one site, once, and it is not worth a line in
+the configuration file. With `api.adHocUrls.enabled`, the interface grows a
+**Scan a URL** page: type an address, pick a consent mode, get a result.
+
+```yaml
+api:
+  enabled: true
+  adHocUrls:
+    enabled: true          # off by default
+    # consentModes: [reject, accept]   # default: defaults.consentModes
+    # maxPerHour: 20                   # whole deployment, rolling hour
+    # allowPrivateHosts: false         # see below
+```
+
+The same thing over the API, for a client that wants the result rather than a
+page:
+
+```sh
+curl -X POST http://127.0.0.1:8712/api/v1/scan-url \
+  -H 'Authorization: Bearer '"$WSAW_API_TOKEN" \
+  -d '{"url": "https://example.com/", "consentMode": "reject"}'
+```
+
+The result is stored like any other, under a name derived from the address —
+the same name `wsaw scan --url` derives — so scanning the same address twice
+gives you a diff, and an address scanned from the command line and from the
+form share one history. The watchboard still lists the configured targets:
+typing a URL creates history, not a watched target.
+
+**This is a switch worth understanding before you flip it.** On, whoever can
+reach the interface decides what this machine fetches, which is the shape of a
+server-side request forgery. So:
+
+- The address is admitted before a browser sees it: http or https only, no
+  embedded credentials, and a host that resolves **entirely** to public
+  internet addresses. Loopback (by literal or by the name `localhost`), the
+  private ranges, link-local — the cloud metadata service with it —
+  unique-local, carrier-grade NAT and the other special-purpose ranges are all
+  refused, and a name whose answers include one of them is refused rather than
+  left to pick which address the browser reaches. `allowPrivateHosts: true`
+  turns that off, for a deployment that means "scan our own staging" and knows
+  who can reach the page.
+- The credentials in `defaults.basicAuthUser`, `defaults.basicAuthPassword`
+  and `defaults.extraHeaders` are **not** sent to a typed address. They exist
+  to reach your own sites; sending them to an address somebody typed would
+  hand them to whoever typed it.
+- Everything else is bounded the way a scheduled scan is: the deployment's own
+  budget of scans per hour, the `minInterval` floor between two scans of the
+  same address, the robots policy, and the refusal to run two scans of one
+  series at once.
+- It needs the web interface and is refused in read-only mode, and a
+  configuration that says otherwise is refused at load rather than ignored.
+
+A scan started this way is labelled `typed-url` in the running list, so an
+operator can tell an address somebody typed from a target somebody configured.
 
 ## When a scan fails
 
@@ -313,6 +467,104 @@ passes, which is the opposite of a gate.
 This is not the store's retry (`store.maxAttempts`), which retries a store
 operation *inside* a scan. They are configured separately and neither implies
 the other.
+
+### When a scan never goes quiet
+
+A scan ends when the network has been quiet for `idleQuiet`, and some trackers
+make sure it never is. A time-on-site beacon exists to keep reporting while
+nobody does anything: Taboola's fires every 10 seconds for as long as the tab
+is open, which against a 10s quiet window restarts the wait a fraction before
+it elapses. The page went quiet at 14s, the scan ends on its hard timeout at
+90s, and the result is marked truncated over eight repetitions of one beacon.
+Raising the timeout cannot help — the heartbeat has no end — and the outcome
+turns into a coin toss, `idle` on one run and `timeout` on the next.
+
+So idle detection does not wait for them:
+
+```yaml
+capture:
+  useDefaultBeacons: true   # the shipped list; the default
+  beacons:
+    - host: telemetry.example.net
+    - host: analytics.example.com   # a host that also serves scripts
+      urlPattern: '/collect'        # is matched by path, never wholesale
+```
+
+A rule matches on a host, on a regular expression over the URL, or on both
+together — and both must then match. Host patterns work like allow and deny
+lists: an exact host, a bare domain covering its subdomains, or a leading
+`*.`. Rules add up rather than replace, so a target's own session ping goes on
+the target:
+
+```yaml
+targets:
+  - name: app
+    url: https://app.example.com/
+    beacons:
+      - host: app.example.com
+        urlPattern: '/api/session/ping'
+```
+
+The shipped list covers the periodic beacons known to hold scans open —
+Taboola, Outbrain, Clarity, GA4, Matomo, New Relic, Datadog, Sentry,
+FullStory, Hotjar, Chartbeat and a few more — and every entry names an
+endpoint that exists to receive telemetry. Where a vendor serves its script
+from the same host, the rule is scoped by path: excluding a *script* from idle
+detection would end the scan before the assets that script loads were ever
+requested. `useDefaultBeacons: false` declines the list entirely.
+
+Nothing is filtered out of the result. A beacon is recorded like any other
+request — URL, timing, status, party, initiator — and counts against
+`maxRequests` and `maxBytes`; it carries `beacon: true` so a reader can see
+which requests the scan chose not to wait for. Only the moment the scan stops
+changes.
+
+### When a scan half-fails
+
+A scan can finish on schedule, terminate `idle`, and still be missing a tenth
+of its requests. Chrome reports `net::ERR_INSUFFICIENT_RESOURCES` when it
+cannot get a socket or the shared memory to open one — typically because a
+page released its images in one burst and the browser container was sized for
+less. Those requests never reach the network, so they say nothing about the
+site, and every asset they would have loaded is absent too. One failed loader
+silences everything below it.
+
+Left alone this is the worst kind of noise, because it looks exactly like a
+finding: assets vanish, then come back next scan. wsaw counts it instead:
+
+```yaml
+detection:
+  degradedFailureRatio: 0.05   # 0 uses the default; above 1 disables the check
+```
+
+Above that share of lost requests, the scan is reported as `scan-degraded`
+naming the actual error, and **no `asset-removed` or `host-removed` change is
+raised** for that comparison. Additions still are, and so is everything about
+consent. The asymmetry is deliberate: a request that is present can only mean
+the site made it, while a request that is missing may mean wsaw failed to see
+it. A false positive on an addition costs somebody a look; a false negative
+hides a tracker that fired without consent.
+
+A degraded *baseline* is reported too, for the mirror-image reason — an asset
+that looks new may only have been missed last time — but its additions are
+still raised rather than suppressed.
+
+Failures that are not wsaw's fault do not count towards the ratio.
+`net::ERR_ABORTED` is what a beacon looks like when the page is torn down
+around it, and such a request usually carries a status because the server did
+answer; `net::ERR_BLOCKED_BY_*` records a decision. Both are observations.
+
+The fix for the underlying fault is to stop starving the browser:
+
+```yaml
+browser:
+  container:
+    shmSize: 1g          # the runtime default of 64m is not enough for a real page
+    fileDescriptors: 8192
+```
+
+Both are defaults now, and both are limits rather than allocations, so they
+cost nothing until they are needed.
 
 ## Sharing one result
 
@@ -449,6 +701,29 @@ store:
 
 The DSN belongs in a secret reference — it carries a password, and wsaw redacts it everywhere a webhook token is redacted. Anything driver-specific (TLS mode, connect timeout) goes in the DSN itself rather than being re-invented as wsaw settings.
 
+Evidence is stored gzipped where that makes it smaller: most stored bodies — they are scripts, stylesheets and JSON — and every result document, which is the largest and most repetitive thing wsaw writes. No screenshot is, since a PNG is already compressed and wsaw keeps it as Chrome produced it. A compressed artifact is an ordinary gzip object named `kind/sha256hex.gz`, so a local directory stays readable with `zcat` and without wsaw, and the reference in a result is unchanged: it is the digest of the evidence, not of the object holding it. Reading is transparent, both forms are always readable, and nothing is migrated — artifacts written before this stay where they are.
+
+Against object storage the two spellings cost one request when the first guess is wrong, so wsaw guesses from what it writes: with compression on it looks for the packed object first for a body, a probe and a document, and for the plain one first for a screenshot.
+
+```yaml
+store:
+  compressArtifacts: true   # the default; false stores artifacts as captured
+```
+
+`wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total` report what it saved on your data, which depends on the sites you scan.
+
+Artifacts stored before this existed are read where they lie and are never rewritten behind your back. To apply the saving to a bucket you already have, ask for it:
+
+```sh
+wsaw artifacts compress --dry-run   # what it would do, and what it would save
+wsaw artifacts compress             # do it, printing a summary that adds up
+wsaw artifacts compress --verbose   # and name every artifact as it goes
+```
+
+It writes the compressed object, reads it back, and checks it against the digest in the artifact's own key before removing the original — so a rewrite is verified rather than assumed, and every artifact stays readable in one form or the other throughout, which makes the command safe to run while wsaw is scanning. Interrupting it leaves a half-compressed, wholly readable bucket, and running it again picks up where it stopped. An object that is not a wsaw artifact, or one whose contents no longer hash to its own key, is reported and left exactly as it is: a corrupt artifact is a finding, not something to repack.
+
+Against object storage it is not free: every artifact is a GET, a PUT and a DELETE, and the whole history moves twice. `--dry-run` prices it first.
+
 The schema is created and migrated by wsaw on startup, forward-only, and a store written by a newer wsaw is refused rather than misread.
 
 A setting that belongs to a driver you are not using — a `path` on `postgres`, a connection-pool size on sqlite — is a configuration error naming the line, never a setting quietly ignored. Somebody who left one there has one idea about where their history is kept and wsaw has another, and only one of them can be right.
@@ -464,6 +739,54 @@ store:
 A permanent failure, such as a constraint violation, is never retried: that would only make it slower and hide the cause. Every retry is logged and counted as `wsaw_store_retries_total`, because a store that flaps while each scan quietly succeeds on the second attempt is worth knowing about before it becomes an outage.
 
 **No store makes wsaw multi-node.** Moving the index off the local disk removes the file and its lock; it does not remove the constraint. Two instances sharing one database, or one bucket, still duplicate every scheduled scan and can still disagree about a baseline. What a remote store does change is that it becomes a network dependency, so readiness fails when it is unreachable — a wsaw that cannot record what it observed is not ready, however healthy its browser is.
+
+### How long results are kept
+
+Retention has two forms. The blunt one draws a line and drops everything past it:
+
+```yaml
+store:
+  maxAge: 2160h      # 90 days
+  maxPerSeries: 200  # newest 200 scans of each target and consent mode
+```
+
+That is enough for one target scanned nightly and wrong for anything busier: four scans a day fill 200 in seven weeks, so the age limit never fires and the scan that would show when a tracker first appeared is the one that goes.
+
+The thinning form keeps a history that gets sparser with age, the way `restic forget` does:
+
+```yaml
+store:
+  keep:
+    last: 10        # the newest 10 scans, whenever they ran
+    within: 72h     # everything from the last three days
+    hourly: 24
+    daily: 14
+    weekly: 8
+    monthly: 12
+    yearly: 3
+    timezone: Europe/Berlin  # where a day begins; empty uses the host zone
+```
+
+`keep` **replaces** `maxAge` and `maxPerSeries`. Configuring both is a startup error rather than a precedence to remember — a count limit left over from an older file would cut a policy asked to keep five years back to a few hundred scans, and it would do it silently.
+
+Three things are worth knowing about how it decides:
+
+- **Rules only keep.** They combine by union, so adding `yearly: 5` can never shrink what is stored. Each of `hourly` through `yearly` keeps one scan in each of the newest N periods that hold a scan at all; empty periods are not counted, so `monthly: 12` means twelve months that were scanned, not the last twelve months on the calendar.
+- **A period keeps its most usable scan, not simply its newest.** A scan that ran to idle beats one cut short by the clock or a cap, which in turn beats one that errored or was skipped. A day whose 23:50 scan hit the hard timeout keeps the day's clean 06:00 scan instead — otherwise the record left a year later reads like a quiet day rather than like a failed observation. A period holding nothing but failures still keeps one: that wsaw tried, and what came of it, is evidence too.
+- **A policy of counts alone never empties a series.** `within` and `maxAge` are explicit age limits and may: captured data can itself be personal data, so an operator who says "keep 30 days" is taken at their word.
+
+Retention runs hourly in the daemon, and every prune is logged and counted as `wsaw_results_pruned_total`. A policy change applies to everything already stored the next time it runs, so there is a dry run:
+
+```console
+$ wsaw prune --dry-run --all
+site  reject  3 kept, 41 to delete
+  2026-03-20T09:12:04Z  scan-a3f  idle     keep (last)
+  2026-03-19T09:11:58Z  scan-91c  timeout  delete
+  …
+would delete 41 result(s), keep 3; nothing was deleted
+```
+
+Without `--dry-run` the same command applies the policy once, outside the daemon. Baselines are never pruned — an approved baseline holds its own copy of the result, so history can expire without changing what "expected" means. The artifacts a pruned result alone referenced — its document, its screenshots, its stored bodies — are reclaimed from the bucket with it; see [retention](#retention-reclaims-what-it-stops-referencing).
 
 State lives in the platform's directory by default (`$XDG_STATE_HOME/wsaw` on Linux, `~/Library/Application Support/wsaw` on macOS) and is created `0700`.
 
@@ -684,6 +1007,8 @@ Captured data can itself be personal data, so:
 make check        # fmt, vet, lint, licences, test -race, and the cloudblob compile
 make test-fast    # skip browser tests
 make soak         # long-run stability test (Story 6.8)
+make cover        # coverage profile, one total
+make cover-report # the same profile as a browsable HTML page
 ```
 
 The soak reports what the artifact bucket cost the run — requests and bytes,
@@ -721,7 +1046,14 @@ object store nobody here wrote, and a bucket is not a directory. Listing order,
 pagination, modification-time granularity, delete semantics and error codes all
 differ, and the differences are asserted in `test/e2e/objectstore/`.
 
+`make cover-report` writes `coverage-report.html`: every package ranked by statement coverage and
+again by how many statements are untested, then a card per package with its files and the functions
+no test ever reaches. The two rankings disagree on purpose — one answers "how well tested is this
+package", the other "where should the next test go".
+
 The fast suite runs **without Chrome installed** — browser tests skip themselves and say why. Integration tests use local fixture servers, including a synthetic consent banner and a synthetic third-party host; they never touch a live third-party website, so CI does not depend on someone else's site staying unchanged.
+
+Everything above proves wsaw in one process. What a deployment breaks — a browser that cannot reach the host's loopback from inside a container, a database connection that drops, a consent banner served over a real origin rather than a fixture string — only shows up between processes, so it has its own containerised end-to-end stack: [`test/e2e/README.md`](test/e2e/README.md).
 
 Contributors and coding agents: read [`AGENTS.md`](AGENTS.md), [`architecture-tenets.MD`](architecture-tenets.MD) and [`non-functional-requirements.MD`](non-functional-requirements.MD) first. The tenets are binding, not advisory.
 

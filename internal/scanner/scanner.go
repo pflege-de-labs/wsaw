@@ -79,6 +79,10 @@ type Options struct {
 	// HashResourceTypes selects which bodies are fingerprinted.
 	HashResourceTypes []string
 
+	// DegradedFailureRatio is the share of lost requests above which a
+	// scan's asset list is no longer trusted for removals.
+	DegradedFailureRatio float64
+
 	// ConsentStepTimeout and ConsentTotalTimeout bound banner interaction.
 	ConsentStepTimeout  time.Duration
 	ConsentTotalTimeout time.Duration
@@ -355,6 +359,7 @@ func (s *Scanner) consentHook(target config.Resolved, mode model.ConsentMode, lo
 			Domain:         domain,
 			StepTimeout:    s.opts.ConsentStepTimeout,
 			TotalTimeout:   s.opts.ConsentTotalTimeout,
+			BannerWait:     target.ConsentBannerWait,
 			AllowHeuristic: s.opts.AllowHeuristicConsent,
 			OnFailure:      s.opts.ConsentOnFailure,
 			Screenshot:     cctx.Screenshot,
@@ -385,6 +390,7 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		ConsentBudget:     s.opts.ConsentTotalTimeout,
 		DwellAfterLoad:    target.DwellAfterLoad,
 		ScrollToBottom:    target.ScrollToBottom,
+		Beacons:           target.Beacons,
 		HashResourceTypes: s.opts.HashResourceTypes,
 		StoreBodies:       target.StoreBodies,
 		Screenshots:       target.Screenshots,
@@ -480,9 +486,10 @@ func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.L
 	}
 
 	rep := diff.Compare(baseline, res, diff.Options{
-		Allow:    target.Allow,
-		Deny:     target.Deny,
-		Severity: target.Severity,
+		Allow:                target.Allow,
+		Deny:                 target.Deny,
+		Severity:             target.Severity,
+		DegradedFailureRatio: s.opts.DegradedFailureRatio,
 	})
 
 	if gone && rep != nil {

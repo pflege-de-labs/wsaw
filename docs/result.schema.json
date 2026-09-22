@@ -126,6 +126,13 @@
         "type": "string"
       },
       "description": "Non-fatal problems a reader must see, such as a body that could not be fingerprinted."
+    },
+    "storage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/storageEntry"
+      },
+      "description": "Web Storage present when the scan finished. A cookie list describes only half of what a site keeps on a visitor's machine."
     }
   },
   "$defs": {
@@ -141,9 +148,11 @@
             "applied",
             "not-needed",
             "failed",
-            "unverified"
+            "unverified",
+            "banner-visible",
+            "necessary-only"
           ],
-          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed."
+          "description": "'not-needed' means no interaction was required, which is a legitimate and common result, not an error. 'unverified' means the interaction ran but its effect could not be confirmed. 'banner-visible' means the CMP recorded the requested choice but the banner itself was still displayed even after a fallback click was attempted. 'necessary-only' means the requested mode was 'reject' but the banner offered no reject/decline control at all, so wsaw fell back to deselecting every optional category; it is never reported as 'applied' and must not be read as a verified full rejection."
         },
         "reason": {
           "type": "string"
@@ -163,9 +172,12 @@
             "gpp",
             "vendor-api",
             "selector",
-            "heuristic"
+            "heuristic",
+            "vendor-api+click",
+            "selector+click",
+            "heuristic+click"
           ],
-          "description": "How the state was reached. A TCF API call is strong evidence; a heuristic label match is weak."
+          "description": "How the state was reached. A TCF API call is strong evidence; a heuristic label match is weak. A '+click' suffix means the primary mechanism recorded the choice but left the banner displayed, and a fallback click was needed to close it."
         },
         "heuristic": {
           "type": "boolean",
@@ -180,6 +192,55 @@
         "interactedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "screenshotsIdentical": {
+          "type": "boolean",
+          "description": "True when the before- and after-interaction screenshots are byte-for-byte identical, which contradicts an 'applied' outcome and is worth checking even when the outcome is 'banner-visible' or 'failed'."
+        },
+        "cmpKind": {
+          "enum": [
+            "vendor",
+            "bespoke",
+            "none"
+          ],
+          "description": "What was found on the page, which is a different question from what the interaction achieved. 'vendor' means a CMP product was identified. 'bespoke' means a consent UI is present and no vendor fingerprint matched it. 'none' means no consent UI was found within the banner wait, and it is the only kind that licenses reading this result as a page that never asks for consent."
+        },
+        "bannerHeading": {
+          "type": "string",
+          "description": "The banner's own first line of text, truncated. Page-controlled data, recorded so a reader can tell which banner this was."
+        },
+        "consentStorageKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Web Storage keys written while the interaction ran, as 'local:cookie-accepted'. On a site that keeps consent state outside cookies this is the only trace that the choice was recorded."
+        },
+        "staleHostRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Consent rules scoped to this host that did not match it. A host-scoped rule exists because somebody wrote it for this site; its silence usually means the site changed."
+        },
+        "diagnostic": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "A banner that was found but not handled: which element matched, what it said, and which controls it offered. Every field is page-controlled text.",
+          "properties": {
+            "element": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "controls": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },
@@ -336,6 +397,10 @@
           "type": "boolean",
           "description": "data:, blob: and similar. Recorded, but nothing left the browser."
         },
+        "beacon": {
+          "type": "boolean",
+          "description": "A configured rule excluded this request from idle detection: it repeats for as long as the page is open, so the scan recorded it without waiting for it."
+        },
         "redirectFrom": {
           "type": "string"
         },
@@ -387,12 +452,22 @@
           "type": "string",
           "description": "Reference to the stored response body, present when body storage is on. Bodies live outside this document as content-addressed files; fetch one with GET /api/v1/artifacts/{ref}."
         },
+        "bodyIdentity": {
+          "type": "string",
+          "description": "A stable identifier lifted out of the response body by a configured normalize.bodyIdentity rule, such as a tag-manager container version. Present only where a rule matched and the body carried the value. A comparison prefers it over bodySha256, because some scripts rewrite their bytes on every response without changing what they do."
+        },
+        "bodyIdentityLabel": {
+          "type": "string",
+          "description": "What bodyIdentity is, for reports, e.g. \"GTM container version\"."
+        },
         "body": {
           "type": "string",
           "description": "The stored response body itself. Present only in an export — a HAR, a downloaded result, or the API's result endpoint — and never in the document as stored, which keeps bodies outside it. A result read from the store therefore has bodyRef and no body."
         },
         "bodyEncoding": {
-          "enum": ["base64"],
+          "enum": [
+            "base64"
+          ],
           "description": "Present when body is base64-encoded because the bytes are not text. Absent when body is the body as text."
         },
         "bodyStoredSize": {
@@ -484,6 +559,43 @@
           "type": "string"
         },
         "bytes": {
+          "type": "integer"
+        }
+      }
+    },
+    "storageEntry": {
+      "type": "object",
+      "required": [
+        "origin",
+        "area",
+        "key",
+        "party"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "origin": {
+          "type": "string"
+        },
+        "area": {
+          "enum": [
+            "local",
+            "session"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "party": {
+          "enum": [
+            "first",
+            "third"
+          ]
+        },
+        "valueSha256": {
+          "type": "string",
+          "description": "Values are fingerprinted, never stored: they carry identifiers as routinely as cookie values do."
+        },
+        "valueLength": {
           "type": "integer"
         }
       }

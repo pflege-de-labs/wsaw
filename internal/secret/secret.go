@@ -139,6 +139,15 @@ func (v Value) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + Redacted + `"`), nil
 }
 
+// MarshalYAML emits the redacted form. Without it a Value is still not
+// leaked — yaml cannot reach the unexported field the plaintext lives in, and
+// renders an empty mapping instead — but `wsaw config show` prints resolved
+// targets, and a type that keeps credentials out of output should say so
+// rather than rely on that.
+func (v Value) MarshalYAML() (any, error) {
+	return v.String(), nil
+}
+
 // RedactURL removes userinfo from a URL so proxy and webhook URLs can be
 // logged and stored. An unparseable URL is reported as entirely redacted
 // rather than echoed, since it may still contain a credential.

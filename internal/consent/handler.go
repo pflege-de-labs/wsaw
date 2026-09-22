@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,18 @@ const (
 	MechanismSelector  = "selector"
 	MechanismHeuristic = "heuristic"
 )
+
+// mechanismEscalatedSuffix is appended to a mechanism when a fallback click
+// was needed to close a banner that the primary mechanism left displayed —
+// "vendor-api+click" and "selector+click" report a different story than
+// "vendor-api" and "selector" alone (Story 2.7, AC4).
+const mechanismEscalatedSuffix = "+click"
+
+// defaultDismissedExpr decides whether a banner is gone when a rule does not
+// define its own Dismissed expression. It reuses the same container check the
+// heuristic fallback already relies on, rather than inventing a second
+// definition of "banner-shaped" (Story 2.7, AC1).
+const defaultDismissedExpr = "!window.__wsawConsentContainer()"
 
 // FailurePolicy decides what a failed interaction does to the scan.
 type FailurePolicy string
@@ -61,6 +74,13 @@ type Options struct {
 	// cannot consume the scan's entire budget.
 	TotalTimeout time.Duration
 
+	// BannerWait bounds how long wsaw waits for a consent banner to appear
+	// before concluding there is none. An application-rendered banner is
+	// mounted after hydration or on an idle callback, so checking once, the
+	// instant the page goes idle, reports "no CMP" for a site that does have
+	// one (Story 2.9, AC3).
+	BannerWait time.Duration
+
 	// AllowHeuristic permits the label-guessing fallback. On by default via
 	// New; turning it off means unknown banners are reported rather than
 	// guessed at.
@@ -85,6 +105,9 @@ type Options struct {
 const (
 	DefaultStepTimeout  = 10 * time.Second
 	DefaultTotalTimeout = 30 * time.Second
+	// DefaultBannerWait is short on purpose: it is spent only on pages where
+	// nothing has been found yet, and it is paid once per scan.
+	DefaultBannerWait = 5 * time.Second
 )
 
 func (o *Options) withDefaults() Options {
@@ -96,6 +119,10 @@ func (o *Options) withDefaults() Options {
 
 	if out.TotalTimeout <= 0 {
 		out.TotalTimeout = DefaultTotalTimeout
+	}
+
+	if out.BannerWait <= 0 {
+		out.BannerWait = DefaultBannerWait
 	}
 
 	if out.OnFailure == "" {
@@ -148,6 +175,23 @@ func Apply(ctx context.Context, rawOpts Options) (model.Consent, error) {
 
 type handler struct {
 	opts Options
+
+	// banner is what the page showed before anything was clicked, and
+	// storageBefore is what it had already stored. Both are taken once, up
+	// front, because both are evidence about the state wsaw found rather than
+	// the state it produced (Story 2.9).
+	banner        bannerSummary
+	storageBefore map[string]int
+}
+
+// bannerSummary is __wsawConsentSummary's answer: page-controlled text,
+// treated as data.
+type bannerSummary struct {
+	Found    bool     `json:"found"`
+	Element  string   `json:"element"`
+	Heading  string   `json:"heading"`
+	Text     string   `json:"text"`
+	Controls []string `json:"controls"`
 }
 
 func (h *handler) apply(ctx context.Context) (model.Consent, error) {
@@ -160,12 +204,18 @@ func (h *handler) apply(ctx context.Context) (model.Consent, error) {
 
 	probe := h.probe(ctx)
 
+	// A banner that has not been rendered yet is not an absent banner, so
+	// wait for one before anything concludes there is none (Story 2.9, AC3).
+	// A page carrying a TCF API has already answered the question.
+	h.banner = h.awaitBanner(ctx, probe)
+	h.storageBefore = h.storageSnapshot(ctx)
+
 	// The TCF API is tried first: it is documented, version-stable, and
 	// reports back what the CMP recorded.
 	if probe.TCF {
 		consent, done := h.applyTCF(ctx, probe)
 		if done {
-			return consent, nil
+			return h.decorate(ctx, consent), nil
 		}
 
 		// TCF was present but could not be driven; fall through to rules and
@@ -182,7 +232,120 @@ func (h *handler) apply(ctx context.Context) (model.Consent, error) {
 		}
 	}
 
-	return consent, nil
+	return h.decorate(ctx, consent), nil
+}
+
+// decorate adds the evidence that is about the page rather than about the
+// interaction: what the banner said, and what the interaction wrote to Web
+// Storage. It runs on every path, including the ones that gave up.
+func (h *handler) decorate(ctx context.Context, consent model.Consent) model.Consent {
+	if consent.Kind == "" {
+		consent.Kind = model.CMPKindNone
+		if h.banner.Found {
+			consent.Kind = model.CMPKindBespoke
+		}
+	}
+
+	if h.banner.Found && consent.BannerHeading == "" {
+		consent.BannerHeading = h.banner.Heading
+	}
+
+	if consent.InteractedAt != nil {
+		consent.StorageKeys = h.storageWrites(ctx)
+	}
+
+	return consent
+}
+
+// awaitBanner polls for a consent container until one appears or the wait
+// runs out. The poll is cheap and the deadline is small; a page that has no
+// banner pays it once (Story 2.9, AC3).
+func (h *handler) awaitBanner(ctx context.Context, probe probeResult) bannerSummary {
+	summary := h.bannerSummary(ctx)
+	if summary.Found || probe.TCF || h.opts.BannerWait <= 0 {
+		return summary
+	}
+
+	const poll = 250 * time.Millisecond
+
+	waitCtx, cancel := context.WithTimeout(ctx, h.opts.BannerWait)
+	defer cancel()
+
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			return summary
+		case <-ticker.C:
+		}
+
+		if s := h.bannerSummary(waitCtx); s.Found {
+			return s
+		}
+	}
+}
+
+func (h *handler) bannerSummary(ctx context.Context) bannerSummary {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var out bannerSummary
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawConsentSummary()", &out)); err != nil {
+		h.opts.Logger.Debug("consent banner summary failed", "error", err)
+	}
+
+	return out
+}
+
+// storageSnapshot reads Web Storage key names and value lengths. Values are
+// never read out of the page: a length is enough to tell that a key changed,
+// and the value itself may be personal data (NFR §4).
+func (h *handler) storageSnapshot(ctx context.Context) map[string]int {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	out := map[string]int{}
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawStorageSnapshot()", &out)); err != nil {
+		h.opts.Logger.Debug("consent storage snapshot failed", "error", err)
+
+		return nil
+	}
+
+	return out
+}
+
+// storageWrites names the keys this interaction created or changed. It is the
+// only trace a site leaves when it keeps its consent state outside cookies.
+func (h *handler) storageWrites(ctx context.Context) []string {
+	return h.diffStorage(h.storageSnapshot(ctx))
+}
+
+// diffStorage names the keys that appeared or changed length since the
+// snapshot taken before the interaction. A key that was already there with
+// the same value is not evidence of anything this scan did — the same
+// reasoning __wsawCmpPrior applies to a CMP's own consent state.
+func (h *handler) diffStorage(after map[string]int) []string {
+	if len(after) == 0 {
+		return nil
+	}
+
+	var written []string
+
+	for key, length := range after {
+		if before, existed := h.storageBefore[key]; existed && before == length {
+			continue
+		}
+
+		written = append(written, key)
+	}
+
+	sort.Strings(written)
+
+	return written
 }
 
 func (h *handler) injectHelpers(ctx context.Context) error {
@@ -251,6 +414,7 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 			Reason:    "TCF API call failed: " + err.Error(),
 			CMP:       CMPTCF,
 			Detection: DetectionTCF,
+			Kind:      model.CMPKindVendor,
 		}, false
 	}
 
@@ -259,6 +423,9 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 		Detection: DetectionTCF,
 		Mechanism: MechanismTCF,
 		TCString:  out.TCString,
+		// A TCF API is a CMP product by definition, whatever the banner
+		// around it looks like (Story 2.9, AC1).
+		Kind: model.CMPKindVendor,
 	}
 
 	if id := numString(out.CMPID); id != "" {
@@ -308,7 +475,11 @@ func (h *handler) readGPP(ctx context.Context) string {
 func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Consent {
 	candidates := h.opts.Rules.Candidates(h.opts.Host, h.opts.Domain)
 
-	var attempted []string
+	var (
+		attempted  []string
+		stale      []string
+		lastReason string
+	)
 
 	for _, rule := range candidates {
 		if rule.Heuristic && !h.opts.AllowHeuristic {
@@ -316,7 +487,14 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		}
 
 		steps := rule.Steps(h.opts.Mode)
-		if len(steps) == 0 {
+
+		// A rule may declare a necessary-only fallback for `reject` mode
+		// (Story 2.8): the closest reachable state on a banner that offers no
+		// reject/decline control at all. A rule with neither real steps nor a
+		// fallback for this mode is not a candidate.
+		hasFallback := h.opts.Mode == model.ConsentReject && len(rule.Necessary) > 0
+
+		if len(steps) == 0 && !hasFallback {
 			continue
 		}
 
@@ -328,14 +506,50 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 		}
 
 		if !matched {
+			// A host-scoped rule that does not match the host it was written
+			// for is the way a rule quietly stops working: the site was
+			// redesigned, the selector moved, and nothing says so. Record it
+			// (Story 2.9, AC6).
+			if len(rule.Hosts) > 0 {
+				stale = append(stale, rule.Name)
+			}
+
 			continue
 		}
 
 		attempted = append(attempted, rule.Name)
 
-		consent := h.runRule(ctx, rule, steps)
-		if consent.Outcome == model.OutcomeApplied || consent.Outcome == model.OutcomeUnverified {
+		var consent model.Consent
+
+		switch {
+		case len(steps) == 0:
+			// No reject sequence is defined at all: the fallback is the only
+			// thing to try.
+			consent = h.runNecessaryOnly(ctx, rule)
+
+		default:
+			var ranAnyStep bool
+
+			consent, ranAnyStep = h.runRule(ctx, rule, steps)
+
+			if hasFallback && !ranAnyStep {
+				// Every defined reject step was optional and none of them
+				// found or affected anything — the shape of a banner whose
+				// reject control does not exist, which is exactly what the
+				// fallback is for.
+				consent = h.runNecessaryOnly(ctx, rule)
+			}
+		}
+
+		switch consent.Outcome {
+		case model.OutcomeApplied, model.OutcomeUnverified, model.OutcomeBannerVisible, model.OutcomeNecessaryOnly:
+			consent.StaleHostRules = stale
+
 			return consent
+		}
+
+		if consent.Reason != "" {
+			lastReason = consent.Reason
 		}
 
 		// A rule that detected but failed is worth reporting if nothing else
@@ -347,25 +561,82 @@ func (h *handler) applyRules(ctx context.Context, probe probeResult) model.Conse
 
 	if probe.TCF {
 		return model.Consent{
-			Outcome:   model.OutcomeFailed,
-			Reason:    "a TCF CMP is present but could not be driven, and no rule matched",
-			CMP:       CMPTCF,
-			Detection: DetectionTCF,
+			Outcome:        model.OutcomeFailed,
+			Reason:         "a TCF CMP is present but could not be driven, and no rule matched",
+			CMP:            CMPTCF,
+			Detection:      DetectionTCF,
+			Kind:           model.CMPKindVendor,
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
 		}
 	}
 
 	if len(attempted) > 0 {
+		reason := "rules matched but none completed: " + strings.Join(attempted, ", ")
+		// The rule's own reason says what actually went wrong — a step that
+		// found nothing, a verification that reported the banner still
+		// standing. Dropping it for a list of names throws away the one
+		// sentence a reader can act on (Story 2.9, AC4).
+		reason = appendReason(reason, lastReason)
+
+		return model.Consent{
+			Outcome:        model.OutcomeFailed,
+			Reason:         reason,
+			Kind:           kindForBanner(h.banner.Found),
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
+		}
+	}
+
+	// A banner is on the page and nothing wsaw knows matched it. That is a
+	// failure to handle a CMP, not an absence of one: reporting it as
+	// "not-needed" would tell a reviewer the site never asked for consent
+	// (Story 2.9, AC1).
+	if h.banner.Found {
 		return model.Consent{
 			Outcome: model.OutcomeFailed,
-			Reason:  "rules matched but none completed: " + strings.Join(attempted, ", "),
+			Reason: "a consent banner is present but no rule matched it; " +
+				"the recorded traffic is pre-consent traffic, whatever mode was requested",
+			Kind:           model.CMPKindBespoke,
+			StaleHostRules: stale,
+			Diagnostic:     h.diagnostic(),
 		}
 	}
 
 	// No CMP at all is a legitimate, common outcome and must not read as an
 	// error: many pages simply have no banner.
 	return model.Consent{
-		Outcome: model.OutcomeNotNeeded,
-		Reason:  "no consent management platform detected",
+		Outcome:        model.OutcomeNotNeeded,
+		Reason:         "no consent management platform detected",
+		Kind:           model.CMPKindNone,
+		StaleHostRules: stale,
+	}
+}
+
+// kindForBanner classifies a page that no vendor rule claimed. "Bespoke" is
+// the honest reading of a banner no vendor fingerprint matched: it may be a
+// CMP wsaw does not know, and the result says only what was observed.
+func kindForBanner(found bool) model.CMPKind {
+	if found {
+		return model.CMPKindBespoke
+	}
+
+	return model.CMPKindNone
+}
+
+// diagnostic turns the banner summary into the record AC4 asks for: which
+// element matched, what it said, and which controls it offered. It is the
+// difference between "none completed" and a reader knowing which rule to
+// write next.
+func (h *handler) diagnostic() *model.ConsentDiagnostic {
+	if !h.banner.Found {
+		return nil
+	}
+
+	return &model.ConsentDiagnostic{
+		Element:  h.banner.Element,
+		Text:     h.banner.Text,
+		Controls: h.banner.Controls,
 	}
 }
 
@@ -395,12 +666,34 @@ func (h *handler) interacted() {
 	}
 }
 
-func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.Consent {
+// runRule executes a rule's step sequence and reports what happened, plus
+// whether any step actually found or affected anything on the page.
+//
+// The second return value distinguishes "this step sequence has nothing to
+// try" from every other case, including a hard failure: a sequence made
+// entirely of optional steps, none of which matched, means the control this
+// rule is looking for is not on the page at all — which for a `reject` rule
+// is exactly the shape of a banner with no reject control (Story 2.8, AC2).
+// A sequence with even one required step is never mistaken for that case,
+// whether it succeeds or fails, because a required step is evidence the rule
+// author expected a real control to be there.
+func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) (model.Consent, bool) {
 	consent := model.Consent{
 		CMP:       ruleCMPName(rule),
 		Detection: "rule:" + rule.Name,
 		Mechanism: mechanismFor(rule, steps),
 		Heuristic: rule.Heuristic,
+		Kind:      ruleKind(rule),
+	}
+
+	allOptional := true
+
+	for _, s := range steps {
+		if !s.Optional {
+			allOptional = false
+
+			break
+		}
 	}
 
 	// The phase boundary is marked before the action, not after it.
@@ -416,6 +709,8 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 	// pre-consent request can be swept into the post-consent phase.
 	h.interacted()
 
+	var anySucceeded bool
+
 	for i, step := range steps {
 		if err := h.runStep(ctx, step); err != nil {
 			if step.Optional {
@@ -425,8 +720,14 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 			consent.Outcome = model.OutcomeFailed
 			consent.Reason = fmt.Sprintf("rule %q step %d failed: %v", rule.Name, i+1, err)
 
-			return consent
+			return consent, true
 		}
+
+		anySucceeded = true
+	}
+
+	if allOptional && !anySucceeded {
+		return consent, false
 	}
 
 	now := time.Now()
@@ -434,12 +735,29 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 
 	// Verification decides between "applied" and "unverified". A rule with no
 	// verify expression can never claim to be verified, which is the honest
-	// default (Story 2.5).
+	// default (Story 2.5) — unless the page itself left evidence. A site that
+	// keeps its consent state in Web Storage records the choice there and
+	// nowhere else, and a storage write plus a banner that is gone is the
+	// same pair of facts a consent cookie plus a dismissed dialog provides
+	// (Story 2.9, AC5 and AC8).
 	if rule.Verify == "" {
+		if written := h.storageWrites(ctx); len(written) > 0 {
+			consent.StorageKeys = written
+
+			if gone, gerr := h.bannerGone(ctx, rule); gerr == nil && gone {
+				consent.Outcome = model.OutcomeApplied
+				consent.Reason = fmt.Sprintf(
+					"rule %q ran and defines no verification; the choice was recorded in Web Storage (%s) and the banner is gone",
+					rule.Name, strings.Join(written, ", "))
+
+				return consent, true
+			}
+		}
+
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but defines no verification", rule.Name)
 
-		return consent
+		return consent, true
 	}
 
 	ok, err := h.verify(ctx, rule)
@@ -449,22 +767,355 @@ func (h *handler) runRule(ctx context.Context, rule Rule, steps []Action) model.
 		consent.Outcome = model.OutcomeUnverified
 		consent.Reason = fmt.Sprintf("rule %q ran but verification errored: %v", rule.Name, err)
 
+		return consent, true
+
 	case !ok:
 		consent.Outcome = model.OutcomeFailed
 		consent.Reason = fmt.Sprintf("rule %q ran but verification reported the banner is still present", rule.Name)
 
-	default:
-		consent.Outcome = model.OutcomeApplied
-		consent.Reason = fmt.Sprintf("rule %q applied and verified", rule.Name)
+		return consent, true
+	}
+
+	// The CMP recorded the choice. Whether the banner itself is gone is a
+	// separate question (Story 2.7, AC1): a vendor API can record a
+	// rejection without ever running the banner's own dismiss handler, which
+	// reacts to its buttons, not to the CMP's internal state.
+	consent.Outcome = model.OutcomeApplied
+	consent.Reason = fmt.Sprintf("rule %q applied and verified", rule.Name)
+
+	if gone, gerr := h.bannerGone(ctx, rule); gerr == nil && gone {
+		return consent, true
+	}
+
+	return h.escalate(ctx, rule, steps, consent), true
+}
+
+// runNecessaryOnly drives a rule's necessary-only fallback (Story 2.8): the
+// closest reachable state on a banner that offers no reject/decline control
+// at all. It mirrors runRule's step execution and verification, but its
+// success is never OutcomeApplied — this banner did not offer a rejection, so
+// nothing here claims one was performed.
+func (h *handler) runNecessaryOnly(ctx context.Context, rule Rule) model.Consent {
+	steps := rule.Necessary
+
+	consent := model.Consent{
+		CMP:       ruleCMPName(rule),
+		Detection: "rule:" + rule.Name,
+		Mechanism: mechanismFor(rule, steps),
+		Heuristic: rule.Heuristic,
+		Kind:      ruleKind(rule),
+	}
+
+	h.interacted()
+
+	for i, step := range steps {
+		if err := h.runStep(ctx, step); err != nil {
+			if step.Optional {
+				continue
+			}
+
+			consent.Outcome = model.OutcomeFailed
+			consent.Reason = fmt.Sprintf(
+				"rule %q has no reject control; its necessary-only fallback step %d failed: %v",
+				rule.Name, i+1, err)
+
+			return consent
+		}
+	}
+
+	now := time.Now()
+	consent.InteractedAt = &now
+
+	if rule.Verify == "" {
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but defines no verification", rule.Name)
+
+		return consent
+	}
+
+	ok, err := h.verify(ctx, rule)
+
+	switch {
+	case err != nil:
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but verification errored: %v",
+			rule.Name, err)
+
+		return consent
+
+	case !ok:
+		consent.Outcome = model.OutcomeFailed
+		consent.Reason = fmt.Sprintf(
+			"rule %q has no reject control; its necessary-only fallback ran but verification reported no choice was recorded",
+			rule.Name)
+
+		return consent
+	}
+
+	consent.Outcome = model.OutcomeNecessaryOnly
+	consent.Reason = fmt.Sprintf(
+		"rule %q has no reject control; wsaw limited consent to strictly necessary categories via its necessary-only fallback",
+		rule.Name)
+
+	gone, gerr := h.bannerGone(ctx, rule)
+	if gerr == nil && !gone {
+		clicked := h.escalateClicks(ctx, steps)
+		if !clicked && h.opts.AllowHeuristic {
+			clicked = h.escalateHeuristic(ctx, rule)
+		}
+
+		if clicked {
+			consent.Mechanism += mechanismEscalatedSuffix
+		}
+
+		gone, gerr = h.bannerGone(ctx, rule)
+	}
+
+	if gerr == nil && !gone {
+		consent.Reason = appendReason(consent.Reason, "the banner remained displayed after the fallback was attempted")
 	}
 
 	return consent
+}
+
+// bannerGone reports whether the banner is still displayed, using the rule's
+// own Dismissed expression where it defines one and the shared container
+// heuristic otherwise (Story 2.7, AC1).
+//
+// The check is retried briefly, mirroring verify(): a CMP that recorded the
+// choice often still fades its dialog out over the following frames, and a
+// single check taken the instant the choice is recorded can catch that
+// animation mid-flight. Without the retry, the outcome is decided from a
+// frame that is already stale by the time the after-consent screenshot is
+// taken a moment later, so the report claims the banner is visible in an
+// image that does not show it.
+func (h *handler) bannerGone(ctx context.Context, rule Rule) (bool, error) {
+	expr := rule.Dismissed
+	if expr == "" {
+		expr = defaultDismissedExpr
+	}
+
+	const (
+		attempts = 10
+		interval = 250 * time.Millisecond
+	)
+
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var (
+		gone    bool
+		lastErr error
+	)
+
+	for range attempts {
+		err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone))
+		if err == nil && gone {
+			return true, nil
+		}
+
+		if err != nil {
+			lastErr = err
+		}
+
+		timer := time.NewTimer(interval)
+
+		select {
+		case <-timer.C:
+		case <-stepCtx.Done():
+			timer.Stop()
+
+			return false, lastErr
+		}
+
+		timer.Stop()
+	}
+
+	if lastErr != nil {
+		return false, lastErr
+	}
+
+	return gone, nil
+}
+
+// escalate is reached when a rule's own verification says the CMP recorded
+// the requested choice, but the banner itself is still on screen — the gap
+// Story 2.7 exists to close. Tenet 11 ranks a vendor API above clicking for
+// expressing the choice; it never licenses treating the API's silence about
+// the banner as evidence the banner is gone.
+//
+// This is one bounded pass, not a retry loop (Tenet 6): every click step the
+// rule already defines for this mode is retried once, this time with the
+// fuller pointer/mouse event sequence __wsawSimulateClick provides, and if
+// none of them close the banner the generic heuristic label match is tried
+// for the same mode (Story 2.4, AC5). A CMP whose own mechanism already
+// closes its dialog never reaches this method, because the caller only calls
+// it once bannerGone has already reported the banner is still displayed.
+func (h *handler) escalate(ctx context.Context, rule Rule, steps []Action, consent model.Consent) model.Consent {
+	clicked := h.escalateClicks(ctx, steps)
+
+	if !clicked && h.opts.AllowHeuristic {
+		clicked = h.escalateHeuristic(ctx, rule)
+	}
+
+	if clicked {
+		consent.Mechanism += mechanismEscalatedSuffix
+	}
+
+	gone, err := h.bannerGone(ctx, rule)
+
+	switch {
+	case err != nil:
+		consent.Outcome = model.OutcomeUnverified
+		consent.Reason = fmt.Sprintf(
+			"rule %q recorded the choice, but whether the banner closed could not be checked: %v", rule.Name, err)
+
+	case gone:
+		consent.Reason = fmt.Sprintf(
+			"rule %q applied and verified; the banner needed a fallback click to close", rule.Name)
+
+	default:
+		consent.Outcome = model.OutcomeBannerVisible
+		consent.Reason = fmt.Sprintf(
+			"rule %q recorded the choice, but the banner was still displayed after a fallback click was attempted",
+			rule.Name)
+	}
+
+	return consent
+}
+
+// escalateClicks retries every click step the rule defines for this mode —
+// through __wsawSimulateClick for a plain Click, or another trusted dispatch
+// for a TrustedClick whose first attempt landed on a still-animating target —
+// and reports whether any of them found and clicked an element.
+func (h *handler) escalateClicks(ctx context.Context, steps []Action) bool {
+	var clicked bool
+
+	for _, step := range steps {
+		switch {
+		case step.Click != "":
+			if h.simulateClick(ctx, step.Click) {
+				clicked = true
+			}
+
+		case step.TrustedClick != "":
+			if h.trustedClick(ctx, step.TrustedClick) == nil {
+				clicked = true
+			}
+		}
+	}
+
+	return clicked
+}
+
+// escalateHeuristic tries the generic label-matching fallback for the current
+// mode, reusing the shipped heuristic rule rather than a second copy of its
+// label lists (Story 2.4, AC5).
+func (h *handler) escalateHeuristic(ctx context.Context, originating Rule) bool {
+	for _, r := range h.opts.Rules.Rules() {
+		if !r.Heuristic || r.Name == originating.Name {
+			continue
+		}
+
+		steps := r.Steps(h.opts.Mode)
+		if len(steps) == 0 {
+			continue
+		}
+
+		var acted bool
+
+		for _, step := range steps {
+			if step.Click == "" && step.Eval == "" {
+				continue
+			}
+
+			if err := h.runStep(ctx, step); err == nil {
+				acted = true
+			}
+		}
+
+		if acted {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *handler) simulateClick(ctx context.Context, selector string) bool {
+	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
+	defer cancel()
+
+	var out clickResult
+
+	expr := fmt.Sprintf("window.__wsawSimulateClick(%s)", jsString(selector))
+
+	if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &out)); err != nil {
+		return false
+	}
+
+	return out.Clicked
 }
 
 type clickResult struct {
 	Clicked bool   `json:"clicked"`
 	Reason  string `json:"reason"`
 	Matched string `json:"matched"`
+}
+
+type locateResult struct {
+	Found   bool    `json:"found"`
+	Visible bool    `json:"visible"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Reason  string  `json:"reason"`
+}
+
+// trustedClick drives a genuine, CDP-dispatched pointer event rather than a
+// synthetic one. A synthetic click (el.click(), or __wsawSimulateClick's
+// fuller pointer/mouse sequence) is still reported as untrusted —
+// Event.isTrusted is false either way — and at least one CMP (CCM19) checks
+// isTrusted and silently ignores the click, so it can appear to succeed
+// while the choice is never recorded. Only the off-screen case — a control a
+// CMP relies on a handler to trigger rather than a pointer, which
+// __wsawLocate cannot meaningfully dispatch a click onto — falls back to the
+// synthetic click.
+func (h *handler) trustedClick(ctx context.Context, selector string) error {
+	var loc locateResult
+
+	locateExpr := fmt.Sprintf("window.__wsawLocate(%s)", jsString(selector))
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(locateExpr, &loc)); err != nil {
+		return fmt.Errorf("locating %s: %w", selector, err)
+	}
+
+	if !loc.Found {
+		return fmt.Errorf("clicking %s: %s", selector, loc.Reason)
+	}
+
+	if !loc.Visible {
+		var out clickResult
+
+		clickExpr := fmt.Sprintf("window.__wsawClick(%s)", jsString(selector))
+
+		if err := chromedp.Run(ctx, chromedp.Evaluate(clickExpr, &out)); err != nil {
+			return fmt.Errorf("clicking %s: %w", selector, err)
+		}
+
+		if !out.Clicked {
+			return fmt.Errorf("clicking %s: %s", selector, out.Reason)
+		}
+
+		return nil
+	}
+
+	if err := chromedp.Run(ctx, chromedp.MouseClickXY(loc.X, loc.Y)); err != nil {
+		return fmt.Errorf("clicking %s: %w", selector, err)
+	}
+
+	return nil
 }
 
 func (h *handler) runStep(ctx context.Context, step Action) error {
@@ -500,6 +1151,9 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 		}
 
 		return nil
+
+	case step.TrustedClick != "":
+		return h.trustedClick(stepCtx, step.TrustedClick)
 
 	case step.Eval != "":
 		// A rule's eval may return a boolean to signal whether it did
@@ -598,6 +1252,17 @@ func mechanismFor(rule Rule, steps []Action) string {
 	}
 
 	return MechanismSelector
+}
+
+// ruleKind reports what the matched rule proves about the page. A vendor rule
+// identifies a product; a host rule or a label guess proves only that a
+// consent UI is there (Story 2.9, AC1).
+func ruleKind(rule Rule) model.CMPKind {
+	if rule.Vendor != "" {
+		return model.CMPKindVendor
+	}
+
+	return model.CMPKindBespoke
 }
 
 func ruleCMPName(rule Rule) string {

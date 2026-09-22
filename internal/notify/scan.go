@@ -111,6 +111,13 @@ func trustworthiness(res *model.Result) (bool, string) {
 	case res.Consent.Outcome == model.OutcomeUnverified:
 		return false, "the consent interaction could not be verified, so the consent state during this scan is unconfirmed"
 
+	case res.Consent.Outcome == model.OutcomeBannerVisible:
+		return false, "the CMP recorded the requested choice, but the banner was still displayed to a visitor"
+
+	case res.Consent.Outcome == model.OutcomeNecessaryOnly:
+		return false, "this banner has no reject control, so wsaw limited consent to strictly necessary categories " +
+			"instead of a verified rejection"
+
 	default:
 		return true, ""
 	}

@@ -444,19 +444,22 @@ func cmdStorePrune(ctx context.Context, args []string) error {
 
 	defer m.close()
 
-	retention := app.RetentionFor(m.cfg)
+	retention, err := app.RetentionFor(m.cfg)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("store:     %s\n", m.opts.Location())
 	fmt.Printf("bucket:    %s\n", m.opts.ArtifactLocation())
 	fmt.Printf("retention: %s\n", describeRetention(retention))
 
-	if retention.MaxAge <= 0 && retention.MaxPerSeries <= 0 {
+	if !retention.Active() {
 		// Said rather than reported as a prune that removed nothing: an
 		// operator who expected a reclaim needs to know that the reason is
 		// their configuration and not an empty store.
 		fmt.Println()
 		fmt.Println("Nothing was removed: no retention is configured, so wsaw keeps every result.")
-		fmt.Println("Set store.maxAge or store.maxPerSeries to bound the history.")
+		fmt.Println("Set store.keep, or store.maxAge and store.maxPerSeries, to bound the history.")
 
 		return nil
 	}
@@ -487,6 +490,10 @@ func prune(ctx context.Context, m *maintenance, retention store.Retention) (stor
 func describeRetention(r store.Retention) string {
 	var parts []string
 
+	if k := r.Keep; k != nil {
+		return describeKeep(*k)
+	}
+
 	if r.MaxAge > 0 {
 		parts = append(parts, "maxAge "+r.MaxAge.String())
 	}
@@ -500,6 +507,40 @@ func describeRetention(r store.Retention) string {
 	}
 
 	return strings.Join(parts, ", ")
+}
+
+// describeKeep states a thinning policy the way store.keep spells it, so an
+// operator reading a prune's header sees the rules they wrote (Story 4.10).
+func describeKeep(k store.Keep) string {
+	rules := []struct {
+		name string
+		n    int
+	}{
+		{"last", k.Last},
+		{"hourly", k.Hourly},
+		{"daily", k.Daily},
+		{"weekly", k.Weekly},
+		{"monthly", k.Monthly},
+		{"yearly", k.Yearly},
+	}
+
+	var parts []string
+
+	if k.Within > 0 {
+		parts = append(parts, "within "+k.Within.String())
+	}
+
+	for _, rule := range rules {
+		if rule.n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", rule.name, rule.n))
+		}
+	}
+
+	if len(parts) == 0 {
+		return "none configured"
+	}
+
+	return "keep " + strings.Join(parts, ", ")
 }
 
 func reportPrune(stats store.PruneStats, dryRun bool, limit int) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,6 +67,11 @@ import (
 // scan running now is about to reference it.
 const unreferencedArtifactGrace = 24 * time.Hour
 
+// pruneBatch bounds how many results one delete statement names. A first
+// prune after a policy change can condemn tens of thousands of rows, and a
+// statement with a placeholder per row is one no database will accept.
+const pruneBatch = 200
+
 // artifactRefPageSize is how many artifacts one page of the reference check
 // covers. Retention walks its work rather than loading it, so a store with a
 // hundred thousand results costs no more memory than one with ten.
@@ -73,14 +79,355 @@ const artifactRefPageSize = 256
 
 // Retention bounds how much history is kept.
 //
-// It is unchanged by Story 8.5 (AC7): this story changes what pruning removes,
-// not how an operator asks for it.
+// It carries either the two blunt bounds wsaw has always had, or a thinning
+// Keep policy that replaces them (Story 4.10). The two forms are never mixed:
+// a bound that quietly cut into a policy designed to keep a year of monthly
+// scans would defeat the policy without saying so.
 type Retention struct {
 	// MaxAge drops results older than this. Zero means no age limit.
 	MaxAge time.Duration
 	// MaxPerSeries keeps at most this many results per target and mode. Zero
 	// means no count limit.
 	MaxPerSeries int
+
+	// Keep, when set, replaces MaxAge and MaxPerSeries with a thinning
+	// policy in the terms restic's forget uses.
+	Keep *Keep
+}
+
+// Active reports whether this policy would do anything at all.
+func (r Retention) Active() bool {
+	if r.Keep != nil {
+		return !r.Keep.Empty()
+	}
+
+	return r.MaxAge > 0 || r.MaxPerSeries > 0
+}
+
+// Keep is a thinning retention policy: keep the best result in each of the
+// newest N hours, days, weeks, months and years, and forget the rest.
+//
+// Every field only ever keeps results. A rule added to the policy can
+// therefore never shrink what is stored, which is what makes a retention
+// policy safe to reason about and safe to edit.
+type Keep struct {
+	// Last keeps the newest N results of each series regardless of when they
+	// ran; Within keeps everything younger than a duration.
+	Last   int
+	Within time.Duration
+
+	// Hourly through Yearly keep one result in each of the newest N periods
+	// of that length that hold any result at all. An empty period is not
+	// counted, so "keep 12 monthly" means twelve months that were scanned.
+	Hourly  int
+	Daily   int
+	Weekly  int
+	Monthly int
+	Yearly  int
+
+	// Location decides where an hour, a day, a week, a month and a year
+	// begin. Nil means the process's local zone.
+	Location *time.Location
+}
+
+// Empty reports whether the policy would keep nothing at all.
+func (k Keep) Empty() bool {
+	return k.Last <= 0 && k.Within <= 0 &&
+		k.Hourly <= 0 && k.Daily <= 0 && k.Weekly <= 0 && k.Monthly <= 0 && k.Yearly <= 0
+}
+
+// bounded reports whether the policy states an explicit age limit. Such a
+// limit is allowed to empty a series: an operator who says "keep 30 days"
+// about data that can itself be personal has said something deliberate, and
+// quietly holding one result of a target nobody scans any more would be the
+// opposite of data minimization (Tenet 19).
+func (k Keep) bounded() bool { return k.Within > 0 }
+
+func (k Keep) location() *time.Location {
+	if k.Location == nil {
+		return time.Local
+	}
+
+	return k.Location
+}
+
+// Rules a decision can name. They are constants because a dry run prints
+// them and the tests assert on them.
+const (
+	ruleLast    = "last"
+	ruleWithin  = "within"
+	ruleHourly  = "hourly"
+	ruleDaily   = "daily"
+	ruleWeekly  = "weekly"
+	ruleMonthly = "monthly"
+	ruleYearly  = "yearly"
+	ruleNewest  = "newest"
+	ruleAge     = "maxAge"
+	ruleCount   = "maxPerSeries"
+)
+
+// candidate is one stored result as retention sees it: the index columns and
+// nothing else. The document is never read to decide what to prune — a store
+// holding a year of scans would have to be loaded in full to answer a
+// question three columns already answer (Story 4.10, AC5).
+type candidate struct {
+	ScanID      string
+	StartedAt   time.Time
+	Termination model.TerminationReason
+}
+
+// Decision records what retention decided about one result, and which rule
+// decided it. The rule is what makes a dry run answer "why is this still
+// here?" rather than only "it is".
+type Decision struct {
+	ScanID      string                  `json:"scanId"`
+	StartedAt   time.Time               `json:"startedAt"`
+	Termination model.TerminationReason `json:"termination"`
+	Keep        bool                    `json:"keep"`
+	Rule        string                  `json:"rule,omitempty"`
+}
+
+// SeriesPlan is what a prune would do to one series, newest result first.
+type SeriesPlan struct {
+	Series    Series     `json:"series"`
+	Decisions []Decision `json:"decisions"`
+}
+
+// Kept and Deleted count the two halves of a plan.
+func (p SeriesPlan) Kept() int { return len(p.Decisions) - p.Deleted() }
+
+// Deleted counts the results a plan would remove.
+func (p SeriesPlan) Deleted() int {
+	n := 0
+
+	for _, d := range p.Decisions {
+		if !d.Keep {
+			n++
+		}
+	}
+
+	return n
+}
+
+// tier ranks how much a result is worth keeping, lowest first: a scan that
+// ran to idle, then one that was cut short by a cap or the clock, then one
+// that produced no asset list at all.
+//
+// This is the whole point of the completeness preference: a day whose newest
+// scan hit the hard timeout, and which also holds a clean scan, must keep the
+// clean one. Keeping the timeout would leave a year-old record that reads
+// like a quiet day rather than like a failed observation (Tenet 5).
+func tier(t model.TerminationReason) int {
+	switch {
+	case t.Failed():
+		return 2
+	case t.Truncated():
+		return 1
+	default:
+		return 0
+	}
+}
+
+// period identifies the bucket a start time falls in. It is a comparable
+// struct rather than a formatted string so grouping costs no allocation and
+// cannot be confused by a locale.
+type period struct{ a, b, c, d int }
+
+func hourly(t time.Time) period {
+	y, m, d := t.Date()
+
+	return period{y, int(m), d, t.Hour()}
+}
+
+func daily(t time.Time) period {
+	y, m, d := t.Date()
+
+	return period{y, int(m), d, 0}
+}
+
+func weekly(t time.Time) period {
+	y, w := t.ISOWeek()
+
+	return period{y, w, 0, 0}
+}
+
+func monthly(t time.Time) period {
+	y, m, _ := t.Date()
+
+	return period{y, int(m), 0, 0}
+}
+
+func yearly(t time.Time) period { return period{t.Year(), 0, 0, 0} }
+
+// selectKeep decides what survives, newest first.
+//
+// It is a pure function of the candidates, the policy and the current time,
+// which is what lets the whole of retention be tested with a fixed clock and
+// no database (Tenet 13).
+func selectKeep(cands []candidate, now time.Time, r Retention) []Decision {
+	sorted := make([]candidate, len(cands))
+	copy(sorted, cands)
+
+	// The order every other result query uses, so "the newest N" means the
+	// same thing here as it does in a listing (Tenet 6).
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if !sorted[i].StartedAt.Equal(sorted[j].StartedAt) {
+			return sorted[i].StartedAt.After(sorted[j].StartedAt)
+		}
+
+		return sorted[i].ScanID > sorted[j].ScanID
+	})
+
+	kept := make(map[int]string, len(sorted))
+
+	if r.Keep != nil {
+		applyKeep(sorted, now, *r.Keep, kept)
+	} else {
+		applyBounds(sorted, now, r, kept)
+	}
+
+	out := make([]Decision, len(sorted))
+
+	for i, c := range sorted {
+		rule, ok := kept[i]
+		out[i] = Decision{
+			ScanID:      c.ScanID,
+			StartedAt:   c.StartedAt,
+			Termination: c.Termination,
+			Keep:        ok,
+			Rule:        rule,
+		}
+	}
+
+	return out
+}
+
+// applyBounds is the older policy: an age limit and a count limit, both of
+// which delete. It is expressed here rather than in SQL so that both forms
+// share one selection, one delete path and one dry run.
+func applyBounds(sorted []candidate, now time.Time, r Retention, kept map[int]string) {
+	cutoff := now.Add(-r.MaxAge)
+
+	// Both bounds have to allow a result for it to survive, so the rule that
+	// kept it is the pair, not one of them.
+	rule := ruleAge
+
+	switch {
+	case r.MaxAge > 0 && r.MaxPerSeries > 0:
+		rule = ruleAge + "+" + ruleCount
+	case r.MaxPerSeries > 0:
+		rule = ruleCount
+	}
+
+	for i, c := range sorted {
+		if r.MaxAge > 0 && c.StartedAt.Before(cutoff) {
+			continue
+		}
+
+		if r.MaxPerSeries > 0 && i >= r.MaxPerSeries {
+			continue
+		}
+
+		kept[i] = rule
+	}
+}
+
+func applyKeep(sorted []candidate, now time.Time, k Keep, kept map[int]string) {
+	keep := func(i int, rule string) {
+		if _, ok := kept[i]; !ok {
+			kept[i] = rule
+		}
+	}
+
+	for i := range sorted {
+		if i < k.Last {
+			keep(i, ruleLast)
+		}
+	}
+
+	if k.Within > 0 {
+		cutoff := now.Add(-k.Within)
+
+		for i, c := range sorted {
+			if !c.StartedAt.Before(cutoff) {
+				keep(i, ruleWithin)
+			}
+		}
+	}
+
+	loc := k.location()
+
+	buckets := []struct {
+		n    int
+		rule string
+		key  func(time.Time) period
+	}{
+		{k.Hourly, ruleHourly, hourly},
+		{k.Daily, ruleDaily, daily},
+		{k.Weekly, ruleWeekly, weekly},
+		{k.Monthly, ruleMonthly, monthly},
+		{k.Yearly, ruleYearly, yearly},
+	}
+
+	for _, b := range buckets {
+		for _, i := range bucketKeepers(sorted, b.n, loc, b.key) {
+			keep(i, b.rule)
+		}
+	}
+
+	// A policy made only of counts must never empty a series: with no result
+	// at all, a target reads as one that was never scanned rather than one
+	// whose history has expired (Tenet 5). An explicit age limit is allowed
+	// to empty it, because that is what an operator asked for.
+	if len(kept) == 0 && len(sorted) > 0 && !k.bounded() {
+		keep(0, ruleNewest)
+	}
+}
+
+// bucketKeepers returns the index of the result to keep in each of the newest
+// n periods that hold a result.
+func bucketKeepers(sorted []candidate, n int, loc *time.Location, key func(time.Time) period) []int {
+	if n <= 0 {
+		return nil
+	}
+
+	var (
+		order   []period
+		best    = make(map[period]int)
+		seen    = make(map[period]bool)
+		keepers []int
+	)
+
+	for i, c := range sorted {
+		p := key(c.StartedAt.In(loc))
+
+		if !seen[p] {
+			if len(order) == n {
+				// The candidates are newest first, so the first n distinct
+				// periods are the newest n. Anything after them belongs to a
+				// period this rule does not reach.
+				break
+			}
+
+			seen[p] = true
+			order = append(order, p)
+			best[p] = i
+
+			continue
+		}
+
+		// Within a period, a better-terminated scan beats a newer one; the
+		// candidates are already newest first, so an equal tier never wins.
+		if tier(sorted[i].Termination) < tier(sorted[best[p]].Termination) {
+			best[p] = i
+		}
+	}
+
+	for _, p := range order {
+		keepers = append(keepers, best[p])
+	}
+
+	return keepers
 }
 
 // PrunedResult names one stored result a prune removed, or would remove.
@@ -94,8 +441,16 @@ type PrunedResult struct {
 // PruneStats reports what a prune removed, so retention is observable rather
 // than silent. A plan fills the same fields with what a prune would remove.
 type PruneStats struct {
-	// ResultsDeleted counts rows dropped from the history.
+	// ResultsDeleted counts rows dropped from the history, ResultsKept the
+	// ones the policy decided to keep, and SeriesPruned how many series lost
+	// at least one result (Story 4.10).
 	ResultsDeleted int `json:"resultsDeleted"`
+	ResultsKept    int `json:"resultsKept"`
+	SeriesPruned   int `json:"seriesPruned"`
+
+	// OldestKept is the start time of the oldest result still stored, which
+	// is the figure an operator checks a policy against.
+	OldestKept time.Time `json:"oldestKept,omitzero"`
 
 	// ArtifactsDeleted and BytesFreed count what left the bucket: documents,
 	// screenshots and stored bodies that no surviving result or baseline
@@ -119,13 +474,15 @@ type PruneStats struct {
 	// or no longer decodes.
 	UnknownReferences int `json:"unknownReferences"`
 
-	// Results and Artifacts name what would be removed. They are filled by a
-	// plan, which exists so that an operator can see the consequence of a
-	// retention setting before it is applied and cannot be undone (AC6). A
-	// prune that is actually removing things leaves them empty, because the
-	// list would be as long as the work and nothing reads it.
+	// Results and Artifacts name what would be removed, and Plans says which
+	// rule decided each one. They are filled by a plan, which exists so that
+	// an operator can see the consequence of a retention setting before it is
+	// applied and cannot be undone (Story 8.5, AC6; Story 4.10, AC10). A prune
+	// that is actually removing things leaves them empty, because the list
+	// would be as long as the work and nothing reads it.
 	Results   []PrunedResult `json:"results,omitempty"`
 	Artifacts []string       `json:"artifacts,omitempty"`
+	Plans     []SeriesPlan   `json:"plans,omitempty"`
 }
 
 // Prune enforces retention: it drops the results that fall outside it and
@@ -163,7 +520,7 @@ func (s *SQL) PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneS
 func (s *SQL) prune(ctx context.Context, now time.Time, r Retention, plan bool) (PruneStats, error) {
 	var stats PruneStats
 
-	if r.MaxAge <= 0 && r.MaxPerSeries <= 0 {
+	if !r.Active() {
 		return stats, nil
 	}
 
@@ -186,16 +543,29 @@ func (s *SQL) prune(ctx context.Context, now time.Time, r Retention, plan bool) 
 
 	stats.UnknownReferences = unknown
 
+	// Decided before anything is deleted, and decided once: the plan is what a
+	// dry run prints and what a prune carries out, so the two cannot describe
+	// different sets (Story 8.5, AC6; Story 4.10, AC10).
+	plans, err := s.prunePlans(ctx, now, r)
+	if err != nil {
+		return stats, err
+	}
+
+	accountForKept(plans, &stats)
+
 	if plan {
-		return s.planPrune(ctx, now, r, stats)
+		return s.planPrune(ctx, plans, now, stats)
 	}
 
 	if err := s.retry(ctx, "pruning results", func(ctx context.Context) error {
-		deleted, err := s.deleteExpiredTx(ctx, now, r)
 		// Assigned inside the retry rather than accumulated across attempts: a
 		// replayed transaction starts again, and a count that added up every
 		// attempt would report rows that were only deleted once.
-		stats.ResultsDeleted = deleted
+		stats.ResultsDeleted, stats.SeriesPruned = 0, 0
+
+		deleted, series, err := s.deleteCondemnedTx(ctx, plans)
+
+		stats.ResultsDeleted, stats.SeriesPruned = deleted, series
 
 		return err
 	}); err != nil {
@@ -225,7 +595,7 @@ func (s *SQL) prune(ctx context.Context, now time.Time, r Retention, plan bool) 
 
 // planPrune answers what a prune would do, from inside a transaction it throws
 // away.
-func (s *SQL) planPrune(ctx context.Context, now time.Time, r Retention, stats PruneStats) (PruneStats, error) {
+func (s *SQL) planPrune(ctx context.Context, plans []SeriesPlan, now time.Time, stats PruneStats) (PruneStats, error) {
 	// The transaction takes the caller's context, not a bounded one: it spans
 	// as many statements as the plan has pages, the way the document migration
 	// spans as many as it has rows. Each statement inside it still gets the
@@ -240,16 +610,11 @@ func (s *SQL) planPrune(ctx context.Context, now time.Time, r Retention, stats P
 	// this transaction exists to be discarded.
 	defer func() { _ = tx.Rollback() }()
 
-	if err := boundedStep(ctx, func(ctx context.Context) error {
-		stats.Results, err = s.expiredResults(ctx, tx, now, r)
-
-		return err
-	}); err != nil {
-		return stats, err
-	}
+	stats.Plans = plans
+	stats.Results = condemnedResults(plans)
 
 	if err := boundedStep(ctx, func(ctx context.Context) error {
-		stats.ResultsDeleted, err = s.deleteExpired(ctx, tx, now, r)
+		stats.ResultsDeleted, stats.SeriesPruned, err = s.deleteCondemned(ctx, tx, plans)
 
 		return err
 	}); err != nil {
@@ -289,83 +654,225 @@ func boundedStep(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }
 
-// deleteExpiredTx deletes the results retention no longer keeps, in one
-// transaction so that a series is never left half pruned.
-func (s *SQL) deleteExpiredTx(ctx context.Context, now time.Time, r Retention) (int, error) {
+// deleteCondemnedTx deletes what the plans condemned, in one transaction so
+// that a series is never left half pruned.
+func (s *SQL) deleteCondemnedTx(ctx context.Context, plans []SeriesPlan) (deleted, series int, err error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("pruning results: %w", err)
+		return 0, 0, fmt.Errorf("pruning results: %w", err)
 	}
 
 	defer func() { _ = tx.Rollback() }()
 
-	deleted, err := s.deleteExpired(ctx, tx, now, r)
+	deleted, series, err = s.deleteCondemned(ctx, tx, plans)
 	if err != nil {
-		return 0, err
+		return deleted, series, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("committing prune: %w", err)
+		return 0, 0, fmt.Errorf("committing prune: %w", err)
 	}
 
-	return deleted, nil
+	return deleted, series, nil
 }
 
-// deleteExpired applies both retention limits and reports how many rows went.
+// prunePlans works out what retention would do to every series, and touches
+// nothing.
+//
+// The selection is Story 4.10's, unchanged: the index columns of a series go
+// to selectKeep, which decides each result against the policy and says which
+// rule decided it. What Story 8.5 adds is everything after the decision —
+// which artifacts those results alone referenced, and what becomes of them.
+//
+// It reads every series rather than only the ones a bound would touch, because
+// a plan is read to answer "what would this policy do to my history", and a
+// series it left out would read as a series it would not change.
+func (s *SQL) prunePlans(ctx context.Context, now time.Time, r Retention) ([]SeriesPlan, error) {
+	series, err := s.Series()
+	if err != nil {
+		return nil, err
+	}
+
+	plans := make([]SeriesPlan, 0, len(series))
+
+	for _, se := range series {
+		cands, err := s.candidates(ctx, se)
+		if err != nil {
+			return nil, err
+		}
+
+		plans = append(plans, SeriesPlan{Series: se, Decisions: selectKeep(cands, now, r)})
+	}
+
+	return plans, nil
+}
+
+// accountForKept records what the policy decided to keep, which is the half of
+// a prune's report that says whether the policy is the one the operator meant.
+//
+// OldestKept is the figure a policy is actually checked against — "keep a year
+// of monthly scans" is right or wrong depending on what the oldest surviving
+// scan is dated — so it is taken across every series rather than per series.
+func accountForKept(plans []SeriesPlan, stats *PruneStats) {
+	for _, plan := range plans {
+		for _, d := range plan.Decisions {
+			if !d.Keep {
+				continue
+			}
+
+			stats.ResultsKept++
+
+			if stats.OldestKept.IsZero() || d.StartedAt.Before(stats.OldestKept) {
+				stats.OldestKept = d.StartedAt
+			}
+		}
+	}
+}
+
+// condemnedResults names the results a plan would remove, in the order the
+// plans were made, so a dry run and the prune it describes list them alike.
+func condemnedResults(plans []SeriesPlan) []PrunedResult {
+	var out []PrunedResult
+
+	for _, plan := range plans {
+		for _, d := range plan.Decisions {
+			if d.Keep {
+				continue
+			}
+
+			out = append(out, PrunedResult{
+				Target:      plan.Series.Target,
+				ConsentMode: plan.Series.Mode,
+				ScanID:      d.ScanID,
+				StartedAt:   d.StartedAt,
+			})
+		}
+	}
+
+	return out
+}
+
+// deleteCondemned deletes the results every plan condemned and reports how
+// many rows went, plus how many series lost at least one.
 //
 // The reference rows those results own are deliberately left in place. They are
 // what the collection step reads to work out which artifacts have just lost
 // their last owner, and leaving them means an interrupted prune resumes rather
-// than forgetting what it was about to delete (AC3, AC4).
-func (s *SQL) deleteExpired(ctx context.Context, h querier, now time.Time, r Retention) (int, error) {
-	var deleted int
+// than forgetting what it was about to delete (Story 8.5, AC3 and AC4).
+//
+// It takes a querier rather than reaching for the database, because the dry run
+// runs the same deletes inside a transaction it throws away: one definition of
+// what a prune removes, used by both, is what stops a plan describing a
+// different set from the prune it claims to describe (AC6).
+func (s *SQL) deleteCondemned(ctx context.Context, h querier, plans []SeriesPlan) (deleted, series int, err error) {
+	for _, plan := range plans {
+		doomed := make([]string, 0, len(plan.Decisions))
 
-	if r.MaxAge > 0 {
-		res, err := h.ExecContext(ctx,
-			s.q(`delete from `+resultsTable+expiredByAgePredicate), now.Add(-r.MaxAge).UnixNano())
-		if err != nil {
-			return 0, fmt.Errorf("pruning results by age: %w", err)
+		for _, d := range plan.Decisions {
+			if !d.Keep {
+				doomed = append(doomed, d.ScanID)
+			}
 		}
 
-		if n, err := res.RowsAffected(); err == nil {
-			deleted += int(n)
+		if len(doomed) == 0 {
+			continue
+		}
+
+		n, err := s.deleteResults(ctx, h, plan.Series, doomed)
+
+		deleted += n
+
+		if n > 0 {
+			series++
+		}
+
+		if err != nil {
+			// The count so far is returned with the error rather than rounded
+			// down to zero: a partial prune is a fact the caller has to report,
+			// and the rows that did go are gone whatever happens next.
+			return deleted, series, err
 		}
 	}
 
-	if r.MaxPerSeries > 0 {
-		// Ranked within each series by the same ordering every listing uses,
-		// so "the newest N" means the same thing here as it does there. The
-		// statement itself is the dialect's: MySQL refuses to select from the
-		// table a delete targets, so it needs a different shape.
-		res, err := h.ExecContext(ctx, s.q(s.d.pruneByCount()), r.MaxPerSeries)
-		if err != nil {
-			return 0, fmt.Errorf("pruning results by count: %w", err)
-		}
+	return deleted, series, nil
+}
 
-		if n, err := res.RowsAffected(); err == nil {
-			deleted += int(n)
+// deleteResults removes named results of one series, in bounded batches.
+func (s *SQL) deleteResults(ctx context.Context, h querier, se Series, scanIDs []string) (int, error) {
+	total := 0
+
+	for start := 0; start < len(scanIDs); start += pruneBatch {
+		end := min(start+pruneBatch, len(scanIDs))
+
+		n, err := s.deleteBatch(ctx, h, se, scanIDs[start:end])
+
+		total += n
+
+		if err != nil {
+			return total, err
 		}
+	}
+
+	return total, nil
+}
+
+func (s *SQL) deleteBatch(ctx context.Context, h querier, se Series, scanIDs []string) (int, error) {
+	args := make([]any, 0, len(scanIDs)+2)
+	args = append(args, se.Target, string(se.Mode))
+
+	for _, id := range scanIDs {
+		args = append(args, id)
+	}
+
+	res, err := h.ExecContext(ctx, s.q(deleteResultsQuery(len(scanIDs))), args...)
+	if err != nil {
+		return 0, fmt.Errorf("pruning results for %s/%s: %w", se.Target, se.Mode, err)
+	}
+
+	deleted := 0
+
+	if n, err := res.RowsAffected(); err == nil {
+		deleted = int(n)
 	}
 
 	return deleted, nil
 }
 
-// expiredResults lists the results retention would remove, for a plan.
+// deleteResultsQuery deletes n named results of one series.
 //
-// Both queries are built from the same predicates the deletes use, so what a
-// dry run names and what a prune removes cannot describe different sets. A
-// result can match both limits, so the two lists are merged on the row's
-// identity rather than concatenated.
-func (s *SQL) expiredResults(ctx context.Context, h querier, now time.Time, r Retention) ([]PrunedResult, error) {
-	seen := make(map[resultRowKey]struct{})
+// It is the same statement in every dialect and needs no hook of its own: it
+// names results by the identity the schema declares rather than by a physical
+// row identifier — SQLite's rowid, PostgreSQL's ctid and MySQL's nothing are
+// not the same concept — and it never selects from the table it deletes from,
+// which is what MySQL refuses (error 1093).
+func deleteResultsQuery(n int) string {
+	return `delete from ` + resultsTable + ` where target = ? and consent_mode = ? and scan_id in (` +
+		strings.TrimSuffix(strings.Repeat("?, ", n), ", ") + `)`
+}
 
-	var out []PrunedResult
+// candidates reads the index columns of one series, newest first. The document
+// is never read to decide what to prune — a store holding a year of scans would
+// have to be fetched from the bucket in full to answer a question three columns
+// already answer (Story 4.10, AC5), which is the whole reason the summary is
+// indexed (Story 8.3).
+func (s *SQL) candidates(ctx context.Context, se Series) ([]candidate, error) {
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
 
-	collect := func(query string, arg any) error {
-		rows, err := h.QueryContext(ctx, s.q(query), arg)
+	const q = `
+		select scan_id, started_at, termination from ` + resultsTable + `
+		where target = ? and consent_mode = ?
+		order by started_at desc, scan_id desc`
+
+	var out []candidate
+
+	err := s.retry(ctx, "listing results for retention", func(ctx context.Context) error {
+		out = nil
+
+		rows, err := s.db.QueryContext(ctx, s.q(q), se.Target, string(se.Mode))
 		if err != nil {
 			return err
 		}
@@ -374,40 +881,25 @@ func (s *SQL) expiredResults(ctx context.Context, h querier, now time.Time, r Re
 
 		for rows.Next() {
 			var (
-				pr        PrunedResult
-				mode      string
-				startedAt int64
+				c       candidate
+				started int64
+				term    string
 			)
 
-			if err := rows.Scan(&pr.Target, &mode, &pr.ScanID, &startedAt); err != nil {
+			if err := rows.Scan(&c.ScanID, &started, &term); err != nil {
 				return err
 			}
 
-			key := resultRowKey{target: pr.Target, mode: mode, scanID: pr.ScanID}
-			if _, dup := seen[key]; dup {
-				continue
-			}
+			c.StartedAt = time.Unix(0, started)
+			c.Termination = model.TerminationReason(term)
 
-			seen[key] = struct{}{}
-
-			pr.ConsentMode = model.ConsentMode(mode)
-			pr.StartedAt = time.Unix(0, startedAt).UTC()
-			out = append(out, pr)
+			out = append(out, c)
 		}
 
 		return rows.Err()
-	}
-
-	if r.MaxAge > 0 {
-		if err := collect(expiredByAge, now.Add(-r.MaxAge).UnixNano()); err != nil {
-			return nil, fmt.Errorf("listing the results an age limit would remove: %w", err)
-		}
-	}
-
-	if r.MaxPerSeries > 0 {
-		if err := collect(expiredByCount, r.MaxPerSeries); err != nil {
-			return nil, fmt.Errorf("listing the results a count limit would remove: %w", err)
-		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing results for %s/%s: %w", se.Target, se.Mode, err)
 	}
 
 	return out, nil

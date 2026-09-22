@@ -405,6 +405,85 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/RunningScan"}
 
+  /api/v1/scan-url:
+    post:
+      tags: [operations]
+      summary: Scan a URL that is not a configured target
+      description: >
+        Disabled unless api.adHocUrls.enabled is set, and refused in read-only
+        mode. The address is admitted before anything is fetched: http or https
+        only, no embedded credentials, and — unless allowPrivateHosts is set —
+        a host that resolves entirely to public internet addresses. The result
+        is stored under a name derived from the address, the same name
+        `wsaw scan --url` uses, so repeated scans of one address form a series
+        with a diff.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  description: An absolute http or https URL, without credentials.
+                  example: https://example.com/
+                consentMode:
+                  description: >
+                    Defaults to the first mode this deployment offers for typed
+                    URLs. A mode it does not offer is refused.
+                  enum: [none, reject, accept]
+      responses:
+        "200":
+          description: The scan finished. A failed scan still returns its result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  target:
+                    type: string
+                    description: The name the result is stored under.
+                  result: {$ref: "./result.schema.json"}
+                  diff: {$ref: "#/components/schemas/DiffReport"}
+        "400":
+          description: >
+            The address was refused, or the consent mode is not one this
+            deployment offers. The message says which.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {type: string}
+        "403":
+          description: Scanning typed URLs is disabled, or wsaw is read-only.
+        "409":
+          description: A scan of this address and consent mode is already running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {type: string}
+                  running:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunningScan"}
+        "429":
+          description: >
+            The deployment's rolling-hour budget for typed URLs is spent.
+            Retry-After says when the next one can start.
+          headers:
+            Retry-After:
+              schema: {type: integer}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {type: string}
+
   /api/v1/audit:
     get:
       tags: [operations]
@@ -536,6 +615,39 @@ components:
                 type: boolean
                 description: True when the series has never been scanned, its last scan failed, or its last scan is older than the configured threshold.
               staleReason: {type: string}
+              severity:
+                type: string
+                enum: [info, low, medium, high, critical]
+                description: >
+                  The worst change in the last scan's comparison, ranked by
+                  the diff engine's own severity rules — the same ranking the
+                  notifier and the CI exit code use. Absent where there was
+                  nothing to compare. The HTML watchboard re-ranks the same
+                  comparison for display, so a tile can read info where this
+                  field says high; this field is the machine-readable one and
+                  does not follow the board.
+              comparedTo: {$ref: "#/components/schemas/Comparison"}
+
+    Comparison:
+      type: object
+      description: >
+        The scan a series' severity was computed against: the approved
+        baseline, or the scan before the last one where no baseline is set.
+        Absent where there was nothing to compare against at all. The counts
+        are the base scan's own, so a client can state a deviation without
+        fetching the document; lastScan stays absolute either way.
+      properties:
+        base:
+          type: string
+          enum: [baseline, previous]
+          description: Which scan the comparison used. "previous" is the fallback where no baseline is approved, and is a weaker claim than "baseline".
+        scanId: {type: string}
+        comparable:
+          type: boolean
+          description: False where the pair could not be compared at all, e.g. an errored or skipped scan on either side. Never the same as "nothing changed".
+        requests: {type: integer}
+        thirdPartyDomains: {type: integer}
+        preConsentDomains: {type: integer}
 
     RunningScan:
       type: object

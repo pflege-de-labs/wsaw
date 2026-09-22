@@ -25,6 +25,7 @@ const (
 	fieldReason  = "reason"
 	fieldRunning = "running"
 	fieldReady   = "ready"
+	fieldError   = "error"
 )
 
 func (s *Server) routes() {
@@ -47,6 +48,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/baseline/{target}/{mode}", s.handleSetBaseline)
 	s.mux.HandleFunc("DELETE /api/v1/baseline/{target}/{mode}", s.handleDeleteBaseline)
 	s.mux.HandleFunc("POST /api/v1/scan/{target}/{mode}", s.handleTriggerScan)
+	s.mux.HandleFunc("POST /api/v1/scan-url", s.handleScanURL)
 
 	s.shareRoutes()
 
@@ -163,6 +165,68 @@ type SeriesView struct {
 	Stale bool `json:"stale"`
 	// StaleReason explains it in operator-readable terms.
 	StaleReason string `json:"staleReason,omitempty"`
+
+	// Severity is the highest severity among the last scan's findings
+	// against its baseline (or, absent one, the previous scan) — the same
+	// comparison the result page shows in full (Story 5.9, AC5), condensed
+	// to its worst outcome so the target list can flag it without opening
+	// the scan (Story 5.8, AC1: "open findings by severity").
+	//
+	// Empty when there is nothing to compare: no scan yet, or the pair
+	// could not be compared (diff.Report.Comparable is false, e.g. a
+	// series' first-ever scan).
+	//
+	// Ranked by the diff engine for every consumer of this type but one: the
+	// HTML watchboard re-ranks the same comparison around what a board is
+	// for (Story 5.30, severityView in tile_severity.go), so a tile can read
+	// info where the JSON API reports high. What this field serializes never
+	// follows the board (Tenet 16).
+	Severity diff.Severity `json:"severity,omitempty"`
+
+	// ComparedTo names the scan Severity was computed against and carries
+	// its three counts, so a reader — or the watchboard, which leads with
+	// the deviation rather than the totals (Story 5.28) — can say what the
+	// last scan changed and against what. Nil where there was nothing to
+	// compare against at all.
+	//
+	// Additive, and derived from documents targetViews already loads: an
+	// API client subtracting two numbers still gets both (Tenet 16).
+	ComparedTo *ComparisonView `json:"comparedTo,omitempty"`
+}
+
+// ComparisonBase is which scan a series' Severity was computed against. The
+// distinction is not cosmetic: "unchanged against the baseline somebody
+// approved" and "unchanged against yesterday's scan, which nobody has
+// looked at" are different claims, and a view that renders them identically
+// has inferred an approval that does not exist (Tenet 5).
+type ComparisonBase string
+
+// The bases lastScanSeverity picks between, in its own order of preference.
+const (
+	// BaseApproved is the series' approved baseline.
+	BaseApproved ComparisonBase = "baseline"
+	// BasePrevious is the scan before the shown one, used where no baseline
+	// is set.
+	BasePrevious ComparisonBase = "previous"
+)
+
+// ComparisonView is the scan a series' last scan was compared against.
+type ComparisonView struct {
+	Base ComparisonBase `json:"base"`
+
+	// ScanID identifies it, so the deviation can be traced to two documents.
+	ScanID string `json:"scanId"`
+
+	// Comparable is diff.Report.Comparable: false where the pair could not
+	// be compared at all (an errored or skipped scan on either side), which
+	// must never render as "nothing changed".
+	Comparable bool `json:"comparable"`
+
+	// The base scan's own counts, derived by store.Summarize so they cannot
+	// drift from the figures a listing or the scan page shows.
+	Requests          int `json:"requests"`
+	ThirdPartyDomains int `json:"thirdPartyDomains"`
+	PreConsentDomains int `json:"preConsentDomains"`
 }
 
 // running returns the in-flight scans, or nil when activity is not tracked.
@@ -187,7 +251,21 @@ func runningFor(all []scanner.Running, target string, mode model.ConsentMode) []
 	return out
 }
 
-func (s *Server) targetViews() []TargetView {
+// hostChangeTypes is what the watchboard's "hosts only" toggle narrows a
+// series' Severity to: a host appearing, disappearing, or denied. Everything
+// else a diff can report — an asset, a script, a cookie, a status flip, a
+// consent regression, a degraded scan — is left out on purpose, since the
+// toggle exists for a viewer who wants the board to speak up only when the
+// set of hosts contacted has actually changed.
+var hostChangeTypes = []diff.ChangeType{diff.HostAdded, diff.HostRemoved, diff.DeniedHost}
+
+// targetViews builds the dashboard's and the JSON API's shared view model.
+// view decides how each series' Severity is ranked: the JSON API passes the
+// zero value and gets the diff engine's own severity, machine-readable and
+// unchanged (Tenet 16), while the HTML dashboard passes its per-viewer
+// "hosts only" toggle (Tenet 15) and the watchboard's own ranking (Story
+// 5.29, severityView in tile_severity.go).
+func (s *Server) targetViews(ranking severityView) []TargetView {
 	var out []TargetView
 
 	if s.deps.Targets == nil {
@@ -219,16 +297,25 @@ func (s *Server) targetViews() []TargetView {
 				sv.LastScan = &summaries[0]
 			}
 
-			// Whether one exists, not what it is: this runs once per series
-			// on every render of the page, and reading the baseline itself
-			// would fetch a whole approved result to answer yes or no
-			// (Story 5.10). A store that cannot answer leaves the badge off,
-			// exactly as a failed read did before — but it says so now, see
+			// The whole baseline, not merely whether there is one: the
+			// severity this page ranks by is computed against the approved
+			// result, so the document is needed here anyway and HasBaseline
+			// would be a second read (Story 5.30).
+			//
+			// A store that cannot answer leaves the badge off, exactly as a
+			// failed read did before — but it says so now, see
 			// storeReadFailures for why that is not the same as ignoring it.
-			if has, err := s.deps.Store.HasBaseline(t.Name, mode); err != nil {
+			baseline, err := s.deps.Store.GetBaseline(t.Name, mode)
+
+			switch {
+			case err == nil:
+				sv.HasBaseline = true
+			case !errors.Is(err, store.ErrNotFound):
 				failed.note("baseline", t.Name, mode, err)
-			} else {
-				sv.HasBaseline = has
+			}
+
+			if sv.LastScan != nil {
+				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, ranking)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -284,6 +371,66 @@ func (f *storeReadFailures) log(logger *slog.Logger) {
 		"reads", f.count, "first", f.what, "error", f.first)
 }
 
+// lastScanSeverity is Story 5.8 AC1's "open findings by severity", computed
+// the same way the result page computes it (diffFor, Story 5.9 AC5): against
+// the approved baseline when there is one, else the scan before it.
+//
+// It costs one extra document load per series (the scan itself; the
+// baseline was already loaded for HasBaseline). That is a deliberate
+// trade — store.ListResults's own doc comment already accepts a full parse
+// per row so a summary can never drift from the document it describes, and
+// a severity flag on the target list is worth the same price.
+//
+// It also returns what it compared against, summarized. The base document is
+// in hand here and nowhere else, so describing it costs nothing, where asking
+// for it again from the watchboard would cost a second load per series
+// (Story 5.28, AC6).
+func (s *Server) lastScanSeverity(
+	target string,
+	mode model.ConsentMode,
+	scanID string,
+	baseline *store.Baseline,
+	view severityView,
+) (diff.Severity, *ComparisonView) {
+	res, err := s.deps.Store.GetResult(target, mode, scanID)
+	if err != nil {
+		return "", nil
+	}
+
+	var (
+		baseRes *model.Result
+		base    ComparisonBase
+	)
+
+	if baseline != nil {
+		baseRes, base = baseline.Result, BaseApproved
+	} else if prev, err := s.deps.Store.PreviousResult(target, mode, scanID); err == nil {
+		baseRes, base = prev, BasePrevious
+	}
+
+	rep := diff.Compare(baseRes, res, diff.Options{})
+
+	var cmp *ComparisonView
+
+	if baseRes != nil {
+		sum := store.Summarize(baseRes)
+		cmp = &ComparisonView{
+			Base:              base,
+			ScanID:            sum.ScanID,
+			Comparable:        rep.Comparable,
+			Requests:          sum.Requests,
+			ThirdPartyDomains: sum.ThirdPartyDomains,
+			PreConsentDomains: sum.PreConsentDomains,
+		}
+	}
+
+	if !rep.Comparable {
+		return "", cmp
+	}
+
+	return seriesSeverity(rep, mode, view), cmp
+}
+
 // staleness decides whether a series should be flagged. Never-scanned and
 // last-scan-failed both count: an empty result set must never read as a clean
 // site (Tenet 5).
@@ -307,7 +454,9 @@ func staleness(last *store.Summary, now time.Time, maxAge time.Duration) (bool, 
 }
 
 func (s *Server) handleTargets(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews()})
+	// Always the full severity: the "hosts only" toggle is an HTML dashboard
+	// display preference, not a property of the result (Tenet 16).
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.targetViews(severityView{})})
 }
 
 // handleRunning reports the scans in flight. "tracked" distinguishes a daemon
@@ -627,7 +776,7 @@ func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
 	// because the caller learns that the work is already under way.
 	if live := runningFor(s.running(), target, mode); len(live) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":      "a scan of this target and consent mode is already running",
+			fieldError:   "a scan of this target and consent mode is already running",
 			fieldRunning: live,
 		})
 
@@ -738,7 +887,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]any{"error": msg})
+	writeJSON(w, status, map[string]any{fieldError: msg})
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

@@ -2,41 +2,198 @@
 {{$page := .}}
 {{with .Data}}
 
-<h1>Targets</h1>
+{{/* The target list as a watchboard (this replaces the table-per-target
+     list). Every value here was on the previous list; what changed is what
+     size and position claim about it — the age and the pre-consent count
+     decide whether somebody has to act, so they are what a reader sees from
+     across the room. */}}
 
-<div class="status-row">
-  <div class="status {{if .Ready}}status-ok{{else}}status-bad{{end}}">
-    <strong>{{if .Ready}}Ready{{else}}Not ready{{end}}</strong>
-    <span>{{.Reason}}</span>
-  </div>
-  <div class="status {{if .Stale}}status-bad{{else}}status-ok{{end}}">
-    <strong>{{.Stale}} stale</strong>
-    <span>series without a recent successful scan</span>
-  </div>
-  <div class="status {{if .Running}}status-active{{end}}">
+<div class="watch-head">
+  <h1>{{.Shown}} targets watched</h1>
+  <p class="watch-counts">
+    <span class="watch-count watch-stale{{if .Stale}} is-set{{end}}">{{.Stale}} stale series</span>
     {{if not .Tracked}}
-      <strong>Activity not tracked</strong>
-      <span>this instance does not run scans</span>
-    {{else if .Running}}
-      <strong>{{len .Running}} running</strong>
-      <span>scans in flight right now</span>
+      <span class="watch-count">activity not tracked</span>
     {{else}}
-      <strong>Idle</strong>
-      <span>no scan is running</span>
+      <span class="watch-count watch-running{{if .Running}} is-set{{end}}">{{len .Running}} running</span>
     {{end}}
-  </div>
+    {{/* Muted-until-it-matters, same reasoning as the counts above: a board
+         that says "ready" on every render teaches the reader to stop reading
+         it. Silence means ready; this only speaks up when it is not. */}}
+    {{if not .Ready}}<span class="watch-count watch-notready is-set">not ready — {{.Reason}}</span>{{end}}
+  </p>
+  <span class="watch-asof" title="{{time $page.RenderedAt}}">as of {{clock $page.RenderedAt}} · {{$page.Refresh.Label}}</span>
+  {{/* The filter is a plain input with a submit button: it works with
+       JavaScript off (the choice is remembered in a cookie and applied on the
+       server), and watch.js upgrades it to filter as you type. The label
+       stays for assistive tech but is visually hidden — the placeholder
+       carries the same information on screen. */}}
+  <form method="post" action="/filter" class="watch-filter">
+    <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+    <input type="hidden" name="return" value="{{$page.RefreshTarget}}">
+    <label for="watch-filter-input" class="sr-only">Filter</label>
+    <input type="text" id="watch-filter-input" name="filter" value="{{.Filter}}"
+           placeholder="filter target, url, env or severity" autocomplete="off">
+    {{/* Narrows every tile's notion of "changed" to a host appearing,
+         disappearing, or denied — not an asset, script, cookie, status flip,
+         or consent regression. Submits with the same form, so it works with
+         JavaScript off exactly like the filter does; watch.js submits it the
+         moment it's toggled instead of waiting for Apply. */}}
+    <label class="watch-hostsonly">
+      <input type="checkbox" id="watch-hostsonly-input" name="hostsonly" value="1"{{if .HostsOnly}} checked{{end}}>
+      hosts only
+    </label>
+    <button type="submit">Apply</button>
+    {{if .Filter}}<button type="submit" name="filter" value="" class="watch-filter-clear">Clear</button>{{end}}
+  </form>
+  <p class="watch-shown" id="watch-shown" aria-live="polite">showing {{.Shown}}/{{.Total}}</p>
 </div>
 
+{{if not .Targets}}
+  {{if .Filter}}
+    <p class="empty">No target matches this filter. {{.Total}} are configured.</p>
+  {{else}}
+    <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
+  {{end}}
+{{end}}
+
+{{range .Groups}}
+  {{$group := .}}
+  {{/* <details> rather than a scripted toggle: collapsing works with
+       JavaScript off, and watch.js only adds remembering it. The summary
+       carries the group's size so a collapsed group can still be judged. */}}
+  <details class="watch-env" data-env="{{.Value}}"{{if not .Collapsed}} open{{end}}>
+    <summary>
+      <span class="watch-env-label">{{.Label}}</span>
+      <span class="watch-env-n">{{.Count}}</span>
+    </summary>
+
+    {{/* The consent mode is a column, not a tile field: it is the same three
+         words on every row, and stating it once per column gives each tile
+         its top line back for the figures that actually differ
+         (design option 6a). */}}
+    <div class="watch-modes" aria-hidden="true">
+      <span></span>
+      {{range .ModeColumns}}<span class="watch-mode-col">{{.}}</span>{{end}}
+    </div>
+
+    {{range .Targets}}
+      {{$t := .}}
+      <div class="watch-row" data-labels="{{range $k, $v := $t.Labels}}{{$k}}={{$v}} {{end}}">
+        {{/* design_handoff_target_tile, option 4a: the badge is always shown
+             (never gated on severity — info/low just read as muted), and the
+             left border widens on hover as the tile's only interactive cue;
+             the target name link inside it is unaffected. */}}
+        <div class="watch-rail {{sevclass $t.Severity}}">
+          <div class="watch-name-row">
+            <a class="watch-name" href="/compare/{{$t.Name}}">{{$t.Name}}</a>
+            <span class="watch-sev sev-{{$t.Severity}}" title="worst open finding across this target's consent modes">{{$t.Severity}}</span>
+          </div>
+          <span class="watch-host" title="{{$t.URL}}">{{$t.Host}}</span>
+        </div>
+
+        {{range $t.Rows}}
+          {{$row := .}}
+          {{$mode := .Series.Mode}}
+          <div class="{{.TileClass}}{{if .Folded}} is-folded{{end}}"
+               data-severity="{{.Series.Severity}}"
+               data-outcome="{{rowOutcome .Series}}"
+               data-modes="{{rowModes .Label}}">
+
+            {{/* Title line: how this scan deviates from the one it is
+                 compared against, and the tile's hit area — the whole tile
+                 opens the scan the figures came from. The absolute counts
+                 are in the title and the accessible name, one hover or one
+                 screen reader away (Story 5.28). The qualifier says what
+                 the deviation is measured against, because "no change"
+                 against an approved baseline and "no change" against an
+                 unreviewed scan are different claims. A folded row keeps an
+                 inline mode label, since the column header above it
+                 describes two columns it spans. */}}
+            {{with .Series.LastScan}}
+              <a class="{{$row.ScanClass}}"
+                 href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
+                 title="{{$row.ScanAria $t.Name}} — started {{time .StartedAt}}"
+                 aria-label="{{$row.ScanAria $t.Name}}">{{$row.DeltaLabel}}{{with $row.StateLabel}} <span class="watch-scan-base">{{.}}</span>{{end}}</a>
+            {{else}}
+              <span class="watch-scan muted">no observation yet</span>
+            {{end}}
+            {{if .Folded}}<span class="watch-tile-mode">{{.Label}}</span>{{end}}
+
+            <div class="watch-tile-status">
+              {{with .Series.LastScan}}
+                <span class="outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
+                <span class="term term-{{.Termination}}">{{.Termination}}</span>
+              {{else}}
+                <span class="muted">never scanned</span>
+              {{end}}
+            </div>
+
+            {{/* Age and time to next scan: the two ends of the interval, at
+                 the two ends of the line, immediately above the bar that
+                 measures it. Both come from the daemon's own schedule. */}}
+            <div class="watch-tile-time">
+              <span class="watch-age">{{$row.AgeLabel}}</span>
+              <span class="watch-next{{if $row.Overdue}} is-overdue{{end}}">{{$row.NextLabel}}</span>
+            </div>
+
+            <div class="watch-tile-foot">
+              {{if .Series.Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}
+              {{if .Series.Stale}}<span class="badge badge-stale" title="{{.Series.StaleReason}}">stale</span>{{end}}
+              {{/* Right-aligned, and hidden until the tile is hovered or one
+                   of them has focus — :focus-within, not just :hover, so a
+                   keyboard reader tabbing onto "history" or "Scan now" still
+                   sees it appear (wsaw.css). */}}
+              <div class="watch-tile-actions">
+                <a href="/targets/{{$t.Name}}/{{$mode}}">history</a>
+                {{if $page.AllowScan}}
+                {{/* from: the page this press was made on, so the 303 that
+                     answers a script-off press lands back on the board
+                     instead of on the target's history page (Story 5.26,
+                     AC1). It is the refresh target — the current path
+                     without the flash parameters — so the reader does not
+                     return to a page still showing a message about
+                     something that happened before this press. */}}
+                <form method="post" action="/rescan/{{$t.Name}}/{{$mode}}" class="inline scan-form">
+                  <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+                  <input type="hidden" name="from" value="{{$page.RefreshTarget}}">
+                  <button type="submit">Scan now</button>
+                </form>
+                {{end}}
+              </div>
+            </div>
+
+            {{/* data-percent, not a "width: N%" inline style: the page's CSP
+                 (server.go) sets style-src with no unsafe-inline, which
+                 silently drops inline style attributes — the div would keep
+                 its CSS default width instead of failing loudly. cycle.js
+                 reads the attribute and sets .style.width itself, which the
+                 CSSOM path isn't subject to style-src at all. */}}
+            {{if $row.Scheduled}}
+              <div class="watch-cycle" title="{{$row.AgeLabel}}, {{$row.NextLabel}}">
+                <div class="{{$row.CycleClass}}" data-percent="{{$row.CyclePercent}}"></div>
+              </div>
+            {{end}}
+          </div>
+        {{end}}
+      </div>
+    {{end}}
+  </details>
+{{end}}
+
 {{if .Running}}
+{{/* Kept from the previous list, and deliberately: a running scan exists in
+     no stored result, so without this row an idle daemon and a busy one look
+     the same (Story 5.12). The board shows which series is scanning; this
+     says which scan, since when, and who asked for it. */}}
+<h2>Running scans</h2>
 <table class="running">
-  <caption>Running scans</caption>
   <thead><tr><th>Target</th><th>Mode</th><th>Scan</th><th>Started</th><th>Elapsed</th><th>Started by</th></tr></thead>
   <tbody>
   {{range .Running}}
     <tr class="row-running">
       <td><a href="/targets/{{.Target}}/{{.ConsentMode}}">{{.Target}}</a></td>
       <td>{{.ConsentMode}}</td>
-      {{/* No link: a running scan has no result to open yet (Story 5.15, AC6). */}}
       <td title="this scan has not finished, so there is no result to open yet"><code>{{.ScanID}}</code></td>
       <td title="{{time .StartedAt}}">{{ago .StartedAt}}</td>
       <td>{{since .StartedAt}}</td>
@@ -45,72 +202,6 @@
   {{end}}
   </tbody>
 </table>
-{{end}}
-
-{{if not .Targets}}
-  <p class="empty">No targets are configured. Add them to the configuration file and reload.</p>
-{{end}}
-
-{{range .Targets}}
-  {{$target := .}}
-  <section class="target">
-    <h2>{{.Name}} <a class="compare-link" href="/compare/{{.Name}}">compare consent modes</a></h2>
-    <p class="url">{{.URL}}</p>
-    {{if .Labels}}<p class="labels">{{range $k, $v := .Labels}}<span class="label">{{$k}}={{$v}}</span>{{end}}</p>{{end}}
-
-    <table>
-      <thead>
-        <tr>
-          <th>Consent mode</th>
-          <th>Last scan</th>
-          <th>Outcome</th>
-          <th>Consent</th>
-          <th class="num">Requests</th>
-          <th class="num">3rd-party</th>
-          <th class="num">Pre-consent</th>
-          <th>Baseline</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-      {{range .Series}}
-        <tr class="{{if .Running}}row-running{{else if .Stale}}row-stale{{end}}">
-          <td><a href="/targets/{{$target.Name}}/{{.Mode}}">{{.Mode}}</a>
-            {{if .Running}}<span class="term term-pending" title="a scan of this series is running now">pending</span>{{end}}</td>
-          {{if .LastScan}}
-            {{/* The link points at this specific scan, never at "latest": a
-                 row that says "3h ago" and opens a scan from four minutes ago
-                 has misrepresented what the reader clicked. A failed scan is
-                 linked too — that is the row most worth opening. */}}
-            <td title="{{time .LastScan.StartedAt}}">
-              <a class="scan-link"
-                 href="/results/{{$target.Name}}/{{.Mode}}/{{.LastScan.ScanID}}"
-                 aria-label="Open the last scan of {{$target.Name}} in {{.Mode}} mode, {{.LastScan.ScanID}}"
-                >{{ago .LastScan.StartedAt}}<span class="open-icon" aria-hidden="true">↗</span></a></td>
-            <td><span class="term term-{{.LastScan.Termination}}">{{.LastScan.Termination}}</span></td>
-            <td><span class="outcome outcome-{{.LastScan.ConsentOutcome}}">{{.LastScan.ConsentOutcome}}</span>
-              {{if .LastScan.ConsentCMP}}<span class="cmp">{{.LastScan.ConsentCMP}}</span>{{end}}</td>
-            <td class="num">{{.LastScan.Requests}}</td>
-            <td class="num">{{.LastScan.ThirdPartyDomains}}</td>
-            <td class="num {{if .LastScan.PreConsentDomains}}warn{{end}}">{{.LastScan.PreConsentDomains}}</td>
-          {{else}}
-            <td colspan="6" class="empty">never scanned</td>
-          {{end}}
-          <td>{{if .HasBaseline}}approved{{else}}<span class="muted">none</span>{{end}}</td>
-          <td>
-            {{if .Stale}}<span class="badge badge-stale" title="{{.StaleReason}}">stale</span>{{end}}
-            {{if $page.AllowScan}}
-            <form method="post" action="/rescan/{{$target.Name}}/{{.Mode}}" class="inline">
-              <input type="hidden" name="csrf" value="{{$page.CSRF}}">
-              <button type="submit">Scan now</button>
-            </form>
-            {{end}}
-          </td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
-  </section>
 {{end}}
 
 {{if .Jobs}}

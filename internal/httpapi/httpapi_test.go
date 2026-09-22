@@ -98,7 +98,23 @@ func newFixtureLive(
 ) *fixture {
 	t.Helper()
 
-	return newFixtureIn(t, opts, trigger, running, "")
+	return newFixtureWith(t, opts, trigger, running, nil)
+}
+
+// newFixtureWith adds the tweak. It sees the assembled Deps immediately before
+// the server is built, which is how a test supplies a collaborator the other
+// constructors leave nil — the daemon, above all, because Deps.Daemon is a
+// concrete type and cannot be faked.
+func newFixtureWith(
+	t *testing.T,
+	opts httpapi.Options,
+	trigger httpapi.ScanTrigger,
+	running func() []scanner.Running,
+	tweak func(*httpapi.Deps),
+) *fixture {
+	t.Helper()
+
+	return newFixtureIn(t, opts, trigger, running, "", tweak)
 }
 
 // newFixtureIn additionally names the artifact location, so a test can put the
@@ -111,6 +127,7 @@ func newFixtureIn(
 	trigger httpapi.ScanTrigger,
 	running func() []scanner.Running,
 	location string,
+	tweak func(*httpapi.Deps),
 ) *fixture {
 	t.Helper()
 
@@ -146,7 +163,7 @@ func newFixtureIn(
 
 	logged := &lockedBuffer{}
 
-	srv, err := httpapi.New(opts, httpapi.Deps{
+	deps := httpapi.Deps{
 		Store: st,
 		// Debug level, because the request log — where a leaked token would
 		// show up — is written at debug.
@@ -155,7 +172,13 @@ func newFixtureIn(
 		Trigger: trigger,
 		Targets: func() []config.Resolved { return targets },
 		Running: running,
-	})
+	}
+
+	if tweak != nil {
+		tweak(&deps)
+	}
+
+	srv, err := httpapi.New(opts, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +273,19 @@ func (f *fixture) postForm(path string, form url.Values, headers ...string) *htt
 	}
 
 	resp, err := f.client.Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+
+	return resp
+}
+
+// do issues a request with an arbitrary method, for the verbs the API uses
+// that neither get nor postForm covers.
+func (f *fixture) do(method, path, payload string) *http.Response {
+	f.t.Helper()
+
+	resp, err := f.client.Do(mustRequest(f.t, f, method, path, payload))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -520,7 +556,15 @@ func (f *fixture) removeStoredDocument(res *model.Result) {
 	sum := sha256.Sum256(document)
 	path := filepath.Join(f.artifactDir, "result", hex.EncodeToString(sum[:]))
 
-	if err := os.Remove(path); err != nil {
+	// Either spelling: the store packs what it writes where compression is on,
+	// and this is a lifecycle rule deleting the object behind its back
+	// (Story 4.8, AC2).
+	err = os.Remove(path)
+	if os.IsNotExist(err) {
+		err = os.Remove(path + ".gz")
+	}
+
+	if err != nil {
 		f.t.Fatalf("removing the stored document: %v", err)
 	}
 }

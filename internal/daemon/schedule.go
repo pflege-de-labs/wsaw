@@ -51,12 +51,32 @@ func (j *job) key() string {
 // they ever were.
 type lastScanFunc func(target string, mode model.ConsentMode) (time.Time, bool)
 
+// wall strips the monotonic clock reading from a timestamp, so every
+// comparison the scheduler makes is a wall-clock comparison.
+//
+// This is not a nicety. A time.Time from time.Now() carries a monotonic
+// reading, and Go compares two such timestamps by that reading alone — the
+// wall clock in them is ignored. The monotonic clock does not advance while
+// the host is suspended (on macOS it is mach_absolute_time, which stops for
+// the whole of a sleep), so a scheduler that compares monotonic timestamps
+// measures awake time rather than elapsed time: a laptop that slept for an
+// hour resumes believing that hour never happened, and every job silently
+// waits it out again while the API reports a nextRun that has long passed.
+//
+// wsaw watches sites on a wall-clock schedule, so the schedule is kept in
+// wall-clock terms even though that makes it sensitive to the clock being
+// set. A jump backwards delays a scan at worst; a frozen schedule stops the
+// watching altogether (Tenet 8).
+func wall(t time.Time) time.Time { return t.Round(0) }
+
 // buildJobs builds the job list from resolved targets.
 //
 // lastScan may be nil, in which case every job starts as though its target
 // had never been scanned. That is only correct for a process that never
 // restarts, which is why the daemon always supplies it in practice.
 func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan lastScanFunc) ([]*job, error) {
+	now = wall(now)
+
 	var jobs []*job
 
 	for _, t := range targets {
@@ -85,7 +105,7 @@ func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan 
 						at = now
 					}
 
-					j.lastRun = at
+					j.lastRun = wall(at)
 				}
 			}
 
@@ -106,6 +126,8 @@ func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan 
 // restart does not fire every overdue target at once. A restart storm against
 // a shared origin is exactly the behaviour that gets a scanner blocked.
 func (j *job) firstRun(now time.Time, catchUp bool) time.Time {
+	now = wall(now)
+
 	// A cron schedule is absolute: the next occurrence does not depend on when
 	// the process started or when the target last ran. The minimum interval
 	// still applies to it, and now has a last scan to measure from.
@@ -168,6 +190,8 @@ func spread(hash uint32, window time.Duration) time.Duration {
 
 // advance computes the next run time after a completed scan.
 func (j *job) advance(now time.Time) {
+	now = wall(now)
+
 	switch {
 	case j.schedule != nil:
 		j.next = j.schedule.Next(now)
@@ -214,6 +238,8 @@ func (j *job) jitter(now time.Time) time.Duration {
 // opposite of what Story 3.8 is for — the politeness that still applies is
 // the per-origin concurrency limit and the jittered backoff.
 func (j *job) dueAt(now time.Time) bool {
+	now = wall(now)
+
 	if now.Before(j.next) {
 		return false
 	}
@@ -235,6 +261,8 @@ func (j *job) dueAt(now time.Time) bool {
 // one flapping target must not hold a slot, or a handful of them would stall
 // every other target's schedule (Story 3.8, AC8).
 func (j *job) scheduleRetry(now time.Time, delay time.Duration, because string) {
+	now = wall(now)
+
 	j.attempt++
 	j.prevError = because
 	j.retrying = true

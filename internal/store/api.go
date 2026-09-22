@@ -77,6 +77,11 @@ type Store interface {
 	// store an operator has rather than about the one they had.
 	RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildStats, error)
 
+	// CompactArtifacts compresses the evidence already in the bucket
+	// (Story 4.9). It is on the seam for the reason RebuildIndex is: it is
+	// asked for by a command, against whichever store an operator has.
+	CompactArtifacts(ctx context.Context, opts CompactOptions) (CompactStats, error)
+
 	Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
 	PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
 	Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error)

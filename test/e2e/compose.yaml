@@ -1,0 +1,79 @@
+# Story 7.2 — the whole wsaw system as a Docker Compose stack: wsaw, a
+# server database, and the Klaro fixture's two origins (Story 7.1). One
+# command reproduces a deployment problem instead of an afternoon of it.
+#
+# The database is not defined here — pick one with an override file, which is
+# the whole reason this file and the next two exist rather than one:
+#
+#   docker compose -f test/e2e/compose.yaml -f test/e2e/compose.postgres.yaml up
+#   docker compose -f test/e2e/compose.yaml -f test/e2e/compose.mysql.yaml    up
+#
+# or `make e2e-compose-up DB=postgres` / `DB=mysql`, which does the same and
+# waits for every service to actually be healthy rather than merely started.
+#
+# Every credential anywhere in this stack is an obvious fixture
+# (wsaw-e2e-fixture-only...). Do not reuse them anywhere real (AC7).
+
+services:
+  # The third-party origin the fixture loads from, reached by its own
+  # hostname so first-party and third-party attribution is exercised rather
+  # than assumed (Story 7.1, AC2).
+  tracker:
+    build:
+      context: ../..
+      dockerfile: test/e2e/fixture/Containerfile
+    command: ["-role=third-party", "-listen=:8080", "-self-base=http://tracker:8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/__fixture/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # The Klaro fixture website itself (Story 7.1).
+  site:
+    build:
+      context: ../..
+      dockerfile: test/e2e/fixture/Containerfile
+    command:
+      - "-role=site"
+      - "-listen=:8080"
+      - "-third-party-base=http://tracker:8080"
+    depends_on:
+      tracker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/__fixture/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  wsaw:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      site:
+        condition: service_healthy
+      tracker:
+        condition: service_healthy
+      # The database dependency is added by whichever override file is in
+      # play (AC5); this file alone has no database to wait for.
+    # The container default, 64 MiB, crashes Chrome on a real page. The fix
+    # belongs in the shipped file, not a troubleshooting section (AC6).
+    shm_size: "1gb"
+    environment:
+      WSAW_API_TOKEN: wsaw-e2e-fixture-only-token
+    ports:
+      - "8712:8712"
+    healthcheck:
+      # The API requires the token once one is set (AC7 puts one here), and
+      # that applies to /api/v1/health too — there is no unauthenticated
+      # exemption for it, so the probe carries the same header a real client
+      # would.
+      # $$ so Compose passes a literal $ through for the container's own
+      # shell to expand at run time, rather than trying to interpolate it
+      # itself from this file's environment.
+      test: ["CMD-SHELL", "wget -qO- --header=\"Authorization: Bearer $$WSAW_API_TOKEN\" http://localhost:8712/api/v1/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

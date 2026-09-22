@@ -3,15 +3,77 @@ package browser_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/pflege-de-labs/wsaw/internal/browser"
 )
 
-// fakeChrome writes an executable stub that reports the given --version
+// stubVersions is every --version output these tests need a stub browser for.
+// A stub is prepared for each before any test runs; see TestMain.
+var stubVersions = []string{
+	"Google Chrome 131.0.6778.85",
+	"Chromium 130.0.6723.116 snap",
+	"Chromium 124.0.6367.207 Arch Linux",
+	"Google Chrome 140.0.7000.1 dev",
+	"Chromium 90.0.4430.212",
+	"not a version at all",
+}
+
+// stubs maps a --version output to the executable that prints it.
+var stubs map[string]string
+
+// TestMain writes every stub browser up front, before the first test — and
+// therefore before anything in this process forks.
+//
+// Writing an executable and running it later is not safe to do while sibling
+// tests are running: fork copies the writing test's still-open descriptor into
+// the child, and for as long as that child has the file open for writing the
+// kernel refuses to exec it. The result was a test that merely *reads* a stub
+// failing with "text file busy" because an unrelated parallel test happened to
+// be creating its own. Preparing them all first closes that window rather than
+// retrying around it.
+func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" {
+		// The stubs are shell scripts, and wsaw does not support Windows;
+		// fakeChrome skips there instead.
+		os.Exit(m.Run())
+	}
+
+	dir, err := os.MkdirTemp("", "wsaw-browser-stubs")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "preparing the stub browsers: %v\n", err)
+		os.Exit(1)
+	}
+
+	stubs = make(map[string]string, len(stubVersions))
+
+	for i, versionOutput := range stubVersions {
+		path := filepath.Join(dir, "fake-chrome-"+strconv.Itoa(i))
+
+		script := "#!/bin/sh\necho '" + versionOutput + "'\n"
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // test fixture must be executable
+			fmt.Fprintf(os.Stderr, "writing the stub browser for %q: %v\n", versionOutput, err)
+			_ = os.RemoveAll(dir)
+			os.Exit(1)
+		}
+
+		stubs[versionOutput] = path
+	}
+
+	code := m.Run()
+
+	// Not deferred: os.Exit does not run deferred functions.
+	_ = os.RemoveAll(dir)
+
+	os.Exit(code)
+}
+
+// fakeChrome returns an executable stub that reports the given --version
 // output, so version handling is testable without a real browser.
 func fakeChrome(t *testing.T, versionOutput string) string {
 	t.Helper()
@@ -20,11 +82,9 @@ func fakeChrome(t *testing.T, versionOutput string) string {
 		t.Skip("wsaw does not support Windows")
 	}
 
-	path := filepath.Join(t.TempDir(), "fake-chrome")
-
-	script := "#!/bin/sh\necho '" + versionOutput + "'\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // test fixture must be executable
-		t.Fatal(err)
+	path, ok := stubs[versionOutput]
+	if !ok {
+		t.Fatalf("no stub browser was prepared for %q; add it to stubVersions", versionOutput)
 	}
 
 	return path

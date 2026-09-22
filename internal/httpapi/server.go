@@ -55,6 +55,20 @@ type Options struct {
 	// AllowAdHocScan permits triggering scans through the API and UI.
 	AllowAdHocScan bool
 
+	// AllowURLScan offers the page where a URL that is not in the target list
+	// is typed in and scanned (Story 5.27). Off unless a deployment turned it
+	// on: it lets whoever can reach the interface choose what wsaw fetches.
+	AllowURLScan bool
+	// URLScanModes are the consent modes that page offers.
+	URLScanModes []model.ConsentMode
+	// URLScanPerHour bounds how many such scans start in a rolling hour,
+	// across the whole deployment.
+	URLScanPerHour int
+	// URLScanPrivateHosts reports whether addresses off the public internet
+	// are allowed. The server does not enforce it — the scanner's admission
+	// checks do — but the page says which it is.
+	URLScanPrivateHosts bool
+
 	// MetricsEnabled serves the Prometheus endpoint.
 	MetricsEnabled bool
 	MetricsPath    string
@@ -128,8 +142,12 @@ type Deps struct {
 	Metrics *metrics.Registry
 	Daemon  *daemon.Daemon
 	Trigger ScanTrigger
-	Rules   *consent.RuleSet
-	Logger  *slog.Logger
+
+	// URLScanner scans an address that is not in the target list. Nil, or
+	// Options.AllowURLScan unset, and the page does not exist.
+	URLScanner URLScanner
+	Rules      *consent.RuleSet
+	Logger     *slog.Logger
 
 	// Targets returns the current target list. It is a function so a config
 	// reload is reflected without restarting the server.
@@ -163,6 +181,15 @@ type Server struct {
 	// signingWarned keeps a bucket that fails to sign for some other reason
 	// from writing a log line per screenshot on every page view.
 	signingWarned atomic.Bool
+
+	// urlScanBudget bounds how often a typed URL may be scanned (Story 5.27).
+	urlScanBudget *rollingBudget
+
+	// otp and loginLimiter back the one-time browser sign-in (Story 5.21).
+	// They exist whether or not the web interface is on; only the routes
+	// that reach them are conditional.
+	otp          *otpStore
+	loginLimiter *otpLimiter
 }
 
 // New builds the server.
@@ -187,7 +214,18 @@ func New(opts Options, deps Deps) (*Server, error) {
 		opts.StaleAfter = 48 * time.Hour
 	}
 
-	s := &Server{opts: opts, deps: deps, mux: http.NewServeMux()}
+	if opts.URLScanPerHour <= 0 {
+		opts.URLScanPerHour = config.DefaultAdHocMaxPerHour
+	}
+
+	s := &Server{
+		opts:          opts,
+		deps:          deps,
+		mux:           http.NewServeMux(),
+		urlScanBudget: newRollingBudget(opts.URLScanPerHour, time.Hour),
+		otp:           newOTPStore(),
+		loginLimiter:  newOTPLimiter(),
+	}
 
 	if opts.WebUI {
 		ui, err := newUIRenderer()
@@ -336,6 +374,17 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		// The login form itself must be reachable unauthenticated.
 		if r.URL.Path == "/login" {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		// A one-time login link (Story 5.21) authenticates itself: it
+		// carries no standing credential, is single-use, expires in
+		// seconds, and the handler behind it refuses anything that did not
+		// originate on this machine. It is the one other path that does not
+		// need the standing token first.
+		if strings.HasPrefix(r.URL.Path, "/login/otp/") {
 			next.ServeHTTP(w, r)
 
 			return

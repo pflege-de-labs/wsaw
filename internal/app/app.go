@@ -165,6 +165,10 @@ func (a *App) openStore(ctx context.Context) error {
 	}
 
 	opts.OnRetry = a.logStoreRetry
+	// What every artifact cost, before and after packing, so that what
+	// compression saves is a measured number rather than a claim (Story 4.8,
+	// AC10). It is counted at the bucket, which is what does the packing.
+	opts.OnArtifactStored = a.countArtifact
 	// The store reports its own progress through wsaw's logger, because one
 	// thing it does is not instantaneous: upgrading a store written before
 	// Story 8.2 moves every stored document into the artifact bucket, which on
@@ -229,9 +233,10 @@ func StoreOptions(cfg *config.Config, secrets *secret.Registry) (store.Options, 
 	}
 
 	opts := store.Options{
-		ArtifactDir:  artifacts,
-		MaxAttempts:  cfg.Store.MaxAttempts,
-		RetryBackoff: cfg.Store.RetryBackoff.Duration(),
+		ArtifactDir:         artifacts,
+		ArtifactCompression: cfg.Store.ArtifactCompression(),
+		MaxAttempts:         cfg.Store.MaxAttempts,
+		RetryBackoff:        cfg.Store.RetryBackoff.Duration(),
 	}
 
 	if cfg.Store.IsServerStore() {
@@ -390,6 +395,13 @@ func namesACredential(name string) bool {
 	return false
 }
 
+// countArtifact records what one stored artifact cost, so what compression
+// saved is a query against wsaw's own metrics rather than a claim in the
+// documentation (Story 4.8, AC10).
+func (a *App) countArtifact(_ string, original, stored int64) {
+	a.Metrics.ArtifactStored(original, stored)
+}
+
 // logStoreRetry makes a retry visible. A database that is flapping while
 // every scan quietly succeeds on the second attempt is exactly the kind of
 // degradation an operator should be told about before it becomes an outage
@@ -507,13 +519,15 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 	launch.Container = &containerLauncher{
 		runtime: runtime,
 		spec: container.Spec{
-			Image:          image,
-			Memory:         a.Config.Browser.Container.Memory,
-			PidsLimit:      a.Config.Browser.Container.PidsLimit,
-			ExtraArgs:      a.Config.Browser.Container.ExtraArgs,
-			BrowserArgs:    a.Config.Browser.Container.BrowserArgs,
-			StartupTimeout: a.Config.Browser.Container.StartupTimeout.Or(90 * time.Second),
-			Logger:         a.Logger,
+			Image:           image,
+			Memory:          a.Config.Browser.Container.Memory,
+			PidsLimit:       a.Config.Browser.Container.PidsLimit,
+			SHMSize:         a.Config.Browser.Container.SHMSize,
+			FileDescriptors: a.Config.Browser.Container.FileDescriptors,
+			ExtraArgs:       a.Config.Browser.Container.ExtraArgs,
+			BrowserArgs:     a.Config.Browser.Container.BrowserArgs,
+			StartupTimeout:  a.Config.Browser.Container.StartupTimeout.Or(90 * time.Second),
+			Logger:          a.Logger,
 		},
 	}
 
@@ -642,6 +656,7 @@ func (a *App) buildScanner() error {
 		Normalizer:            normalizer,
 		Baseline:              a.Config.Detection.Baseline,
 		HashResourceTypes:     a.Config.Detection.HashResourceTypes,
+		DegradedFailureRatio:  a.Config.Detection.DegradedFailureRatio,
 		ConsentStepTimeout:    a.Config.Consent.StepTimeout.Or(consent.DefaultStepTimeout),
 		ConsentTotalTimeout:   a.Config.Consent.TotalTimeout.Or(consent.DefaultTotalTimeout),
 		AllowHeuristicConsent: allowHeuristic,
@@ -745,22 +760,37 @@ func (a *App) RunningScans() []scanner.Running {
 	return a.Scanner.Running()
 }
 
-// Retention returns the configured retention policy.
-func (a *App) Retention() store.Retention { return RetentionFor(a.Config) }
+// Retention returns the configured retention policy: the thinning policy where
+// one is configured, and the two bounds it replaces otherwise.
+func (a *App) Retention() (store.Retention, error) { return RetentionFor(a.Config) }
 
 // RetentionFor reads a retention policy out of configuration without needing a
 // running App.
 //
 // It exists for the maintenance command that applies retention on request
 // (Story 8.5, AC6): that command loads configuration and opens a store, and
-// nothing else. Reading the two settings there instead would be a second place
-// that decides what `maxAge` and `maxPerSeries` mean, and a dry run whose
-// retention differed from the daemon's would be a dry run of the wrong thing.
-func RetentionFor(cfg *config.Config) store.Retention {
+// nothing else. Reading the settings there instead would be a second place that
+// decides what a policy means, and a dry run whose retention differed from the
+// daemon's would be a dry run of the wrong thing.
+//
+// The timezone has already been validated at load time, so a policy that cannot
+// be resolved here means the config was built in Go. Rather than guess a zone —
+// which would cut days in the wrong place and delete the wrong scans — the
+// error is returned and the caller declines to prune.
+func RetentionFor(cfg *config.Config) (store.Retention, error) {
+	if k := cfg.Store.Keep; k != nil {
+		policy, err := k.Policy()
+		if err != nil {
+			return store.Retention{}, fmt.Errorf("store.keep: %w", err)
+		}
+
+		return store.Retention{Keep: &policy}, nil
+	}
+
 	return store.Retention{
 		MaxAge:       cfg.Store.MaxAge.Duration(),
 		MaxPerSeries: cfg.Store.MaxPerSeries,
-	}
+	}, nil
 }
 
 // closeAfterFailedStart unwinds a partial startup. The original error is what
@@ -862,8 +892,14 @@ func DefaultConfigPaths() []string {
 // for months grows without bound (NFR §1); with it, retention is observable
 // because every prune is logged.
 func (a *App) PruneLoop(ctx context.Context) {
-	retention := a.Retention()
-	if retention.MaxAge <= 0 && retention.MaxPerSeries <= 0 {
+	retention, err := a.Retention()
+	if err != nil {
+		a.Logger.Error("retention is not usable; no history will be pruned", "error", err)
+
+		return
+	}
+
+	if !retention.Active() {
 		return
 	}
 
@@ -926,6 +962,9 @@ func (a *App) pruneOnce(ctx context.Context, now time.Time, retention store.Rete
 	if stats.ResultsDeleted > 0 || stats.ArtifactsDeleted > 0 {
 		a.Logger.Info("pruned old results",
 			"results_deleted", stats.ResultsDeleted,
+			"results_kept", stats.ResultsKept,
+			"series_pruned", stats.SeriesPruned,
+			"oldest_kept", stats.OldestKept.Format(time.RFC3339),
 			"artifacts_deleted", stats.ArtifactsDeleted,
 			"bytes_freed", stats.BytesFreed)
 	}

@@ -36,6 +36,12 @@ type Registry struct {
 
 	browserRestarts int64
 	notifyFailures  int64
+
+	// artifactBytesIn is what the store was handed, artifactStoredBytes what
+	// it wrote. Together they report what compression saved (Story 4.8).
+	artifactBytesIn     int64
+	artifactStoredBytes int64
+
 	storeRetries    int64
 	scanRetries     int64
 	retriesExceeded int64
@@ -45,10 +51,10 @@ type Registry struct {
 	// bucket that now holds every scan's document is the largest thing wsaw
 	// owns, and whether retention is actually shrinking it is only visible
 	// from outside (Story 8.5, AC5).
-	resultsPruned     int64
-	artifactsDeleted  int64
-	artifactBytes     int64
-	artifactDeleteErr int64
+	resultsPruned      int64
+	artifactsDeleted   int64
+	artifactBytesFreed int64
+	artifactDeleteErr  int64
 
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
@@ -72,7 +78,12 @@ type labels struct {
 // New creates a Registry.
 func New(version string) *Registry {
 	return &Registry{
-		startedAt:       time.Now(),
+		// Rounded to drop the monotonic reading, so uptime is measured on
+		// the wall clock. The monotonic clock stops while the host is
+		// suspended, which made this gauge under-report by the length of
+		// every sleep and turned "how long has this been running" into a
+		// number that quietly disagreed with the process start time.
+		startedAt:       time.Now().Round(0),
 		version:         version,
 		scansStarted:    make(map[labels]int64),
 		scansSucceeded:  make(map[labels]int64),
@@ -165,6 +176,35 @@ func (r *Registry) StoreRetried() {
 	r.storeRetries++
 }
 
+// ResultsPruned counts results retention removed. A policy that suddenly
+// deletes far more than usual — an edited keep policy, a clock that jumped —
+// shows up here before it shows up as a history somebody needed (Story 4.10).
+func (r *Registry) ResultsPruned(n int) {
+	if n <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.resultsPruned += int64(n)
+}
+
+// ArtifactStored records one artifact written to storage: the bytes handed
+// to the store, and the bytes that reached the disk.
+//
+// The pair is what makes compression measurable instead of assumed — the
+// ratio between them is the answer to "is this worth it on my data", and it
+// differs per installation because it is a property of the sites being
+// scanned (Story 4.8, AC10).
+func (r *Registry) ArtifactStored(original, stored int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.artifactBytesIn += original
+	r.artifactStoredBytes += stored
+}
+
 // ScanRetried counts a scan that had to be tried again, and
 // ScanRetriesExhausted one that ran out of attempts.
 //
@@ -198,7 +238,7 @@ func (r *Registry) Pruned(results, artifacts int, bytes int64) {
 
 	r.resultsPruned += int64(results)
 	r.artifactsDeleted += int64(artifacts)
-	r.artifactBytes += bytes
+	r.artifactBytesFreed += bytes
 }
 
 // ArtifactDeletionsFailed counts artifacts a bucket refused to delete.
@@ -330,16 +370,20 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
 	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
 	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
+	writeGaugeValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", float64(r.resultsPruned))
 	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
 	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
-	writeGaugeValue(&b, "wsaw_results_pruned_total", "Stored results removed by retention.", float64(r.resultsPruned))
 	writeGaugeValue(&b, "wsaw_artifacts_deleted_total",
 		"Artifacts deleted from the bucket because no stored result referenced them any more.",
 		float64(r.artifactsDeleted))
 	writeGaugeValue(&b, "wsaw_artifact_bytes_freed_total", "Bytes reclaimed from the artifact bucket by retention.",
-		float64(r.artifactBytes))
+		float64(r.artifactBytesFreed))
 	writeGaugeValue(&b, "wsaw_artifact_deletions_failed_total",
 		"Artifact deletions the bucket refused, left for the next sweep.", float64(r.artifactDeleteErr))
+	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
+		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
+	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
+		"Artifact bytes actually written to the bucket.", float64(r.artifactStoredBytes))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))

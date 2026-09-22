@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -223,6 +224,20 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
 		return nil, err
 	}
 
+	// A reload can only replace the target list. Everything else became a
+	// browser pool, a normalizer, an HTTP server or a scheduler at startup,
+	// so a change to it cannot take effect in this process — and adopting the
+	// half that can while logging "configuration reloaded" would leave the
+	// operator believing the rest had applied too (Tenet 5). Refusing names
+	// what moved and keeps the running configuration.
+	if changed := config.NonReloadableChanges(a.Config, cfg); len(changed) > 0 {
+		return nil, fmt.Errorf(
+			"%s cannot change without a restart; the running configuration is unchanged. "+
+				"Restart wsaw to apply %s",
+			strings.Join(changed, ", "),
+			pluralSettings(len(changed)))
+	}
+
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
 		return nil, err
@@ -231,6 +246,14 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
 	a.Logger.Info("configuration reloaded", "targets", len(targets))
 
 	return targets, nil
+}
+
+func pluralSettings(n int) string {
+	if n == 1 {
+		return "it"
+	}
+
+	return "them"
 }
 
 func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
@@ -417,6 +440,8 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		allowAdHoc = *a.Config.API.AllowAdHocScan
 	}
 
+	adHoc := a.Config.API.AdHocURLs
+
 	return httpapi.New(httpapi.Options{
 		Listen:         a.Config.API.Listen,
 		Token:          token,
@@ -425,8 +450,15 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		WebUI:          webUI,
 		ReadOnly:       a.Config.API.ReadOnly,
 		AllowAdHocScan: allowAdHoc,
-		Share:          signer,
-		ShareBaseURL:   a.Config.API.Share.BaseURL,
+		// Typed URLs are their own switch, not a consequence of ad-hoc
+		// scanning being on: one lets a reader rescan a target somebody
+		// configured, the other lets them choose the address (Story 5.27).
+		AllowURLScan:        adHoc.Enabled,
+		URLScanModes:        a.Config.AdHocModes(),
+		URLScanPerHour:      adHoc.Limit(),
+		URLScanPrivateHosts: adHoc.AllowPrivateHosts,
+		Share:               signer,
+		ShareBaseURL:        a.Config.API.Share.BaseURL,
 		// Where the evidence is kept is a store setting, and so is whether a
 		// reader is sent to it directly (Story 8.7, AC3).
 		SignedArtifactURLs:   a.Config.Store.ArtifactSignedURLs,
@@ -440,6 +472,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Metrics:    a.Metrics,
 		Daemon:     d,
 		Trigger:    a,
+		URLScanner: a,
 		Rules:      a.Rules,
 		Logger:     a.Logger,
 		Targets:    targets,

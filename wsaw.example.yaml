@@ -88,6 +88,31 @@ targets:
     # Kept for its history and baseline rather than deleted.
     disabled: true
 
+capture:
+  # Requests that must not hold a scan open.
+  #
+  # A time-on-site tracker keeps reporting for as long as the tab is open, so
+  # the network never goes quiet for idleQuiet and the scan ends on its hard
+  # timeout with nothing left to observe. Beacons are recorded like every
+  # other request — they carry "beacon": true in the result — and simply not
+  # waited for.
+  #
+  # The shipped list covers the vendors known to do this (Taboola, Outbrain,
+  # Clarity, GA4, Matomo, New Relic, Datadog, Sentry, FullStory, Hotjar,
+  # Chartbeat and a few more). Set this to false to decline it.
+  useDefaultBeacons: true
+  beacons:
+    # An exact host, a bare domain covering its subdomains, or a "*." wildcard.
+    - host: telemetry.example.net
+    # A host that also serves scripts is matched by path, never wholesale:
+    # dropping a script from idle detection would end the scan before the
+    # assets that script loads were ever requested.
+    - host: analytics.example.com
+      urlPattern: '/collect'
+    # A rule may be a pattern alone, for an endpoint that appears on many
+    # hosts — a self-hosted analytics endpoint on the site's own origin.
+    - urlPattern: '/(matomo|piwik)\.php(\?|$)'
+
 browser:
   # Where the browser runs.
   #
@@ -111,11 +136,25 @@ browser:
     memory: 1g
     pidsLimit: 512
     startupTimeout: 90s
+    # Chrome keeps renderer shared memory in /dev/shm, and podman and docker
+    # both default it to 64 MB. That is not enough for a page that releases
+    # its images in one burst: allocations start failing, Chrome reports
+    # net::ERR_INSUFFICIENT_RESOURCES for requests that never opened a
+    # connection, and the assets those requests would have loaded look like
+    # assets the site stopped loading. Both of these are limits, not
+    # allocations, so raising them costs nothing until it is needed.
+    shmSize: 1g
+    fileDescriptors: 8192
 
   # Leave empty to auto-discover Chrome or Chromium for the local runtime.
   path: ""
   poolSize: 2
-  maxScansPerBrowser: 50
+  # 1 is the default and the only value that guarantees per-scan isolation by
+  # construction: one browser, one profile, one cookie jar. Raise it for
+  # throughput, but a browser that serves many scans has more time to
+  # accumulate the resource pressure that ends in dropped requests, so keep
+  # it low enough that a leak is recycled rather than diffed.
+  maxScansPerBrowser: 10
   # The sandbox is the boundary between a hostile page and this host. Only set
   # this where the runtime forbids user namespaces, and expect a warning.
   noSandbox: false
@@ -247,8 +286,53 @@ store:
   # artifactSignedURLs: false
   # artifactSignedURLTTL: 5m
 
+  # Artifacts are stored gzipped where that makes them smaller — most bodies,
+  # which are text, and no screenshot, since a PNG is already compressed. The
+  # object is an ordinary gzip member named kind/sha256hex.gz, so a local
+  # directory stays readable with zcat, and the reference in a result is
+  # unchanged: it is the digest of the evidence, not of the object holding it.
+  # Set this to false to store artifacts exactly as captured; both forms stay
+  # readable either way, so nothing is stranded by changing it.
+  compressArtifacts: true
+
+  # Retention, the blunt form: drop anything older than maxAge, and keep at
+  # most maxPerSeries scans of each target and consent mode. Both cut at a
+  # line, so a target scanned four times a day fills 200 scans in seven weeks
+  # and the age limit never gets to fire.
   maxAge: 2160h  # 90 days; Go duration units, so hours
   maxPerSeries: 200
+
+  # Retention, the thinning form, in the terms restic's forget uses. It
+  # replaces maxAge and maxPerSeries — configuring both is an error rather
+  # than a precedence to remember, so delete the two lines above when you
+  # enable this.
+  #
+  # Every rule only keeps, so they combine by union and adding one can never
+  # shrink what is stored. Each of hourly/daily/weekly/monthly/yearly keeps
+  # one scan in each of the newest N periods that hold a scan at all, and the
+  # scan it keeps is the most usable one in that period, not simply the
+  # newest: a day whose last scan hit the hard timeout keeps the day's clean
+  # scan instead, so a year-old record does not read like a quiet day. A
+  # period holding nothing but failures still keeps one — that wsaw tried and
+  # what came of it is evidence too.
+  #
+  # A policy made only of counts never empties a series; "within" is an
+  # explicit age limit and may.
+  #
+  # keep:
+  #   last: 10        # the newest 10 scans, whenever they ran
+  #   within: 72h     # everything from the last three days
+  #   hourly: 24
+  #   daily: 14
+  #   weekly: 8
+  #   monthly: 12
+  #   yearly: 3
+  #   timezone: Europe/Berlin  # where a day begins; empty uses the host zone
+  #
+  # A policy change applies to everything already stored the next time wsaw
+  # prunes, and deleting evidence cannot be undone:
+  #
+  #   wsaw prune --dry-run --all
   writeReport: false
   writeHar: false
 
@@ -270,9 +354,39 @@ normalize:
     - session_id
   dropTrailingSlash: true
   # Collapse build hashes, so a deploy is not reported as a new asset.
+  #
+  # Only collapse a path segment that carries no identity of its own. This
+  # pattern is safe because the name survives the collapse: app.a1b2c3d4.js
+  # and vendor.e5f6a7b8.js stay distinct. A bundler that names chunks by hash
+  # alone — Nuxt's _nuxt/CVNmyPYs.js — must NOT be collapsed this way: every
+  # chunk would fold into one key and a genuinely new module would disappear.
   pathReplacements:
     - pattern: '\.[0-9a-f]{8,}\.(js|css)$'
       with: '.{hash}.$1'
+    # consentmanager encodes its settings descriptor into the filename, and
+    # the same version number is already in the sv= parameter of the sibling
+    # /delivery/info call. Left alone, one settings publish reports as two
+    # added assets and two removed ones.
+    - pattern: '/delivery/customdata/[A-Za-z0-9+/=_-]{16,}\.js$'
+      with: '/delivery/customdata/{cmpsettings}.js'
+
+  # Compare a script by the version it publishes about itself, rather than by
+  # the digest of its bytes.
+  #
+  # A tag-manager container folds Google-side experiment flags into every
+  # response: two consecutive fetches of the same published container can
+  # differ by a handful of tokens out of a hundred thousand. Hashing that body
+  # reports script-changed on nearly every scan and buries the one publish
+  # that mattered. The container states its own version, so compare that.
+  #
+  # extract needs exactly one capturing group, and the group is the identity.
+  # A rule that matches the URL but finds nothing in the body makes the script
+  # not comparable rather than changed — the same treatment as a missing
+  # digest, because a false "unchanged" is the worse answer here.
+  bodyIdentity:
+    - urlPattern: 'googletagmanager\.com/gtm\.js'
+      extract: '"version":"(\d+)"'
+      label: 'GTM container version'
 
 detection:
   # "previous" compares each scan with the one before it; "approved" compares
@@ -281,9 +395,25 @@ detection:
   # Collapse a change and its reverse inside this window, so a rotating CDN
   # host does not alert every scan.
   flapWindow: 6h
+  # The share of a scan's requests that may fail for capture reasons — a
+  # starved browser, DNS that did not answer — before the asset list stops
+  # being trusted for removals.
+  #
+  # Above this line the scan is reported as degraded and no asset-removed or
+  # host-removed change is raised, because one failed loader silences every
+  # asset it would have requested and the loss is not confined to the host
+  # that failed. Additions are still reported: a false positive there costs a
+  # look, a false negative hides a tracker that fired without consent.
+  #
+  # 0 uses the built-in default of 0.05; a value above 1 disables the check.
+  degradedFailureRatio: 0.05
   # Severities only need listing where you disagree with the defaults.
   severity:
     firstPartyAssetAdded: info
+    # Web Storage is ranked with cookies: a third party keeping an identifier
+    # in localStorage after a rejection has done what a third-party cookie
+    # does.
+    thirdPartyStorageRejectMode: critical
 
 consent:
   # Extra rule packs, applied after the shipped ones. A higher priority in
@@ -294,6 +424,12 @@ consent:
   # "flag" keeps the result and records the failure; "fail" makes a failed
   # banner interaction a scan error.
   onFailure: flag
+  # How long to wait for a banner to appear before concluding the page has
+  # none. A banner rendered by the site's own application code is mounted
+  # after hydration, so a single check the instant the page goes idle reports
+  # "no CMP" for a site that does have one. Override per target with
+  # `consentBannerWait`.
+  bannerWait: 5s
 
 api:
   enabled: true
@@ -315,6 +451,30 @@ api:
   readOnly: false
   allowAdHocScan: true
 
+  # Scanning a URL that is not in the list above, typed into the web interface
+  # (Story 5.27). Its own switch, not a consequence of allowAdHocScan: that one
+  # lets a reader rescan a target you configured, this one lets them choose the
+  # address.
+  #
+  # Off by default, and worth thinking about before turning on: with it,
+  # anybody who can reach the interface decides what this machine fetches. The
+  # address is admitted first — http or https, no embedded credentials, and a
+  # host that resolves to the public internet — and the credentials in
+  # defaults.basicAuth* and defaults.extraHeaders are never sent to it.
+  adHocUrls:
+    # Settings alongside enabled: false are refused, because a file that
+    # carries them reads as though the form were there. Uncomment together.
+    enabled: false
+    # The modes the form offers. Unset means defaults.consentModes.
+    # consentModes: [reject, accept]
+    # A budget for the whole deployment, not per caller: the limit is there to
+    # protect the sites being scanned, which do not care who asked (default 20).
+    # maxPerHour: 20
+    # Allows loopback, private, link-local and metadata addresses. Only for a
+    # deployment that means "scan our own staging", and only where the
+    # interface is not reachable by anybody else.
+    # allowPrivateHosts: false
+
   # Sharing one result by an expiring link, so a colleague or an auditor can
   # read the evidence without being given this token (Story 5.19).
   #
@@ -332,6 +492,8 @@ api:
   # configuration error naming the line, on the same principle as a dsn left
   # behind after a switch of store driver. Uncomment them with enabled: true.
   share:
+    # Settings alongside enabled: false are refused, because a file that
+    # carries them reads as though sharing were on. Uncomment them together.
     enabled: false
     # key: "${env:WSAW_SHARE_KEY}"   # at least 32 characters
     # validity: 168h                 # a week; what a link lasts by default

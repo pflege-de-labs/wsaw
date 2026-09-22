@@ -4,11 +4,27 @@
 # this file or by supplying an override pack, never by releasing a new binary.
 #
 # Conventions
-#   detect  must evaluate truthy for the rule to be tried
-#   verify  must evaluate truthy afterwards, otherwise the outcome is
-#           recorded as "unverified" rather than "applied"
-#   eval    is reserved for a vendor's own documented API, which is more
-#           robust than clicking a button whose label may be translated
+#   detect     must evaluate truthy for the rule to be tried
+#   verify     must evaluate truthy afterwards, otherwise the outcome is
+#              recorded as "unverified" rather than "applied"
+#   dismissed  must evaluate truthy once the banner itself is gone. Omit it
+#              when verify already checks the banner's own markup — the two
+#              would only disagree by accident. Set it explicitly only when
+#              verify checks CMP state instead (an API flag, an object
+#              existing), which proves the choice was recorded but says
+#              nothing about the banner still being on screen; left unset,
+#              wsaw falls back to the generic "does anything banner-shaped
+#              remain" check. See Story 2.7.
+#   eval       is reserved for a vendor's own documented API, which is more
+#              robust than clicking a button whose label may be translated
+#   necessary  is the fallback tried in `reject` mode when reject defines no
+#              steps, or every reject step is optional and none of them
+#              matched anything on the page — the shape of a banner that
+#              offers no reject/decline control at all. It must reach its
+#              state through a control the banner's own UI actually offers a
+#              visitor, never by calling a vendor API a visitor has no way to
+#              trigger themselves: the API existing is not evidence the site
+#              offers that choice. See Story 2.8.
 #
 # Higher priority is tried first. Vendor rules sit above the heuristic
 # fallback in heuristics.yaml.
@@ -77,6 +93,9 @@ rules:
     verify: |
       !document.getElementById('onetrust-banner-sdk') ||
       getComputedStyle(document.getElementById('onetrust-banner-sdk')).display === 'none'
+    dismissed: |
+      !document.getElementById('onetrust-banner-sdk') ||
+      getComputedStyle(document.getElementById('onetrust-banner-sdk')).display === 'none'
 
   - name: cookiebot
     vendor: Cookiebot
@@ -96,16 +115,33 @@ rules:
       - click: "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept"
         optional: true
     reject:
+      # submitCustomConsent(false, false, false) is only tried when a
+      # decline-shaped control actually exists in the DOM. Cookiebot exposes
+      # that function on every site regardless of which buttons the site
+      # configured its banner to show, so calling it unconditionally would
+      # record a rejection no visitor could ever have produced by using the
+      # banner in front of them — exactly the gap that must not be reported
+      # as OutcomeApplied (Story 2.8).
       - eval: |
           (() => {
-            if (window.Cookiebot && window.Cookiebot.submitCustomConsent) {
+            const hasDecline = !!window.__wsawQuery(
+              '#CybotCookiebotDialogBodyButtonDecline, #CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll'
+            );
+            if (hasDecline && window.Cookiebot && window.Cookiebot.submitCustomConsent) {
               window.Cookiebot.submitCustomConsent(false, false, false);
               return true;
             }
             return false;
           })()
+        optional: true
       - click: "#CybotCookiebotDialogBodyButtonDecline, #CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll"
         optional: true
+    necessary:
+      # The "categories" template's own "Allow selection" control submits
+      # whatever the checkboxes are currently set to. Every optional category
+      # is unchecked by default, so clicking it as a visitor would leaves only
+      # the categories Cookiebot itself marks necessary and locks (Story 2.8).
+      - click: "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowallSelection, #CybotCookiebotDialogBodyButtonAcceptSelection"
     verify: |
       !!(window.Cookiebot && window.Cookiebot.hasResponse)
 
@@ -143,6 +179,8 @@ rules:
         optional: true
       - click: "button[title='Reject all'], button[title='Reject All'], .sp_choice_type_13"
     verify: |
+      !document.querySelector('iframe[id^="sp_message_iframe"]')
+    dismissed: |
       !document.querySelector('iframe[id^="sp_message_iframe"]')
 
   # Consentmanager, driven through its documented __cmp API.
@@ -219,6 +257,85 @@ rules:
         const box = document.getElementById('cmpbox');
         return !box || getComputedStyle(box).display === 'none';
       })()
+    # Without this override, bannerGone falls back to the generic
+    # __wsawConsentContainer heuristic, which scans the whole page for any
+    # box-shaped element that merely mentions cookies/consent — and can lock
+    # onto an unrelated element (e.g. the always-present recall widget or a
+    # footer privacy link) that never goes away. #cmpbox is the actual
+    # banner element, and this mirrors the same display check verify already
+    # uses to confirm it is gone.
+    dismissed: |
+      (() => {
+        const box = document.getElementById('cmpbox');
+        return !box || getComputedStyle(box).display === 'none';
+      })()
+
+  # CCM19 (papoo Software), driven through its window.CCM API.
+  #
+  #   window.CCM.grantAllPrivileges()   accept all, persist, close the widget
+  #   window.CCM.revokeAllPrivileges()  reject all, persist, close the widget
+  #   window.CCM.consent                getter, true once a choice is recorded
+  #
+  # There is no public documentation of this API; the method and property
+  # names above were confirmed by reading the vendor's shipped app.js, which
+  # calls exactly the same internal methods from its own accept/decline
+  # button handlers. The click fallback mirrors the button markup found in
+  # the same script: the accept-all button shares its class with the
+  # "save selection" button and is distinguished only by
+  # data-full-consent="true".
+  - name: ccm19
+    vendor: CCM19
+    priority: 100
+    detect: |
+      !!(window.CCM || document.querySelector('#ccm-root, #ccm-widget, .ccm-modal'))
+    accept:
+      # An explicit false from eval is a step failure (rules.go convention),
+      # which would otherwise abort the rule before the click fallback ever
+      # ran. Marking it optional lets a page whose script failed to expose
+      # window.CCM still be handled through the button markup below.
+      - eval: |
+          (() => {
+            if (window.CCM && window.CCM.grantAllPrivileges) { window.CCM.grantAllPrivileges(); return true; }
+            return false;
+          })()
+        optional: true
+      # A plain click is a synthetic el.click(): CCM19 checks Event.isTrusted
+      # and silently ignores it, so the interaction looks like it succeeded
+      # while nothing was actually recorded. trustedClick dispatches a real
+      # CDP pointer event instead.
+      - trustedClick: '.ccm--save-settings[data-full-consent="true"]'
+        optional: true
+    reject:
+      - eval: |
+          (() => {
+            if (window.CCM && window.CCM.revokeAllPrivileges) { window.CCM.revokeAllPrivileges(); return true; }
+            return false;
+          })()
+        optional: true
+      - trustedClick: ".ccm--decline-cookies"
+        optional: true
+    # Some deployments render the widget markup without exposing window.CCM
+    # on the top frame. The consent getter is checked first because it is a
+    # direct read-back of the recorded choice; the modal being gone is only
+    # a fallback for when the API is unreachable and a click was the only
+    # option.
+    verify: |
+      (() => {
+        if (window.CCM && typeof window.CCM.consent !== 'undefined') { return !!window.CCM.consent; }
+        const el = document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
+        return !el || el.hidden || getComputedStyle(el).display === 'none';
+      })()
+    # CCM19 never removes #ccm-widget from the DOM when a choice is made — it
+    # toggles a hidden attribute and display:none instead (its own
+    # ccm-hide/ccm-show classes do the same). A dismissed check that only
+    # asked "does the selector still match anything" would never see that and
+    # would report banner-visible against a screenshot showing an ordinary
+    # page.
+    dismissed: |
+      (() => {
+        const el = document.querySelector('#ccm-root, #ccm-widget, .ccm-modal');
+        return !el || el.hidden || getComputedStyle(el).display === 'none';
+      })()
 
   - name: complianz
     vendor: Complianz
@@ -230,6 +347,8 @@ rules:
     reject:
       - click: ".cmplz-deny"
     verify: |
+      !document.querySelector('.cmplz-cookiebanner.cmplz-show')
+    dismissed: |
       !document.querySelector('.cmplz-cookiebanner.cmplz-show')
 
   - name: borlabs
@@ -255,6 +374,8 @@ rules:
       - click: ".cm-btn-decline, .cn-decline"
     verify: |
       !document.querySelector('#klaro .cookie-notice')
+    dismissed: |
+      !document.querySelector('#klaro .cookie-notice')
 
   - name: osano
     vendor: Osano
@@ -266,4 +387,6 @@ rules:
     reject:
       - click: ".osano-cm-denyAll, .osano-cm-deny"
     verify: |
+      !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
+    dismissed: |
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')

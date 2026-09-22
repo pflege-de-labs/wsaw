@@ -543,7 +543,7 @@ func TestVerifyFindsDriftInBothDirections(t *testing.T) {
 	// names nothing.
 	document := storedDocumentRef(t, s, scans[1])
 
-	evidence(t, opts).Remove(document)
+	evidence(t, opts).Remove(evidence(t, opts).StoredKey(document))
 
 	drifted, err := s.RebuildIndex(t.Context(), store.RebuildOptions{Mode: store.RebuildVerify})
 	if !errors.Is(err, store.ErrIndexDrift) {
@@ -876,7 +876,7 @@ func TestARebuildDoesNotPutBackAResultRetentionRemoved(t *testing.T) {
 	// still names it. Without that there would be nothing for a rebuild to
 	// resurrect and nothing here to test.
 	document := "result/" + digestOf(baselineDocument(t, s))
-	if !evidence(t, opts).Has(document) {
+	if !evidence(t, opts).HasArtifact(document) {
 		t.Fatalf("the pruned scan's document at %s is not in the bucket, so this test proves nothing", document)
 	}
 

@@ -72,11 +72,20 @@ func run(ctx context.Context, args []string) int {
 	case "config":
 		err = cmdConfig(rest)
 
+	case "artifacts":
+		err = cmdArtifacts(ctx, rest)
+
+	case "prune":
+		err = cmdPrune(ctx, rest)
+
 	case "share":
 		err = cmdShare(ctx, rest)
 
 	case "store":
 		err = cmdStore(ctx, rest)
+
+	case "ui":
+		err = cmdUI(ctx, rest)
 
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
@@ -126,8 +135,11 @@ Commands:
   debug          Scan one URL with verbose output, for rule authoring
   rules          Inspect or test consent rules
   config         Validate and print the effective configuration
+  artifacts      Operate on stored evidence: artifacts compress
+  prune          Apply retention once; --dry-run shows what it would delete
   share          Mint an expiring link to one scan result
   store          Maintain the result store: "wsaw store migrate"
+  ui             Open the web interface in a browser, already signed in
   version        Print build information
 
 Exit codes for "scan":

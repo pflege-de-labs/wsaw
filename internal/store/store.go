@@ -124,6 +124,24 @@ type Options struct {
 	// nowhere to put a document cannot record a scan.
 	ArtifactDir string
 
+	// ArtifactCompression is how artifacts are written: CompressionGzip (the
+	// default, and what the empty value means) or CompressionNone. Reading
+	// is unaffected — a store always reads both forms (Story 4.8, AC8).
+	ArtifactCompression string
+
+	// MaxArtifactBytes caps what inflating a compressed artifact may
+	// produce. Zero takes the default, which is above anything capture can
+	// write; it exists so a deployment that raised capture's own caps can
+	// raise this one to match (Story 4.8, AC6).
+	MaxArtifactBytes int64
+
+	// OnArtifactStored is called for every artifact actually written, with
+	// the bytes handed in and the bytes that reached the disk. A store that
+	// compresses without anyone being able to see what it saved is a claim
+	// rather than a measurement (Tenet 8). Deduplicated writes are not
+	// reported: nothing was written.
+	OnArtifactStored func(kind string, original, stored int64)
+
 	// Timeout is how long a statement waits for a busy database before
 	// failing, which is how SQLite's single-writer constraint surfaces.
 	Timeout time.Duration
@@ -180,6 +198,30 @@ type Options struct {
 // them, and a DSN printed as configured would print a password with it (Story
 // 4.7, AC6).
 func (o *Options) Location() string { return o.describe() }
+
+// compressArtifacts resolves the configured compression mode. An unknown
+// value is refused at open rather than silently taken as the default: an
+// operator who misspelled it asked for something, and quietly doing the other
+// thing is how a setting stops meaning anything.
+func (o *Options) compressArtifacts() (bool, error) {
+	switch o.ArtifactCompression {
+	case "", CompressionGzip:
+		return true, nil
+	case CompressionNone:
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown artifact compression %q: want %q or %q",
+			o.ArtifactCompression, CompressionGzip, CompressionNone)
+	}
+}
+
+func (o *Options) maxArtifactBytes() int64 {
+	if o.MaxArtifactBytes > 0 {
+		return o.MaxArtifactBytes
+	}
+
+	return defaultMaxArtifactBytes
+}
 
 // ArtifactLocation names the artifact bucket the way a log line or a command's
 // output should.
@@ -331,6 +373,14 @@ func connect(ctx context.Context, opts Options) (*SQL, error) {
 		)
 	}
 
+	// Resolved before anything is opened: an operator who misspelled the mode
+	// asked for something, and quietly doing the other thing is how a setting
+	// stops meaning anything (Tenet 15).
+	compress, err := opts.compressArtifacts()
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+
 	if d.name() == DriverSQLite {
 		if opts.Path == "" {
 			return nil, errors.New("store: Path is required")
@@ -390,6 +440,12 @@ func connect(ctx context.Context, opts Options) (*SQL, error) {
 	// they do for rows (Story 8.1, AC8).
 	b.setRetry(s.retry)
 	b.setMeter(opts.OnBucketOp)
+
+	// How artifacts are packed is the bucket's business, because the bucket is
+	// what writes and reads them: the store hands over the decision and never
+	// sees a compressed byte (Story 4.8, AC4).
+	b.setCompression(compress, opts.maxArtifactBytes(), opts.OnArtifactStored)
+
 	s.bucket = b
 
 	return s, nil
@@ -834,6 +890,15 @@ type Summary struct {
 	Requests          int `json:"requests"`
 	ThirdPartyDomains int `json:"thirdPartyDomains"`
 	PreConsentDomains int `json:"preConsentDomains"`
+}
+
+// Summarize derives a Summary from a result in memory, without going near
+// the store. The watchboard's deviation figures compare a scan against its
+// baseline on the same three counts a listing shows (Story 5.28, AC6), and
+// deriving those counts a second time in the HTTP layer is how a board comes
+// to disagree with the scan page it links to.
+func Summarize(res *model.Result) Summary {
+	return summarize(res)
 }
 
 func summarize(res *model.Result) Summary {

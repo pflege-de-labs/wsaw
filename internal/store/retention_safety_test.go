@@ -128,7 +128,7 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 
 	// The document goes the way a bucket lifecycle rule takes it: the object
 	// is deleted and the row still names it.
-	evidence(t, opts).Remove(document)
+	evidence(t, opts).Remove(evidence(t, opts).StoredKey(document))
 
 	forgetWhatEveryResultReferences(t, opts)
 

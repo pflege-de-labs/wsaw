@@ -85,9 +85,11 @@ func (c *Config) Validate() error {
 	c.validateArtifacts(add)
 	c.validateSignedURLs(add)
 	c.validateNormalize(add)
+	c.validateCapture(add)
 	c.validateDetection(add)
 	c.validateConsent(add)
 	c.validateAPI(add)
+	c.validateAdHocURLs(add)
 	c.validateAPIRefresh(add)
 	c.validateShare(add)
 	c.validateNotifiers(add)
@@ -137,11 +139,13 @@ func (c *Config) validateTargets(add addFunc) {
 		}
 
 		validateSeverityRules(t.Severity, t.line, field+".severity", add)
+		validateBeacons(t.Beacons, t.line, field+".beacons", add)
 	}
 
 	// Defaults are validated for the parts that make sense globally.
 	c.validateTargetModes(&c.Defaults, "defaults", add)
 	c.validateTargetSchedule(&c.Defaults, "defaults", add)
+	validateBeacons(c.Defaults.Beacons, c.Defaults.line, "defaults.beacons", add)
 
 	if c.Defaults.Robots != "" && c.Defaults.Robots != RobotsIgnore && c.Defaults.Robots != RobotsRespect {
 		add(c.Defaults.line, "defaults.robots", "%q is not a valid policy; use \"ignore\" or \"respect\"", c.Defaults.Robots)
@@ -336,6 +340,10 @@ func (c *Config) validateScheduler(add addFunc) {
 		add(0, "browser.container.pidsLimit", "must not be negative")
 	}
 
+	if c.Browser.Container.FileDescriptors < 0 {
+		add(0, "browser.container.fileDescriptors", "must not be negative")
+	}
+
 	if c.Browser.RemoteURL != "" {
 		u, err := url.Parse(c.Browser.RemoteURL)
 		if err != nil || u.Host == "" {
@@ -347,6 +355,52 @@ func (c *Config) validateScheduler(add addFunc) {
 
 	if c.Store.MaxPerSeries < 0 {
 		add(0, "store.maxPerSeries", "must not be negative")
+	}
+
+	validateKeep(c, add)
+}
+
+// validateKeep checks the thinning retention policy (Story 4.10).
+//
+// Two of its rules exist because the failure they prevent is silent: a policy
+// that keeps nothing would delete a whole history on the next prune, and a
+// policy left next to the bounds it replaces would be cut back by them
+// without anything saying so.
+func validateKeep(c *Config, add addFunc) {
+	k := c.Store.Keep
+	if k == nil {
+		return
+	}
+
+	if len(c.legacyRetention) > 0 {
+		add(0, "store.keep",
+			"replaces %s; remove %s, or remove store.keep — they are never combined",
+			strings.Join(c.legacyRetention, " and "), strings.Join(c.legacyRetention, " and "))
+	}
+
+	if k.Empty() {
+		add(0, "store.keep",
+			"keeps nothing; set at least one of last, within, hourly, daily, weekly, monthly or yearly")
+	}
+
+	for _, r := range []struct {
+		field string
+		n     int
+	}{
+		{"last", k.Last},
+		{"hourly", k.Hourly},
+		{"daily", k.Daily},
+		{"weekly", k.Weekly},
+		{"monthly", k.Monthly},
+		{"yearly", k.Yearly},
+	} {
+		if r.n < 0 {
+			add(0, "store.keep."+r.field, "must not be negative")
+		}
+	}
+
+	if _, err := k.location(); err != nil {
+		add(0, "store.keep.timezone", "%v", err)
 	}
 }
 
@@ -368,6 +422,71 @@ func (c *Config) validateNormalize(add addFunc) {
 	if len(c.Normalize.KeepQueryParams) > 0 && len(c.Normalize.DropQueryParams) > 0 {
 		add(0, "normalize", "keepQueryParams and dropQueryParams are both set; keepQueryParams takes precedence and dropQueryParams will be ignored")
 	}
+
+	c.validateBodyIdentities(add)
+}
+
+// validateBodyIdentities rejects a rule that can never produce a value. Such
+// a rule fails silently at scan time — the script simply keeps being compared
+// by digest — so the mistake has to be caught here or it is invisible.
+func (c *Config) validateBodyIdentities(add addFunc) {
+	for i, id := range c.Normalize.BodyIdentities {
+		field := fmt.Sprintf("normalize.bodyIdentity[%d]", i)
+
+		if id.URLPattern == "" {
+			add(0, field+".urlPattern", "is empty")
+		} else if _, err := regexp.Compile(id.URLPattern); err != nil {
+			add(0, field+".urlPattern", "%q is not a valid regular expression: %v", id.URLPattern, err)
+		}
+
+		if id.Extract == "" {
+			add(0, field+".extract", "is empty")
+
+			continue
+		}
+
+		re, err := regexp.Compile(id.Extract)
+		if err != nil {
+			add(0, field+".extract", "%q is not a valid regular expression: %v", id.Extract, err)
+
+			continue
+		}
+
+		if got := re.NumSubexp(); got != 1 {
+			add(0, field+".extract",
+				"%q has %d capturing groups; exactly one is required, and it is the identity",
+				id.Extract, got)
+		}
+	}
+}
+
+func (c *Config) validateCapture(add addFunc) {
+	validateBeacons(c.Capture.Beacons, 0, "capture.beacons", add)
+}
+
+// validateBeacons refuses a rule that would not do what it says. A rule with
+// neither a host nor a pattern would match every request and end every scan
+// the moment the page stopped for a breath, and a pattern that does not
+// compile would be discovered at scan time, where it costs a scan rather than
+// a restart.
+func validateBeacons(beacons []Beacon, line int, field string, add addFunc) {
+	for i, b := range beacons {
+		at := fmt.Sprintf("%s[%d]", field, i)
+
+		if b.Host == "" && b.URLPattern == "" {
+			add(line, at, "needs a host, a urlPattern, or both")
+
+			continue
+		}
+
+		if b.URLPattern == "" {
+			continue
+		}
+
+		if _, err := regexp.Compile(b.URLPattern); err != nil {
+			add(line, at+".urlPattern", "%q is not a valid regular expression: %v", b.URLPattern, err)
+		}
+	}
 }
 
 func (c *Config) validateDetection(add addFunc) {
@@ -375,6 +494,10 @@ func (c *Config) validateDetection(add addFunc) {
 	case "", BaselineApproved, BaselinePrevious:
 	default:
 		add(0, "detection.baseline", "%q is not valid; use \"approved\" or \"previous\"", c.Detection.Baseline)
+	}
+
+	if c.Detection.DegradedFailureRatio < 0 {
+		add(0, "detection.degradedFailureRatio", "must not be negative")
 	}
 
 	validateSeverityRules(c.Detection.Severity, 0, "detection.severity", add)
@@ -407,6 +530,10 @@ func validateSeverityRules(s diff.SeverityRules, line int, field string, add add
 	check("thirdPartyCookieAdded", s.ThirdPartyCookieAdded)
 	check("firstPartyCookieAdded", s.FirstPartyCookieAdded)
 	check("cookieRemoved", s.CookieRemoved)
+	check("thirdPartyStorageRejectMode", s.ThirdPartyStorageRejectMode)
+	check("thirdPartyStorageAdded", s.ThirdPartyStorageAdded)
+	check("firstPartyStorageAdded", s.FirstPartyStorageAdded)
+	check("storageRemoved", s.StorageRemoved)
 	check("statusBecameError", s.StatusBecameError)
 	check("statusChanged", s.StatusChanged)
 	check("consentChanged", s.ConsentChanged)
@@ -443,6 +570,57 @@ func (c *Config) validateAPI(add addFunc) {
 			"listen address %q is not loopback but no token is set; remote exposure requires authentication",
 			c.API.Listen)
 	}
+}
+
+// validateAdHocURLs refuses a typed-URL configuration that cannot do what it
+// says (Story 5.27).
+//
+// Each of these is a setting an operator wrote meaning something, which wsaw
+// would otherwise ignore in silence: a feature switched on behind a switched
+// off server, a write action in a read-only deployment, a mode that does not
+// exist, a budget that is not a number of scans.
+func (c *Config) validateAdHocURLs(add addFunc) {
+	ah := c.API.AdHocURLs
+
+	if !ah.Enabled {
+		if len(ah.ConsentModes) > 0 || ah.MaxPerHour != 0 || ah.AllowPrivateHosts {
+			add(0, "api.adHocUrls.enabled",
+				"settings are present but scanning typed URLs is off; set enabled: true or remove them")
+		}
+
+		return
+	}
+
+	if !c.API.Enabled {
+		add(0, "api.adHocUrls.enabled", "needs api.enabled: the form is part of the web interface")
+	}
+
+	if c.API.ReadOnly {
+		add(0, "api.adHocUrls.enabled",
+			"cannot be used with api.readOnly: starting a scan is a write action, and a read-only "+
+				"deployment refuses it")
+	}
+
+	if webUIOff(c.API.WebUI) {
+		add(0, "api.adHocUrls.enabled", "needs api.webui: the form is a page in the web interface")
+	}
+
+	for _, m := range ah.ConsentModes {
+		if !m.Valid() {
+			add(0, "api.adHocUrls.consentModes", "%q is not a valid consent mode", string(m))
+		}
+	}
+
+	if ah.MaxPerHour < 0 {
+		add(0, "api.adHocUrls.maxPerHour",
+			"must not be negative; leave it unset for the default of %d", DefaultAdHocMaxPerHour)
+	}
+}
+
+// webUIOff reports whether the web interface was explicitly turned off. Unset
+// means on, which is what the server does with it.
+func webUIOff(webUI *bool) bool {
+	return webUI != nil && !*webUI
 }
 
 func isRemoteListen(listen string) bool {

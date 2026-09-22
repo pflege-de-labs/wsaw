@@ -271,7 +271,15 @@ func (o *oldLayout) storedDocument(t *testing.T, ref string) []byte {
 		t.Fatalf("artifact reference %q is not a result document", ref)
 	}
 
-	return evidence(t, o.opts).Read(ref)
+	// The evidence, not the object: the migration stores a document the way
+	// every other write does, which is packed where compression is on
+	// (Story 4.8).
+	stored, err := evidence(t, o.opts).Evidence(ref)
+	if err != nil {
+		t.Fatalf("reading the stored document %s: %v", ref, err)
+	}
+
+	return stored
 }
 
 // storedDocuments lists the result documents the bucket holds, by digest.
@@ -282,7 +290,7 @@ func (o *oldLayout) storedDocuments(t *testing.T) []string {
 
 	names := make([]string, 0, len(keys))
 	for _, key := range keys {
-		names = append(names, strings.TrimPrefix(key, "result/"))
+		names = append(names, strings.TrimPrefix(store.ArtifactRefOf(key), "result/"))
 	}
 
 	return names

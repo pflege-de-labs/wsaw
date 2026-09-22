@@ -14,6 +14,10 @@
   --panel: #f9fafb;
   --accent: #1d4ed8;
   --ok: #047857;
+  /* A second green, for an outcome that succeeded but is not the same
+     success as `applied`: a lime hue, so necessary-only never reads as a
+     verified reject at a glance (Story 2.8, AC6). */
+  --ok-partial: #4d7c0f;
   --warn: #b45309;
   --bad: #b91c1c;
   --crit: #7f1d1d;
@@ -28,6 +32,7 @@
     --panel: #181b21;
     --accent: #93b4ff;
     --ok: #34d399;
+    --ok-partial: #a3e635;
     --warn: #fbbf24;
     --bad: #f87171;
     --crit: #fca5a5;
@@ -130,6 +135,14 @@ tr.row-running {
 
 table.running { margin-bottom: 1.4rem; }
 
+/* The target list: one compact table per target, tighter than the default
+   so more targets fit on screen without scrolling (the redesign this
+   supports folds "none" and "reject" into one row when they agree, which
+   already does most of the compacting — this just stops the remaining rows
+   from wasting height). */
+table.compact th, table.compact td { padding: 0.25rem 0.5rem; }
+table.compact { margin: 0.3rem 0 0.8rem; }
+
 tr.row-baseline {
   background: color-mix(in srgb, var(--ok) 8%, transparent);
   box-shadow: inset 3px 0 0 0 var(--ok);
@@ -191,6 +204,77 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .status-bad strong { color: var(--bad); }
 .status-active strong { color: var(--accent); }
 
+/* Target list filters (Story 5.22). Starts `hidden` in markup and is only
+   ever revealed by filter.js, so there is nothing here to style for a
+   no-JavaScript reader — it simply never appears. */
+
+.filters {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.6rem 0.8rem;
+  margin: 0.4rem 0 1.2rem;
+}
+
+.filters-row { display: flex; align-items: flex-start; gap: 1.2rem; flex-wrap: wrap; }
+
+.filter-group {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.filter-group legend, .filter-labels label {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0;
+  margin-bottom: 0.1rem;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9em;
+  font-weight: normal;
+}
+
+.filter-n {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-labels input {
+  font-size: 0.9em;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 12rem;
+}
+
+.filter-reset {
+  align-self: flex-end;
+  margin-left: auto;
+  font-size: 0.9em;
+}
+
+.filter-reset:disabled { opacity: 0.5; cursor: default; }
+
+.filter-count {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 0.5rem 0 0;
+}
+
 .banner {
   border-left: 4px solid var(--border);
   padding: 0.6rem 0.9rem;
@@ -207,6 +291,13 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .flash {
   padding: 0.6rem 1.5rem;
   border-bottom: 1px solid var(--border);
+}
+
+/* The slots are always in the document so a message written into one after
+   load is announced (layout.html, Story 5.26). An empty one takes no space
+   and draws no border: a page with nothing to say looks as it always did. */
+.flash:empty {
+  display: none;
 }
 
 .flash-ok { background: color-mix(in srgb, var(--ok) 12%, transparent); }
@@ -239,12 +330,53 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
    because a reader who cannot see the tint must still be able to tell which
    row the other rows are measured against (Story 5.20, AC2). */
 .badge-baseline { border-color: var(--ok); color: var(--ok); }
+.badge-necessary-only { border-color: var(--ok-partial); color: var(--ok-partial); }
 
 .sev-info { color: var(--muted); }
 .sev-low { color: var(--muted); }
 .sev-medium { color: var(--warn); }
 .sev-high { color: var(--bad); font-weight: 600; }
 .sev-critical { color: var(--crit); font-weight: 700; border-color: var(--crit); }
+
+/* The Changes summary: one line that counts a scan's changes by family and
+   filters by them (Story 5.29). The chips are links, so they keep a link's
+   focus ring and keyboard behaviour; only the active one is filled in, and a
+   family with nothing in it renders as a muted, unclickable zero. */
+
+.change-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.change-summary .chip {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.85em;
+  white-space: nowrap;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.change-summary .chip-total { font-weight: 600; }
+.change-summary a.chip:hover { border-color: var(--accent); }
+
+.change-summary .chip.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 600;
+}
+
+.change-summary .chip.is-zero { color: var(--muted); }
+
+/* Rows the active family excludes. Stated here because a bare `hidden`
+   attribute loses to the table's own display rules in some browsers, and a
+   change that is meant to be filtered out must not be left on the page. */
+.changes tr[hidden] { display: none; }
 
 .term-idle { color: var(--ok); }
 .term-timeout, .term-request-cap, .term-byte-cap { color: var(--warn); }
@@ -298,6 +430,8 @@ table.running caption { text-align: left; font-weight: 600; padding-bottom: 0.3r
 .outcome-applied { color: var(--ok); }
 .outcome-not-needed { color: var(--muted); }
 .outcome-unverified { color: var(--warn); }
+.outcome-banner-visible { color: var(--warn); }
+.outcome-necessary-only { color: var(--ok-partial); }
 .outcome-failed { color: var(--bad); }
 
 .party-first { color: var(--muted); }
@@ -354,6 +488,22 @@ button:hover { border-color: var(--accent); }
   max-width: 22rem;
 }
 
+/* The typed-URL form. Wider than the login form because an address is long,
+   and laid out in one column so the field, the mode and the button read in
+   the order they are used. */
+.scan-url {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 34rem;
+}
+
+.scan-url label { color: var(--muted); }
+.scan-url button { align-self: flex-start; }
+
+.scan-url-limits { margin-top: 1rem; padding-left: 1.1rem; }
+.scan-url-limits li { margin: 0.2rem 0; }
+
 /* Comparison table */
 
 .compare td { text-align: center; }
@@ -367,4 +517,408 @@ button:hover { border-color: var(--accent); }
 .downloads { color: var(--muted); }
 .downloads a { margin-right: 0.6rem; }
 
-.target { margin-bottom: 2rem; }
+.target { margin-bottom: 1.2rem; }
+.target h2 .sev { margin: 0 0.5rem; vertical-align: middle; }
+
+/* The target list as a watchboard. Appended to internal/httpapi/static/wsaw.css.
+ *
+ * Every colour here is an existing token, so the board inherits the dark
+ * palette under prefers-color-scheme with nothing further to maintain.
+ */
+
+/* One row: title, counts, freshness, filter, shown-count. Wraps under a
+   narrow viewport rather than truncating anything in it. */
+.watch-head {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 1.2rem;
+}
+
+.watch-head h1 { margin: 0; white-space: nowrap; }
+
+.watch-counts {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A count is muted until it is non-zero: a board that shouts "0 stale" in
+   red every day teaches the reader to stop looking at it. */
+.watch-count { color: var(--muted); }
+.watch-stale.is-set, .watch-notready.is-set { color: var(--bad); font-weight: 600; }
+.watch-running.is-set { color: var(--accent); font-weight: 600; }
+
+.watch-asof {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filter and shown-count sit at the row's far edge, separated from the
+   header's status cluster. */
+.watch-filter { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-left: auto; }
+.watch-filter input[type="text"] { min-width: 16rem; }
+.watch-hostsonly {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.watch-shown { color: var(--muted); font-size: 0.85em; margin: 0; white-space: nowrap; }
+
+/* Visually hidden but still reachable by assistive tech — the placeholder
+   carries the same information on screen, so the label would be redundant
+   clutter for a sighted reader. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* A group of targets. <summary> is the collapse control, so it works with
+   JavaScript off; watch.js only remembers the state. */
+.watch-env { margin: 0 0 1.2rem; }
+
+.watch-env > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.watch-env-label {
+  font-weight: 600;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.watch-env-n { color: var(--muted); font-size: 0.8em; font-variant-numeric: tabular-nums; margin-left: auto; }
+
+.watch-row {
+  display: grid;
+  grid-template-columns: 15rem repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  align-items: stretch;
+}
+
+/* Narrow viewports: the rail sits above its tiles rather than squeezing four
+   columns into a phone. */
+@media (max-width: 60rem) {
+  .watch-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+.watch-rail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 0;
+  transition: border-left-width 0.12s ease;
+}
+
+/* The rail's only interactive cue: the left border widens on hover. Nothing
+   else moves — the extra 8px comes out of the padding box, not the grid
+   track, so the tile's outer width stays fixed (design_handoff_target_tile). */
+.watch-rail:hover { border-left-width: 12px; }
+
+/* The rail's left edge is the target's worst finding. The badge next to the
+   name says it in words too — the colour must never be the only carrier. */
+.watch-rail.sev-info, .watch-rail.sev-low { border-left-color: var(--muted); }
+.watch-rail.sev-medium { border-left-color: var(--warn); }
+.watch-rail.sev-high { border-left-color: var(--bad); }
+.watch-rail.sev-critical { border-left-color: var(--crit); }
+
+.watch-name-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+.watch-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Always shown, unlike the old notable-only badge: text carries the exact
+   severity at every level, colour intensity carries how much it matters —
+   info/low stay a quiet grey rather than disappearing outright. Its own
+   class rather than the shared .sev used elsewhere (result.html's plain
+   coloured-text badge is untouched; this is a solid pill, scoped to the
+   target tile only). */
+.watch-sev {
+  flex: none;
+  margin-left: auto;
+  font: 700 0.62rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 0.34rem;
+  border-radius: 3px;
+  color: #fff;
+}
+
+.watch-sev.sev-info, .watch-sev.sev-low { background: var(--muted); }
+.watch-sev.sev-medium { background: var(--warn); }
+.watch-sev.sev-high { background: var(--bad); }
+.watch-sev.sev-critical { background: var(--crit); }
+
+.watch-host {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.watch-tile {
+  /* Named so .watch-tile-actions's rectangle (below) can match whichever of
+     these a tile is actually showing, rather than assuming the plain one. */
+  --tile-bg: var(--bg);
+
+  background: var(--tile-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  position: relative;
+}
+
+/* The whole tile opens the scan it describes, not just the age. A tile also
+   holds its own "history" link and a "Scan now" button, and an <a> cannot
+   contain other interactive content — so instead of one wrapping link, the
+   existing age link's hit area is stretched over the tile (a positioned
+   ::after covering it via inset:0), and the other controls are raised above
+   it with z-index so they stay independently clickable. */
+
+/* The one state on the board allowed to draw the eye by itself: at least one
+   critical-severity change against the series' baseline. */
+.watch-tile.has-critical {
+  border-color: var(--crit);
+  --tile-bg: color-mix(in srgb, var(--crit) 6%, var(--bg));
+}
+
+.watch-tile.is-running {
+  border-color: var(--accent);
+  --tile-bg: color-mix(in srgb, var(--accent) 6%, var(--bg));
+}
+
+.watch-tile.is-stale { border-color: var(--warn); }
+
+
+
+
+
+
+
+
+.watch-tile-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  margin-top: auto;
+}
+
+/* Above the stretched age link (.watch-age::after), so the foot's own
+   controls stay independently clickable instead of being swallowed by it. */
+.watch-tile-foot a, .watch-tile-foot button { position: relative; z-index: 1; }
+
+/* history and Scan now: secondary actions, so they stay out of the way
+   until the tile is hovered — or, for a keyboard reader who cannot hover,
+   until one of them has focus. Opacity rather than display/visibility, so
+   both stay reachable by Tab and by assistive tech the whole time.
+   Positioned out of flow so a tile with no badges reserves no space for
+   them — hidden or not, .watch-tile-foot would otherwise still be as tall
+   as this row, leaving a gap under the metrics line. Anchored to the
+   tile's own bottom-right corner, it overlays the metrics line when shown —
+   a small opaque rectangle in the tile's own --tile-bg (so it matches a
+   plain, critical, or running tile alike) rather than letting the metrics
+   text underneath show through it. */
+.watch-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: absolute;
+  right: 0.7rem;
+  bottom: 0.55rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--tile-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.watch-tile:hover .watch-tile-actions,
+.watch-tile:focus-within .watch-tile-actions {
+  opacity: 1;
+}
+
+/* A row the script filtered out. Hidden rather than removed, so clearing the
+   filter costs no request (Story 5.22, AC2). */
+.watch-row[hidden], .watch-env[hidden] { display: none; }
+
+/* The consent mode, once per column instead of once per tile. Eight targets
+   and three modes wrote the same three words twenty-four times; the column
+   header says each one once, and the tile spends that line on the figures
+   that differ. */
+.watch-modes {
+  display: grid;
+  grid-template-columns: 15rem repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.1rem;
+}
+
+.watch-modes .watch-mode-col {
+  font: 600 0.72rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0 0.2rem;
+}
+
+@media (max-width: 60rem) {
+  .watch-modes { display: none; }
+}
+
+/* A folded "none / reject" tile covers two of those columns, so it spans
+   them and keeps its own inline label — the column header above it no longer
+   describes it on its own. */
+.watch-tile.is-folded { grid-column: span 2; }
+
+.watch-tile-mode {
+  font: 600 0.68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* The tile's title line: how the last scan deviates from what it is compared
+   against. The deviation is what differs between renders — three absolute
+   counts are the same three numbers every render of a site that has not
+   moved — so it gets the tile's largest type, and the whole tile opens the
+   scan it came from (Story 5.28). */
+.watch-scan {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.watch-scan::after { content: ""; position: absolute; inset: 0; }
+
+/* The headline is coloured by the severity of what changed, and by nothing
+   else — the same palette the rail, the badge and every severity elsewhere
+   use, so one colour means one thing across the page. A deviation that ranks
+   info ("+3 req", an asset re-deployed under a new hash) is as quiet as "no
+   change": it is a number the reader has already read on the line, not a
+   finding. These override .watch-scan's own colour by sharing its specificity
+   and coming later in the file.
+
+   Colour is never the only carrier: the figures say what moved, the severity
+   badge on the rail names the rank, and .is-pre still marks a pre-consent
+   tile for the cues that are not this line (Story 5.11, AC5). */
+.watch-scan.sev-info, .watch-scan.sev-low { color: var(--muted); }
+.watch-scan.sev-medium { color: var(--warn); }
+.watch-scan.sev-high { color: var(--bad); }
+.watch-scan.sev-critical { color: var(--crit); }
+
+/* A scan that moved nothing and found nothing recedes further still: the
+   board's job is to be quiet until something needs a reader. */
+.watch-scan.is-quiet { color: var(--muted); font-weight: 500; }
+
+/* What the deviation is measured against — smaller and quieter than the
+   figures, but never absent: a deviation without its base is not actionable. */
+.watch-scan-base {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Outcome on the left, termination on the right, one line. */
+.watch-tile-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.watch-tile-status .term { border: none; padding: 0; margin-left: auto; }
+
+/* The time line, directly above the bar it describes: age left, next scan
+   right, so the two ends of the interval sit at the two ends of the track. */
+.watch-tile-time {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.watch-tile-time .watch-next { margin-left: auto; }
+.watch-tile-time .watch-next.is-overdue { color: var(--bad); font-weight: 600; }
+
+/* How far through the current interval the board is. A second reading of the
+   two words above it, never the only carrier (Story 5.11). */
+.watch-cycle {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: auto;
+}
+
+/* width:0 until cycle.js sets it from data-percent — an inline "width: N%"
+   style attribute would be silently dropped by the page's CSP (style-src, no
+   unsafe-inline; server.go), so this is also the correct no-JS state: an
+   empty bar rather than one that always reads full. */
+.watch-cycle-fill { height: 100%; width: 0; background: var(--muted); }
+.watch-cycle-fill.is-running { background: var(--accent); }
+.watch-cycle-fill.is-overdue { background: var(--bad); }
+
+/* REPLACE — the age is no longer the tile's headline, so it stops being
+   1.35rem and stops carrying the tile's hit area (.watch-scan does now).
+   Delete the old .watch-age, .watch-age::after, .watch-tile-top, .watch-mode
+   and .watch-outcome rules and the `:has(a.watch-age)` selector; these are
+   their replacements. */
+.watch-tile:has(a.watch-scan) { cursor: pointer; }

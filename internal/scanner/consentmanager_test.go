@@ -597,3 +597,142 @@ func TestPreExistingConsentIsNotTakenAsVerification(t *testing.T) {
 			out.Result.Consent.Outcome, out.Result.Consent.Reason)
 	}
 }
+
+// TestConsentmanagerReportsAppliedWhenBannerIsHiddenNotRemoved is the
+// regression test for a bug found in real scan data (scan
+// scan-16383a3cf7053ecfa26bafba against pflege.de): the outcome read
+// "banner-visible" while the after-consent screenshot showed an ordinary
+// page.
+//
+// consentmanager's own close() call sets #cmpbox to display:none rather than
+// removing it from the DOM, and the shipped rule had no dismissed override of
+// its own — so bannerGone fell back to the generic __wsawConsentContainer
+// heuristic, which scans the whole page for anything cookie-shaped with a
+// button. The fixture reproduces both halves of the real page: a banner that
+// hides rather than vanishing, and a permanent, unrelated "manage consent"
+// widget that the heuristic could lock onto and never clear.
+func TestConsentmanagerReportsAppliedWhenBannerIsHiddenNotRemoved(t *testing.T) {
+	info := requireChrome(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/favicon.ico" {
+			w.Header().Set("Content-Type", "image/x-icon")
+			_, _ = w.Write([]byte{0, 0, 1, 0})
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html>
+<html><head><title>hide-not-remove fixture</title></head>
+<body>
+<div id="cmpbox" style="position:fixed;bottom:0;left:0;width:600px;height:140px;background:#eee">
+  <p>We use cookies. Please choose whether to allow tracking.</p>
+  <button id="cmpwelcomebtnyes" class="cmpboxbtn cmpboxbtnyes">Accept all</button>
+  <button id="cmpwelcomebtnno" class="cmpboxbtn cmpboxbtnno">Reject all</button>
+</div>
+
+<div style="position:fixed;top:0;left:0;width:300px;height:60px;background:#fff">
+  <p>Manage your cookie consent anytime here.</p>
+  <button>Cookie settings</button>
+</div>
+
+<script>
+(function () {
+  var ready = false;
+  var queue = [];
+  var listeners = {};
+  var consentExists = false;
+  var consentData = '';
+
+  function fire(name) {
+    (listeners[name] || []).forEach(function (fn) {
+      try { fn(name, null, null); } catch (e) {}
+    });
+  }
+
+  function handle(command, parameter) {
+    switch (command) {
+      case 'consentStatus':
+        return {consentExists: consentExists, consentData: consentData};
+      case 'setConsent':
+        consentExists = true;
+        consentData = 'CM-' + (parameter === 1 ? 'accept' : 'reject') + '-' + Date.now();
+        fire('consent');
+        return true;
+      case 'close':
+        // Real consentmanager deployments hide the box rather than removing
+        // it — this is the exact behaviour the regression guards against.
+        var box = document.getElementById('cmpbox');
+        if (box) box.style.display = 'none';
+        fire('consentscreenoff');
+        return true;
+      case 'addEventListener':
+        var name = parameter[0], fn = parameter[1];
+        listeners[name] = listeners[name] || [];
+        listeners[name].push(fn);
+        return true;
+      default:
+        return null;
+    }
+  }
+
+  window.__cmp = function (command, parameter, callback) {
+    if (!ready) {
+      queue.push([command, parameter, callback]);
+      return undefined;
+    }
+    var result = handle(command, parameter);
+    if (typeof callback === 'function') callback(result, true);
+    return result;
+  };
+
+  window.setTimeout(function () {
+    ready = true;
+    fire('init');
+    fire('settings');
+    queue.forEach(function (item) {
+      var result = handle(item[0], item[1]);
+      if (typeof item[2] === 'function') item[2](result, true);
+    });
+    queue = [];
+  }, 100);
+})();
+</script>
+</body></html>`)
+	}))
+	defer srv.Close()
+
+	s, closePool := newScannerFor(t, info, "")
+	defer closePool()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	target := config.Resolved{
+		Name:         "hide-not-remove",
+		URL:          srv.URL + "/",
+		ConsentModes: []model.ConsentMode{model.ConsentReject},
+		IdleQuiet:    time.Second,
+		HardTimeout:  40 * time.Second,
+		NavTimeout:   20 * time.Second,
+		MaxRequests:  100,
+		Robots:       config.RobotsIgnore,
+	}
+
+	out, err := s.Scan(ctx, target, model.ConsentReject)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	c := out.Result.Consent
+
+	if c.Outcome != model.OutcomeApplied {
+		t.Fatalf("outcome = %q (%s), want applied — the banner is hidden, not removed, and the page carries a permanent unrelated cookie-shaped widget the generic heuristic could lock onto",
+			c.Outcome, c.Reason)
+	}
+
+	if c.Detection != "rule:consentmanager" {
+		t.Errorf("detection = %q, want the consentmanager rule", c.Detection)
+	}
+}

@@ -3,6 +3,7 @@ package capture
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -58,10 +59,24 @@ type recorder struct {
 	// counting towards network idle.
 	stallAfter time.Duration
 
+	// beacons matches requests that never count towards network idle,
+	// because their stream has no end to wait for (Story 1.10).
+	beacons Beacons
+
 	totalBytes  int64
 	maxRequests int
 	maxBytes    int64
 	exceeded    capReason
+
+	// maxBodyBytes caps a data: URI payload considered for hashing/storage,
+	// exactly like a fetched body (Story 1.6).
+	maxBodyBytes int64
+	// storeBodies and bodySink mirror Options.StoreBodies/BodySink, needed
+	// here because a data: URI's payload is already fully in hand at
+	// requestWillBeSent — unlike a fetched body, there is nothing to wait for
+	// (Story 1.9).
+	storeBodies bool
+	bodySink    BodySink
 
 	// phase is flipped to post-interaction once the consent hook returns.
 	phase model.ConsentPhase
@@ -90,24 +105,28 @@ type record struct {
 	observedAt time.Time
 }
 
-func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64, stallAfter time.Duration) *recorder {
+func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalizer, hashTypes []string, maxRequests int, maxBytes int64, stallAfter time.Duration, maxBodyBytes int64, storeBodies bool, bodySink BodySink, beacons Beacons) *recorder {
 	types := make(map[string]struct{}, len(hashTypes))
 	for _, t := range hashTypes {
 		types[t] = struct{}{}
 	}
 
 	return &recorder{
-		start:       start,
-		classifier:  c,
-		normalizer:  n,
-		hashTypes:   types,
-		current:     make(map[network.RequestID]*record),
-		maxRequests: maxRequests,
-		maxBytes:    maxBytes,
-		stallAfter:  stallAfter,
-		phase:       model.PhasePre,
-		idleSignal:  make(chan struct{}, 1),
-		bodyWanted:  make(chan network.RequestID, 256),
+		start:        start,
+		classifier:   c,
+		normalizer:   n,
+		hashTypes:    types,
+		current:      make(map[network.RequestID]*record),
+		maxRequests:  maxRequests,
+		maxBytes:     maxBytes,
+		stallAfter:   stallAfter,
+		beacons:      beacons,
+		maxBodyBytes: maxBodyBytes,
+		storeBodies:  storeBodies,
+		bodySink:     bodySink,
+		phase:        model.PhasePre,
+		idleSignal:   make(chan struct{}, 1),
+		bodyWanted:   make(chan network.RequestID, 256),
 	}
 }
 
@@ -156,9 +175,73 @@ func (r *recorder) offset(t *time.Time) time.Duration {
 	return d
 }
 
+// dataURIBody is what Story 1.9 extracts from a data: URI's payload before
+// the request is recorded: a bounded stand-in for the URL, plus the digest
+// and (optionally) stored-body reference that make the payload a body like
+// any other, rather than a URL nothing can safely render.
+type dataURIBody struct {
+	applicable  bool
+	url         string
+	sha256      string
+	ref         string
+	unavailable string
+	decodedSize int64
+}
+
+// extractDataURI decodes a data: URI's payload and, where body storage is
+// enabled, stores it. It is computed before the recorder's lock is taken:
+// decoding and storing can take real time, and nothing here touches recorder
+// state that the lock protects except through the read-only fields it closes
+// over (Tenet 3: capture records, it does not need serialized access to do
+// so).
+func (r *recorder) extractDataURI(rawURL string) dataURIBody {
+	mime, payload, isBase64, ok := parseDataURIHeader(rawURL)
+	if !ok {
+		return dataURIBody{}
+	}
+
+	upper := dataURIUpperBound(payload, isBase64)
+
+	if int64(upper) > r.maxBodyBytes {
+		return dataURIBody{
+			applicable:  true,
+			url:         truncatedDataURI(mime, isBase64, upper, false),
+			unavailable: fmt.Sprintf("body larger than the %d byte cap", r.maxBodyBytes),
+		}
+	}
+
+	data, err := decodeDataURIPayload(payload, isBase64)
+	if err != nil {
+		// An unparseable payload is not a body wsaw can extract; leave the
+		// request recorded exactly as captured rather than guess at it
+		// (Tenet 5).
+		return dataURIBody{}
+	}
+
+	body := dataURIBody{
+		applicable:  true,
+		url:         truncatedDataURI(mime, isBase64, len(data), true),
+		sha256:      sha256Hex(data),
+		decodedSize: int64(len(data)),
+	}
+
+	if r.storeBodies && r.bodySink != nil {
+		ref, err := r.bodySink("body", data)
+		if err != nil {
+			r.addWarning("storing a data: URI body failed: " + err.Error())
+		} else {
+			body.ref = ref
+		}
+	}
+
+	return body
+}
+
 // requestWillBeSent records a new hop. When the event carries a redirect
 // response it first finalizes the previous hop for that ID.
 func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
+	dataBody := r.extractDataURI(ev.Request.URL)
+
 	r.mu.Lock()
 
 	if ev.RedirectResponse != nil {
@@ -166,7 +249,10 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 			r.applyResponseLocked(prev, ev.RedirectResponse)
 			prev.req.RedirectTo = ev.Request.URL
 			prev.finished = true
-			r.inflightDoneLocked()
+
+			if !prev.req.Beacon {
+				r.inflightDoneLocked()
+			}
 		}
 	}
 
@@ -185,10 +271,15 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 
 	host := r.classifier.Classify(ev.Request.URL)
 
+	requestURL := ev.Request.URL
+	if dataBody.applicable {
+		requestURL = dataBody.url
+	}
+
 	rec := &record{
 		req: model.Request{
 			RequestID:     string(ev.RequestID),
-			URL:           ev.Request.URL,
+			URL:           requestURL,
 			NormalizedURL: r.normalizer.Key(ev.Request.URL),
 			Method:        ev.Request.Method,
 			ResourceType:  resourceType(ev.Type),
@@ -198,12 +289,23 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 			Phase:         r.phase,
 			NonNetwork:    isNonNetwork(ev.Request.URL),
 			Initiator:     convertInitiator(ev.Initiator),
+			Beacon:        r.beacons.Matches(ev.Request.URL, host.Host),
 			Timing:        model.Timing{StartOffset: r.offset(monotonic(ev.Timestamp))},
 		},
 	}
 
 	if ev.RedirectResponse != nil {
 		rec.req.RedirectFrom = ev.RedirectResponse.URL
+	}
+
+	if dataBody.applicable {
+		rec.req.BodySHA256 = dataBody.sha256
+		rec.req.BodyRef = dataBody.ref
+		rec.req.BodyUnavailable = dataBody.unavailable
+
+		if dataBody.decodedSize > 0 {
+			rec.req.DecodedSize = dataBody.decodedSize
+		}
 	}
 
 	if _, ok := r.hashTypes[rec.req.ResourceType]; ok && !rec.req.NonNetwork {
@@ -214,7 +316,12 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 
 	r.records = append(r.records, rec)
 	r.current[ev.RequestID] = rec
-	r.inflight++
+
+	// A beacon is recorded like any other request but never counted towards
+	// idle: waiting for a heartbeat means waiting until the budget runs out.
+	if !rec.req.Beacon {
+		r.inflight++
+	}
 
 	r.mu.Unlock()
 }
@@ -281,7 +388,11 @@ func (r *recorder) loadingFinished(ev *network.EventLoadingFinished) {
 	}
 
 	wantBody := rec.wantBody
-	r.inflightDoneLocked()
+
+	if !rec.req.Beacon {
+		r.inflightDoneLocked()
+	}
+
 	r.mu.Unlock()
 
 	if wantBody {
@@ -326,7 +437,10 @@ func (r *recorder) loadingFailed(ev *network.EventLoadingFailed) {
 	}
 
 	rec.finished = true
-	r.inflightDoneLocked()
+
+	if !rec.req.Beacon {
+		r.inflightDoneLocked()
+	}
 }
 
 func (r *recorder) servedFromCache(ev *network.EventRequestServedFromCache) {
@@ -400,6 +514,42 @@ func (r *recorder) setBodyDigest(id network.RequestID, digest string, size int, 
 	}
 }
 
+// requestURL returns the raw URL of an in-flight request, so a body can be
+// matched against identity rules without holding the recorder lock across the
+// regular-expression work.
+func (r *recorder) requestURL(id network.RequestID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.current[id]
+	if !ok {
+		return ""
+	}
+
+	return rec.req.URL
+}
+
+// setBodyIdentity attaches an identifier lifted out of the response body. It
+// is kept separate from the digest: the digest records what was fetched, the
+// identity records what the script says it is, and a comparison may prefer
+// the latter without losing the former.
+func (r *recorder) setBodyIdentity(id network.RequestID, label, value string) {
+	if label == "" || value == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.current[id]
+	if !ok {
+		return
+	}
+
+	rec.req.BodyIdentityLabel = label
+	rec.req.BodyIdentity = value
+}
+
 func (r *recorder) inflightDoneLocked() {
 	r.inflight--
 
@@ -452,7 +602,7 @@ func (r *recorder) activeInflightLocked(now time.Time) int {
 	active := 0
 
 	for _, rec := range r.records {
-		if rec.finished {
+		if rec.finished || rec.req.Beacon {
 			continue
 		}
 

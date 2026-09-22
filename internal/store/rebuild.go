@@ -875,7 +875,17 @@ func (r *rebuildRun) readDocument(ctx context.Context, obj artifactObject) readO
 
 	// The size comes from the listing rather than from the read, so that a
 	// truncated read is caught rather than described.
-	res, err := decodeDocument(resultRef{ref: obj.ref, size: obj.size, digest: digest}, body)
+	//
+	// Except for a packed object, where the listing reports the packed length
+	// and the bytes in hand are the inflated ones. Truncation is still caught
+	// there, and twice over: a short gzip member fails to inflate at all, and
+	// the digest below is computed over what came out (Story 4.8, AC6).
+	size := obj.size
+	if isCompressedKey(obj.key) {
+		size = int64(len(body))
+	}
+
+	res, err := decodeDocument(resultRef{ref: obj.ref, size: size, digest: digest}, body)
 	if err != nil {
 		out.damaged = err.Error()
 
@@ -1028,7 +1038,7 @@ func (r *rebuildRun) checkEvidence(ctx context.Context, doc rebuiltDocument) err
 	present := make([]bool, len(refs))
 
 	err := eachBounded(ctx, len(refs), r.opts.workers(), func(ctx context.Context, i int) error {
-		found, err := r.bucket.exists(ctx, refs[i])
+		found, err := r.bucket.hasArtifact(ctx, refs[i])
 		if err != nil {
 			return err
 		}
@@ -1090,7 +1100,7 @@ func (r *rebuildRun) checkIndexed(ctx context.Context, page []indexedScan) error
 			return nil
 		}
 
-		found, err := r.bucket.exists(ctx, page[i].document)
+		found, err := r.bucket.hasArtifact(ctx, page[i].document)
 		if err != nil {
 			if errors.Is(err, errInvalidRef) {
 				// A reference the index holds that this store could never have

@@ -118,7 +118,8 @@ func TestAScanThatNeverInteractsStoresOneScreenshot(t *testing.T) {
 
 	if len(kinds) != 1 || kinds[0] != "screenshot-before-consent" {
 		t.Fatalf("screenshots = %v, want just screenshot-before-consent: nothing "+
-			"interacted with the page, so a second frame would be the first one again", kinds)
+			"interacted with the page, so a second frame would be the first one "+
+			"again (warnings=%v)", kinds, res.Warnings)
 	}
 }
 
@@ -152,7 +153,8 @@ func TestAScanThatInteractsStoresBothScreenshots(t *testing.T) {
 	kinds := screenshotKinds(res)
 
 	if len(kinds) != 2 {
-		t.Fatalf("screenshots = %v, want a before and an after frame", kinds)
+		t.Fatalf("screenshots = %v, want a before and an after frame (warnings=%v)",
+			kinds, res.Warnings)
 	}
 
 	var before, after model.Artifact

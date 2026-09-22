@@ -59,6 +59,14 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 		return nil, fmt.Errorf("capture: %w", err)
 	}
 
+	// Configuration validation rejects a malformed rule at load, with its
+	// line; compiling here keeps the rules data all the way down and means a
+	// rule built any other way is still refused rather than ignored.
+	beacons, err := CompileBeacons(opts.Beacons)
+	if err != nil {
+		return nil, fmt.Errorf("capture: %w", err)
+	}
+
 	start := time.Now()
 
 	res := &model.Result{
@@ -83,7 +91,8 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 	defer stopParent()
 
 	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes,
-		opts.MaxRequests, opts.MaxBytes, opts.StallAfter)
+		opts.MaxRequests, opts.MaxBytes, opts.StallAfter,
+		opts.MaxBodyBytes, opts.StoreBodies, opts.BodySink, beacons)
 
 	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
 
@@ -134,6 +143,12 @@ type session struct {
 
 	mu          sync.Mutex
 	screenshots []model.Artifact
+
+	// surfaceGone records that a capture from the compositor surface already
+	// timed out once. Screenshots are taken repeatedly in one scan, and a
+	// browser that produced no frame for the first request will not produce
+	// one for the next: retrying would spend the reservation again per frame.
+	surfaceGone bool
 
 	interactedMu   sync.Mutex
 	interactedOnce bool
@@ -251,6 +266,15 @@ func (s *session) execute(hooks Hooks) error {
 		// interaction is a finding, not a lost scan.
 		s.res.Consent = consent
 
+		// A rule written for this host that no longer matches it is how a
+		// rule stops working unnoticed, so it is surfaced as a warning a
+		// reader sees rather than a field they have to go looking for
+		// (Story 2.9, AC6).
+		for _, name := range consent.StaleHostRules {
+			s.rec.addWarning(fmt.Sprintf(
+				"consent rule %q is scoped to this host but did not match it; the site may have changed", name))
+		}
+
 		// Whether the hook itself acted, read before the backstop below makes
 		// the answer yes for every scan. Only the hook's own call means the
 		// page was touched.
@@ -285,6 +309,8 @@ func (s *session) execute(hooks Hooks) error {
 		if acted {
 			if err := s.screenshot("after-consent"); err != nil {
 				s.rec.addWarning("screenshot after consent failed: " + s.scrub(err.Error()))
+			} else {
+				s.recordScreenshotIdentity()
 			}
 		}
 
@@ -361,6 +387,21 @@ func (s *session) prepare() error {
 	// (one scan per browser by default); this is the belt to that braces, and
 	// it is what keeps a deliberately reused browser honest.
 	actions = append(actions, network.ClearBrowserCookies())
+
+	// The cookie jar is only half of where a decision is kept. CCM19 records
+	// its answer in localStorage and leaves no cookie at all, so a reused
+	// browser that had already answered once rendered no banner on the next
+	// scan and the site's entire tracking stack was recorded as pre-consent
+	// traffic — the finding this product exists to make, manufactured by wsaw
+	// itself (Story 1.5, AC1).
+	//
+	// Quota storage is named one origin at a time; Chrome has no call that
+	// wipes it wholesale. The origin about to be scanned is the one that can
+	// be named up front, and clearStorage wipes every origin the scan actually
+	// reached once it ends.
+	if origin := originOf(s.opts.URL); origin != "" {
+		actions = append(actions, storage.ClearDataForOrigin(origin, string(storage.TypeAll)))
+	}
 
 	if !s.opts.WarmCache {
 		// Cold cache is the default: it is what makes two scans comparable
@@ -631,6 +672,43 @@ func (s *session) fingerprintBody(id network.RequestID) {
 	}
 
 	s.rec.setBodyDigest(id, digest, len(body), ref, "")
+
+	// The identity is extracted here, where the body is still in hand: the
+	// diff is pure and never reads a stored artifact (Tenet 3), so anything
+	// it needs to compare has to be recorded as an observation.
+	if s.opts.Normalizer != nil && s.opts.Normalizer.HasBodyIdentities() {
+		if u := s.rec.requestURL(id); u != "" {
+			label, value := s.opts.Normalizer.BodyIdentity(u, string(body))
+			s.rec.setBodyIdentity(id, label, value)
+		}
+	}
+}
+
+// recordScreenshotIdentity notes when the before- and after-interaction
+// screenshots are byte-for-byte identical, directly on the consent result.
+//
+// The HTTP UI already computes this to caption the screenshot pair, but a
+// caption is not evidence a JSON consumer can see (Tenet 16): a claimed
+// interaction that left the page looking unchanged belongs in the document
+// wsaw hands over, not only in a page rendered from it (Story 2.7, AC7).
+func (s *session) recordScreenshotIdentity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var before, after string
+
+	for _, shot := range s.screenshots {
+		switch shot.Kind {
+		case "screenshot-before-consent":
+			before = shot.SHA256
+		case "screenshot-after-consent":
+			after = shot.SHA256
+		}
+	}
+
+	if before != "" && before == after {
+		s.res.Consent.ScreenshotsIdentical = true
+	}
 }
 
 func (s *session) screenshot(kind string) error {
@@ -638,14 +716,8 @@ func (s *session) screenshot(kind string) error {
 		return nil
 	}
 
-	const screenshotTimeout = 15 * time.Second
-
-	ctx, cancel := context.WithTimeout(s.runCtx, screenshotTimeout)
-	defer cancel()
-
-	var buf []byte
-
-	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
+	buf, err := s.captureFrame()
+	if err != nil {
 		return fmt.Errorf("capturing screenshot: %w", err)
 	}
 
@@ -664,6 +736,114 @@ func (s *session) screenshot(kind string) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// captureFrame photographs the page.
+//
+// Two capture paths exist and both are needed. Capturing from the surface is
+// what the compositor actually put on screen, so it is tried first — but
+// Chrome answers it only once the compositor produces a frame, and a headless
+// browser with nothing left to draw produces none. On a Linux CI runner that
+// is the ordinary case after the page has settled: the request never returns
+// and the whole screenshot budget is spent waiting for a frame that has no
+// reason to exist. That cost the after-consent frame on every Linux scan, and
+// a missing frame is exactly the evidence this product is for.
+//
+// So the surface path gets a reservation rather than the whole budget, and
+// what remains pays for a capture from the renderer view, which composes the
+// page on demand and needs no frame. The fallback is second, not first,
+// because it omits anything the browser draws over the page.
+func (s *session) captureFrame() ([]byte, error) {
+	const (
+		surfaceBudget = 5 * time.Second
+		viewBudget    = 10 * time.Second
+	)
+
+	var surfaceErr error
+
+	if !s.surfaceUnavailable() {
+		surfaceCtx, cancelSurface := context.WithTimeout(s.runCtx, surfaceBudget)
+		defer cancelSurface()
+
+		var buf []byte
+
+		// Brought to front first: Chrome composites the visible tab, and a
+		// scan tab that is not the frontmost one has no frame to hand over at
+		// all.
+		buf, surfaceErr = s.captureFromSurface(surfaceCtx)
+		if surfaceErr == nil {
+			return buf, nil
+		}
+
+		s.markSurfaceUnavailable()
+
+		// Recorded once, because the two paths can differ and a reader
+		// comparing frames is entitled to know they were taken differently.
+		s.rec.addWarning("screenshots taken from the renderer view: the " +
+			"compositor produced no frame (" + s.scrub(surfaceErr.Error()) + ")")
+	}
+
+	viewCtx, cancelView := context.WithTimeout(s.runCtx, viewBudget)
+	defer cancelView()
+
+	buf, viewErr := s.captureFromView(viewCtx)
+	if viewErr != nil {
+		if surfaceErr != nil {
+			return nil, fmt.Errorf("from the surface: %w; from the renderer view: %w",
+				surfaceErr, viewErr)
+		}
+
+		return nil, viewErr
+	}
+
+	return buf, nil
+}
+
+func (s *session) surfaceUnavailable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.surfaceGone
+}
+
+func (s *session) markSurfaceUnavailable() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.surfaceGone = true
+}
+
+func (s *session) captureFromSurface(ctx context.Context) ([]byte, error) {
+	var buf []byte
+
+	if err := chromedp.Run(ctx, page.BringToFront(), captureAction(&buf, true)); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
+}
+
+func (s *session) captureFromView(ctx context.Context) ([]byte, error) {
+	var buf []byte
+
+	if err := chromedp.Run(ctx, captureAction(&buf, false)); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
+}
+
+func captureAction(buf *[]byte, fromSurface bool) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		out, err := page.CaptureScreenshot().WithFromSurface(fromSurface).Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		*buf = out
+
+		return nil
+	})
 }
 
 // finish assembles the result, including the termination reason, which must
@@ -687,7 +867,13 @@ func (s *session) finish(runErr error) {
 	s.mu.Unlock()
 
 	s.collectCookies()
+	origins := s.collectStorage()
 	s.collectFinalURL()
+
+	// Only once every collector has read what the page left behind: the wipe
+	// is for the next scan on this browser, never at the expense of this
+	// scan's evidence.
+	s.clearStorage(origins)
 
 	s.res.FinishedAt = time.Now()
 	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)

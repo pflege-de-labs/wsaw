@@ -20,6 +20,10 @@ const (
 	SourceAPI = "api"
 	// SourceCLI is a one-shot or debug run from the command line.
 	SourceCLI = "cli"
+	// SourceURL is a scan of an address somebody typed into the web
+	// interface, which is not the same event as a scan of a target an
+	// operator configured (Story 5.27).
+	SourceURL = "typed-url"
 )
 
 type sourceKey struct{}

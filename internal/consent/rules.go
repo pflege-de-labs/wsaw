@@ -24,8 +24,15 @@ var builtinRules embed.FS
 
 // Action is one step in a rule.
 type Action struct {
-	// Click clicks the first element matching this selector.
+	// Click clicks the first element matching this selector via a synthetic
+	// el.click(): fast, and indistinguishable from a real click to most CMPs.
 	Click string `yaml:"click,omitempty"`
+	// TrustedClick clicks the first element matching this selector through a
+	// genuine, CDP-dispatched pointer event rather than a synthetic one. Use
+	// it only where Click is known not to work: at least one CMP (CCM19)
+	// checks Event.isTrusted and silently ignores a synthetic click, so the
+	// interaction appears to succeed while the choice is never recorded.
+	TrustedClick string `yaml:"trustedClick,omitempty"`
 	// WaitFor waits for a selector to appear before continuing.
 	WaitFor string `yaml:"waitFor,omitempty"`
 	// WaitMillis pauses, for CMPs that animate their dialog.
@@ -39,6 +46,15 @@ type Action struct {
 }
 
 // Rule handles one CMP, or one site's bespoke banner.
+//
+// A rule written for a single site binds to what survives that site's next
+// deploy: visible text, role and aria attributes, an author-written id or
+// data- attribute, the shape of the element. It must not bind to class names
+// a build tool generated or to positional paths — on a bundled front end
+// those change with every release, and a rule that quietly stops matching is
+// worse than no rule at all, because nothing says so. Where a rule is
+// host-scoped and its host no longer matches, wsaw records it as stale
+// (Story 2.9, AC6).
 type Rule struct {
 	// Name identifies the rule in results and logs.
 	Name string `yaml:"name"`
@@ -58,9 +74,26 @@ type Rule struct {
 	Accept []Action `yaml:"accept,omitempty"`
 	Reject []Action `yaml:"reject,omitempty"`
 
+	// Necessary is the fallback step sequence tried in `reject` mode when this
+	// rule defines no Reject steps, or when every Reject step is optional and
+	// none of them matched anything — the shape of a banner that offers no
+	// reject/decline control at all (Story 2.8). It should reach the closest
+	// state such a banner allows: every optional category deselected, saved.
+	// It is never tried ahead of a working Reject sequence, and it is never
+	// used for any mode but `reject`.
+	Necessary []Action `yaml:"necessary,omitempty"`
+
 	// Verify is a JavaScript expression that must evaluate truthy after the
 	// steps ran. Without it, the interaction can only ever be "unverified".
 	Verify string `yaml:"verify,omitempty"`
+
+	// Dismissed is a JavaScript expression that must evaluate truthy once the
+	// banner itself is no longer displayed. It answers a different question
+	// than Verify: a vendor API can record a choice without the banner's own
+	// dismiss handler ever running, so "the CMP recorded my choice" and "the
+	// banner is gone" need separate evidence (Story 2.7, AC1). Empty means
+	// the shared heuristic container check decides.
+	Dismissed string `yaml:"dismissed,omitempty"`
 
 	// Priority orders rules; higher wins. Site-specific rules should
 	// outrank generic vendor rules.
@@ -157,8 +190,8 @@ func parseRules(source string, b []byte) ([]Rule, error) {
 			return nil, fmt.Errorf("rule file %s: rule %d has no name", source, i)
 		}
 
-		if len(file.Rules[i].Accept) == 0 && len(file.Rules[i].Reject) == 0 {
-			return nil, fmt.Errorf("rule file %s: rule %q defines neither accept nor reject steps",
+		if len(file.Rules[i].Accept) == 0 && len(file.Rules[i].Reject) == 0 && len(file.Rules[i].Necessary) == 0 {
+			return nil, fmt.Errorf("rule file %s: rule %q defines neither accept, reject, nor necessary steps",
 				source, file.Rules[i].Name)
 		}
 	}

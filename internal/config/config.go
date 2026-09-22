@@ -28,6 +28,7 @@ type Config struct {
 
 	Targets []Target `yaml:"targets"`
 
+	Capture   Capture    `yaml:"capture"`
 	Browser   Browser    `yaml:"browser"`
 	Store     Store      `yaml:"store"`
 	Scheduler Scheduler  `yaml:"scheduler"`
@@ -41,6 +42,12 @@ type Config struct {
 
 	// path records where the config came from, for reload and error messages.
 	path string
+
+	// legacyRetention names the superseded retention keys the file actually
+	// contained. It cannot be read off the struct: maxPerSeries carries a
+	// shipped default, so a zero value there means "not written down" and a
+	// non-zero one does not mean "written down" (Story 4.10, AC7).
+	legacyRetention []string
 }
 
 // Target is one URL to watch, or the set of defaults for all of them.
@@ -76,7 +83,16 @@ type Target struct {
 	MaxRequests    int      `yaml:"maxRequests,omitempty"`
 	MaxBytes       int64    `yaml:"maxBytes,omitempty"`
 	DwellAfterLoad Duration `yaml:"dwellAfterLoad,omitempty"`
-	ScrollToBottom *bool    `yaml:"scrollToBottom,omitempty"`
+	// ConsentBannerWait bounds how long wsaw waits for a consent banner to
+	// appear before concluding the page has none. Sites that render their
+	// banner from application code mount it after hydration, so a single
+	// check the instant the page goes idle misses it (Story 2.9).
+	ConsentBannerWait Duration `yaml:"consentBannerWait,omitempty"`
+	ScrollToBottom    *bool    `yaml:"scrollToBottom,omitempty"`
+	// Beacons are this target's own periodic requests, added to the global
+	// list. A site's own session ping belongs here rather than in the shared
+	// list (Story 1.10).
+	Beacons []Beacon `yaml:"beacons,omitempty"`
 
 	// Browser context.
 	ViewportWidth  int      `yaml:"viewportWidth,omitempty"`
@@ -169,10 +185,12 @@ type Browser struct {
 	// directory, so one scan per browser means one cookie jar per scan.
 	//
 	// Raising it trades that guarantee for fewer browser launches. wsaw still
-	// clears cookies and storage between scans and records that the browser
-	// was reused in every affected result, but a site can persist state in
-	// ways a clear does not reach. Raise it only where throughput matters
-	// more than the consent comparison.
+	// clears the cookie jar, the cache, and quota storage — localStorage,
+	// IndexedDB, service workers, cache storage — for every origin a scan
+	// touched, and records that the browser was reused in every affected
+	// result, but a site can persist state in ways a clear does not reach.
+	// Raise it only where throughput matters more than the consent
+	// comparison.
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`
 }
@@ -186,6 +204,15 @@ type ContainerBrowser struct {
 
 	Memory    string `yaml:"memory,omitempty"`
 	PidsLimit int    `yaml:"pidsLimit,omitempty"`
+
+	// SHMSize sizes /dev/shm inside the container, e.g. "1g". Empty selects
+	// container.DefaultSHMSize. The runtime default of 64 MB starves Chrome
+	// on image-heavy pages, and the requests it then drops look like assets
+	// the site stopped loading.
+	SHMSize string `yaml:"shmSize,omitempty"`
+	// FileDescriptors is the container's open-file limit. Zero selects
+	// container.DefaultFileDescriptors.
+	FileDescriptors int `yaml:"fileDescriptors,omitempty"`
 
 	StartupTimeout Duration `yaml:"startupTimeout,omitempty"`
 
@@ -263,9 +290,21 @@ type Store struct {
 	// the link that gave it to them.
 	ArtifactSignedURLTTL Duration `yaml:"artifactSignedURLTTL,omitempty"`
 
+	// CompressArtifacts stores evidence gzipped in the bucket where that makes
+	// it smaller. On unless set to false; reading is unaffected either way, so
+	// it can be turned off without stranding anything already written
+	// (Story 4.8).
+	CompressArtifacts *bool `yaml:"compressArtifacts,omitempty"`
+
 	OutputDir    string   `yaml:"outputDir,omitempty"`
 	MaxAge       Duration `yaml:"maxAge,omitempty"`
 	MaxPerSeries int      `yaml:"maxPerSeries,omitempty"`
+
+	// Keep replaces MaxAge and MaxPerSeries with a thinning policy: dense
+	// recent history, one scan per period further back (Story 4.10). The two
+	// forms are never combined, because a count limit left over from an
+	// older file would quietly defeat a policy asked to keep five years.
+	Keep *Keep `yaml:"keep,omitempty"`
 
 	// WriteJSONL mirrors results to newline-delimited JSON files.
 	WriteJSONL bool `yaml:"writeJsonl,omitempty"`
@@ -369,6 +408,77 @@ func (s Store) SignedURLTTL() time.Duration {
 	return s.ArtifactSignedURLTTL.Or(DefaultArtifactSignedURLTTL)
 }
 
+// Keep is a retention policy in the terms restic's forget command uses: keep
+// the best scan in each of the newest N hours, days, weeks, months and years.
+//
+// Every field only keeps. Adding a rule can never shrink what is stored.
+type Keep struct {
+	// Last keeps the newest N scans of a series whenever they ran; Within
+	// keeps everything younger than a duration.
+	Last   int      `yaml:"last,omitempty"`
+	Within Duration `yaml:"within,omitempty"`
+
+	Hourly  int `yaml:"hourly,omitempty"`
+	Daily   int `yaml:"daily,omitempty"`
+	Weekly  int `yaml:"weekly,omitempty"`
+	Monthly int `yaml:"monthly,omitempty"`
+	Yearly  int `yaml:"yearly,omitempty"`
+
+	// Timezone is the IANA zone the periods are cut in, so that "daily"
+	// means the operator's day. Empty uses the host's local zone.
+	Timezone string `yaml:"timezone,omitempty"`
+}
+
+// Policy converts the configured policy into the store's own, resolving the
+// timezone. The zone is validated at load time, so a failure here means the
+// config was built in Go rather than parsed.
+func (k Keep) Policy() (store.Keep, error) {
+	loc, err := k.location()
+	if err != nil {
+		return store.Keep{}, err
+	}
+
+	return store.Keep{
+		Last:     k.Last,
+		Within:   k.Within.Duration(),
+		Hourly:   k.Hourly,
+		Daily:    k.Daily,
+		Weekly:   k.Weekly,
+		Monthly:  k.Monthly,
+		Yearly:   k.Yearly,
+		Location: loc,
+	}, nil
+}
+
+func (k Keep) location() (*time.Location, error) {
+	if k.Timezone == "" {
+		return time.Local, nil
+	}
+
+	loc, err := time.LoadLocation(k.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a known IANA time zone: %w", k.Timezone, err)
+	}
+
+	return loc, nil
+}
+
+// Empty reports whether the policy would keep nothing at all.
+func (k Keep) Empty() bool {
+	return k.Last <= 0 && k.Within <= 0 &&
+		k.Hourly <= 0 && k.Daily <= 0 && k.Weekly <= 0 && k.Monthly <= 0 && k.Yearly <= 0
+}
+
+// ArtifactCompression returns the store's artifact compression mode, which is
+// on unless it was explicitly turned off.
+func (s Store) ArtifactCompression() string {
+	if s.CompressArtifacts != nil && !*s.CompressArtifacts {
+		return store.CompressionNone
+	}
+
+	return store.CompressionGzip
+}
+
 // StoreDriver returns the configured driver, defaulting to SQLite.
 func (s Store) StoreDriver() string {
 	if s.Driver == "" {
@@ -421,8 +531,56 @@ type Normalize struct {
 	DropTrailingSlash bool          `yaml:"dropTrailingSlash,omitempty"`
 	PathReplacements  []Replacement `yaml:"pathReplacements,omitempty"`
 
+	// BodyIdentities compare a script by a version it publishes about itself
+	// instead of by the digest of its bytes.
+	BodyIdentities []BodyIdentity `yaml:"bodyIdentity,omitempty"`
+
 	// UseDefaultDropParams adds the shipped list of noise parameters.
 	UseDefaultDropParams *bool `yaml:"useDefaultDropParams,omitempty"`
+}
+
+// Capture configures the scan budget's shared parts.
+type Capture struct {
+	// Beacons name requests that repeat for as long as the page is open, so
+	// idle detection must not wait for them (Story 1.10). They are recorded
+	// in full either way; only the moment the scan stops changes.
+	Beacons []Beacon `yaml:"beacons,omitempty"`
+
+	// UseDefaultBeacons adds the shipped list of known periodic beacons.
+	// Opt-out rather than opt-in: without it the first scan of an ordinary
+	// commercial site runs to its hard timeout and reports a truncation that
+	// says nothing about the site.
+	UseDefaultBeacons *bool `yaml:"useDefaultBeacons,omitempty"`
+}
+
+// Beacon matches requests that must not hold a scan open.
+//
+// A rule may name a host, a URL pattern, or both — both must then match. A
+// host that also serves scripts is matched by path, never wholesale: dropping
+// a script from idle accounting would end the scan before the assets it loads
+// were requested.
+type Beacon struct {
+	// Host is a host pattern: an exact host, a bare domain that also covers
+	// its subdomains, or a leading "*." wildcard.
+	Host string `yaml:"host,omitempty"`
+	// URLPattern is a regular expression matched against the raw URL.
+	URLPattern string `yaml:"urlPattern,omitempty"`
+}
+
+// BodyIdentity extracts a stable identifier out of a response body.
+//
+// It is for scripts whose bytes change more often than their content does. A
+// tag-manager container folds experiment flags into every response, so its
+// digest moves on almost every scan while the container version it declares
+// stays put — and it is the version an operator needs to hear about.
+type BodyIdentity struct {
+	// URLPattern selects the requests the rule applies to, matched against
+	// the raw URL.
+	URLPattern string `yaml:"urlPattern"`
+	// Extract is a regular expression with exactly one capturing group.
+	Extract string `yaml:"extract"`
+	// Label names the identity in reports, e.g. "GTM container version".
+	Label string `yaml:"label,omitempty"`
 }
 
 // Replacement collapses a volatile path segment.
@@ -439,6 +597,12 @@ type Detection struct {
 	FlapWindow Duration `yaml:"flapWindow,omitempty"`
 	// HashResourceTypes selects which bodies are fingerprinted.
 	HashResourceTypes []string `yaml:"hashResourceTypes,omitempty"`
+
+	// DegradedFailureRatio is the share of a scan's requests that may fail
+	// for capture reasons before its asset list stops being trusted for
+	// removals. Zero selects diff.DefaultDegradedFailureRatio; a value above
+	// 1 disables the check.
+	DegradedFailureRatio float64 `yaml:"degradedFailureRatio,omitempty"`
 
 	AllowHosts []string `yaml:"allowHosts,omitempty"`
 	DenyHosts  []string `yaml:"denyHosts,omitempty"`
@@ -467,6 +631,9 @@ type Consent struct {
 	OnFailure    string   `yaml:"onFailure,omitempty"`
 	StepTimeout  Duration `yaml:"stepTimeout,omitempty"`
 	TotalTimeout Duration `yaml:"totalTimeout,omitempty"`
+	// BannerWait is the deployment-wide default for how long to wait for a
+	// banner to appear; a target may override it.
+	BannerWait Duration `yaml:"bannerWait,omitempty"`
 }
 
 // API configures the HTTP interface and web UI.
@@ -498,6 +665,56 @@ type API struct {
 	ReadOnly bool `yaml:"readOnly,omitempty"`
 	// AllowAdHocScan permits triggering scans through the API.
 	AllowAdHocScan *bool `yaml:"allowAdHocScan,omitempty"`
+
+	// AdHocURLs lets a reader scan a URL that is not in the target list, by
+	// typing it into the web interface (Story 5.27). Off by default: it turns
+	// wsaw into a service that fetches an address somebody else chose.
+	AdHocURLs AdHocURLs `yaml:"adHocUrls,omitempty"`
+}
+
+// AdHocURLs configures scanning a URL that nobody put in the configuration
+// file (Story 5.27).
+type AdHocURLs struct {
+	// Enabled turns the feature on. Everything else here is a bound on it.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// ConsentModes are the modes the form offers. Empty means the modes
+	// defaults.consentModes gives every other target.
+	ConsentModes []model.ConsentMode `yaml:"consentModes,omitempty"`
+
+	// MaxPerHour bounds how many such scans may be started in a rolling hour,
+	// across everybody using this wsaw. Zero is the default; a negative value
+	// is refused rather than read as "unlimited", because that is not a thing
+	// this setting can say.
+	MaxPerHour int `yaml:"maxPerHour,omitempty"`
+
+	// AllowPrivateHosts permits URLs whose host resolves to an address that
+	// is not on the public internet: loopback, the private ranges,
+	// link-local, and the cloud metadata service with them. Off by default,
+	// and worth leaving off anywhere this interface is reachable by somebody
+	// who is not the operator.
+	AllowPrivateHosts bool `yaml:"allowPrivateHosts,omitempty"`
+}
+
+// DefaultAdHocMaxPerHour is the rolling-hour budget a typed URL scan gets when
+// none is configured. Generous for a person working through a handful of
+// sites, and low enough that wsaw cannot be pointed at somebody else's
+// infrastructure as a load generator (Tenet 17).
+const DefaultAdHocMaxPerHour = 20
+
+// Limit reports the rolling-hour budget for typed URL scans.
+func (a AdHocURLs) Limit() int {
+	if a.MaxPerHour > 0 {
+		return a.MaxPerHour
+	}
+
+	return DefaultAdHocMaxPerHour
+}
+
+// AdHocModes reports the consent modes the URL form offers, which fall back to
+// the ones every other target gets.
+func (c *Config) AdHocModes() []model.ConsentMode {
+	return firstModes(c.API.AdHocURLs.ConsentModes, c.Defaults.ConsentModes)
 }
 
 // Share configures result sharing by expiring link (Story 5.19).
@@ -751,11 +968,59 @@ func Parse(b []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	cfg.legacyRetention = legacyRetentionKeys(b)
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// legacyRetentionKeys reports which of store.maxAge and store.maxPerSeries
+// the file names, in the order they appear.
+//
+// It reads the document a second time rather than hooking the decoder,
+// because a custom unmarshaler on Store would lose the strict field checking
+// that makes a misspelled key an error instead of a silent no-op.
+func legacyRetentionKeys(b []byte) []string {
+	var doc yaml.Node
+
+	if err := yaml.Unmarshal(b, &doc); err != nil || len(doc.Content) == 0 {
+		// A file that does not parse never reaches validation, and one with
+		// no document has no keys to find.
+		return nil
+	}
+
+	storeNode := mappingValue(doc.Content[0], "store")
+	if storeNode == nil {
+		return nil
+	}
+
+	var found []string
+
+	for _, key := range []string{"maxAge", "maxPerSeries"} {
+		if mappingValue(storeNode, key) != nil {
+			found = append(found, "store."+key)
+		}
+	}
+
+	return found
+}
+
+// mappingValue returns the value node for a key of a YAML mapping, or nil.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+
+	return nil
 }
 
 // New returns a config with the shipped defaults applied.

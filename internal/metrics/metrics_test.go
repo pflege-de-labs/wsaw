@@ -224,10 +224,14 @@ func TestCountersForBrowserAndNotifications(t *testing.T) {
 	r.NotifyFailed()
 	r.NotifySent()
 	r.SetQueueDepth(7)
+	r.ResultsPruned(5)
+	r.ResultsPruned(2)
+	r.ResultsPruned(0)
 
 	out := render(t, r)
 
 	for _, want := range []string{
+		"wsaw_results_pruned_total 7",
 		"wsaw_browser_restarts_total 2",
 		"wsaw_notifications_failed_total 1",
 		"wsaw_notifications_sent_total 1",

@@ -44,6 +44,8 @@ func keyOf(c Change) flapKey {
 		typ = AssetAdded
 	case CookieRemoved:
 		typ = CookieAdded
+	case StorageRemoved:
+		typ = StorageAdded
 	}
 
 	return flapKey{target: c.Target, mode: c.ConsentMode, typ: typ, subject: c.Subject}

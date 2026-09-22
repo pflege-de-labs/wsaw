@@ -607,10 +607,69 @@ test-store-minio:
 	$(STORE_TEST_RUNTIME) rm -f wsaw-test-minio; \
 	exit $$status
 
+# Coverage is measured with -coverpkg, not per-package. Much of wsaw is
+# deliberately tested from the outside: the scanner's integration tests drive
+# a real browser against fixture servers and exercise capture, browser and
+# consent through it. Without -coverpkg, Go credits a test binary only for
+# statements in its own package, so that whole stack reads as untested when it
+# is not.
+#
+# The e2e fixture server and the manual browse tool are excluded: they are
+# test scaffolding, and measuring them says nothing about wsaw while moving
+# the number whenever a fixture grows. tools/coverreport is already out via
+# //go:build ignore.
+COVER_PKGS = $(shell go list ./... | grep -v '/test/e2e/' | paste -sd, -)
+
 .PHONY: cover
 cover:
-	go test -coverprofile=coverage.out ./...
+	go test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
+
+# COVER_MIN is a ratchet, not an aspiration: it holds the number CI last
+# measured so coverage cannot silently regress. Raise it when real coverage
+# rises; never lower it to make a build pass.
+#
+# It sits below what a developer machine measures on purpose. A machine with
+# Podman and Chrome covers container paths that skip on a runner without a
+# container runtime, and that was worth about four points at the Phase 0/1
+# baseline: the same tree measured 78.3% locally and 74.2% on Linux CI. A
+# floor calibrated against the higher number fails the build for a
+# difference in the environment rather than in the code, so this tracks CI,
+# with a little room for the run-to-run variance of the browser-dependent
+# tests.
+#
+# Phases 2 and 3 (internal/app wiring, plus cmd/wsaw's browser- and
+# signal-driven paths) landed without touching the container path — every
+# new test forces browser.runtime: local — so they should not change that
+# four-point gap much. Local now measures 82.6%. This is raised to 77.0
+# rather than to a number derived from that, on the same principle the
+# Phase 0/1 floor was set on: guess conservatively and let CI's next run
+# correct it, because a floor set above what CI actually measures is a
+# broken build, not a gate. Raise it again once CI has measured this.
+COVER_MIN ?= 77.0
+
+# cover-gate fails the build below COVER_MIN. The percentage comes from
+# `go tool cover -func`, which knows how to fold the repeated blocks a
+# -coverpkg profile contains — summing the profile by hand does not.
+.PHONY: cover-gate
+cover-gate: cover
+	@total=$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$NF}' | tr -d '%'); \
+	echo "coverage: $$total% (minimum $(COVER_MIN)%)"; \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { exit !(t + 0 >= m + 0) }' || { \
+		echo "coverage $$total% is below the $(COVER_MIN)% minimum"; \
+		exit 1; \
+	}
+
+# cover-report renders the same profile as a browsable page: every package
+# ranked, then per file and per function. The generator is named as a file
+# rather than a package because it carries //go:build ignore — that keeps it
+# out of ./... so the tool never shows up in the coverage it reports on.
+COVER_REPORT ?= coverage-report.html
+
+.PHONY: cover-report
+cover-report:
+	go test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out -covermode=atomic ./...
+	go run tools/coverreport/main.go -profile coverage.out -out $(COVER_REPORT)
 
 # soak runs the long-running stability test, which is deliberately separate
 # from the regular suite (Story 6.8).
@@ -865,6 +924,62 @@ e2e-fixture-logs:
 # question without its tag being trusted.
 BUILD_TAGS ?=
 IMAGE_NAME := wsaw$(if $(BUILD_TAGS),-$(BUILD_TAGS),)
+
+# The Compose stack (Story 7.2): wsaw, a server database, and the Klaro
+# fixture's two origins, all addressing each other by name on one Compose
+# network. Unlike e2e-fixture-up, the browser runs inside the wsaw
+# container — there is no host loopback to resolve into (Story 1.8, AC10) —
+# and the database is a real one, not the file store the fixture targets
+# above use.
+#
+# The database is picked with an override file, not a flag wsaw reads: `make
+# e2e-compose-up DB=postgres` runs
+#   $(E2E_RUNTIME) compose -f test/e2e/compose.yaml -f test/e2e/compose.postgres.yaml ...
+# `DB=mysql` the same with the other override (AC5).
+E2E_COMPOSE_PROJECT ?= wsaw-e2e
+E2E_COMPOSE := $(E2E_RUNTIME) compose -p $(E2E_COMPOSE_PROJECT) -f test/e2e/compose.yaml -f test/e2e/compose.$(DB).yaml
+
+define e2e_compose_need_db
+	@test -n "$(DB)" || { echo "usage: make $(1) DB=postgres|mysql"; exit 2; }
+endef
+
+.PHONY: e2e-compose-up
+e2e-compose-up:
+	$(call e2e_compose_need_db,e2e-compose-up)
+	$(E2E_COMPOSE) up -d --build --wait --wait-timeout 180
+	@echo
+	@echo "The stack is up, wsaw included, all reporting healthy."
+	@echo "Scan it:            make e2e-compose-scan DB=$(DB)"
+	@echo "Watch what it says: make e2e-compose-logs DB=$(DB)"
+	@echo "Take it down:       make e2e-compose-down DB=$(DB)"
+
+# e2e-compose-scan triggers a scan through wsaw's own API rather than the
+# CLI, because inside the stack that API is the only thing that can reach
+# it — there is no shared file store to run `wsaw scan` against from here.
+.PHONY: e2e-compose-scan
+e2e-compose-scan:
+	$(call e2e_compose_need_db,e2e-compose-scan)
+	@for mode in none reject accept; do \
+		echo "scanning fixture ($$mode)..."; \
+		$(E2E_COMPOSE) exec -T wsaw \
+			wget -qO- --header="Authorization: Bearer wsaw-e2e-fixture-only-token" \
+			--post-data="" "http://localhost:8712/api/v1/scan/fixture/$$mode" >/dev/null || exit 1; \
+	done
+	@echo "done — read the results back with SQL, not through wsaw (Story 7.4, AC1):"
+	@echo "  make e2e-compose-logs DB=$(DB)"
+
+# Bringing the stack down always removes its volumes: a stale database left
+# over from an earlier run must never be why a later one passes or fails
+# (AC8).
+.PHONY: e2e-compose-down
+e2e-compose-down:
+	$(call e2e_compose_need_db,e2e-compose-down)
+	$(E2E_COMPOSE) down -v
+
+.PHONY: e2e-compose-logs
+e2e-compose-logs:
+	$(call e2e_compose_need_db,e2e-compose-logs)
+	$(E2E_COMPOSE) logs -f
 
 .PHONY: docker
 docker:

@@ -1358,7 +1358,15 @@ func documentRefFor(t *testing.T, bucket *store.TestBucket, scanID string) (ref 
 	t.Helper()
 
 	for _, key := range bucket.Keys("result/") {
-		stored := bucket.Read(key)
+		// The reference names the document; the key may name a packed copy of
+		// it (Story 4.8, AC2). What the row records is the document's own size
+		// and digest, so that is what is derived here.
+		ref := store.ArtifactRefOf(key)
+
+		stored, err := bucket.Evidence(ref)
+		if err != nil {
+			continue
+		}
 
 		var decoded struct {
 			ScanID string `json:"scanId"`
@@ -1370,7 +1378,7 @@ func documentRefFor(t *testing.T, bucket *store.TestBucket, scanID string) (ref 
 
 		sum := sha256.Sum256(stored)
 
-		return key, int64(len(stored)), hex.EncodeToString(sum[:])
+		return ref, int64(len(stored)), hex.EncodeToString(sum[:])
 	}
 
 	t.Fatalf("no stored document names scan %s", scanID)
@@ -1434,7 +1442,7 @@ func TestResultDocumentIsStoredInTheBucket(t *testing.T) {
 
 	ref, size, digest := documentRefFor(t, bucket, "scan-1")
 
-	stored, err := bucket.TryRead(ref)
+	stored, err := bucket.Evidence(ref)
 	if err != nil {
 		t.Fatalf("the reference does not name a stored artifact: %v", err)
 	}
@@ -1543,10 +1551,16 @@ func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 	bucket := evidence(t, opts)
 
 	ref, _, _ := documentRefFor(t, bucket, "scan-1")
-	stored := bucket.Read(ref)
 
-	// The same number of bytes, so only the digest can catch it — a size check
-	// alone would hand back a document that says something else.
+	// The document is tampered with and then stored exactly as the store would
+	// store it — packed, where compression is on — so that nothing but the
+	// digest can catch it. A size check alone would hand back a document that
+	// says something else.
+	stored, err := bucket.Evidence(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tampered := []byte(strings.Replace(string(stored),
 		"https://tracker.test/px", "https://tracker.evil/px", 1))
 
@@ -1554,9 +1568,15 @@ func TestDigestMismatchIsCorruptionNotEvidence(t *testing.T) {
 		t.Fatalf("the tampered document is %d bytes, the original %d", len(tampered), len(stored))
 	}
 
-	bucket.Write(ref, tampered)
+	key := bucket.StoredKey(ref)
 
-	_, err := s.GetResult("site", model.ConsentReject, "scan-1")
+	if store.ArtifactRefOf(key) != key {
+		tampered = store.Pack(t, tampered)
+	}
+
+	bucket.Write(key, tampered)
+
+	_, err = s.GetResult("site", model.ConsentReject, "scan-1")
 
 	if !errors.Is(err, store.ErrCorrupt) {
 		t.Errorf("reading a tampered document = %v, want ErrCorrupt", err)
@@ -1582,9 +1602,11 @@ func TestTruncatedDocumentIsCorruption(t *testing.T) {
 	bucket := evidence(t, opts)
 
 	ref, _, _ := documentRefFor(t, bucket, "scan-1")
-	stored := bucket.Read(ref)
 
-	bucket.Write(ref, stored[:len(stored)/2])
+	key := bucket.StoredKey(ref)
+	stored := bucket.Read(key)
+
+	bucket.Write(key, stored[:len(stored)/2])
 
 	if _, err := s.GetResult("site", model.ConsentReject, "scan-1"); !errors.Is(err, store.ErrCorrupt) {
 		t.Errorf("reading a truncated document = %v, want ErrCorrupt", err)
@@ -1612,7 +1634,7 @@ func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 	bucket := evidence(t, opts)
 
 	ref, _, _ := documentRefFor(t, bucket, "scan-1")
-	bucket.Remove(ref)
+	bucket.Remove(bucket.StoredKey(ref))
 
 	got, err := s.ListResults("site", model.ConsentReject, 0)
 	if err != nil {

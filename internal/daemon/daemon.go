@@ -320,7 +320,7 @@ func (d *Daemon) markStarted(j *job, now time.Time) (attempt int, previous strin
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	j.lastRun = now
+	j.lastRun = wall(now)
 	j.advance(now)
 
 	// Cleared here: the next tick must not treat this run as still pending a
@@ -453,7 +453,9 @@ func (d *Daemon) publish(ctx context.Context, out scanner.Outcome) {
 	}
 
 	if out.Diff != nil && len(out.Diff.Changes) > 0 {
-		emit, suppressed := d.flap.Filter(time.Now(), out.Diff.Changes)
+		// Wall clock, like the schedule: the flap window is a span of real
+		// time, not of the time this process happened to be awake for.
+		emit, suppressed := d.flap.Filter(wall(time.Now()), out.Diff.Changes)
 		out.Diff.Changes = emit
 		out.Diff.Suppressed += suppressed
 	}
@@ -490,7 +492,7 @@ func (d *Daemon) shutdown(wg *sync.WaitGroup, cancelScans context.CancelFunc) er
 
 	// The flap suppressor is pruned so a long-running process does not carry
 	// stale identities forward.
-	d.flap.Prune(time.Now())
+	d.flap.Prune(wall(time.Now()))
 
 	return nil
 }

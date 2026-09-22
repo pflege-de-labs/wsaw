@@ -41,7 +41,7 @@ func signingFixture(t *testing.T, opts httpapi.Options) *fixture {
 
 	dir := t.TempDir()
 
-	f := newFixtureIn(t, opts, nil, nil, storetest.SigningBucketURL(t, dir))
+	f := newFixtureIn(t, opts, nil, nil, storetest.SigningBucketURL(t, dir), nil)
 	// The bucket is rooted at the directory its URL names, so a test can still
 	// remove an object behind the store's back.
 	f.artifactDir = dir

@@ -131,6 +131,18 @@ type bucket struct {
 	// meter is who is counting, or nil. See meterFunc.
 	meter meterFunc
 
+	// compress says whether this bucket packs what it is given, and
+	// maxArtifactBytes bounds what one may inflate to on the way back. See
+	// bucketcompress.go; a bucket nobody configured writes plain artifacts and
+	// still reads compressed ones.
+	compress         bool
+	maxArtifactBytes int64
+
+	// onArtifactStored is told what an artifact cost, before and after packing,
+	// for the artifact actually written — so that what compression saves is a
+	// measured number rather than a claim (Story 4.8).
+	onArtifactStored func(kind string, original, stored int64)
+
 	// dir is the directory a local bucket is rooted at, and empty for every
 	// other provider. It exists for one question — is this bucket still there
 	// — which the local driver cannot be asked any other way; see reachable.
@@ -571,19 +583,28 @@ func (b *bucket) put(ctx context.Context, kind string, data []byte) (string, err
 	// would spend a round trip to produce no change — and captured evidence
 	// is immutable, so a write that could change it is not wanted at all
 	// (Tenet 4, AC3).
-	present, err := b.exists(ctx, ref)
-	if err != nil {
+	//
+	// Either spelling counts as stored. An installation upgraded into
+	// compression must not write a packed copy of everything it already holds
+	// plain, and one that turned compression off must not write a plain copy of
+	// everything it holds packed (Story 4.8, AC5).
+	switch _, err := b.storedKey(ctx, ref); {
+	case err == nil:
+		return ref, nil
+	case !errors.Is(err, ErrNotFound):
 		return "", err
 	}
 
-	if present {
-		return ref, nil
-	}
+	key, stored := b.pack(ref, data)
 
 	if err := b.doN(ctx, "storing an artifact", func(ctx context.Context) (int64, error) {
-		return int64(len(data)), b.write(ctx, ref, data)
+		return int64(len(stored)), b.write(ctx, key, stored)
 	}); err != nil {
 		return "", artifactError("storing", ref, err)
+	}
+
+	if b.onArtifactStored != nil {
+		b.onArtifactStored(kind, int64(len(data)), int64(len(stored)))
 	}
 
 	return ref, nil
@@ -779,10 +800,15 @@ func (b *bucket) get(ctx context.Context, ref string) ([]byte, error) {
 		return nil, err
 	}
 
+	key, err := b.storedKey(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+
 	var data []byte
 
 	if err := b.doN(ctx, "reading an artifact", func(ctx context.Context) (int64, error) {
-		read, err := b.b.ReadAll(ctx, ref)
+		read, err := b.b.ReadAll(ctx, key)
 		if err != nil {
 			return 0, err
 		}
@@ -794,7 +820,7 @@ func (b *bucket) get(ctx context.Context, ref string) ([]byte, error) {
 		return nil, artifactError("reading", ref, err)
 	}
 
-	return data, nil
+	return b.unpack(ref, key, data)
 }
 
 // artifactStream is an artifact opened for reading, with what the object's
@@ -861,10 +887,15 @@ func (b *bucket) newReader(ctx context.Context, ref string) (*artifactStream, er
 		return nil, err
 	}
 
+	key, err := b.storedKey(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+
 	var r *blob.Reader
 
 	if err := b.do(ctx, "opening an artifact", func(ctx context.Context) error {
-		opened, err := b.b.NewReader(ctx, ref, nil)
+		opened, err := b.b.NewReader(ctx, key, nil)
 		if err != nil {
 			return err
 		}
@@ -876,7 +907,31 @@ func (b *bucket) newReader(ctx context.Context, ref string) (*artifactStream, er
 		return nil, artifactError("reading", ref, err)
 	}
 
-	return &artifactStream{ReadCloser: r, size: r.Size(), modTime: r.ModTime(), meter: b.meter}, nil
+	stream := &artifactStream{ReadCloser: r, size: r.Size(), modTime: r.ModTime(), meter: b.meter}
+
+	if !isCompressedKey(key) {
+		return stream, nil
+	}
+
+	// The size has to be the evidence's, not the object's: it is written into a
+	// Content-Length before a byte of the body is (Story 8.7, AC4), and a
+	// client told the packed length would be handed a truncated download
+	// (Story 4.8, AC7).
+	size, err := b.inflatedSize(ctx, key, r.Size())
+	if err != nil {
+		_ = r.Close()
+
+		return nil, err
+	}
+
+	inflated, err := inflate(r)
+	if err != nil {
+		return nil, artifactError("reading", ref, err)
+	}
+
+	stream.ReadCloser, stream.size = inflated, size
+
+	return stream, nil
 }
 
 // signedURL asks the provider for a URL that grants one GET of one artifact
@@ -929,10 +984,15 @@ func (b *bucket) stat(ctx context.Context, ref string) (artifactObject, error) {
 		return artifactObject{}, err
 	}
 
-	obj := artifactObject{ref: ref}
+	key, err := b.storedKey(ctx, ref)
+	if err != nil {
+		return artifactObject{}, err
+	}
+
+	obj := artifactObject{ref: ref, key: key}
 
 	if err := b.do(ctx, "reading artifact attributes", func(ctx context.Context) error {
-		attrs, err := b.b.Attributes(ctx, ref)
+		attrs, err := b.b.Attributes(ctx, key)
 		if err != nil {
 			return err
 		}
@@ -944,20 +1004,38 @@ func (b *bucket) stat(ctx context.Context, ref string) (artifactObject, error) {
 		return artifactObject{}, artifactError("reading", ref, err)
 	}
 
+	if !isCompressedKey(key) {
+		return obj, nil
+	}
+
+	// What a caller is being told is how much evidence there is, and that must
+	// not change because the bytes were packed differently (Story 4.8, AC7).
+	size, err := b.inflatedSize(ctx, key, obj.size)
+	if err != nil {
+		return artifactObject{}, err
+	}
+
+	obj.size = size
+
 	return obj, nil
 }
 
-// exists reports whether an artifact is stored, without distinguishing that
+// exists reports whether one stored key is there, without distinguishing that
 // from an error the way stat does.
-func (b *bucket) exists(ctx context.Context, ref string) (bool, error) {
-	if err := validateRef(ref); err != nil {
+//
+// It takes a stored key rather than a reference — either spelling of one, see
+// bucketcompress.go — because it is what storedKey asks the bucket to find out.
+// A caller holding a reference and wanting "is this artifact stored" wants
+// storedKey, which tries both.
+func (b *bucket) exists(ctx context.Context, key string) (bool, error) {
+	if err := validateStoredKey(key); err != nil {
 		return false, err
 	}
 
 	var present bool
 
 	if err := b.do(ctx, "checking for an artifact", func(ctx context.Context) error {
-		found, err := b.b.Exists(ctx, ref)
+		found, err := b.b.Exists(ctx, key)
 		if err != nil {
 			return err
 		}
@@ -966,7 +1044,7 @@ func (b *bucket) exists(ctx context.Context, ref string) (bool, error) {
 
 		return nil
 	}); err != nil {
-		return false, artifactError("checking for", ref, err)
+		return false, artifactError("checking for", key, err)
 	}
 
 	return present, nil
@@ -980,8 +1058,16 @@ func (b *bucket) remove(ctx context.Context, ref string) error {
 		return err
 	}
 
+	// Whichever spelling holds it, because a reference names the evidence and
+	// not the object: a prune that deleted only the plain key would leave the
+	// packed one behind for ever, unreferenced and uncollectable.
+	key, err := b.storedKey(ctx, ref)
+	if err != nil {
+		return err
+	}
+
 	if err := b.do(ctx, "deleting an artifact", func(ctx context.Context) error {
-		return b.b.Delete(ctx, ref)
+		return b.b.Delete(ctx, key)
 	}); err != nil {
 		return artifactError("deleting", ref, err)
 	}
@@ -998,7 +1084,17 @@ func (b *bucket) remove(ctx context.Context, ref string) error {
 // tells those apart from outside is how long ago it was written (Story 8.5,
 // AC3).
 type artifactObject struct {
-	ref     string
+	// ref is the artifact the object holds, and key is the object holding it.
+	// They differ by the packing suffix and nothing else (Story 4.8, AC2), and
+	// both are here because a caller needs each for a different thing: what an
+	// artifact is called is what a result references, and what the object is
+	// called is what a deletion names.
+	ref string
+	key string
+
+	// size is the object's, not the artifact's: a sweep reports what deleting
+	// it would actually free from the bucket, which for a packed artifact is
+	// the packed length. A caller that wants the evidence's own size asks stat.
 	size    int64
 	modTime time.Time
 }
@@ -1046,7 +1142,14 @@ func (b *bucket) list(ctx context.Context, prefix string, fn func(obj artifactOb
 				continue
 			}
 
-			if err := fn(artifactObject{ref: obj.Key, size: obj.Size, modTime: obj.ModTime}); err != nil {
+			entry := artifactObject{
+				ref:     ArtifactRefOf(obj.Key),
+				key:     obj.Key,
+				size:    obj.Size,
+				modTime: obj.ModTime,
+			}
+
+			if err := fn(entry); err != nil {
 				return err
 			}
 		}

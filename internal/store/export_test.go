@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -91,6 +93,56 @@ func (tb *TestBucket) TryRead(key string) ([]byte, error) {
 	return body, nil
 }
 
+// Evidence returns the artifact a reference names, whichever spelling the
+// bucket holds it under and inflated if it is packed (Story 4.8).
+//
+// It is the counterpart to Read for the tests whose subject is the evidence
+// rather than the object: what a result names is `kind/<digest>`, and whether
+// those bytes are sitting there gzipped is a storage decision the test is not
+// about.
+func (tb *TestBucket) Evidence(ref string) ([]byte, error) {
+	tb.t.Helper()
+
+	return tb.b.get(tb.t.Context(), ref)
+}
+
+// StoredKey names the object that actually holds a reference, which is the
+// reference itself or the reference plus the packing suffix (Story 4.8).
+//
+// It is what a test reaches for when its subject is the object rather than the
+// evidence: planting a tampered copy, truncating one, deleting one behind the
+// store's back. Asking for the artifact instead is Evidence.
+func (tb *TestBucket) StoredKey(ref string) string {
+	tb.t.Helper()
+
+	key, err := tb.b.storedKey(tb.t.Context(), ref)
+	if err != nil {
+		return ref
+	}
+
+	return key
+}
+
+// Pack gzips data the way the store packs an artifact, for a test that has to
+// plant a *valid* packed object rather than arbitrary bytes.
+func Pack(t *testing.T, data []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+
+	zw := gzip.NewWriter(&buf)
+
+	if _, err := zw.Write(data); err != nil {
+		t.Fatalf("packing an artifact: %v", err)
+	}
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("packing an artifact: %v", err)
+	}
+
+	return buf.Bytes()
+}
+
 // Write puts data at key, whatever is there already.
 //
 // It writes the raw key rather than content-addressing the bytes, which is the
@@ -137,6 +189,20 @@ func (tb *TestBucket) Has(key string) bool {
 	found, err := tb.b.b.Exists(tb.t.Context(), key)
 	if err != nil {
 		tb.t.Fatalf("asking the artifact bucket for %s: %v", key, err)
+	}
+
+	return found
+}
+
+// HasArtifact reports whether the bucket holds an artifact under either
+// spelling, which is the question a test asking "is this evidence still here"
+// means (Story 4.8, AC2).
+func (tb *TestBucket) HasArtifact(ref string) bool {
+	tb.t.Helper()
+
+	found, err := tb.b.hasArtifact(tb.t.Context(), ref)
+	if err != nil {
+		tb.t.Fatalf("asking the artifact bucket for %s: %v", ref, err)
 	}
 
 	return found

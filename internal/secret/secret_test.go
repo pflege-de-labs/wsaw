@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pflege-de-labs/wsaw/internal/secret"
+	"gopkg.in/yaml.v3"
 )
 
 const plaintext = "hunter2-super-secret"
@@ -106,6 +107,21 @@ func TestValueNeverFormatsPlaintext(t *testing.T) {
 
 	if strings.Contains(string(b), plaintext) {
 		t.Errorf("JSON leaked plaintext: %s", b)
+	}
+
+	y, err := yaml.Marshal(struct {
+		Token secret.Value `yaml:"token"`
+	}{v})
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+
+	if strings.Contains(string(y), plaintext) {
+		t.Errorf("YAML leaked plaintext: %s", y)
+	}
+
+	if !strings.Contains(string(y), secret.Redacted) {
+		t.Errorf("YAML = %q, want the redaction marker", y)
 	}
 
 	var sb strings.Builder

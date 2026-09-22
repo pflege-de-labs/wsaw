@@ -66,6 +66,65 @@ const helperScript = `
     return { clicked: true, visible: true };
   };
 
+  // __wsawSimulateClick is __wsawClick's more thorough sibling, reserved for
+  // the escalation path a rule reaches when its own click already ran but the
+  // banner is still on screen (Story 2.7, AC3).
+  //
+  // Element.click() only ever synthesizes a "click" event. Real user input
+  // fires a whole sequence first — pointerover, pointerdown, mousedown,
+  // pointerup, mouseup — and a control bound to one of those, rather than to
+  // "click" itself, never reacts to a plain .click(). That is a real and
+  // fairly common way for a banner's own dismiss handler to stay silent while
+  // the click step reports success.
+  //
+  // Every event dispatched here is exactly as untrusted as .click() already
+  // is — isTrusted is false either way — so this widens which handlers can
+  // fire without pretending to be a real user gesture.
+  window.__wsawSimulateClick = (selector) => {
+    const el = window.__wsawQuery(selector);
+    if (!el) return { clicked: false, reason: 'no element matched ' + selector };
+
+    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* best effort */ }
+
+    const r = el.getBoundingClientRect();
+    const point = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    const shared = { bubbles: true, cancelable: true, composed: true, view: window, ...point };
+
+    try {
+      el.dispatchEvent(new PointerEvent('pointerover', { ...shared, pointerId: 1, isPrimary: true }));
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...shared, pointerId: 1, isPrimary: true, button: 0 }));
+      el.dispatchEvent(new MouseEvent('mousedown', { ...shared, button: 0 }));
+      el.dispatchEvent(new PointerEvent('pointerup', { ...shared, pointerId: 1, isPrimary: true, button: 0 }));
+      el.dispatchEvent(new MouseEvent('mouseup', { ...shared, button: 0 }));
+      // .click() still runs last: it is what fires "click" handlers and runs
+      // a native control's default action (link navigation, form submit),
+      // neither of which the pointer/mouse sequence above triggers on its own.
+      el.click();
+    } catch (e) {
+      return { clicked: false, reason: String(e) };
+    }
+
+    return { clicked: true, synthesized: true };
+  };
+
+  // __wsawLocate finds a click target's on-screen centre without clicking
+  // it, so the caller can dispatch a genuine CDP pointer event there instead
+  // of a synthetic one. A CDP-dispatched click is trusted the way
+  // el.click() and dispatchEvent() are not — Event.isTrusted is true only
+  // for input that goes through Chrome's real input pipeline — and at least
+  // one CMP (CCM19) checks isTrusted and silently ignores an untrusted
+  // click, so a synthetic click can appear to succeed while nothing is
+  // actually recorded.
+  window.__wsawLocate = (selector) => {
+    const el = window.__wsawQuery(selector);
+    if (!el) return { found: false, reason: 'no element matched ' + selector };
+    if (visible(el)) {
+      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) { /* best effort */ }
+    }
+    const r = el.getBoundingClientRect();
+    return { found: true, visible: visible(el), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
   // Readiness helpers for Consentmanager's __cmp API.
   //
   // __cmp is installed as a stub before the CMP initialises, and a call made
@@ -150,8 +209,84 @@ const helperScript = `
   // offsetParent: that property is null for position:fixed elements, which is
   // exactly how most cookie banners are positioned. Using it would have made
   // the fallback blind to the common case.
-  window.__wsawConsentContainer = () => {
-    const words = /(cookie|consent|datenschutz|privacy|einwilligung|zustimmung|tracking)/i;
+  //
+  // Candidates are scored rather than taken in document order. The first
+  // element that merely mentions cookies is usually the page's own footer —
+  // it carries a "Datenschutz" link, it is visible, and it is banner-shaped
+  // enough to pass a keyword-and-a-link test. Returning it makes the
+  // heuristic click nothing and, worse, makes "is the banner gone?" answer
+  // "no" forever, because the footer never goes anywhere (Story 2.9).
+  const CONSENT_WORDS = /(cookie|consent|datenschutz|privacy|einwilligung|zustimmung|tracking)/i;
+
+  const ownText = (el) => {
+    let out = '';
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) out += n.nodeValue;
+    }
+    return out;
+  };
+
+  const scoreCandidate = (n) => {
+    if (!visible(n)) return null;
+
+    const r = n.getBoundingClientRect();
+    if (r.height < 30 || r.width < 150) return null;
+
+    // A panel parked off-canvas via transform or a negative offset (a common
+    // closed state for animated cookie panels) still has display, opacity and
+    // a nonzero rect, so require it to actually intersect the viewport.
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) return null;
+
+    const text = n.textContent || '';
+    // A whole-page wrapper matches the words too, so require the element to
+    // be banner-shaped rather than the entire document.
+    if (text.length > 3000) return null;
+    if (!CONSENT_WORDS.test(text)) return null;
+
+    // It must actually offer a choice, otherwise a privacy-policy paragraph
+    // would count as a banner.
+    const buttons = n.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"]');
+    const links = n.querySelectorAll('a[href]');
+    if (buttons.length === 0 && links.length === 0) return null;
+
+    let score = 0;
+
+    // A real control beats a link: a footer offers a privacy-policy link, a
+    // banner offers something to press. Links still count, because a CMP
+    // skin that renders its controls as anchors is common enough that
+    // excluding them would miss real banners — Cookiebot's category skin is
+    // built that way.
+    if (buttons.length > 0) score += 3;
+    else score += 1;
+
+    const role = (n.getAttribute('role') || '').toLowerCase();
+    if (role === 'dialog' || role === 'alertdialog' || n.hasAttribute('aria-modal')) score += 3;
+
+    // A banner is laid over the page; page furniture scrolls with it.
+    const position = getComputedStyle(n).position;
+    if (position === 'fixed' || position === 'sticky') score += 2;
+
+    if (CONSENT_WORDS.test(ownText(n) || '')) score += 1;
+    if (text.length <= 600) score += 1;
+
+    // Page furniture that happens to mention cookies is not a banner, and a
+    // dense list of links is what furniture looks like.
+    if (n.closest('footer,header,nav')) score -= 3;
+    if (links.length >= 8) score -= 2;
+
+    return score;
+  };
+
+  // A candidate needs more than a keyword and something clickable. The
+  // threshold is set so that a footer carrying a privacy link cannot reach
+  // it, while an ordinary banner — a fixed container with a button — clears
+  // it comfortably.
+  const CONSENT_SCORE_MIN = 4;
+
+  const consentCandidates = () => {
+    const out = [];
 
     for (const root of roots()) {
       let nodes;
@@ -160,27 +295,87 @@ const helperScript = `
       } catch (e) { continue; }
 
       for (const n of nodes) {
-        if (!visible(n)) continue;
-
-        const r = n.getBoundingClientRect();
-        if (r.height < 30 || r.width < 150) continue;
-
-        const text = n.textContent || '';
-        // A whole-page wrapper matches the words too, so require the element
-        // to be banner-shaped rather than the entire document.
-        if (text.length > 3000) continue;
-        if (!words.test(text)) continue;
-
-        // It must actually offer a choice, otherwise a privacy-policy
-        // paragraph would count as a banner.
-        const buttons = n.querySelectorAll('button,a[href],[role="button"],input[type="button"],input[type="submit"]');
-        if (buttons.length === 0) continue;
-
-        return n;
+        const score = scoreCandidate(n);
+        if (score === null || score < CONSENT_SCORE_MIN) continue;
+        out.push({ el: n, score: score });
       }
     }
 
-    return null;
+    // Highest score wins; ties go to the smaller element, which is the one
+    // closer to the controls rather than a wrapper around them.
+    out.sort((a, b) => b.score - a.score ||
+      (a.el.textContent || '').length - (b.el.textContent || '').length);
+
+    return out;
+  };
+
+  window.__wsawConsentContainer = () => {
+    const found = consentCandidates();
+    return found.length > 0 ? found[0].el : null;
+  };
+
+  // __wsawConsentSummary describes the banner without acting on it, so a
+  // detection that could not be driven still leaves a reader something to act
+  // on: which element, what it said, and which controls it offered (Story
+  // 2.9, AC2 and AC4). Everything here is page-controlled text; it is
+  // truncated, and the caller treats it as data.
+  window.__wsawConsentSummary = () => {
+    const el = window.__wsawConsentContainer();
+    if (!el) return { found: false };
+
+    const clip = (s, max) => {
+      const t = (s || '').replace(/\s+/g, ' ').trim();
+      return t.length > max ? t.slice(0, max) + '…' : t;
+    };
+
+    let name = el.tagName.toLowerCase();
+    if (el.id) name += '#' + el.id;
+    for (const attr of ['data-testid', 'data-cy', 'aria-label', 'role']) {
+      const v = el.getAttribute(attr);
+      if (v) { name += '[' + attr + '="' + clip(v, 40) + '"]'; break; }
+    }
+
+    const heading = el.querySelector('h1,h2,h3,h4,strong,p');
+
+    const controls = [];
+    const seen = new Set();
+    for (const c of el.querySelectorAll('button,a[href],[role="button"],input[type="button"],input[type="submit"]')) {
+      const label = clip(c.innerText || c.textContent || c.value || c.getAttribute('aria-label'), 60);
+      if (!label || seen.has(label)) continue;
+      seen.add(label);
+      controls.push(label);
+      if (controls.length >= 12) break;
+    }
+
+    return {
+      found: true,
+      element: clip(name, 120),
+      heading: clip(heading ? (heading.innerText || heading.textContent) : '', 160),
+      text: clip(el.innerText || el.textContent, 400),
+      controls: controls,
+    };
+  };
+
+  // __wsawStorageSnapshot lists Web Storage keys and value lengths for the
+  // frame it runs in. It exists so the consent engine can see that a choice
+  // was written somewhere at all: a site that keeps consent in localStorage
+  // leaves no cookie behind, and "no cookie" would otherwise read as "nothing
+  // was recorded" (Story 2.9, AC5).
+  window.__wsawStorageSnapshot = () => {
+    const read = (area, label) => {
+      const out = {};
+      try {
+        for (let i = 0; i < area.length && i < 200; i++) {
+          const k = area.key(i);
+          if (k === null) continue;
+          const v = area.getItem(k);
+          out[label + ':' + k] = v === null ? 0 : v.length;
+        }
+      } catch (e) { /* storage can be blocked; an empty view is the answer */ }
+      return out;
+    };
+
+    return Object.assign({}, read(window.localStorage, 'local'), read(window.sessionStorage, 'session'));
   };
 
   // Label matching for the heuristic fallback. Deliberately conservative:

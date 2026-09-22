@@ -460,6 +460,10 @@ type ArtifactInfo struct {
 // (Story 5.17, AC3) — which matters more against a bucket, where reading it
 // would also cost a request.
 //
+// The size is the artifact's own, not the stored object's. A reader is being
+// told how much evidence there is, and that answer must not change because the
+// bytes were packed differently (Story 4.8, AC7).
+//
 // The caller's context bounds the call, so a request that has been abandoned
 // stops waiting on a bucket that is not answering (Story 8.7, AC6); the
 // store's own deadline still applies on top of it.
@@ -476,6 +480,10 @@ func (s *SQL) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error
 // It stays for the callers that genuinely need the bytes in hand — a stored
 // body being diffed, a document being decoded. Anything that only forwards
 // them to a client should use OpenArtifact instead (Story 8.1, AC7).
+//
+// Whether an artifact is stored compressed is the store's business and no
+// caller's: both forms come back as the bytes that were handed to PutArtifact
+// (Story 4.8, AC4).
 func (s *SQL) GetArtifact(ref string) ([]byte, error) {
 	return s.bucket.artifactBytes(ref)
 }

@@ -306,36 +306,33 @@ func TestUpsertFormsMatchTheirDatabase(t *testing.T) {
 	}
 }
 
-// TestPruneByCountIsDialectSpecificOnlyWhereItMustBe records why MySQL has
-// its own form, so that a later simplification has to confront the reason.
-func TestPruneByCountIsDialectSpecificOnlyWhereItMustBe(t *testing.T) {
+// TestPruneDeletesByIdentityInEveryDialect records why retention needs no
+// dialect hook of its own, so that a later change has to confront the reason.
+func TestPruneDeletesByIdentityInEveryDialect(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{DriverSQLite, DriverPostgres} {
-		d, _ := dialectFor(name)
+	q := strings.ToLower(deleteResultsQuery(3))
 
-		if d.pruneByCount() != pruneByCountPortable {
-			t.Errorf("%s does not use the portable prune; if it needs its own, say why in the dialect", name)
+	if strings.Count(q, "?") != 5 {
+		t.Errorf("delete names %d placeholders, want a series and three scan IDs", strings.Count(q, "?"))
+	}
+
+	// Neither a physical row identifier nor a self-select: rowid and ctid are
+	// not the same concept and MySQL has neither, and MySQL refuses to select
+	// from the table a delete targets (error 1093).
+	for _, forbidden := range []string{"rowid", "ctid", "select"} {
+		if strings.Contains(q, forbidden) {
+			t.Errorf("delete uses %q; retention must name results by their primary key", forbidden)
 		}
 	}
 
-	my, _ := dialectFor(DriverMySQL)
-
-	if my.pruneByCount() == pruneByCountPortable {
-		t.Error("mysql uses the portable prune, which selects from the table it deletes from (error 1093)")
-	}
-
-	// Neither form may fall back to a physical row identifier: rowid and ctid
+	// The delete may not fall back to a physical row identifier: rowid and ctid
 	// are not the same concept and MySQL has neither.
 	for _, name := range sqlDrivers() {
 		d, _ := dialectFor(name)
 
-		q := strings.ToLower(d.pruneByCount())
-
-		for _, forbidden := range []string{"rowid", "ctid"} {
-			if strings.Contains(q, forbidden) {
-				t.Errorf("%s prunes by %s rather than by primary key", name, forbidden)
-			}
+		if rebound := d.rebind(deleteResultsQuery(2)); rebound == "" {
+			t.Errorf("%s produced an empty delete", name)
 		}
 	}
 }

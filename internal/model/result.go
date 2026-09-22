@@ -55,6 +55,23 @@ const (
 	// OutcomeUnverified means the interaction was performed but its effect
 	// could not be confirmed.
 	OutcomeUnverified ConsentOutcome = "unverified"
+	// OutcomeBannerVisible means the CMP recorded the requested choice — the
+	// traffic this scan observed reflects that choice — but the banner itself
+	// was still displayed after the interaction, and a fallback click could
+	// not close it either. A vendor API commonly records consent without
+	// running the banner's own dismiss handler, which reacts to its buttons,
+	// not to the CMP's internal state. That gap must never be reported as
+	// OutcomeApplied (Story 2.7).
+	OutcomeBannerVisible ConsentOutcome = "banner-visible"
+	// OutcomeNecessaryOnly means the requested mode was "reject", the banner
+	// offered no reject/decline control at all, and wsaw fell back to its
+	// next best reachable state: every optional category deselected, leaving
+	// only the categories the CMP itself marks as strictly necessary. This is
+	// never reported as OutcomeApplied — a reader comparing reject-mode
+	// results across sites must be able to tell a site that truly has no
+	// non-essential traffic when rejected from one that has no reject
+	// control and reached the closest state wsaw could manage (Story 2.8).
+	OutcomeNecessaryOnly ConsentOutcome = "necessary-only"
 )
 
 // TerminationReason records why capture stopped. Determinism requires that
@@ -152,6 +169,11 @@ type Result struct {
 
 	Requests []Request `json:"requests"`
 	Cookies  []Cookie  `json:"cookies,omitempty"`
+	// Storage is the Web Storage present when the scan finished. A cookie
+	// list alone describes only half of what a site keeps on a visitor's
+	// machine: consent state and analytics identifiers routinely live in
+	// localStorage instead (Story 2.9, AC5).
+	Storage []StorageEntry `json:"storage,omitempty"`
 
 	// Screenshots holds evidence artifact references, when enabled.
 	Screenshots []Artifact `json:"screenshots,omitempty"`
@@ -235,6 +257,71 @@ type Consent struct {
 	// InteractedAt is when the consent action completed, used to split the
 	// pre- and post-interaction phases.
 	InteractedAt *time.Time `json:"interactedAt,omitempty"`
+
+	// ScreenshotsIdentical is true when the before- and after-interaction
+	// screenshots are byte-for-byte identical. It is computed once, from the
+	// captured evidence, so any consumer of this document — not only the HTML
+	// report — can see that a claimed interaction left the page looking
+	// unchanged (Story 2.7, Tenet 16).
+	ScreenshotsIdentical bool `json:"screenshotsIdentical,omitempty"`
+
+	// Kind separates the three states a page can be in: a CMP product was
+	// identified, a consent UI is present but no vendor matched, or there is
+	// no consent UI at all. Without it, a banner wsaw failed to recognize and
+	// a page that never asks for consent both read as "no CMP" (Story 2.9,
+	// AC1).
+	Kind CMPKind `json:"cmpKind,omitempty"`
+
+	// BannerHeading is the banner's own first line of text, bounded, so a
+	// reader can tell which banner this was without re-scanning the site. It
+	// is page-controlled data and is never interpolated anywhere (NFR §4).
+	BannerHeading string `json:"bannerHeading,omitempty"`
+
+	// StorageKeys names the Web Storage keys written while the interaction
+	// ran, as "local:cookie-accepted". A site that keeps its consent state
+	// outside cookies leaves no other trace that the choice was recorded
+	// (Story 2.9, AC5).
+	StorageKeys []string `json:"consentStorageKeys,omitempty"`
+
+	// Diagnostic explains a detection that found a banner but could not act
+	// on it, so "rules matched but none completed" stops being the end of the
+	// trail (Story 2.9, AC4).
+	Diagnostic *ConsentDiagnostic `json:"diagnostic,omitempty"`
+
+	// StaleHostRules names rules scoped to this host that did not match it. A
+	// host-scoped rule exists because somebody wrote it for this site; its
+	// silence means the site changed, and silence is exactly how a rule stops
+	// working unnoticed (Story 2.9, AC6).
+	StaleHostRules []string `json:"staleHostRules,omitempty"`
+}
+
+// CMPKind classifies what was found on the page, which is a different
+// question from what the interaction achieved.
+type CMPKind string
+
+// CMP kinds.
+const (
+	// CMPKindVendor means a known CMP product was identified — a TCF API, a
+	// vendor API, or a vendor rule.
+	CMPKindVendor CMPKind = "vendor"
+	// CMPKindBespoke means a consent UI is present and no vendor fingerprint
+	// matched it: as far as wsaw can tell, the site wrote its own banner.
+	CMPKindBespoke CMPKind = "bespoke"
+	// CMPKindNone means no consent UI was found within the wait. It is the
+	// only kind that licenses reporting a page as having no CMP.
+	CMPKindNone CMPKind = "none"
+)
+
+// ConsentDiagnostic describes a banner that was found but not handled. Every
+// field is page-controlled text, recorded as data and bounded in length.
+type ConsentDiagnostic struct {
+	// Element describes the matched container, e.g. `div#cookie-banner`.
+	Element string `json:"element,omitempty"`
+	// Text is the container's first line of text.
+	Text string `json:"text,omitempty"`
+	// Controls lists the labels of the clickable controls inside it, which is
+	// what a rule author needs in order to write the missing rule.
+	Controls []string `json:"controls,omitempty"`
 }
 
 // Request is a single observed network fetch. Redirects are recorded as
@@ -272,6 +359,13 @@ type Request struct {
 	// leave the browser.
 	NonNetwork bool `json:"nonNetwork,omitempty"`
 
+	// Beacon marks a request a configured rule excluded from idle detection
+	// (Story 1.10). It was recorded in full; the scan simply did not wait for
+	// it, because a heartbeat repeats for as long as the page is open. The
+	// flag is here so a reader can tell which requests the scan declined to
+	// wait for.
+	Beacon bool `json:"beacon,omitempty"`
+
 	// RedirectFrom is the URL this request was redirected from, if any.
 	RedirectFrom string `json:"redirectFrom,omitempty"`
 	// RedirectTo is the Location target when this request was itself a
@@ -295,6 +389,19 @@ type Request struct {
 	BodyUnavailable string `json:"bodyUnavailable,omitempty"`
 	// BodyRef points at a stored body artifact, when body storage is on.
 	BodyRef string `json:"bodyRef,omitempty"`
+
+	// BodyIdentity is a stable identifier lifted out of the response body by
+	// a configured rule, and BodyIdentityLabel names what it is.
+	//
+	// Some scripts rewrite their own body on every response — a tag manager
+	// embeds experiment flags that change without the container changing — so
+	// a digest reports a change on nearly every scan while the thing an
+	// operator cares about sits inside the body as a version number. Storing
+	// the extracted value alongside the digest lets a comparison use the
+	// identity the script publishes about itself, and keeps the raw digest
+	// available so a reader can still see what was hashed.
+	BodyIdentity      string `json:"bodyIdentity,omitempty"`
+	BodyIdentityLabel string `json:"bodyIdentityLabel,omitempty"`
 
 	// Body carries the stored response body itself. It is present only in an
 	// export — a HAR, or a downloaded result — and never in the stored
@@ -351,6 +458,29 @@ type Cookie struct {
 	ValueLength int    `json:"valueLength,omitempty"`
 }
 
+// StorageArea names which Web Storage an entry came from.
+type StorageArea string
+
+// Storage areas.
+const (
+	StorageLocal   StorageArea = "local"
+	StorageSession StorageArea = "session"
+)
+
+// StorageEntry is one Web Storage key present after the scan completed.
+// Values get the same treatment as cookie values — fingerprinted, never
+// stored — because they carry identifiers just as routinely (Tenet 19).
+type StorageEntry struct {
+	// Origin is the origin whose storage this is, e.g. "https://example.com".
+	Origin string      `json:"origin"`
+	Area   StorageArea `json:"area"`
+	Key    string      `json:"key"`
+	Party  Party       `json:"party"`
+
+	ValueSHA256 string `json:"valueSha256,omitempty"`
+	ValueLength int    `json:"valueLength,omitempty"`
+}
+
 // Artifact references a stored evidence file.
 type Artifact struct {
 	// Kind is e.g. "screenshot-before-consent".
@@ -369,13 +499,199 @@ func (r *Result) OK() bool {
 
 // Truncated reports whether capture stopped before the page went idle, which
 // means the asset list may be incomplete.
-func (r *Result) Truncated() bool {
-	switch r.Termination {
+func (r *Result) Truncated() bool { return r.Termination.Truncated() }
+
+// Truncated reports whether this termination means capture stopped before the
+// page went idle.
+//
+// It is on the reason rather than only on the result because retention has to
+// rank a scan it has not read: the results table carries the termination as a
+// column, and reading every document back to decide what to prune would cost
+// the whole store (Story 4.10, AC5).
+func (t TerminationReason) Truncated() bool {
+	switch t {
 	case TermTimeout, TermRequestCap, TermByteCap:
 		return true
 	default:
 		return false
 	}
+}
+
+// Failed reports whether this termination means no asset list was produced at
+// all, as opposed to one that may be short.
+func (t TerminationReason) Failed() bool {
+	return t == TermError || t == TermSkipped
+}
+
+// captureFailures are the Chrome network errors that mean wsaw failed to
+// observe a request, as opposed to the page or the site choosing not to
+// complete it.
+//
+// The distinction matters because it decides whether a missing asset is a
+// finding. A request that never opened a connection did not tell us anything
+// about the site, and every asset it would have initiated is missing for a
+// reason the site did not choose — so "this asset is gone" is unprovable.
+// Whereas net::ERR_ABORTED is ordinary: it is what a beacon looks like when
+// the page is torn down around it, and such a request routinely carries a
+// status because the server did answer. Treating it as a capture defect would
+// mark almost every accept-mode scan degraded.
+//
+// Errors that report a deliberate decision — blocked by a policy, by an
+// extension, or by ORB — are likewise not defects: they are observations, and
+// an accurate one.
+var captureFailures = map[string]struct{}{
+	"net::ERR_INSUFFICIENT_RESOURCES": {},
+	"net::ERR_NAME_NOT_RESOLVED":      {},
+	"net::ERR_NAME_RESOLUTION_FAILED": {},
+	"net::ERR_NETWORK_CHANGED":        {},
+	"net::ERR_INTERNET_DISCONNECTED":  {},
+	"net::ERR_ADDRESS_UNREACHABLE":    {},
+	"net::ERR_CONNECTION_CLOSED":      {},
+	"net::ERR_CONNECTION_RESET":       {},
+	"net::ERR_CONNECTION_REFUSED":     {},
+	"net::ERR_CONNECTION_TIMED_OUT":   {},
+	"net::ERR_CONNECTION_FAILED":      {},
+	"net::ERR_SOCKET_NOT_CONNECTED":   {},
+	"net::ERR_OUT_OF_MEMORY":          {},
+	"net::ERR_TIMED_OUT":              {},
+	"net::ERR_TOO_MANY_RETRIES":       {},
+}
+
+// IsCaptureFailure reports whether a request failure reason means wsaw could
+// not observe the request, rather than that the site or page declined it.
+func IsCaptureFailure(reason string) bool {
+	_, ok := captureFailures[reason]
+
+	return ok
+}
+
+// CaptureFailure reports whether this request failed for a reason that makes
+// the observation incomplete rather than informative.
+func (r *Request) CaptureFailure() bool {
+	return !r.NonNetwork && r.Failed && IsCaptureFailure(r.FailureReason)
+}
+
+// ReasonNeverCompleted stands in for a failure reason on a request that was
+// still in flight when capture ended. Chrome reported no error, because from
+// its point of view nothing went wrong yet.
+const ReasonNeverCompleted = "never reported completion"
+
+// NeverCompleted reports whether this request was still in flight when
+// capture stopped waiting: no status, no end offset, and no error.
+//
+// Idle detection deliberately stops waiting for such a request — a
+// cross-origin iframe's completion events go to a separate browser target and
+// would otherwise never arrive, running every scan of a page with an embedded
+// widget to its hard timeout. The consequence is that a request which stalls
+// early can leave the page half-built while the scan still ends on schedule,
+// and nothing in the termination reason says so.
+func (r *Request) NeverCompleted() bool {
+	return !r.NonNetwork && !r.Failed && r.Status == 0 && r.Timing.EndOffset == 0
+}
+
+// Incomplete reports whether this request produced no usable observation,
+// either because it failed in transit or because it never finished. Both mean
+// the same thing for a comparison: whatever this request would have loaded is
+// absent for a reason the site did not choose.
+func (r *Request) Incomplete() bool {
+	return r.CaptureFailure() || r.NeverCompleted()
+}
+
+// IncompleteObservations counts the requests wsaw could not observe. A
+// non-zero count means the asset list is missing entries for reasons that
+// have nothing to do with the site.
+func (r *Result) IncompleteObservations() int {
+	n := 0
+
+	for i := range r.Requests {
+		if r.Requests[i].Incomplete() {
+			n++
+		}
+	}
+
+	return n
+}
+
+// IncompleteRatio is the share of network requests that produced no usable
+// observation. A ratio is used rather than a count because it is comparable
+// across pages: ten lost requests mean something different on a page that
+// issues twenty than on one that issues three hundred.
+func (r *Result) IncompleteRatio() float64 {
+	total, lost := 0, 0
+
+	for i := range r.Requests {
+		if r.Requests[i].NonNetwork {
+			continue
+		}
+
+		total++
+
+		if r.Requests[i].Incomplete() {
+			lost++
+		}
+	}
+
+	if total == 0 {
+		return 0
+	}
+
+	return float64(lost) / float64(total)
+}
+
+// TopIncompleteReason returns the most frequent reason an observation was
+// incomplete and how often it occurred, so a degradation report names the
+// actual fault instead of saying only that something went wrong.
+func (r *Result) TopIncompleteReason() (reason string, count int) {
+	tally := make(map[string]int)
+
+	for i := range r.Requests {
+		req := &r.Requests[i]
+
+		switch {
+		case req.CaptureFailure():
+			tally[req.FailureReason]++
+		case req.NeverCompleted():
+			tally[ReasonNeverCompleted]++
+		}
+	}
+
+	// Ties break on the reason string so the same result always produces the
+	// same report (Tenet 6).
+	for candidate, n := range tally {
+		if n > count || (n == count && candidate < reason) {
+			reason, count = candidate, n
+		}
+	}
+
+	return reason, count
+}
+
+// FirstPartyHosts returns the sorted distinct hosts of first-party requests
+// in one phase, or in all phases when the phase is empty.
+//
+// It exists because "zero third parties before consent" is not the same claim
+// as "nothing happened before consent". Analytics reverse-proxied onto the
+// site's own domain is first-party by every rule wsaw applies, and a report
+// that summarizes only third parties hides it completely (Story 2.9, AC7).
+func (r *Result) FirstPartyHosts(phase ConsentPhase) []string {
+	seen := make(map[string]struct{})
+
+	for i := range r.Requests {
+		req := &r.Requests[i]
+		if req.Party != FirstParty || req.NonNetwork {
+			continue
+		}
+
+		if phase != "" && req.Phase != phase {
+			continue
+		}
+
+		if req.Host != "" {
+			seen[req.Host] = struct{}{}
+		}
+	}
+
+	return sortedKeys(seen)
 }
 
 // ThirdPartyDomains returns the sorted distinct registrable domains of

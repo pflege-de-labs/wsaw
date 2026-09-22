@@ -32,6 +32,10 @@ type Rules struct {
 
 	// DropTrailingSlash normalizes "/a/" to "/a".
 	DropTrailingSlash bool
+
+	// BodyIdentities lift a self-published version out of a response body,
+	// for scripts whose bytes change more often than their content does.
+	BodyIdentities []BodyIdentity
 }
 
 // Replacement rewrites part of a path with a fixed placeholder.
@@ -43,6 +47,27 @@ type Replacement struct {
 	With string
 
 	re *regexp.Regexp
+}
+
+// BodyIdentity extracts a stable identifier from a response body.
+//
+// It exists for one shape of false positive: a script served from a stable
+// URL whose bytes differ on nearly every fetch, while the version it declares
+// about itself stays put. Hashing such a body reports a change every time and
+// buries the one publish that mattered. Extracting the declared version turns
+// that stream of noise into a single change with a number in it.
+type BodyIdentity struct {
+	// URLPattern selects which requests the rule applies to. It is matched
+	// against the raw URL, not the normalized key, so a rule can key on a
+	// query parameter that normalization drops.
+	URLPattern string
+	// Extract is a regular expression with exactly one capturing group; the
+	// group is the identity.
+	Extract string
+	// Label names the identity for reports, e.g. "GTM container version".
+	Label string
+
+	urlRe, extractRe *regexp.Regexp
 }
 
 // Common query parameters that carry no meaning for asset identity. Offered
@@ -59,6 +84,7 @@ type Normalizer struct {
 	keepParams   map[string]struct{}
 	pathReplace  []Replacement
 	dropTrailing bool
+	bodyIdents   []BodyIdentity
 }
 
 // New compiles rules into a Normalizer. Invalid path patterns are a
@@ -93,8 +119,60 @@ func New(r Rules) (*Normalizer, error) {
 		n.pathReplace = append(n.pathReplace, rep)
 	}
 
+	for i, id := range r.BodyIdentities {
+		urlRe, err := regexp.Compile(id.URLPattern)
+		if err != nil {
+			return nil, fmt.Errorf("body identity %d: compiling urlPattern %q: %w", i, id.URLPattern, err)
+		}
+
+		extractRe, err := regexp.Compile(id.Extract)
+		if err != nil {
+			return nil, fmt.Errorf("body identity %d: compiling extract %q: %w", i, id.Extract, err)
+		}
+
+		// One capturing group, checked here rather than at extraction time:
+		// a rule that can never produce a value is a configuration mistake,
+		// and it should be reported at load rather than silently yielding
+		// nothing on every scan.
+		if got := extractRe.NumSubexp(); got != 1 {
+			return nil, fmt.Errorf(
+				"body identity %d: extract %q has %d capturing groups, want exactly 1",
+				i, id.Extract, got)
+		}
+
+		id.urlRe, id.extractRe = urlRe, extractRe
+		n.bodyIdents = append(n.bodyIdents, id)
+	}
+
 	return n, nil
 }
+
+// BodyIdentity returns the label and value of the first matching identity
+// rule, or empty strings when no rule applies or the body does not carry the
+// identity. A rule that matches the URL but not the body yields nothing,
+// which a comparison must treat as "not comparable" rather than as a change.
+func (n *Normalizer) BodyIdentity(rawURL, body string) (label, value string) {
+	for i := range n.bodyIdents {
+		id := &n.bodyIdents[i]
+
+		if !id.urlRe.MatchString(rawURL) {
+			continue
+		}
+
+		m := id.extractRe.FindStringSubmatch(body)
+		if m == nil {
+			return "", ""
+		}
+
+		return id.Label, m[1]
+	}
+
+	return "", ""
+}
+
+// HasBodyIdentities reports whether any identity rule is configured, so a
+// caller can skip the work of holding on to a body when none is.
+func (n *Normalizer) HasBodyIdentities() bool { return len(n.bodyIdents) > 0 }
 
 // Key returns the comparison key for raw. Inputs that are not hierarchical
 // URLs — data:, blob:, javascript: — are returned with their opaque payload

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/capture"
+	"github.com/pflege-de-labs/wsaw/internal/consent"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
@@ -50,7 +51,15 @@ type Resolved struct {
 	MaxRequests    int
 	MaxBytes       int64
 	DwellAfterLoad time.Duration
-	ScrollToBottom bool
+	// ConsentBannerWait bounds the wait for a banner to appear before the
+	// scan concludes the page has none.
+	ConsentBannerWait time.Duration
+	ScrollToBottom    bool
+
+	// Beacons are the requests idle detection must not wait for: the shipped
+	// list unless it was opted out of, plus the global and per-target rules
+	// (Story 1.10).
+	Beacons []capture.Beacon
 
 	ViewportWidth  int
 	ViewportHeight int
@@ -107,8 +116,56 @@ func (c *Config) ResolveTargets(reg *secret.Registry) ([]Resolved, error) {
 	return out, nil
 }
 
-//nolint:gocognit // a wide struct of independent overrides; splitting it would obscure the mapping
+// ResolveAdHocTarget resolves a target that is not in the configuration file:
+// a URL somebody typed into the web interface (Story 5.27).
+//
+// It is the resolution every configured target gets, minus the
+// credential-bearing defaults. defaults.basicAuthUser,
+// defaults.basicAuthPassword and defaults.extraHeaders exist so that wsaw can
+// reach the operator's own sites; sending them to an address somebody typed
+// would hand those credentials to whoever typed it.
+//
+// Those references are not resolved and then dropped: they are never read on
+// this path at all, so it takes no secret registry and cannot fail. Resolving
+// them here would put the reference — an environment variable's name, a key
+// file's path — into an error that this path reports to whoever typed the
+// URL, which is a second way to leak a credential the scan was never going to
+// send.
+func (c *Config) ResolveAdHocTarget(name, rawURL string, mode model.ConsentMode) Resolved {
+	t := &Target{Name: name, URL: rawURL, ConsentModes: []model.ConsentMode{mode}}
+
+	return c.resolveTargetFields(t)
+}
+
 func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error) {
+	r := c.resolveTargetFields(t)
+	d := c.Defaults
+
+	headers, err := resolveHeaders(d.ExtraHeaders, t.ExtraHeaders, reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	r.ExtraHeaders = headers
+
+	r.BasicAuthUser, err = resolveSecret(firstString(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	r.BasicAuthPassword, err = resolveSecret(firstString(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
+	return r, nil
+}
+
+// resolveTargetFields applies defaults to everything that is not a credential.
+// It reads no secret reference, so it cannot fail.
+//
+//nolint:gocognit // a wide struct of independent overrides; splitting it would obscure the mapping
+func (c *Config) resolveTargetFields(t *Target) Resolved {
 	d := c.Defaults
 
 	r := Resolved{
@@ -124,21 +181,24 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 		MaxRequests:       firstInt(t.MaxRequests, d.MaxRequests, capture.DefaultMaxRequests),
 		MaxBytes:          firstInt64(t.MaxBytes, d.MaxBytes, capture.DefaultMaxBytes),
 		DwellAfterLoad:    firstDuration(t.DwellAfterLoad, d.DwellAfterLoad, 0),
-		ScrollToBottom:    firstBool(t.ScrollToBottom, d.ScrollToBottom, false),
-		ViewportWidth:     firstInt(t.ViewportWidth, d.ViewportWidth, 1280),
-		ViewportHeight:    firstInt(t.ViewportHeight, d.ViewportHeight, 800),
-		DeviceScale:       firstFloat(t.DeviceScale, d.DeviceScale, 1),
-		Mobile:            firstBool(t.Mobile, d.Mobile, false),
-		UserAgent:         firstString(t.UserAgent, d.UserAgent),
-		AcceptLanguage:    firstString(t.AcceptLanguage, d.AcceptLanguage),
-		Timezone:          firstString(t.Timezone, d.Timezone),
-		Proxy:             firstString(t.Proxy, d.Proxy),
-		WarmCache:         firstBool(t.WarmCache, d.WarmCache, false),
-		Screenshots:       firstBool(t.Screenshots, d.Screenshots, false),
-		StoreBodies:       firstBool(t.StoreBodies, d.StoreBodies, false),
-		Robots:            firstRobots(t.Robots, d.Robots),
-		MinInterval:       firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
-		Jitter:            firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
+		ConsentBannerWait: firstDuration(t.ConsentBannerWait, d.ConsentBannerWait,
+			c.Consent.BannerWait.Or(consent.DefaultBannerWait)),
+		ScrollToBottom: firstBool(t.ScrollToBottom, d.ScrollToBottom, false),
+		Beacons:        c.beaconRules(t),
+		ViewportWidth:  firstInt(t.ViewportWidth, d.ViewportWidth, 1280),
+		ViewportHeight: firstInt(t.ViewportHeight, d.ViewportHeight, 800),
+		DeviceScale:    firstFloat(t.DeviceScale, d.DeviceScale, 1),
+		Mobile:         firstBool(t.Mobile, d.Mobile, false),
+		UserAgent:      firstString(t.UserAgent, d.UserAgent),
+		AcceptLanguage: firstString(t.AcceptLanguage, d.AcceptLanguage),
+		Timezone:       firstString(t.Timezone, d.Timezone),
+		Proxy:          firstString(t.Proxy, d.Proxy),
+		WarmCache:      firstBool(t.WarmCache, d.WarmCache, false),
+		Screenshots:    firstBool(t.Screenshots, d.Screenshots, false),
+		StoreBodies:    firstBool(t.StoreBodies, d.StoreBodies, false),
+		Robots:         firstRobots(t.Robots, d.Robots),
+		MinInterval:    firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
+		Jitter:         firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
 		Retry: retry.Policy{
 			Attempts:   firstInt(t.RetryAttempts, d.RetryAttempts, DefaultRetryAttempts),
 			Backoff:    firstDuration(t.RetryBackoff, d.RetryBackoff, DefaultRetryBackoff),
@@ -175,24 +235,7 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 	r.Allow = diff.NewHostList(concat(c.Detection.AllowHosts, d.AllowHosts, t.AllowHosts))
 	r.Deny = diff.NewHostList(concat(c.Detection.DenyHosts, d.DenyHosts, t.DenyHosts))
 
-	headers, err := resolveHeaders(d.ExtraHeaders, t.ExtraHeaders, reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	r.ExtraHeaders = headers
-
-	r.BasicAuthUser, err = resolveSecret(firstString(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	r.BasicAuthPassword, err = resolveSecret(firstString(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
-	if err != nil {
-		return Resolved{}, err
-	}
-
-	return r, nil
+	return r
 }
 
 func resolveHeaders(defaults, overrides map[string]string, reg *secret.Registry) (map[string]secret.Value, error) {
@@ -260,6 +303,14 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		r.PathReplacements = append(r.PathReplacements, normalize.Replacement{
 			Pattern: rep.Pattern,
 			With:    rep.With,
+		})
+	}
+
+	for _, id := range c.Normalize.BodyIdentities {
+		r.BodyIdentities = append(r.BodyIdentities, normalize.BodyIdentity{
+			URLPattern: id.URLPattern,
+			Extract:    id.Extract,
+			Label:      id.Label,
 		})
 	}
 
@@ -341,13 +392,44 @@ func mergeSeverity(global, defaults, target diff.SeverityRules) diff.SeverityRul
 		ThirdPartyCookieAdded:      pick(global.ThirdPartyCookieAdded, defaults.ThirdPartyCookieAdded, target.ThirdPartyCookieAdded),
 		FirstPartyCookieAdded:      pick(global.FirstPartyCookieAdded, defaults.FirstPartyCookieAdded, target.FirstPartyCookieAdded),
 		CookieRemoved:              pick(global.CookieRemoved, defaults.CookieRemoved, target.CookieRemoved),
-		StatusBecameError:          pick(global.StatusBecameError, defaults.StatusBecameError, target.StatusBecameError),
-		StatusChanged:              pick(global.StatusChanged, defaults.StatusChanged, target.StatusChanged),
-		ConsentChanged:             pick(global.ConsentChanged, defaults.ConsentChanged, target.ConsentChanged),
-		ConsentDegraded:            pick(global.ConsentDegraded, defaults.ConsentDegraded, target.ConsentDegraded),
-		DeniedHost:                 pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
-		ScanDegraded:               pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
+		ThirdPartyStorageRejectMode: pick(global.ThirdPartyStorageRejectMode, defaults.ThirdPartyStorageRejectMode,
+			target.ThirdPartyStorageRejectMode),
+		ThirdPartyStorageAdded: pick(global.ThirdPartyStorageAdded, defaults.ThirdPartyStorageAdded,
+			target.ThirdPartyStorageAdded),
+		FirstPartyStorageAdded: pick(global.FirstPartyStorageAdded, defaults.FirstPartyStorageAdded,
+			target.FirstPartyStorageAdded),
+		StorageRemoved:    pick(global.StorageRemoved, defaults.StorageRemoved, target.StorageRemoved),
+		StatusBecameError: pick(global.StatusBecameError, defaults.StatusBecameError, target.StatusBecameError),
+		StatusChanged:     pick(global.StatusChanged, defaults.StatusChanged, target.StatusChanged),
+		ConsentChanged:    pick(global.ConsentChanged, defaults.ConsentChanged, target.ConsentChanged),
+		ConsentDegraded:   pick(global.ConsentDegraded, defaults.ConsentDegraded, target.ConsentDegraded),
+		DeniedHost:        pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
+		ScanDegraded:      pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
 	}
+}
+
+// beaconRules collects every rule that applies to a target, in the order the
+// shipped defaults, the global list and the target's own additions were
+// written. Rules add up rather than replace: a site's own session ping is
+// expressible per target without restating the shared list.
+func (c *Config) beaconRules(t *Target) []capture.Beacon {
+	var out []capture.Beacon
+
+	// The shipped list is opt-out rather than opt-in: without it the first
+	// scan of an ordinary commercial site ends on its hard timeout, and a
+	// truncated result that says nothing about the site teaches an operator
+	// to ignore the outcome.
+	if c.Capture.UseDefaultBeacons == nil || *c.Capture.UseDefaultBeacons {
+		out = append(out, capture.DefaultBeacons...)
+	}
+
+	for _, list := range [][]Beacon{c.Capture.Beacons, c.Defaults.Beacons, t.Beacons} {
+		for _, b := range list {
+			out = append(out, capture.Beacon{Host: b.Host, URLPattern: b.URLPattern})
+		}
+	}
+
+	return out
 }
 
 func concat(lists ...[]string) []string {

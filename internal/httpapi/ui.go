@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -39,18 +40,31 @@ func newUIRenderer() (*uiRenderer, error) {
 // uiFuncs are display helpers only. None of them produce raw HTML: every
 // value rendered originates from a scanned page, so html/template's
 // contextual escaping must stay in force (Story 5.11).
+// neverRendered is what an unset time.Time shows as everywhere on the page.
+const neverRendered = "never"
+
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
 		"time": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			return t.UTC().Format("2006-01-02 15:04:05 UTC")
 		},
+		// clock is the compact form of "time", for a spot on the page that has
+		// only room for the hour and minute; the full timestamp is still one
+		// hover away via the element's title.
+		"clock": func(t time.Time) string {
+			if t.IsZero() {
+				return neverRendered
+			}
+
+			return t.UTC().Format("15:04")
+		},
 		"ago": func(t time.Time) string {
 			if t.IsZero() {
-				return "never"
+				return neverRendered
 			}
 
 			d := time.Since(t)
@@ -95,6 +109,45 @@ func uiFuncs() template.FuncMap {
 			return "sev-" + string(s)
 		},
 		"add": func(a, b int) int { return a + b },
+		// filterSeverities, filterOutcomes and filterModes enumerate the
+		// values the target list's filter panel offers (Story 5.22, AC1).
+		// They live here rather than as constants in the template so the
+		// options can never drift from the types the rest of the interface
+		// already renders.
+		"filterSeverities": func() []diff.Severity {
+			return []diff.Severity{
+				diff.SeverityInfo, diff.SeverityLow, diff.SeverityMedium,
+				diff.SeverityHigh, diff.SeverityCritical,
+			}
+		},
+		"filterOutcomes": func() []model.ConsentOutcome {
+			return []model.ConsentOutcome{
+				model.OutcomeApplied, model.OutcomeNecessaryOnly, model.OutcomeNotNeeded,
+				model.OutcomeBannerVisible, model.OutcomeUnverified, model.OutcomeFailed,
+			}
+		},
+		"filterModeValues": func() []model.ConsentMode {
+			return []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
+		},
+		// rowModes turns a modeRow's display label ("reject", or the folded
+		// "none / reject") into the space-separated mode tokens a filter
+		// checkbox value can match against — a folded row represents both
+		// modes it agreed on, not only the one its Series happens to carry
+		// (Story 5.22, AC1).
+		"rowModes": func(label string) string {
+			return strings.ReplaceAll(label, " / ", " ")
+		},
+		// rowOutcome reads the consent outcome for a target-list row's data
+		// attribute. A series with no last scan yet has none to report, and
+		// an empty attribute correctly matches no outcome filter rather than
+		// a specific one (Story 5.22, AC1).
+		"rowOutcome": func(sv SeriesView) model.ConsentOutcome {
+			if sv.LastScan == nil {
+				return ""
+			}
+
+			return sv.LastScan.ConsentOutcome
+		},
 	}
 }
 
@@ -104,24 +157,33 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /", s.handleUIDashboard)
 	s.mux.HandleFunc("GET /login", s.handleUILogin)
 	s.mux.HandleFunc("POST /login", s.handleUILoginSubmit)
+	s.mux.HandleFunc("POST /api/v1/ui/login-token", s.handleMintLoginToken)
+	s.mux.HandleFunc("GET /login/otp/{token}", s.handleRedeemLoginToken)
 	s.mux.HandleFunc("GET /targets/{target}/{mode}", s.handleUISeries)
 	s.mux.HandleFunc("GET /results/{target}/{mode}/{scan}", s.handleUIResult)
 	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
 
 	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
+	s.mux.HandleFunc("POST /filter", s.handleUIFilter)
 
 	s.mux.HandleFunc("POST /approve/{target}/{mode}", s.handleUIApprove)
 	s.mux.HandleFunc("POST /rescan/{target}/{mode}", s.handleUIRescan)
+
+	s.mux.HandleFunc("GET "+urlScanPath, s.handleUIScanURL)
+	s.mux.HandleFunc("POST "+urlScanPath, s.handleUIScanURLSubmit)
 }
 
 // page is the data every template receives.
 type page struct {
-	Title      string
-	Version    string
-	ReadOnly   bool
-	AllowScan  bool
-	ConfigPath string
+	Title     string
+	Version   string
+	ReadOnly  bool
+	AllowScan bool
+	// AllowURLScan offers the page where an address that is not a configured
+	// target is typed in (Story 5.27).
+	AllowURLScan bool
+	ConfigPath   string
 	// ShareEnabled offers the button that mints a link to one result
 	// (Story 5.19). Off unless sharing is configured, so the interface never
 	// shows an action that would fail.
@@ -181,6 +243,7 @@ func (s *Server) renderWith(
 		Version:      s.opts.Version,
 		ReadOnly:     s.opts.ReadOnly,
 		AllowScan:    s.opts.AllowAdHocScan && !s.opts.ReadOnly,
+		AllowURLScan: s.urlScanEnabled(),
 		ConfigPath:   s.deps.ConfigPath,
 		ShareEnabled: s.sharingEnabled(),
 		CSRF:         s.csrfToken(),
@@ -256,11 +319,25 @@ func sortIntervals(list []time.Duration) {
 
 // dashboardData is the target overview.
 type dashboardData struct {
-	Targets []TargetView
+	Targets []targetRow
 	Stale   int
 	Ready   bool
 	Reason  string
 	Jobs    []scheduleRow
+
+	// The board's display shape. Total is what is configured and Shown is
+	// what survived the filter: the page states both, because a watcher that
+	// reports "6 targets" while eight are configured has misrepresented
+	// itself.
+	Groups []envGroup
+	Filter string
+	Total  int
+	Shown  int
+
+	// HostsOnly is the viewer's remembered choice to narrow every series'
+	// Severity to a host appearing, disappearing, or denied — set before
+	// targetViews runs, not filtered afterwards (watchboard.go, hostsOnly).
+	HostsOnly bool
 
 	// Running is every scan in flight, across all targets, so the dashboard
 	// answers "is wsaw doing anything right now" without drilling in
@@ -269,6 +346,126 @@ type dashboardData struct {
 	// Tracked is false where this instance does not run scans at all, which
 	// must read differently from "nothing is running".
 	Tracked bool
+}
+
+// targetRow is one target's compact display on the target list: its state
+// (also what the JSON API serves as TargetView) plus how that state groups
+// into rows for a reader. The grouping is a display decision, not a fact
+// about the target, so it lives here rather than on TargetView, which stays
+// what it already was — the UI gets no data the API does not also have
+// (Story 5.8, AC4).
+type targetRow struct {
+	TargetView
+
+	// Rows is the target list's rendering of Series: one row per consent
+	// mode, except "none" and "reject" fold into a single row when their
+	// last scans agreed on every signal the list shows. The two usually
+	// produce the same result, so a reader should only have to look twice
+	// when they didn't. This folding is not yet written into Story 5.8 — a
+	// deviation made on explicit request in the session that added it,
+	// flagged per AGENTS.md §1.
+	Rows []modeRow
+
+	// Severity is the worst Severity across the target's series, condensed
+	// to a single per-target badge (Story 5.8, AC1: "open findings by
+	// severity"). Never empty: newTargetRow defaults it to SeverityInfo, so
+	// the rail's badge always has a real word to show rather than needing a
+	// separate no-scans-yet case (design_handoff_target_tile).
+	Severity diff.Severity
+}
+
+// modeRow is one displayed row of a target's consent modes: either a single
+// mode's series, or the series "none" and "reject" agreed on — the fold
+// picks either one to show, since by definition they show the same thing.
+type modeRow struct {
+	Label  string
+	Series SeriesView
+
+	// NextRun and LastRun are this series' schedule entry, or zero where the
+	// daemon has none. They are what the tile's time line and cycle bar are
+	// computed from (watchboard_cycle.go); the board derives no cadence of
+	// its own, so it cannot claim a rhythm the daemon is not keeping.
+	NextRun time.Time
+	LastRun time.Time
+
+	// Folded marks the "none / reject" row, which covers two mode columns
+	// and therefore keeps an inline mode label of its own.
+	Folded bool
+}
+
+// newTargetRow groups a TargetView's series into modeRows and rolls its
+// series up to a single worst Severity.
+func newTargetRow(v TargetView) targetRow {
+	row := targetRow{TargetView: v, Rows: modeRows(v.Series)}
+
+	for _, sv := range v.Series {
+		if sv.Severity.Rank() > row.Severity.Rank() {
+			row.Severity = sv.Severity
+		}
+	}
+
+	if row.Severity == "" {
+		row.Severity = diff.SeverityInfo
+	}
+
+	return row
+}
+
+// modeRows groups a target's series for compact display. See targetRow.Rows.
+func modeRows(series []SeriesView) []modeRow {
+	var (
+		none, reject *SeriesView
+		rest         []SeriesView
+		rows         []modeRow
+	)
+
+	for i := range series {
+		switch series[i].Mode {
+		case model.ConsentNone:
+			none = &series[i]
+		case model.ConsentReject:
+			reject = &series[i]
+		default:
+			rest = append(rest, series[i])
+		}
+	}
+
+	switch {
+	case none != nil && reject != nil && sameOutcome(none.LastScan, reject.LastScan):
+		rows = append(rows, modeRow{Label: "none / reject", Series: *none, Folded: true})
+	case none != nil && reject != nil:
+		// They disagree: both stay fully visible rather than picking one to
+		// show and burying the other, since the disagreement is itself the
+		// finding worth noticing.
+		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
+		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
+	case none != nil:
+		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
+	case reject != nil:
+		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
+	}
+
+	for _, sv := range rest {
+		rows = append(rows, modeRow{Label: string(sv.Mode), Series: sv})
+	}
+
+	return rows
+}
+
+// sameOutcome reports whether two series' last scans are indistinguishable
+// on every signal the target list shows: termination, consent outcome, and
+// the three request counts. Two never-scanned series count as the same; one
+// scanned and one not never does.
+func sameOutcome(a, b *store.Summary) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+
+	return a.Termination == b.Termination &&
+		a.ConsentOutcome == b.ConsentOutcome &&
+		a.Requests == b.Requests &&
+		a.ThirdPartyDomains == b.ThirdPartyDomains &&
+		a.PreConsentDomains == b.PreConsentDomains
 }
 
 type scheduleRow struct {
@@ -286,11 +483,18 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Targets: s.targetViews(),
-		Ready:   true,
-		Reason:  "readiness is not tracked",
-		Running: s.running(),
-		Tracked: s.deps.Running != nil,
+		Ready:     true,
+		Reason:    "readiness is not tracked",
+		Running:   s.running(),
+		Tracked:   s.deps.Running != nil,
+		HostsOnly: hostsOnly(r),
+	}
+
+	// Tile: the board ranks a scan's changes by what a board is for, not by
+	// the notifier's rules (Story 5.30). The JSON API keeps the engine's own
+	// severity for the same comparison (Tenet 16).
+	for _, v := range s.targetViews(severityView{HostsOnly: data.HostsOnly, Tile: true}) {
+		data.Targets = append(data.Targets, newTargetRow(v))
 	}
 
 	for _, t := range data.Targets {
@@ -311,7 +515,14 @@ func (s *Server) handleUIDashboard(w http.ResponseWriter, r *http.Request) {
 				Target: j.Target, Mode: j.Mode, NextRun: j.NextRun, LastRun: j.LastRun,
 			})
 		}
+
+		sort.SliceStable(data.Jobs, func(i, k int) bool {
+			return data.Jobs[i].NextRun.Before(data.Jobs[k].NextRun)
+		})
 	}
+
+	data.attachSchedule()
+	data.shapeWatchboard(r)
 
 	s.renderPage(w, r, "dashboard.html", "wsaw", data, len(data.Running))
 }
@@ -451,6 +662,12 @@ type resultData struct {
 	Diff   *diff.Report
 	Hosts  []model.HostSummary
 	Counts map[string]int
+
+	// Changes is the Diff grouped into the hosts / requests / other families
+	// the section's summary line counts and its chips filter by
+	// (Story 5.29). It is display state derived from Diff, never a second
+	// source of truth about what changed.
+	Changes changesView
 
 	// Screenshots are the scan's evidence images, before and after the
 	// consent interaction (Story 5.17).
@@ -613,6 +830,12 @@ func collapseUninteracted(res *model.Result, views []screenshotView) []screensho
 		case res.Consent.Outcome == model.OutcomeFailed:
 			views[before].Note = "the consent interaction failed and left the page " +
 				"unchanged: the after frame is the same image, byte for byte"
+		case res.Consent.Outcome == model.OutcomeBannerVisible:
+			views[before].Note = "the CMP recorded the requested choice, but the banner " +
+				"was still displayed: the after frame is the same image, byte for byte"
+		case res.Consent.Outcome == model.OutcomeNecessaryOnly:
+			views[before].Note = "this banner has no reject control; wsaw limited consent to strictly " +
+				"necessary categories instead, and the after frame is the same image, byte for byte"
 		default:
 			views[before].Note = "the consent interaction left the page looking " +
 				"identical: the after frame is the same image, byte for byte"
@@ -659,6 +882,13 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 		FilterType:  r.URL.Query().Get("type"),
 		FilterParty: r.URL.Query().Get("party"),
 		FilterPhase: r.URL.Query().Get("phase"),
+	}
+
+	// The diff is grouped for display only: the report itself is untouched,
+	// and the section renders every row it holds whatever the filter says
+	// (Story 5.29).
+	if data.Diff != nil {
+		data.Changes = newChangesView(data.Diff, r.URL.Query())
 	}
 
 	for i := range res.Requests {
@@ -842,13 +1072,13 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if allowed, reason := s.writeAllowed(); !allowed {
-		s.uiRedirectError(w, r, "/", reason)
+		s.rescanRefused(w, r, "/", reason, http.StatusForbidden)
 
 		return
 	}
 
 	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
-		s.uiRedirectError(w, r, "/", "ad-hoc scanning is disabled")
+		s.rescanRefused(w, r, "/", "ad-hoc scanning is disabled", http.StatusForbidden)
 
 		return
 	}
@@ -859,16 +1089,25 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.isConfiguredTarget(target, mode) {
-		s.uiRedirectError(w, r, "/", "no such target and consent mode is configured")
+		s.rescanRefused(w, r, "/",
+			"no such target and consent mode is configured", http.StatusNotFound)
 
 		return
 	}
 
-	dest := "/targets/" + target + "/" + string(mode)
+	// Back to the page the button was pressed on, which the form says
+	// (Story 5.26, AC1). A press on the watchboard returns to the board; a
+	// press with nothing to say returns to the target's history page, as
+	// every press did before that story.
+	dest := rescanReturn(r.FormValue("from"), target, mode)
 
 	if len(runningFor(s.running(), target, mode)) > 0 {
-		s.uiRedirectError(w, r, dest,
-			"A scan of this target and consent mode is already running. Its progress is shown below.")
+		// Worded for both destinations: "shown below" was true only of the
+		// history page this used to be the one way back to (AC3).
+		s.rescanRefused(w, r, dest,
+			"A scan of this target and consent mode is already running. "+
+				"It appears as pending until it finishes.",
+			http.StatusConflict)
 
 		return
 	}
@@ -893,8 +1132,10 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.uiRedirectOK(w, r, dest,
-		"Scan started. It appears as pending below and this page refreshes until it finishes.")
+	// Named, because a board shows many targets and the reader has to know
+	// which of them they just started (AC3).
+	s.rescanStarted(w, r, dest,
+		"Scan started for "+target+" ("+string(mode)+"). It appears as pending until it finishes.")
 }
 
 // adHocScanBudget bounds a scan started from the web interface. It is generous
@@ -932,6 +1173,19 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setSessionCookie(w)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sessionCookieTTL is how long a browser session lasts once signed in,
+// whichever door it came through.
+const sessionCookieTTL = 12 * time.Hour
+
+// setSessionCookie starts a browser session. Shared by the login form
+// (handleUILoginSubmit) and the one-time link a CLI-opened browser redeems
+// (handleRedeemLoginToken, Story 5.21) — both end up authenticating the same
+// browser the same way.
+func (s *Server) setSessionCookie(w http.ResponseWriter) {
 	// Secure is set only when wsaw is serving TLS. The default listener is
 	// loopback over plain HTTP, where a Secure cookie would simply never be
 	// sent and the session would appear broken; HttpOnly and SameSite=Strict
@@ -943,10 +1197,8 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   s.opts.TLSCert != "",
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int((12 * time.Hour).Seconds()),
+		MaxAge:   int(sessionCookieTTL.Seconds()),
 	})
-
-	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Result, bool) {
@@ -969,7 +1221,7 @@ func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Re
 	}
 
 	if err != nil {
-		s.uiError(w, r, http.StatusNotFound, err.Error())
+		s.uiStoreError(w, r, err)
 
 		return nil, false
 	}
@@ -993,6 +1245,26 @@ func uiTargetMode(w http.ResponseWriter, r *http.Request) (string, model.Consent
 func (s *Server) uiError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	w.WriteHeader(status)
 	s.render(w, r, "error.html", "Error", msg)
+}
+
+// uiStoreError renders a store failure at the status it deserves.
+//
+// A result that is not there and a store that cannot be read are different
+// facts. Reporting both as "not found" tells a reviewer that a scan does not
+// exist when the truth is that wsaw cannot currently tell — the same mistake
+// as letting an empty result set read as a clean site (Tenet 5). It also
+// misleads whatever is watching the deployment, because a store outage looks
+// like ordinary 404 traffic.
+//
+// This is the web interface's counterpart to writeStoreError, which the API
+// and the shared views already use.
+func (s *Server) uiStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, store.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+
+	s.uiError(w, r, status, err.Error())
 }
 
 func (s *Server) uiRedirectOK(w http.ResponseWriter, r *http.Request, dest, msg string) {

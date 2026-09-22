@@ -1,11 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/scanner"
 )
 
 // spread used to take the hash modulo the window. Sum32 read as nanoseconds
@@ -83,5 +88,103 @@ func TestSpreadIsNotCappedAtTheHashWidth(t *testing.T) {
 
 	if widest <= oldCeil {
 		t.Errorf("widest delay was %v, still within the %v the modulo used to cap at", widest, oldCeil)
+	}
+}
+
+// A schedule kept in monotonic time measures awake time rather than elapsed
+// time: the monotonic clock stops while the host is suspended, so after a
+// laptop sleeps for an hour every job waits that hour out again while the API
+// reports a nextRun that has long passed. Go compares two timestamps that both
+// carry a monotonic reading by that reading alone, so the only way to keep the
+// schedule on the wall clock is for it to hold no monotonic reading at all.
+//
+// These tests pin exactly that. The divergence between the two clocks cannot
+// be manufactured inside a test process — only the host suspending produces it
+// — so the invariant is what gets checked instead of the symptom.
+func hasMonotonic(t time.Time) bool { return t != t.Round(0) }
+
+func monotonicNow(t *testing.T) time.Time {
+	t.Helper()
+
+	now := time.Now()
+	if !hasMonotonic(now) {
+		t.Skip("time.Now carries no monotonic reading on this platform")
+	}
+
+	return now
+}
+
+func schedulingTarget() config.Resolved {
+	return config.Resolved{
+		Name:         "example",
+		URL:          "https://example.test/",
+		ConsentModes: []model.ConsentMode{model.ConsentNone},
+		Interval:     time.Hour,
+		MinInterval:  30 * time.Minute,
+		Jitter:       10 * time.Minute,
+	}
+}
+
+func TestScheduleTimesCarryNoMonotonicReading(t *testing.T) {
+	t.Parallel()
+
+	now := monotonicNow(t)
+
+	jobs, err := buildJobs([]config.Resolved{schedulingTarget()}, now, false,
+		func(string, model.ConsentMode) (time.Time, bool) {
+			return now.Add(-2 * time.Hour), true
+		})
+	if err != nil {
+		t.Fatalf("buildJobs: %v", err)
+	}
+
+	j := jobs[0]
+
+	if hasMonotonic(j.next) {
+		t.Errorf("next after buildJobs carries a monotonic reading: %v", j.next)
+	}
+
+	if hasMonotonic(j.lastRun) {
+		t.Errorf("lastRun seeded from the store carries a monotonic reading: %v", j.lastRun)
+	}
+
+	j.advance(now)
+
+	if hasMonotonic(j.next) {
+		t.Errorf("next after advance carries a monotonic reading: %v", j.next)
+	}
+
+	j.scheduleRetry(now, time.Minute, "network unreachable")
+
+	if hasMonotonic(j.next) {
+		t.Errorf("next after scheduleRetry carries a monotonic reading: %v", j.next)
+	}
+}
+
+type stubScanner struct{}
+
+func (stubScanner) Scan(context.Context, config.Resolved, model.ConsentMode) (scanner.Outcome, error) {
+	return scanner.Outcome{}, nil
+}
+
+func TestMarkStartedRecordsWallClockTime(t *testing.T) {
+	t.Parallel()
+
+	now := monotonicNow(t)
+
+	d, err := New(stubScanner{}, nil, []config.Resolved{schedulingTarget()}, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	j := d.jobs[0]
+	d.markStarted(j, now)
+
+	if hasMonotonic(j.lastRun) {
+		t.Errorf("lastRun carries a monotonic reading: %v", j.lastRun)
+	}
+
+	if hasMonotonic(j.next) {
+		t.Errorf("next carries a monotonic reading: %v", j.next)
 	}
 }
