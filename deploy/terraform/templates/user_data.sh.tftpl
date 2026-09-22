@@ -1,0 +1,108 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee /var/log/wsaw-user-data.log) 2>&1
+
+# Podman isn't in AL2023's base repo; it's in SPAL (Supplementary Packages
+# for Amazon Linux), which isn't enabled by default either. Enabling it is
+# its own dnf transaction: dnf only sees the repo spal-release adds on the
+# next invocation, not within the same command that installs it.
+#
+# shadow-utils (useradd/usermod), util-linux (runuser) and tar/gzip (the
+# Caddy download below) are on every real AL2023 AMI already; they're named
+# explicitly anyway so this script doesn't depend on that being true of
+# whatever base it runs against.
+dnf install -y spal-release
+dnf install -y podman unzip shadow-utils util-linux tar gzip
+
+# AL2023's own repos don't carry the AWS CLI under a stable package name, so
+# install it the way AWS documents for every distro: the official bundle.
+if ! command -v aws >/dev/null; then
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+fi
+
+id wsaw >/dev/null 2>&1 || useradd --system --uid 10001 --create-home --home-dir /var/lib/wsaw --shell /usr/sbin/nologin wsaw
+usermod --add-subuids 200000-265535 --add-subgids 200000-265535 wsaw || true
+
+install -o wsaw -g wsaw -m 0700 -d /var/lib/wsaw
+install -m 0755 -d /etc/wsaw
+
+cat > /etc/wsaw/wsaw.yaml <<'WSAW_CONFIG_EOF'
+${wsaw_config_yaml}
+WSAW_CONFIG_EOF
+chown root:wsaw /etc/wsaw/wsaw.yaml
+chmod 0640 /etc/wsaw/wsaw.yaml
+
+: > /etc/wsaw/wsaw.env
+chmod 0600 /etc/wsaw/wsaw.env
+%{ for name, param_name in secret_param_names ~}
+aws ssm get-parameter --region "${aws_region}" --name "${param_name}" --with-decryption \
+  --query Parameter.Value --output text > /etc/wsaw/wsaw.env.value
+printf '%s=%s\n' "${name}" "$(cat /etc/wsaw/wsaw.env.value)" >> /etc/wsaw/wsaw.env
+rm -f /etc/wsaw/wsaw.env.value
+%{ endfor ~}
+chown root:wsaw /etc/wsaw/wsaw.env
+
+aws s3 cp "${wsaw_artifact_s3_uri}" /usr/local/bin/wsaw --region "${aws_region}"
+chmod 0755 /usr/local/bin/wsaw
+
+%{ if enable_swap ~}
+if [ ! -f /swapfile ]; then
+  fallocate -l ${swap_size_mb}M /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+%{ endif ~}
+
+cat > /etc/systemd/system/wsaw.service <<'WSAW_UNIT_EOF'
+${wsaw_unit}
+WSAW_UNIT_EOF
+
+loginctl enable-linger wsaw
+systemctl start "user@$(id -u wsaw).service"
+
+# Rootless podman's first invocation configures its per-user storage; do
+# that once here, up front, so wsaw's first scan isn't also podman's first
+# run.
+runuser -u wsaw -- env XDG_RUNTIME_DIR="/run/user/$(id -u wsaw)" \
+  podman pull "${browser_image}"
+
+systemctl daemon-reload
+systemctl enable --now wsaw.service
+
+%{ if enable_proxy ~}
+id caddy >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
+install -o caddy -g caddy -m 0750 -d /var/lib/caddy
+install -m 0755 -d /etc/caddy
+
+# Caddy has no dnf package here (AL2023's SPAL repo doesn't carry it, and
+# its own COPR repo targets Fedora releases AL2023 doesn't match), so fetch
+# the official static binary the same deliberate way as the AWS CLI above.
+if ! command -v caddy >/dev/null; then
+  curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest \
+    | grep -o '"browser_download_url": *"[^"]*linux_arm64\.tar\.gz"' \
+    | head -n1 \
+    | cut -d'"' -f4 \
+    > /tmp/caddy_url
+  curl -fsSL "$(cat /tmp/caddy_url)" -o /tmp/caddy.tar.gz
+  tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
+  chmod 0755 /usr/local/bin/caddy
+  rm -f /tmp/caddy.tar.gz /tmp/caddy_url
+fi
+
+cat > /etc/caddy/Caddyfile <<'CADDYFILE_EOF'
+${caddyfile_content}
+CADDYFILE_EOF
+chown -R caddy:caddy /etc/caddy
+
+cat > /etc/systemd/system/caddy.service <<'CADDY_UNIT_EOF'
+${caddy_unit}
+CADDY_UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable --now caddy.service
+%{ endif ~}

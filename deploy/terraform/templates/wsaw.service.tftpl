@@ -1,0 +1,65 @@
+[Unit]
+Description=wsaw — website asset watcher
+Documentation=https://github.com/pflege-de-labs/wsaw
+After=network-online.target user@10001.service
+Wants=network-online.target
+BindsTo=user@10001.service
+
+[Service]
+Type=simple
+User=wsaw
+Group=wsaw
+
+Environment=XDG_RUNTIME_DIR=/run/user/10001
+EnvironmentFile=-/etc/wsaw/wsaw.env
+
+ExecStart=/usr/local/bin/wsaw run --config /etc/wsaw/wsaw.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+Restart=on-failure
+RestartSec=10s
+
+StateDirectory=wsaw
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/wsaw
+
+# Hardened like deploy/wsaw.service, minus the assumptions that don't hold
+# here: the browser runs in a rootless Podman container (browser.runtime:
+# podman in wsaw.yaml), not as a local process, so wsaw itself needs no
+# device or namespace access of its own beyond what talking to the rootless
+# podman socket requires.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=no
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+LimitNOFILE=8192
+TasksMax=512
+# Left headroom below total RAM for the OS, sshd/SSM agent and the swap file
+# this stack adds; the browser container has its own separate memory limit
+# (browser.container.memory in wsaw.yaml).
+MemoryMax=${memory_max_mb}M
+
+[Install]
+WantedBy=multi-user.target
