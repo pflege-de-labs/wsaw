@@ -312,9 +312,9 @@ const maxListedArtifacts = 20
 // not on it because the store is closed through the closure openForMaintenance
 // builds, which holds the concrete handle.
 type maintenanceStore interface {
-	Prune(ctx context.Context, now time.Time, r store.Retention) (store.PruneStats, error)
+	Prune(ctx context.Context, trigger string, now time.Time, r store.Retention) (store.PruneStats, error)
 	PlanPrune(ctx context.Context, now time.Time, r store.Retention) (store.PruneStats, error)
-	Sweep(ctx context.Context, now time.Time, opts store.SweepOptions) (store.SweepStats, error)
+	Sweep(ctx context.Context, trigger string, now time.Time, opts store.SweepOptions) (store.SweepStats, error)
 	PlanSweep(ctx context.Context, now time.Time, opts store.SweepOptions) (store.SweepStats, error)
 	RebuildIndex(ctx context.Context, opts store.RebuildOptions) (store.RebuildStats, error)
 }
@@ -482,7 +482,7 @@ func prune(ctx context.Context, m *maintenance, retention store.Retention) (stor
 		return m.store.PlanPrune(ctx, time.Now(), retention)
 	}
 
-	return m.store.Prune(ctx, time.Now(), retention)
+	return m.store.Prune(ctx, store.TriggerCLI, time.Now(), retention)
 }
 
 // describeRetention states the policy in the words the configuration uses, so
@@ -740,7 +740,7 @@ func sweep(ctx context.Context, m *maintenance, opts store.SweepOptions) (store.
 		return m.store.PlanSweep(ctx, time.Now(), opts)
 	}
 
-	return m.store.Sweep(ctx, time.Now(), opts)
+	return m.store.Sweep(ctx, store.TriggerCLI, time.Now(), opts)
 }
 
 // cmdStoreRebuildIndex derives the index from the documents in the bucket,

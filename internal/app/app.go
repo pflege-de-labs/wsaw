@@ -928,7 +928,7 @@ func (a *App) PruneLoop(ctx context.Context) {
 // other store degradation does — one nobody can see is one nobody fixes
 // (Tenet 8).
 func (a *App) pruneOnce(ctx context.Context, now time.Time, retention store.Retention) {
-	stats, err := a.Store.Prune(ctx, now, retention)
+	stats, err := a.Store.Prune(ctx, store.TriggerSchedule, now, retention)
 
 	// Recorded before the failure is handled, and from the same stats either
 	// way. A prune deletes its rows in a committed transaction and collects
@@ -948,6 +948,10 @@ func (a *App) pruneOnce(ctx context.Context, now time.Time, retention store.Rete
 
 		return
 	}
+
+	// Only on this path: the gauge answers "how long ago did a prune last
+	// succeed", and a run that errored did not (Story 4.11, AC8).
+	a.Metrics.PruneSucceeded(now)
 
 	if stats.ArtifactsFailed > 0 {
 		a.Logger.Warn("some unreferenced artifacts could not be deleted and were left for the next sweep",

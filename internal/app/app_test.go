@@ -387,6 +387,81 @@ func TestPruneLoopReturnsImmediatelyWithNoRetentionPolicy(t *testing.T) {
 	}
 }
 
+// TestPruneOnceRecordsAScheduleTriggeredReceiptAndUpdatesTheGauge is the
+// scheduled half of Story 4.11, AC7 and AC8: PruneLoop's own prune records
+// itself with trigger "schedule", and a prune that succeeds moves the
+// last-successful-prune gauge.
+func TestPruneOnceRecordsAScheduleTriggeredReceiptAndUpdatesTheGauge(t *testing.T) {
+	t.Parallel()
+
+	cfg := minimalConfig(t)
+
+	s, err := store.OpenSQL(t.Context(), store.Options{
+		Path:        cfg.Store.Path,
+		ArtifactDir: filepath.Join(filepath.Dir(cfg.Store.Path), "artifacts"),
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("OpenSQL: %v", err)
+	}
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	now := time.Now()
+
+	res := &model.Result{
+		SchemaVersion: model.SchemaVersion,
+		ScanID:        "scan-1",
+		Target:        "site",
+		URL:           "https://example.test/",
+		ConsentMode:   model.ConsentReject,
+		StartedAt:     now.Add(-time.Hour),
+		FinishedAt:    now.Add(-time.Hour).Add(time.Second),
+		Termination:   model.TermIdle,
+		Consent:       model.Consent{Outcome: model.OutcomeApplied},
+	}
+
+	if err := s.PutResult(res); err != nil {
+		t.Fatalf("PutResult: %v", err)
+	}
+
+	a := &App{
+		Config:  cfg,
+		Logger:  discardLogger(),
+		Metrics: metrics.New("test"),
+		Store:   s,
+	}
+
+	a.pruneOnce(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 0}})
+
+	run, found, err := s.LastMaintenanceRun(t.Context(), store.MaintenanceKindPrune)
+	if err != nil {
+		t.Fatalf("LastMaintenanceRun: %v", err)
+	}
+
+	if !found {
+		t.Fatal("pruneOnce left no receipt")
+	}
+
+	if run.Trigger != store.TriggerSchedule {
+		t.Errorf("Trigger = %q, want %q", run.Trigger, store.TriggerSchedule)
+	}
+
+	var out strings.Builder
+
+	if err := a.Metrics.WritePrometheus(&out); err != nil {
+		t.Fatalf("WritePrometheus: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "wsaw_last_successful_prune_timestamp_seconds") {
+		t.Error("metrics output has no last-successful-prune gauge")
+	}
+
+	if strings.Contains(out.String(), "wsaw_last_successful_prune_timestamp_seconds 0\n") {
+		t.Error("last-successful-prune gauge is still 0 after a prune that succeeded")
+	}
+}
+
 func TestPruneLoopReturnsOnContextCancel(t *testing.T) {
 	cfg := config.New()
 	cfg.Store.MaxPerSeries = 10 // a policy so the loop actually starts a ticker

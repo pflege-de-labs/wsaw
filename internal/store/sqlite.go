@@ -3,14 +3,17 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	// The CGo-free SQLite driver. It is a large dependency — a transpiled
 	// SQLite — and that is the price of keeping CGo off: a driver needing CGo
-	// would end cross-compilation to four platforms from one machine.
-	_ "modernc.org/sqlite"
+	// would end cross-compilation to four platforms from one machine. Named,
+	// not blank, because alreadyApplied below needs its *sqlite.Error to tell
+	// a duplicate-column error apart from every other one SQLITE_ERROR covers.
+	"modernc.org/sqlite"
 )
 
 // sqliteDialect is the default store: an embedded file, no server to run.
@@ -245,12 +248,86 @@ func (sqliteDialect) migrations() [][]string {
 				 where artifact_ref <> ''
 				    on conflict do nothing`,
 		},
+
+		// Version 6 (Story 4.11): a receipt for every prune and every sweep.
+		//
+		// Shaped like the audit table above rather than shredded into columns:
+		// the run's own stats struct is the record, encoded as JSON and
+		// decoded straight back into PruneStats or SweepStats on read, so a
+		// column here can never drift from what the struct already reports.
+		// kind and trigger are the two facts a listing needs without decoding
+		// the document, the same reason results carries termination and
+		// consent_outcome as columns of their own (Story 8.3).
+		{
+			`create table if not exists maintenance_runs (
+				id          integer primary key autoincrement,
+				kind        text    not null,
+				trigger     text    not null,
+				started_at  integer not null,
+				finished_at integer not null,
+				error       text    not null default '',
+				stats       text    not null
+			) strict`,
+
+			// Every read is "the newest N runs of this kind", so the index
+			// leads with kind and orders by id — an autoincrement primary key
+			// already sorts newest-first by insertion order, and every run is
+			// inserted once and never updated.
+			`create index if not exists maintenance_runs_kind
+				on maintenance_runs (kind, id desc)`,
+		},
+
+		// Version 7 (Story 5.31): how large each referenced artifact is.
+		//
+		// result_artifacts (version 4) already records which screenshots and
+		// bodies a result names, for the sweep to decide what a deletion
+		// orphans, but not how large any of them are — the size lived only in
+		// the bucket object, one StatArtifact call away and priced like every
+		// other bucket read. The size is already known for free at the moment
+		// a result's references are written (model.Artifact.Bytes for a
+		// screenshot, model.Asset.BodyStoredSize for a stored body), so this
+		// records it there instead of re-deriving it from the bucket on every
+		// listing — the same argument document_size already makes for the
+		// document itself (Story 8.2, AC2).
+		//
+		// The document's own row in this table keeps bytes at 0 deliberately:
+		// its size is already the results row's own document_size, and
+		// summing this column is never meant to include it (Story 5.31, AC2).
+		//
+		// Rows written before this migration default to 0 too, which reads
+		// identically to "the document's own row" — both are reported as
+		// "not recorded" by the row count against results, never silently
+		// folded into a total as zero bytes (Story 5.31, AC5).
+		{
+			`alter table result_artifacts add column bytes integer not null default 0`,
+		},
 	}
 }
 
-// alreadyApplied is always false: SQLite's DDL is transactional here, so a
-// statement either applied with its version record or did neither.
-func (sqliteDialect) alreadyApplied(error) bool { return false }
+// alreadyApplied is false for almost every statement: SQLite's DDL is
+// transactional here, so a `create table if not exists` or an `on conflict do
+// nothing` either applied with its version record or did neither, and no
+// dialect-level check is needed to tell the two apart.
+//
+// The exception is `alter table ... add column` (version 7): this build's
+// SQLite predates `ADD COLUMN IF NOT EXISTS`, so the statement cannot say it
+// is idempotent the way every other migration here does. If it commits and
+// the version record that should follow is lost — a crash, or a store's
+// version deliberately rewound to replay a later migration — the next start
+// meets "duplicate column name" and must recognise its own prior work rather
+// than refuse to open a store whose schema is already correct, the same
+// accident MySQL's errDupFieldName absorbs. SQLite's result code for it is
+// the generic SQLITE_ERROR, so the message is the only way to tell it apart
+// from every other statement that code covers.
+func (sqliteDialect) alreadyApplied(err error) bool {
+	var sqliteErr *sqlite.Error
+
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+
+	return strings.Contains(sqliteErr.Error(), "duplicate column name")
+}
 
 // hasColumn reads SQLite's own table description. pragma_table_info is the
 // table-valued form of the pragma, so the table name is a parameter rather

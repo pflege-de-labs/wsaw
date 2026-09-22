@@ -598,7 +598,7 @@ func TestBaselineSurvivesRetentionPruning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestPruneByCount(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 3})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxPerSeries: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +662,7 @@ func TestPruneWithNoRetentionKeepsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{})
 	if err != nil {
 		t.Fatal(err)
 	}

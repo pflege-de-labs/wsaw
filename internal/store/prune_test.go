@@ -53,7 +53,7 @@ func TestPruneKeepPolicyThinsHistory(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Daily: 2, Weekly: 3, Location: time.UTC}})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{Keep: &store.Keep{Daily: 2, Weekly: 3, Location: time.UTC}})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPruneKeepsTheUsableScanOfADay(t *testing.T) {
 		}
 	}
 
-	if _, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Daily: 1, Location: time.UTC}}); err != nil {
+	if _, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{Keep: &store.Keep{Daily: 1, Location: time.UTC}}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
@@ -166,13 +166,13 @@ func TestPruneIsIdempotent(t *testing.T) {
 
 	r := store.Retention{Keep: &store.Keep{Last: 1, Daily: 2, Location: time.UTC}}
 
-	if _, err := s.Prune(t.Context(), now, r); err != nil {
+	if _, err := s.Prune(t.Context(), store.TriggerCLI, now, r); err != nil {
 		t.Fatalf("first Prune: %v", err)
 	}
 
 	first := storedIDs(t, s)
 
-	stats, err := s.Prune(t.Context(), now, r)
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, now, r)
 	if err != nil {
 		t.Fatalf("second Prune: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestPruneDeletesInBatches(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 1}})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{Keep: &store.Keep{Last: 1}})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestPruneKeepsEverySeriesSeparate(t *testing.T) {
 		}
 	}
 
-	if _, err := s.Prune(t.Context(), now, store.Retention{Keep: &store.Keep{Last: 1}}); err != nil {
+	if _, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{Keep: &store.Keep{Last: 1}}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 

@@ -680,7 +680,7 @@ func TestASweepCollectsNothingWhileARebuildIsInProgress(t *testing.T) {
 
 	markRebuildInProgress(t, evidence(t, opts))
 
-	stats, err := s.Sweep(t.Context(), time.Now().Add(48*time.Hour), store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(48*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestARebuildDoesNotPutBackAResultRetentionRemoved(t *testing.T) {
 		t.Fatalf("approving scan-old as the baseline: %v", err)
 	}
 
-	pruned, err := s.Prune(t.Context(), now, store.Retention{MaxAge: 30 * 24 * time.Hour})
+	pruned, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{MaxAge: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -1152,7 +1152,7 @@ func TestASweepIgnoresARebuildMarkerThatOutlivedItsRun(t *testing.T) {
 	markRebuildStartedAt(t, evidence(t, opts), "rebuild-0000000000000001",
 		now.Add(-store.RebuildMarkerTTL-time.Hour))
 
-	stats, err := s.Sweep(t.Context(), now, store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, now, store.SweepOptions{})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
@@ -1170,7 +1170,7 @@ func TestASweepIgnoresARebuildMarkerThatOutlivedItsRun(t *testing.T) {
 	// operator can clear it.
 	markRebuildStartedAt(t, evidence(t, opts), "rebuild-0000000000000002", now.Add(-time.Minute))
 
-	held, err := s.Sweep(t.Context(), now, store.SweepOptions{})
+	held, err := s.Sweep(t.Context(), store.TriggerCLI, now, store.SweepOptions{})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}

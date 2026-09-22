@@ -227,6 +227,33 @@ func (mysqlDialect) migrations() [][]string {
 				  from results
 				 where artifact_ref <> ''`,
 		},
+
+		// Version 6 (Story 4.11): a receipt for every prune and every sweep.
+		// The sqlite dialect carries the reasoning for the table; what is
+		// MySQL's own is the index declared inside the CREATE, as
+		// result_artifacts already does above.
+		{
+			`create table if not exists maintenance_runs (
+				id          bigint       not null auto_increment primary key,
+				kind        varchar(16)  not null,
+				trigger     varchar(16)  not null,
+				started_at  bigint       not null,
+				finished_at bigint       not null,
+				error       longtext     not null,
+				stats       longtext     not null,
+				key maintenance_runs_kind (kind, id desc)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+		},
+
+		// Version 7 (Story 5.31): how large each referenced artifact is. The
+		// sqlite dialect carries the reasoning; what is MySQL's own is that
+		// the ALTER cannot say `if not exists`, so the tolerance for a rerun
+		// after a lost version record lives in alreadyApplied (errDupFieldName
+		// already covers it, being the same error any repeated ADD COLUMN
+		// produces).
+		{
+			`alter table result_artifacts add column bytes bigint not null default 0`,
+		},
 	}
 }
 

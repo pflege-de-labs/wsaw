@@ -250,7 +250,7 @@ func TestPruningRemovesAPackedArtifact(t *testing.T) {
 		t.Fatal("the stored body was not packed, so this test proves nothing")
 	}
 
-	stats, err := s.Prune(t.Context(), now, store.Retention{MaxAge: time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, now, store.Retention{MaxAge: time.Hour})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}

@@ -44,35 +44,67 @@ import (
 // The result is sorted and deduplicated, so the same result produces the same
 // rows every time it is stored: a scan is content-addressed evidence, and two
 // requests that returned identical bytes share one body artifact.
-func artifactRefsOf(res *model.Result, documentRef string) []string {
-	seen := make(map[string]struct{}, 1+len(res.Screenshots)+len(res.Requests))
+//
+// Each reference carries the size to record for it (Story 5.31, AC1) — from
+// the model, never from a bucket read back: model.Artifact.Bytes for a
+// screenshot, model.Asset.BodyStoredSize for a stored body. The document's
+// own reference always carries zero, deliberately: its size is already the
+// results row's own document_size, and a reader summing this table for
+// "everything besides the document" must not have to know to subtract it
+// back out again.
+func artifactRefsOf(res *model.Result, documentRef string) []artifactRefSize {
+	seen := make(map[string]int64, 1+len(res.Screenshots)+len(res.Requests))
 
-	add := func(ref string) {
+	add := func(ref string, size int64) {
 		if ref == "" || validateRef(ref) != nil {
 			return
 		}
 
-		seen[ref] = struct{}{}
+		// First writer wins: content addressing means two references can
+		// collide only by naming the same bytes, so any recorded size for a
+		// given ref is as good as any other.
+		if _, ok := seen[ref]; !ok {
+			seen[ref] = size
+		}
 	}
 
-	add(documentRef)
+	add(documentRef, 0)
 
 	for i := range res.Screenshots {
-		add(res.Screenshots[i].Ref)
+		add(res.Screenshots[i].Ref, res.Screenshots[i].Bytes)
 	}
 
 	for i := range res.Requests {
-		add(res.Requests[i].BodyRef)
+		add(res.Requests[i].BodyRef, res.Requests[i].BodyStoredSize)
 	}
 
-	refs := make([]string, 0, len(seen))
-	for ref := range seen {
-		refs = append(refs, ref)
+	refs := make([]artifactRefSize, 0, len(seen))
+	for ref, size := range seen {
+		refs = append(refs, artifactRefSize{ref: ref, bytes: size})
 	}
 
-	slices.Sort(refs)
+	slices.SortFunc(refs, func(a, b artifactRefSize) int { return strings.Compare(a.ref, b.ref) })
 
 	return refs
+}
+
+// artifactRefSize is one artifact a result names, with the size to record for
+// it in result_artifacts (Story 5.31, AC1).
+type artifactRefSize struct {
+	ref   string
+	bytes int64
+}
+
+// refsOnly discards the sizes, for the callers that only ever needed the
+// reference — releasing a claim, say, which names nothing about how large the
+// artifact it protected was.
+func refsOnly(refs []artifactRefSize) []string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = r.ref
+	}
+
+	return out
 }
 
 // putResultTx writes a result's row and its artifact references together.
@@ -88,7 +120,7 @@ func artifactRefsOf(res *model.Result, documentRef string) []string {
 // The whole thing is idempotent, which is what lets the retry policy replay it: the
 // row is an upsert and the references are replaced wholesale, so storing the
 // same result twice leaves exactly one row and one set of references.
-func (s *SQL) putResultTx(ctx context.Context, key resultRowKey, args []any, refs []string) error {
+func (s *SQL) putResultTx(ctx context.Context, key resultRowKey, args []any, refs []artifactRefSize) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("storing a result: %w", err)
@@ -109,7 +141,7 @@ func (s *SQL) putResultTx(ctx context.Context, key resultRowKey, args []any, ref
 	// same transaction: from this commit onwards the reference rows are what
 	// keep those objects alive, and a claim outliving its purpose would hold
 	// an artifact past the retention meant to reclaim it (see claims.go).
-	if err := s.releaseClaimsTx(ctx, tx, refs); err != nil {
+	if err := s.releaseClaimsTx(ctx, tx, refsOnly(refs)); err != nil {
 		return err
 	}
 
@@ -135,7 +167,7 @@ const artifactRefInsertChunk = 64
 // name fewer artifacts than it did before — a retried scan that captured no
 // screenshot, say — and references left behind would keep an object alive that
 // nothing names any more.
-func (s *SQL) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultRowKey, refs []string) error {
+func (s *SQL) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultRowKey, refs []artifactRefSize) error {
 	if _, err := tx.ExecContext(ctx, s.q(`delete from `+resultArtifactsTable+
 		` where target = ? and consent_mode = ? and scan_id = ?`), key.args()...); err != nil {
 		return fmt.Errorf("clearing the artifact references of scan %s: %w", key.scanID, err)
@@ -143,15 +175,15 @@ func (s *SQL) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultR
 
 	for chunk := range slices.Chunk(refs, artifactRefInsertChunk) {
 		values := make([]string, 0, len(chunk))
-		args := make([]any, 0, len(chunk)*4)
+		args := make([]any, 0, len(chunk)*5)
 
 		for _, ref := range chunk {
-			values = append(values, "(?, ?, ?, ?)")
-			args = append(args, key.target, key.mode, key.scanID, ref)
+			values = append(values, "(?, ?, ?, ?, ?)")
+			args = append(args, key.target, key.mode, key.scanID, ref.ref, ref.bytes)
 		}
 
 		if _, err := tx.ExecContext(ctx, s.q(`insert into `+resultArtifactsTable+
-			` (target, consent_mode, scan_id, artifact_ref) values `+
+			` (target, consent_mode, scan_id, artifact_ref, bytes) values `+
 			strings.Join(values, ", ")), args...); err != nil {
 			return fmt.Errorf("recording the artifact references of scan %s: %w", key.scanID, err)
 		}

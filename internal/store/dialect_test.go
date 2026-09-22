@@ -60,7 +60,7 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 
 		ddl := strings.ToLower(strings.Join(flatten(d.migrations()), "\n"))
 
-		for _, table := range []string{"results", "baselines", "audit", "result_artifacts"} {
+		for _, table := range []string{"results", "baselines", "audit", "result_artifacts", "maintenance_runs"} {
 			if !strings.Contains(ddl, "table if not exists "+table) {
 				t.Errorf("%s does not create the %s table", name, table)
 			}
@@ -70,6 +70,17 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 		// still works and quietly scans the table.
 		if !strings.Contains(ddl, "results_series") {
 			t.Errorf("%s does not create the results_series index", name)
+		}
+
+		// The column ListResults sums per result to report ArtifactBytes
+		// (Story 5.31, AC2).
+		if !strings.Contains(ddl, "add column bytes") && !strings.Contains(ddl, "add column if not exists bytes") {
+			t.Errorf("%s does not add result_artifacts.bytes", name)
+		}
+
+		// The index every prune and sweep receipt is read back by.
+		if !strings.Contains(ddl, "maintenance_runs_kind") {
+			t.Errorf("%s does not create the maintenance_runs_kind index", name)
 		}
 	}
 }
@@ -81,20 +92,29 @@ func TestEveryDialectDeclaresTheSameTables(t *testing.T) {
 // migrations rather than as one of them, so nothing else would notice if the
 // constant and the list stopped agreeing — and a version number that named a
 // different migration would be a comment that lies.
-func TestTheClaimTableIsTheLatestMigration(t *testing.T) {
+// TestSchemaVersionsAreConsecutiveAndCurrent pins every named schema-version
+// constant against the migration list it indexes.
+//
+// Each constant is quoted in a comment that explains what its version did. A
+// renumbering, or a migration inserted between two named versions, would
+// make one of those comments wrong without this failing to compile-check it.
+func TestSchemaVersionsAreConsecutiveAndCurrent(t *testing.T) {
 	t.Parallel()
 
-	if got := len(sqliteDialect{}.migrations()); got != schemaArtifactClaims {
-		t.Errorf("the schema has %d migrations, schemaArtifactClaims says %d",
-			got, schemaArtifactClaims)
-	}
-
-	// The claim table is the version after the reference index, and both
-	// numbers are quoted in comments that explain what each one did. A
-	// renumbering that left them out of order would make those comments wrong.
 	if schemaArtifactClaims != schemaArtifactReferences+1 {
 		t.Errorf("the claim table is version %d and the reference index is version %d; they are consecutive",
 			schemaArtifactClaims, schemaArtifactReferences)
+	}
+
+	if schemaMaintenanceRuns != schemaArtifactClaims+1 {
+		t.Errorf("maintenance_runs is version %d and the claim table is version %d; they are consecutive",
+			schemaMaintenanceRuns, schemaArtifactClaims)
+	}
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaMaintenanceRuns+1 {
+		t.Errorf("the schema has %d migrations; maintenance_runs is version %d and result_artifacts.bytes "+
+			"is the one migration after it, so the schema should have %d",
+			got, schemaMaintenanceRuns, schemaMaintenanceRuns+1)
 	}
 }
 

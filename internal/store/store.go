@@ -546,6 +546,15 @@ func (s *SQL) prepareMigration(ctx context.Context, version int) error {
 // rather than trips over what already exists. Pretending otherwise, by
 // wrapping MySQL in a transaction that cannot roll back, would be worse than
 // saying so.
+//
+// alreadyApplied is consulted in both branches, transactional or not: a
+// statement one dialect cannot phrase as "if not exists" — SQLite's ALTER
+// TABLE ADD COLUMN, here — can still meet its own prior work, whether that is
+// MySQL's implicit commit outliving its version record or a store whose
+// version record was deliberately rewound to replay a later migration.
+// Continuing after such a statement is safe inside SQLite's own transaction
+// because, unlike PostgreSQL, a failed statement there does not poison the
+// transaction it happened in.
 func (s *SQL) applyMigration(ctx context.Context, statements []string, version int) error {
 	if !s.d.ddlIsTransactional() {
 		for _, stmt := range statements {
@@ -581,6 +590,13 @@ func (s *SQL) applyMigration(ctx context.Context, statements []string, version i
 
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if s.d.alreadyApplied(err) {
+				s.log.Info("schema migration statement was already applied",
+					"version", version, "error", err)
+
+				continue
+			}
+
 			return fmt.Errorf("applying schema migration %d: %w", version, err)
 		}
 	}

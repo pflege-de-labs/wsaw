@@ -142,6 +142,31 @@ func (postgresDialect) migrations() [][]string {
 				 where artifact_ref <> ''
 				    on conflict do nothing`,
 		},
+
+		// Version 6 (Story 4.11): a receipt for every prune and every sweep.
+		// The sqlite dialect carries the reasoning; this is the same schema in
+		// PostgreSQL's spelling.
+		{
+			`create table if not exists maintenance_runs (
+				id          bigserial primary key,
+				kind        text   not null,
+				trigger     text   not null,
+				started_at  bigint not null,
+				finished_at bigint not null,
+				error       text   not null default '',
+				stats       text   not null
+			)`,
+
+			`create index if not exists maintenance_runs_kind
+				on maintenance_runs (kind, id desc)`,
+		},
+
+		// Version 7 (Story 5.31): how large each referenced artifact is. The
+		// sqlite dialect carries the reasoning; `if not exists` is what makes
+		// a rerun after a lost version record a no-op here.
+		{
+			`alter table result_artifacts add column if not exists bytes bigint not null default 0`,
+		},
 	}
 }
 
