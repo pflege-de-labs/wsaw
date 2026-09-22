@@ -148,13 +148,56 @@ func TestRetention(t *testing.T) {
 
 	a := &App{Config: cfg}
 
-	got := a.Retention()
+	got, err := a.Retention()
+	if err != nil {
+		t.Fatalf("Retention() error = %v", err)
+	}
+
 	if got.MaxAge != 48*time.Hour {
 		t.Errorf("MaxAge = %v, want 48h", got.MaxAge)
 	}
 
 	if got.MaxPerSeries != 30 {
 		t.Errorf("MaxPerSeries = %d, want 30", got.MaxPerSeries)
+	}
+}
+
+// TestRetentionPrefersTheKeepPolicy: where both forms are present in a
+// config built in Go, the thinning policy is the one that runs. A count bound
+// left over would cut into it without saying so.
+func TestRetentionPrefersTheKeepPolicy(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.New()
+	cfg.Store.MaxPerSeries = 200
+	cfg.Store.Keep = &config.Keep{Daily: 7, Timezone: "UTC"}
+
+	got, err := (&App{Config: cfg}).Retention()
+	if err != nil {
+		t.Fatalf("Retention() error = %v", err)
+	}
+
+	if got.Keep == nil {
+		t.Fatal("Retention() dropped the keep policy")
+	}
+
+	if got.Keep.Daily != 7 || got.Keep.Location != time.UTC {
+		t.Errorf("keep = %+v, want 7 daily in UTC", got.Keep)
+	}
+
+	if got.MaxPerSeries != 0 {
+		t.Errorf("MaxPerSeries = %d, want the bound to be dropped", got.MaxPerSeries)
+	}
+}
+
+func TestRetentionRejectsAnUnknownZone(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.New()
+	cfg.Store.Keep = &config.Keep{Daily: 7, Timezone: "Mars/Olympus"}
+
+	if _, err := (&App{Config: cfg}).Retention(); err == nil {
+		t.Error("Retention() accepted a zone that does not exist; days would be cut in the wrong place")
 	}
 }
 

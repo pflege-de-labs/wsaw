@@ -46,8 +46,6 @@ func (postgresDialect) upsert(conflict, update []string) string {
 	return upsertExcluded(conflict, update)
 }
 
-func (postgresDialect) pruneByCount() string { return pruneByCountPortable }
-
 // migrations mirror the SQLite schema exactly, differing only where the type
 // system does. started_at stays an integer count of nanoseconds rather than a
 // timestamp type: it is the sort key every listing depends on, and a column

@@ -353,6 +353,52 @@ func (c *Config) validateScheduler(add addFunc) {
 	if c.Store.MaxPerSeries < 0 {
 		add(0, "store.maxPerSeries", "must not be negative")
 	}
+
+	validateKeep(c, add)
+}
+
+// validateKeep checks the thinning retention policy (Story 4.8).
+//
+// Two of its rules exist because the failure they prevent is silent: a policy
+// that keeps nothing would delete a whole history on the next prune, and a
+// policy left next to the bounds it replaces would be cut back by them
+// without anything saying so.
+func validateKeep(c *Config, add addFunc) {
+	k := c.Store.Keep
+	if k == nil {
+		return
+	}
+
+	if len(c.legacyRetention) > 0 {
+		add(0, "store.keep",
+			"replaces %s; remove %s, or remove store.keep — they are never combined",
+			strings.Join(c.legacyRetention, " and "), strings.Join(c.legacyRetention, " and "))
+	}
+
+	if k.Empty() {
+		add(0, "store.keep",
+			"keeps nothing; set at least one of last, within, hourly, daily, weekly, monthly or yearly")
+	}
+
+	for _, r := range []struct {
+		field string
+		n     int
+	}{
+		{"last", k.Last},
+		{"hourly", k.Hourly},
+		{"daily", k.Daily},
+		{"weekly", k.Weekly},
+		{"monthly", k.Monthly},
+		{"yearly", k.Yearly},
+	} {
+		if r.n < 0 {
+			add(0, "store.keep."+r.field, "must not be negative")
+		}
+	}
+
+	if _, err := k.location(); err != nil {
+		add(0, "store.keep.timezone", "%v", err)
+	}
 }
 
 func (c *Config) validateNormalize(add addFunc) {

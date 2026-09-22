@@ -37,6 +37,7 @@ type Registry struct {
 	browserRestarts int64
 	notifyFailures  int64
 	storeRetries    int64
+	resultsPruned   int64
 	scanRetries     int64
 	retriesExceeded int64
 	notifySent      int64
@@ -159,6 +160,20 @@ func (r *Registry) StoreRetried() {
 	defer r.mu.Unlock()
 
 	r.storeRetries++
+}
+
+// ResultsPruned counts results retention removed. A policy that suddenly
+// deletes far more than usual — an edited keep policy, a clock that jumped —
+// shows up here before it shows up as a history somebody needed (Story 4.8).
+func (r *Registry) ResultsPruned(n int) {
+	if n <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.resultsPruned += int64(n)
 }
 
 // ScanRetried counts a scan that had to be tried again, and
@@ -294,6 +309,7 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
 	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
 	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
+	writeGaugeValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", float64(r.resultsPruned))
 	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
 	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
