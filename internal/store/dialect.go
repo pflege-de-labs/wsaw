@@ -224,6 +224,18 @@ const (
 	resultsTable   = "results"
 	documentColumn = "document"
 
+	// scanIDColumn and artifactRefColumn are named because each is spelled
+	// the same way often enough — a key column here, a log field there —
+	// that goconst asks for a constant rather than another site to keep in
+	// sync by hand.
+	scanIDColumn      = "scan_id"
+	artifactRefColumn = "artifact_ref"
+
+	// limitClause is appended, verbatim, by every listing that takes an
+	// optional cap: one spelling, so a query built with it always binds the
+	// placeholder it appends.
+	limitClause = " limit ?"
+
 	// resultArtifactsTable records which artifacts each result names, so
 	// retention can decide what to delete with a query rather than by reading
 	// every document back out of the bucket (Story 8.5, AC2).
@@ -257,7 +269,7 @@ const (
 )
 
 var (
-	resultKey = []string{"target", "consent_mode", "scan_id"}
+	resultKey = []string{"target", "consent_mode", scanIDColumn}
 
 	// resultScanned belongs to the row rather than to the document: the
 	// instant the scan started and how it ended.
@@ -268,7 +280,7 @@ var (
 	// AC2), and the summary, materialised so that a listing needs no document
 	// at all (Story 8.3, AC1).
 	resultDerived = []string{
-		"artifact_ref", "document_size", "document_digest",
+		artifactRefColumn, "document_size", "document_digest",
 		"duration_ns", "scan_error", "consent_outcome", "consent_cmp",
 		"requests", "third_party_domains", "pre_consent_domains",
 	}
@@ -283,7 +295,7 @@ var (
 	resultUpdate = append(append(append([]string{}, resultScanned...), resultDerived...), resultReferenced...)
 
 	baselineKey    = []string{"target", "consent_mode"}
-	baselineUpdate = []string{"scan_id", "approved_at", "document"}
+	baselineUpdate = []string{scanIDColumn, "approved_at", "document"}
 )
 
 // countColumn runs a catalogue query that answers "is this column there?" as

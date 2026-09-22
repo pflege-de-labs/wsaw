@@ -960,9 +960,9 @@ func summarize(res *model.Result) Summary {
 // same list twice — once select-ed, once grouped by — and a query where
 // those two drifted would be a query no database accepts.
 var summaryColumns = []string{
-	"scan_id", "started_at", "duration_ns", "termination", "scan_error",
+	scanIDColumn, "started_at", "duration_ns", "termination", "scan_error",
 	"consent_outcome", "consent_cmp", "requests", "third_party_domains",
-	"pre_consent_domains", "artifact_ref", "document_size",
+	"pre_consent_domains", artifactRefColumn, "document_size",
 }
 
 // underivedSummary explains a row that names no document. Reporting it beats
@@ -1024,7 +1024,7 @@ func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]S
 	args := []any{target, string(mode)}
 
 	if limit > 0 {
-		q += " limit ?"
+		q += limitClause
 		args = append(args, limit)
 	}
 

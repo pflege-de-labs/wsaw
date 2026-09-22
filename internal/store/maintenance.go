@@ -232,7 +232,7 @@ func (s *SQL) MaintenanceRuns(ctx context.Context, kind string, limit int) ([]Ma
 	args := []any{kind}
 
 	if limit > 0 {
-		q += " limit ?"
+		q += limitClause
 		args = append(args, limit)
 	}
 
