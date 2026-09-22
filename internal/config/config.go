@@ -241,8 +241,14 @@ type Store struct {
 	// that.
 	RetryBackoff Duration `yaml:"retryBackoff,omitempty"`
 
-	Path         string   `yaml:"path,omitempty"`
-	ArtifactDir  string   `yaml:"artifactDir,omitempty"`
+	Path        string `yaml:"path,omitempty"`
+	ArtifactDir string `yaml:"artifactDir,omitempty"`
+	// CompressArtifacts stores screenshots and bodies gzipped where that
+	// makes them smaller. On unless set to false; reading is unaffected
+	// either way, so it can be turned off without stranding anything
+	// already written (Story 4.8).
+	CompressArtifacts *bool `yaml:"compressArtifacts,omitempty"`
+
 	OutputDir    string   `yaml:"outputDir,omitempty"`
 	MaxAge       Duration `yaml:"maxAge,omitempty"`
 	MaxPerSeries int      `yaml:"maxPerSeries,omitempty"`
@@ -253,6 +259,16 @@ type Store struct {
 	WriteHAR bool `yaml:"writeHar,omitempty"`
 	// WriteReport emits a Markdown report per scan.
 	WriteReport bool `yaml:"writeReport,omitempty"`
+}
+
+// ArtifactCompression returns the store's artifact compression mode, which is
+// on unless it was explicitly turned off.
+func (s Store) ArtifactCompression() string {
+	if s.CompressArtifacts != nil && !*s.CompressArtifacts {
+		return store.CompressionNone
+	}
+
+	return store.CompressionGzip
 }
 
 // StoreDriver returns the configured driver, defaulting to SQLite.

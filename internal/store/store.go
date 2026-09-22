@@ -48,6 +48,16 @@ type Store struct {
 	// read rarely, and keeping them out leaves room to move them to object
 	// storage later.
 	artifactDir string
+
+	// compressArtifacts decides how artifacts are written, never how they
+	// are read: both forms are always readable, so turning this off is
+	// reversible and turning it on requires no migration (Story 4.8).
+	compressArtifacts bool
+	onArtifactStored  func(kind string, original, stored int64)
+
+	// maxArtifactBytes bounds what inflating a stored artifact may produce,
+	// because the file on disk is untrusted on the way back in.
+	maxArtifactBytes int64
 }
 
 // Options configures a store.
@@ -66,6 +76,24 @@ type Options struct {
 
 	// ArtifactDir holds screenshots and stored bodies.
 	ArtifactDir string
+
+	// ArtifactCompression is how artifacts are written: CompressionGzip (the
+	// default, and what the empty value means) or CompressionNone. Reading
+	// is unaffected — a store always reads both forms (Story 4.8, AC8).
+	ArtifactCompression string
+
+	// MaxArtifactBytes caps what inflating a compressed artifact may
+	// produce. Zero takes the default, which is above anything capture can
+	// write; it exists so a deployment that raised capture's own caps can
+	// raise this one to match (Story 4.8, AC6).
+	MaxArtifactBytes int64
+
+	// OnArtifactStored is called for every artifact actually written, with
+	// the bytes handed in and the bytes that reached the disk. A store that
+	// compresses without anyone being able to see what it saved is a claim
+	// rather than a measurement (Tenet 8). Deduplicated writes are not
+	// reported: nothing was written.
+	OnArtifactStored func(kind string, original, stored int64)
 
 	// Timeout is how long a statement waits for a busy database before
 	// failing, which is how SQLite's single-writer constraint surfaces.
@@ -90,6 +118,30 @@ type Options struct {
 	// flapping database that looks healthy, so the caller is given the chance
 	// to log and count it (Tenet 8).
 	OnRetry func(op string, attempt int, err error)
+}
+
+// compressArtifacts resolves the configured compression mode. An unknown
+// value is refused at open rather than silently taken as the default: an
+// operator who misspelled it asked for something, and quietly doing the other
+// thing is how a setting stops meaning anything.
+func (o *Options) compressArtifacts() (bool, error) {
+	switch o.ArtifactCompression {
+	case "", CompressionGzip:
+		return true, nil
+	case CompressionNone:
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown artifact compression %q: want %q or %q",
+			o.ArtifactCompression, CompressionGzip, CompressionNone)
+	}
+}
+
+func (o *Options) maxArtifactBytes() int64 {
+	if o.MaxArtifactBytes > 0 {
+		return o.MaxArtifactBytes
+	}
+
+	return defaultMaxArtifactBytes
 }
 
 func (o *Options) timeout() time.Duration {
@@ -170,6 +222,11 @@ func Open(opts Options) (*Store, error) {
 		return nil, err
 	}
 
+	compress, err := opts.compressArtifacts()
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+
 	if d.name() == DriverSQLite {
 		if opts.Path == "" {
 			return nil, errors.New("store: Path is required")
@@ -205,12 +262,15 @@ func Open(opts Options) (*Store, error) {
 	}
 
 	s := &Store{
-		db:          db,
-		d:           d,
-		attempts:    opts.maxAttempts(),
-		backoff:     opts.retryBackoff(),
-		onRetry:     opts.OnRetry,
-		artifactDir: opts.ArtifactDir,
+		db:                db,
+		d:                 d,
+		attempts:          opts.maxAttempts(),
+		backoff:           opts.retryBackoff(),
+		onRetry:           opts.OnRetry,
+		artifactDir:       opts.ArtifactDir,
+		compressArtifacts: compress,
+		onArtifactStored:  opts.OnArtifactStored,
+		maxArtifactBytes:  opts.maxArtifactBytes(),
 	}
 
 	if err := s.migrate(ctx); err != nil {
