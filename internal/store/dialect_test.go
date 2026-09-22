@@ -19,64 +19,12 @@ import (
 
 // sqlDrivers are the drivers that have a dialect.
 //
-// Drivers() has listed a fourth since Story 8.10, and blob is not a database:
-// it keeps its index as objects in the artifact bucket, so it has no schema, no
-// placeholders and no upsert, and dialectFor refuses it by name. The parity
-// checks below are about the schema three databases have to agree on, so they
-// iterate this rather than Drivers(); the tests about what a driver name means
-// to configuration still iterate all four.
-func sqlDrivers() []string {
-	out := make([]string, 0, len(Drivers()))
+// Every driver has one today, so this is Drivers(). It stays a function of its
+// own because the parity checks below are about the schema a database dialect
+// has to agree on, and a driver added later that is not one would belong out of
+// this list rather than into every test in this file.
+func sqlDrivers() []string { return Drivers() }
 
-	for _, name := range Drivers() {
-		if name == DriverBlob {
-			continue
-		}
-
-		out = append(out, name)
-	}
-
-	return out
-}
-
-// TestTheBucketIndexIsNotASQLDialect pins both halves of that: blob is a
-// driver an operator can configure, and it is not one this file's seam
-// answers for.
-//
-// The refusal is by name rather than by falling through to "unknown driver"
-// because the two are different mistakes. An unknown driver is a typo; blob is
-// a store that exists, and the reason it has no dialect — no rows, so no schema
-// to migrate — is what its message has to say to the operator who typed
-// "wsaw store migrate" against it (Story 8.10, AC16).
-func TestTheBucketIndexIsNotASQLDialect(t *testing.T) {
-	t.Parallel()
-
-	if len(sqlDrivers())+1 != len(Drivers()) {
-		t.Fatalf("Drivers() = %v, which is not the three SQL drivers plus blob", Drivers())
-	}
-
-	for _, name := range sqlDrivers() {
-		if _, err := dialectFor(name); err != nil {
-			t.Errorf("%s is listed as a SQL driver and has no dialect: %v", name, err)
-		}
-	}
-
-	_, err := dialectFor(DriverBlob)
-	if err == nil {
-		t.Fatal("the blob driver was given a SQL dialect")
-	}
-
-	for _, want := range []string{DriverBlob, "bucket", "migrate"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q: %v", want, err)
-		}
-	}
-}
-
-// TestEveryDialectHasTheSameMigrations is AC4. The schema version is an index
-// into this list, so a dialect with a different number of migrations would
-// mean version 2 described two different schemas depending on the database —
-// and a store would be migrated to the wrong one.
 func TestEveryDialectHasTheSameMigrations(t *testing.T) {
 	t.Parallel()
 

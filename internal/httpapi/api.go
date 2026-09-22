@@ -222,7 +222,7 @@ func (s *Server) targetViews() []TargetView {
 			// Whether one exists, not what it is: this runs once per series
 			// on every render of the page, and reading the baseline itself
 			// would fetch a whole approved result to answer yes or no
-			// (Story 8.10). A store that cannot answer leaves the badge off,
+			// (Story 5.10). A store that cannot answer leaves the badge off,
 			// exactly as a failed read did before — but it says so now, see
 			// storeReadFailures for why that is not the same as ignoring it.
 			if has, err := s.deps.Store.HasBaseline(t.Name, mode); err != nil {
@@ -251,12 +251,10 @@ func (s *Server) targetViews() []TargetView {
 // The page is built from one small read per series, and a store that cannot
 // answer them renders a target list on which nothing has ever been scanned and
 // nothing has ever been approved — which is what a deployment that has genuinely
-// approved nothing looks like (Tenet 5). Against a SQL store those reads are
-// local rows and a failure is close to unthinkable; against the bucket index
-// they are listings, and a refused credential, a throttled bucket or an
-// incomplete index is an ordinary Tuesday. Reporting nothing would leave an
-// operator comparing a screenshot against the truth with no line in the log to
-// explain the difference.
+// approved nothing looks like (Tenet 5). The reads are local rows and a failure
+// is close to unthinkable, which is exactly why one would be reported nowhere
+// if it were not reported here: an operator comparing a screenshot against the
+// truth would have no line in the log to explain the difference.
 //
 // One line per render and not one per series, for the reason noSigning and
 // signingWarned exist: a bucket that is failing fails every series of every

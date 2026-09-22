@@ -11,7 +11,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
-// This file is the half of Story 8.11's rebuild that knows about rows.
+// This file is the half of Story 8.10's rebuild that knows about rows.
 //
 // Everything about the bucket — listing the documents, reading them, checking
 // them against the content address they are stored under, deriving from them
@@ -402,12 +402,3 @@ func (s *SQL) countRows(ctx context.Context, table string) (int, error) {
 
 	return n, nil
 }
-
-// indexOnlyDrift has nothing to report for a SQL index.
-//
-// The drift a store can have on its own is the drift its own shape allows. The
-// bucket index can lose a derived audit pointer while keeping the decision it
-// points at, because the two are separate objects written one after the other;
-// here they are two rows in one transaction, so there is no state where one
-// exists without the other for a verify to find (Story 4.6, AC7).
-func (s *SQL) indexOnlyDrift(context.Context, *rebuildRun) error { return nil }

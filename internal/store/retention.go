@@ -108,19 +108,6 @@ type PruneStats struct {
 	// leaking them (AC4).
 	ArtifactsFailed int `json:"artifactsFailed"`
 
-	// IndexKeysFailed counts index keys a prune could not remove, which is a
-	// state only a store whose index is objects in the bucket can be in: a
-	// SQL prune deletes its rows in one transaction that either commits or
-	// does not.
-	//
-	// It is its own number rather than part of ArtifactsFailed because the two
-	// mean different things to an operator. ArtifactsFailed says some bytes
-	// were not reclaimed; this says a result retention has removed from every
-	// listing is still fetchable by its scan ID, so a share link to it still
-	// resolves. It is normally zero, and a sweep collects what it counts
-	// (Story 8.10, §7.3).
-	IndexKeysFailed int `json:"indexKeysFailed,omitempty"`
-
 	// ArtifactsProtected counts artifacts left alone on purpose: too recently
 	// written to be sure they are garbage, or of a kind that cannot be
 	// declared unreferenced while some result's references are unknown.
@@ -751,20 +738,19 @@ type SweepStats struct {
 	// They are left in place rather than collected, and they are counted
 	// rather than passed over in silence, because a result document is
 	// self-describing: it decodes to the scan it records, so it is a
-	// candidate for a rebuild of the index (Story 8.11) and not garbage. A
-	// non-zero value means an interrupted write or an index that is behind
-	// the bucket, which is Story 8.10, AC6's "a document visible without its
-	// index entry is not silently lost". Screenshots and stored bodies are
-	// not self-describing and keep the ordinary grace-based collection.
+	// candidate for a rebuild of the index (Story 8.10) and not garbage. A
+	// non-zero value means an interrupted write or an index that is behind the
+	// bucket, and a document visible without its index entry must not be
+	// silently lost. Screenshots and stored bodies are not self-describing and
+	// keep the ordinary grace-based collection.
 	ResultsWithoutEntry int `json:"resultsWithoutEntry,omitempty"`
 
 	// RebuildInProgress counts the markers a rebuild of an index leaves while
-	// it runs (Story 8.10, §7.4; Story 8.11, AC12).
+	// it runs (Story 8.10, AC12).
 	//
-	// Every store kind reports it, because the marker is a fact about the
-	// bucket rather than about an index: what a sweep would destroy while a
-	// rebuild is half done is the documents of the scans it has not reached,
-	// and those are in the bucket whichever kind of index is being rebuilt.
+	// The marker is a fact about the bucket rather than about an index: what a
+	// sweep would destroy while a rebuild is half done is the documents of the
+	// scans it has not reached, and those are in the bucket.
 	//
 	// It is its own number rather than part of UnknownReferences, which is
 	// where an earlier version of the blob sweep put it. The two say opposite
@@ -803,7 +789,7 @@ type SweepOptions struct {
 	// bucket, a store pointed at the wrong bucket, or a fresh store opened
 	// against an existing one produce exactly it — and a sweep would then
 	// delete every document, screenshot and body in the bucket and report
-	// success. Rebuilding an index from the bucket (Story 8.11) can put the
+	// success. Rebuilding an index from the bucket (Story 8.10) can put the
 	// result index back — but only from the documents, which is precisely
 	// what such a sweep would have deleted, so there is still no way back
 	// (Tenet 5).
@@ -879,7 +865,7 @@ func (s *SQL) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan 
 		// finishes the documents of the scans it has not reached yet are
 		// referenced by nothing. Collecting on that basis would delete the
 		// evidence the rebuild exists to recover, so nothing is judged at all
-		// (Story 8.11, AC12).
+		// (Story 8.10, AC12).
 		//
 		// The marker is in the bucket rather than in either index because that
 		// is where the risk is, so a SQL store honours it exactly as the

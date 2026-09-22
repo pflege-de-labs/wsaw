@@ -197,11 +197,9 @@ type ContainerBrowser struct {
 
 // Store configures persistence.
 type Store struct {
-	// Driver is sqlite (the default), postgres, mysql, or blob. SQLite needs
-	// no server and is what the single-binary deployment assumes; the two
-	// server databases exist for a deployment that already runs one
-	// (Story 4.7); blob keeps the index as objects in the artifact bucket, so
-	// there is no database at all (Story 8.10).
+	// Driver is sqlite (the default), postgres or mysql. SQLite needs no
+	// server and is what the single-binary deployment assumes; the two server
+	// databases exist for a deployment that already runs one (Story 4.7).
 	Driver string `yaml:"driver,omitempty"`
 	// DSN is the connection string for a server database. It may be a secret
 	// reference, and should be: a DSN carries a password.
@@ -383,9 +381,8 @@ func (s Store) StoreDriver() string {
 // IsServerStore reports whether the store is a database with a server, which
 // is what decides whether a DSN is required and a path is meaningless.
 //
-// It names the two drivers rather than everything that is not SQLite, which is
-// what it used to do. Since Story 8.10 there is a driver that is neither: blob
-// keeps no rows anywhere, so it needs no DSN and would have been asked for one.
+// It names the two drivers rather than everything that is not SQLite, so that a
+// driver added later is not silently treated as one of them.
 func (s Store) IsServerStore() bool {
 	switch s.StoreDriver() {
 	case store.DriverPostgres, store.DriverMySQL:
@@ -394,16 +391,6 @@ func (s Store) IsServerStore() bool {
 		return false
 	}
 }
-
-// IsBucketStore reports whether the store keeps its index in the artifact
-// bucket rather than in rows (Story 8.10).
-//
-// It is the question that decides two things nothing else decides: that an
-// artifact location is required rather than derived, because the bucket is the
-// store and not somewhere its evidence goes, and that every setting describing
-// a database — a DSN, a file path, a connection pool — means nothing here and
-// is refused rather than ignored.
-func (s Store) IsBucketStore() bool { return s.StoreDriver() == store.DriverBlob }
 
 // Scheduler configures the daemon loop.
 type Scheduler struct {

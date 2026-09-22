@@ -73,19 +73,6 @@ func TestSoak(t *testing.T) {
 		OnBucketOp:  bucket.record,
 	}
 
-	// WSAW_SOAK_STORE=blob runs the whole soak against the store that keeps its
-	// index in the bucket as well.
-	//
-	// It is the run the design of that store asks for and nothing else provides
-	// (docs/story-8.10-design.md §12): its compaction thresholds are reasoned
-	// choices rather than measurements, and what they should be is a question
-	// about how a real history grows over hours of scanning. With the meter
-	// above, this is where that number comes from.
-	if os.Getenv("WSAW_SOAK_STORE") == store.DriverBlob {
-		opts.Driver = store.DriverBlob
-		opts.Path = ""
-	}
-
 	st, err := store.Open(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)

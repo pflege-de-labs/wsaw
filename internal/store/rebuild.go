@@ -10,27 +10,21 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
-// This file rebuilds an index from the documents the bucket holds (Story 8.11).
+// This file rebuilds an index from the documents the bucket holds (Story 8.10).
 //
 // Once every scan's document is an object, the index stops being the record and
 // becomes a derived view of it: an ordered list of pointers plus the summaries
 // computed from the documents they point at. Derived data is disposable and raw
 // capture is not (Tenet 4) — but only where the derivation can actually be
 // re-run, and that is what this is. Without it a dropped database, a
-// half-finished migration, an entry that never became visible under eventual
-// consistency (Story 8.10, AC6) or a bucket restored without its database each
-// leave evidence that exists and cannot be found.
-//
-// It is also the only supported way between store kinds. Story 8.10, AC16
-// refuses a migration from SQL to the bucket index and back; all four stores
-// keep their documents in the same layout, so pointing the new store at the
-// same bucket and rebuilding is the conversion, and there is no second format
-// to keep correct.
+// half-finished migration, or a bucket restored without its database each leave
+// evidence that exists and cannot be found.
 //
 // **The strategy is merge, and nothing is ever deleted.** AC4 asks that the
 // existing index survive a rebuild that is interrupted at any point, and offers
@@ -38,13 +32,13 @@ import (
 // merge into it. Merge is what this does, for one reason that is decisive and
 // one that is merely true.
 //
-// The decisive one is that the bucket-index store cannot swap. A swap needs
-// either a rename of a whole key space, which no provider offers, or a second
-// prefix plus one atomic pointer flip, which is a compare-and-swap that
-// Story 8.10 established does not exist portably — and a store that keeps its
-// index in the bucket is exactly the store this command exists for. Half a swap
-// against object storage is two indexes and no way to say which is live, which
-// is worse than the state it was recovering from.
+// The decisive one is that an index the operator is already reading cannot be
+// swapped out from under them without a moment where neither copy is the index.
+// A swap needs a second copy of every row plus one atomic cutover, and the
+// cutover would have to be atomic against a daemon that is writing new scans
+// into the index at the same time (AC12). A half-finished swap is two indexes
+// and no way to say which is live, which is worse than the state it was
+// recovering from.
 //
 // The merely-true one is that a merge needs no swap. Every index record this
 // command writes is derived from a content-addressed document and keyed by the
@@ -227,14 +221,11 @@ type IndexDrift struct {
 // groups by them and because a phrase repeated at three call sites is a phrase
 // that comes to be spelled three ways.
 const (
-	driftDocumentGone    = "an index entry names a document the bucket does not hold"
-	driftEntryMissing    = "a stored document has no index entry"
-	driftEntryPartial    = "a stored document is only half indexed"
-	driftSummaryStale    = "an index summary no longer matches the document it describes"
-	driftScanIDReused    = "one scan ID names two different documents"
-	driftAuditMissing    = "a baseline decision has no entry in the audit log"
-	driftPinMissing      = "a stored result names an artifact that nothing pins"
-	driftIndexUnreadable = "an index object does not decode"
+	driftDocumentGone = "an index entry names a document the bucket does not hold"
+	driftEntryMissing = "a stored document has no index entry"
+	driftEntryPartial = "a stored document is only half indexed"
+	driftSummaryStale = "an index summary no longer matches the document it describes"
+	driftScanIDReused = "one scan ID names two different documents"
 )
 
 // Evidence a result names and the bucket no longer holds is deliberately not in
@@ -337,18 +328,14 @@ type RebuildStats struct {
 	DocumentsPruned int      `json:"documentsPruned"`
 	PrunedScans     []string `json:"prunedScans,omitempty"`
 
-	// Conflicts counts scans whose index record names a different document,
-	// and IndexUnreadable counts index objects that are present and do not
-	// decode.
+	// Conflicts counts scans whose index record names a different document.
 	//
-	// Both are outcomes no rebuild can repair — resolving a conflict means
-	// choosing which of two scans to discard, and an unreadable index object
-	// sits at a key that is already taken — so they are counted apart from the
-	// entries that were left alone because they already agreed. Without them
-	// the report's own numbers do not add up, and its closing sentence would
-	// claim a completeness the run did not reach.
-	Conflicts       int `json:"conflicts"`
-	IndexUnreadable int `json:"indexUnreadable"`
+	// It is an outcome no rebuild can repair — resolving one means choosing
+	// which of two scans to discard — so it is counted apart from the entries
+	// that were left alone because they already agreed. Without it the report's
+	// own numbers do not add up, and its closing sentence would claim a
+	// completeness the run did not reach.
+	Conflicts int `json:"conflicts"`
 
 	// DocumentsNewer counts stored documents whose schemaVersion this build
 	// does not understand, and NewerDocuments names the first few.
@@ -359,9 +346,8 @@ type RebuildStats struct {
 	// drops every field this build does not know; the summary derived from that
 	// decode is lossy by exactly those fields; and the merge would then call the
 	// row stale and rewrite it downwards, reporting it as a repair. A store
-	// refuses a newer schema (Story 4.6, AC5) and the bucket index refuses a
-	// newer layout (Story 8.10, AC14) for the same reason, and neither of those
-	// gates covers a change to what a document holds.
+	// refuses a newer schema (Story 4.6, AC5) for the same reason, and that
+	// gate does not cover a change to what a document holds.
 	//
 	// The document itself is untouched and is still readable by the build that
 	// wrote it, so nothing is lost — what is refused is the derivation
@@ -374,16 +360,6 @@ type RebuildStats struct {
 	// a merge is none: see EntriesStale for what a destructive rebuild would
 	// have deleted and this one reports instead.
 	EntriesRemoved int `json:"entriesRemoved"`
-
-	// SummariesStale counts index entries whose summary no longer matches the
-	// document they describe and whose store cannot correct it.
-	//
-	// It exists because the bucket index cannot: an entry's key is a function
-	// of the scan it records, the key is already written, and no index object
-	// is ever overwritten (Story 8.10, AC3). A SQL index re-derives the columns
-	// instead and counts it as EntriesRefreshed. Reporting the two apart is
-	// what stops a rebuild claiming a repair it could not make.
-	SummariesStale int `json:"summariesStale"`
 
 	// EntriesStale counts index entries naming a document the bucket does not
 	// hold. They are kept, because a lifecycle rule that removed evidence and
@@ -450,7 +426,7 @@ func (s RebuildStats) Changed() bool {
 // completion claim over a partial recovery — with the drift list, which --limit
 // trims, as the only contradiction.
 func (s RebuildStats) Complete() bool {
-	return s.Damaged == 0 && s.Conflicts == 0 && s.IndexUnreadable == 0 && s.DocumentsNewer == 0
+	return s.Damaged == 0 && s.Conflicts == 0 && s.DocumentsNewer == 0
 }
 
 // Unjudged is what a verify could not form an opinion about.
@@ -474,17 +450,11 @@ const (
 	// rebuildRefreshed: the record is there and its summary no longer matches
 	// what the document says, which is what a change to summarize() leaves.
 	rebuildRefreshed
-	// rebuildStale: the index disagrees with the document and this store
-	// cannot rewrite the record that disagrees.
-	rebuildStale
 	// rebuildUnchanged: the index already says exactly this.
 	rebuildUnchanged
 	// rebuildConflict: the index records another document under this scan ID.
 	// Never resolved by overwriting one of them; reported, and both kept.
 	rebuildConflict
-	// rebuildUnreadable: the index has a record for this scan and it does not
-	// decode. Neither unchanged nor repairable — the key is taken.
-	rebuildUnreadable
 	// rebuildPruned: the index records that this scan was removed, and the
 	// document survived because something else still names it. Never added.
 	rebuildPruned
@@ -519,73 +489,6 @@ func (s indexedScan) subject() string {
 	return s.target + "/" + string(s.mode) + " " + s.scanID
 }
 
-// indexRebuild is what a store has to be able to do for its index to be
-// rebuildable from the bucket it shares with the evidence.
-//
-// It is unexported and declared here, beside the one function that consumes it,
-// because it is a seam inside the package rather than a promise to the rest of
-// wsaw: what a caller asks for is Store.RebuildIndex, and this is how the two
-// implementations of it share the half that is the same. That half is
-// everything about the bucket — listing the documents, reading them, verifying
-// them, deriving from them, surveying the orphans and printing the account —
-// and it is the larger half.
-type indexRebuild interface {
-	// Driver names the store kind for the report.
-	Driver() string
-
-	// rebuildBucket is where the documents and the evidence are.
-	rebuildBucket() *bucket
-
-	// rebuildLog is where progress goes.
-	rebuildLog() *slog.Logger
-
-	// beginRebuild records that a rebuild is running, so that a sweep started
-	// against a half-rebuilt index collects nothing (AC12), and returns the
-	// function that clears the record.
-	beginRebuild(ctx context.Context, run *rebuildRun) (func(), error)
-
-	// surveyIndex streams what the index already records and checks that each
-	// entry's document is still in the bucket. It is the half of the drift
-	// question the documents cannot answer.
-	surveyIndex(ctx context.Context, run *rebuildRun) error
-
-	// prunedScan reports whether this index records that the scan was
-	// deliberately removed, so that a rebuild puts back the scans whose entry
-	// never landed and not the ones retention took out.
-	//
-	// It is on the seam because the two indexes record it differently and
-	// neither can be derived from the other: the bucket index appends a
-	// tombstone in the series directory (Story 8.10, AC12), while a SQL index
-	// records it in the artifact references a pruned result leaves behind. What
-	// they have in common is that both answers come from the index, so a store
-	// whose index is genuinely gone answers "no" to all of them and a rebuild
-	// recovers the whole bucket — which is the recovery this command is for.
-	prunedScan(ctx context.Context, run *rebuildRun, doc rebuiltDocument) (bool, error)
-
-	// mergeRebuilt records one decoded document, or reports what recording it
-	// would do. It writes only where the mode says it may.
-	mergeRebuilt(ctx context.Context, run *rebuildRun, doc rebuiltDocument) (rebuildOutcome, error)
-
-	// indexOnlyRecords counts what the index holds that no document can
-	// produce (AC6).
-	indexOnlyRecords(ctx context.Context, run *rebuildRun) (Unrecoverable, error)
-
-	// indexOnlyDrift reports the disagreements only this kind of index can
-	// have — for the bucket index, a decision whose audit pointer never landed.
-	indexOnlyDrift(ctx context.Context, run *rebuildRun) error
-
-	// PlanSweep answers "what does this bucket hold that nothing references",
-	// deleting nothing (AC9).
-	PlanSweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error)
-}
-
-// The compile-time proof that both stores can be rebuilt, next to the contract
-// that says what that takes.
-var (
-	_ indexRebuild = (*SQL)(nil)
-	_ indexRebuild = (*Blob)(nil)
-)
-
 // rebuildRun is one run: what was asked for, what has been found, and the two
 // handles every step needs.
 //
@@ -601,13 +504,6 @@ type rebuildRun struct {
 
 	// logged is how many objects had passed at the last progress line.
 	logged int
-
-	// series is the bucket-index store's scratch: what each series directory
-	// says about which scans are tombstoned and which a checkpoint covers,
-	// worked out once per series instead of once per document. It is nil for a
-	// SQL index, which answers both questions with a query. See
-	// blobSeriesFacts in rebuildblob.go.
-	series map[seriesID]*blobSeriesFacts
 }
 
 // read records one object read in full.
@@ -676,19 +572,13 @@ func (s *SQL) RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildSta
 	return runRebuild(ctx, s, opts)
 }
 
-// RebuildIndex rebuilds this store's index from the documents in its bucket,
-// reports what doing so would change, or verifies the two against each other.
-func (s *Blob) RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildStats, error) {
-	return runRebuild(ctx, s, opts)
-}
-
 // runRebuild is the whole operation, for every store kind.
 //
 // The order is deliberate and each step's reason is on it. What it adds up to
 // is that the report describes the index as it was found and the bucket as it
 // is, and that nothing irreversible happens at any point — because nothing
 // irreversible happens at all.
-func runRebuild(ctx context.Context, s indexRebuild, opts RebuildOptions) (RebuildStats, error) {
+func runRebuild(ctx context.Context, s *SQL, opts RebuildOptions) (RebuildStats, error) {
 	run := &rebuildRun{
 		opts:   opts,
 		log:    s.rebuildLog(),
@@ -730,7 +620,7 @@ func runRebuild(ctx context.Context, s indexRebuild, opts RebuildOptions) (Rebui
 //
 // It is its own function so that the marker is cleared by a defer on the way
 // out of it, before the orphan survey, rather than by unwinding the whole run.
-func rebuildIndexFromBucket(ctx context.Context, s indexRebuild, run *rebuildRun) error {
+func rebuildIndexFromBucket(ctx context.Context, s *SQL, run *rebuildRun) error {
 	// Counted before anything else, so that a run which fails half way still
 	// reports what the index held that a rebuild could never put back (AC6).
 	kept, err := s.indexOnlyRecords(ctx, run)
@@ -753,11 +643,60 @@ func rebuildIndexFromBucket(ctx context.Context, s indexRebuild, run *rebuildRun
 		return err
 	}
 
-	if err := s.indexOnlyDrift(ctx, run); err != nil {
-		return err
+	return run.walkDocuments(ctx, s)
+}
+
+// eachBounded runs fn over the indices 0 to n-1, at most limit of them at once,
+// and stops at the first failure.
+//
+// It is the one worker pool the rebuild has, and every step that turns a
+// listing into a set of small object reads goes through it — the documents of a
+// batch, the evidence an entry names, the documents the index already records.
+// The reads are independent round trips and the wall clock of a rebuild is how
+// many of them run at once, so doing them one at a time would make a bucket of
+// fifty thousand objects fifty thousand sequential round trips. It is a fixed
+// bound rather than one goroutine per item, which AGENTS §4 forbids and which
+// would open a connection per object in the bucket.
+//
+// The failure it reports is the first by time rather than by position:
+// cancelling the rest turns their errors into "context canceled", and reporting
+// one of those instead of the cause would hide what actually went wrong. The
+// workers keep draining after a failure rather than returning, so the send loop
+// below can never block on a pool that has gone away.
+func eachBounded(ctx context.Context, n, limit int, fn func(context.Context, int) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		once     sync.Once
+		firstErr error
+		wg       sync.WaitGroup
+	)
+
+	work := make(chan int)
+
+	for range min(limit, n) {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := range work {
+				if err := fn(ctx, i); err != nil {
+					once.Do(func() { firstErr = err; cancel() })
+				}
+			}
+		}()
 	}
 
-	return run.walkDocuments(ctx, s)
+	for i := range n {
+		work <- i
+	}
+
+	close(work)
+	wg.Wait()
+
+	return firstErr
 }
 
 // walkDocuments reads every object under the result prefix, a batch at a time.
@@ -767,7 +706,7 @@ func rebuildIndexFromBucket(ctx context.Context, s indexRebuild, run *rebuildRun
 // would be deriving from the thing it is repairing (AC2). What makes running it
 // twice cheap in writes rather than in requests is that the second run finds
 // every entry already there and writes nothing.
-func (r *rebuildRun) walkDocuments(ctx context.Context, s indexRebuild) error {
+func (r *rebuildRun) walkDocuments(ctx context.Context, s *SQL) error {
 	batch := make([]artifactObject, 0, rebuildBatchSize)
 
 	// Every key the listing returned, documents and everything else. The pages
@@ -859,7 +798,7 @@ type readObject struct {
 // the folding touches the statistics and the index and is therefore done by one
 // goroutine. It also makes the report reproducible — the same bucket produces
 // the same summary in the same order however many workers read it.
-func (r *rebuildRun) readAndRecord(ctx context.Context, s indexRebuild, batch []artifactObject) error {
+func (r *rebuildRun) readAndRecord(ctx context.Context, s *SQL, batch []artifactObject) error {
 	answers := make([]readObject, len(batch))
 
 	// Each worker writes exactly one element and reads none, so the slice needs
@@ -966,7 +905,7 @@ func (r *rebuildRun) readDocument(ctx context.Context, obj artifactObject) readO
 // pins, not a drift record. Asking before the merge rather than after is also
 // what keeps a dry run and a verify from describing an addition they would not
 // make.
-func (r *rebuildRun) record(ctx context.Context, s indexRebuild, doc rebuiltDocument) error {
+func (r *rebuildRun) record(ctx context.Context, s *SQL, doc rebuiltDocument) error {
 	pruned, err := s.prunedScan(ctx, r, doc)
 	if err != nil {
 		return err
@@ -1032,13 +971,6 @@ func (r *rebuildRun) account(outcome rebuildOutcome, doc rebuiltDocument) {
 			r.drifted(driftSummaryStale, doc.subject(), "document "+doc.ref.ref)
 		}
 
-	case rebuildStale:
-		// Drift in every mode, because no mode repairs it.
-		r.stats.SummariesStale++
-
-		r.drifted(driftSummaryStale, doc.subject(),
-			"this store does not rewrite an index object, so the summary was left as it is")
-
 	case rebuildUnchanged:
 		r.stats.EntriesUnchanged++
 
@@ -1046,13 +978,6 @@ func (r *rebuildRun) account(outcome rebuildOutcome, doc rebuiltDocument) {
 		r.stats.Conflicts++
 
 		r.drifted(driftScanIDReused, doc.subject(), "this document is "+doc.ref.ref)
-
-	case rebuildUnreadable:
-		// The drift was recorded where the object was read, which is where the
-		// decode error is. What is counted here is that the scan was not
-		// indexed by this run, so that it is not reported as one that already
-		// agreed.
-		r.stats.IndexUnreadable++
 
 	case rebuildPruned:
 		// Not drift in any mode, and never written. See DocumentsPruned.
@@ -1217,7 +1142,7 @@ func (r *rebuildRun) checkIndexed(ctx context.Context, page []indexedScan) error
 // A failure here is reported and never fatal. The orphan count is information
 // an operator asked for on the way past; the recovery is what they ran the
 // command for, and it has already happened.
-func (r *rebuildRun) surveyOrphans(ctx context.Context, s indexRebuild) {
+func (r *rebuildRun) surveyOrphans(ctx context.Context, s *SQL) {
 	stats, err := s.PlanSweep(ctx, r.opts.at(), SweepOptions{})
 
 	switch {
@@ -1361,11 +1286,10 @@ func newRebuildMarker() (string, error) {
 // markRebuild writes the marker that says a rebuild is running against this
 // bucket, and returns the function that clears it.
 //
-// The marker is in the bucket rather than in the index, and both store kinds
-// write and honour it, because the thing it protects is in the bucket: a sweep
-// that walked a bucket while half of it was indexed would delete the evidence
-// of the other half, and that is true whether the index being rebuilt is rows
-// or objects (AC12). Story 8.10 built the reader for it; this is the writer.
+// The marker is in the bucket rather than in the index because the thing it
+// protects is in the bucket: a sweep that walked a bucket while half of it was
+// indexed would delete the evidence of the other half (AC12). The sweep reads
+// it; this is the writer.
 //
 // A mode that writes nothing takes no marker. A dry run and a verify change no
 // index, so there is no half-built state for a sweep to be confused by, and
@@ -1382,7 +1306,7 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 	}
 
 	body, err := json.Marshal(rebuildMarkerBody{
-		Layout:    indexLayoutVersion,
+		Layout:    markerLayout,
 		Mode:      run.stats.Mode,
 		StartedAt: run.opts.at().UTC(),
 	})
@@ -1390,9 +1314,9 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 		return nil, fmt.Errorf("describing a rebuild of the index: %w", err)
 	}
 
-	key := rebuildKey(sk(id))
+	key := rebuildKey(id)
 
-	if _, err := b.putIndex(ctx, key, body); err != nil {
+	if err := b.putIndex(ctx, key, body); err != nil {
 		return nil, fmt.Errorf("marking a rebuild of the index as in progress: %w", err)
 	}
 

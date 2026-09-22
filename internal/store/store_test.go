@@ -105,14 +105,6 @@ func storeOptions(t *testing.T) store.Options {
 	case "", store.DriverSQLite:
 		opts.Path = filepath.Join(t.TempDir(), "wsaw.db")
 
-	case store.DriverBlob:
-		// Nothing else to name: ArtifactDir above is the bucket, and for this
-		// store the bucket is the whole store. There is no scratch database to
-		// create and no container to skip on, which is why this one runs in
-		// the default suite rather than behind an environment variable naming
-		// a server.
-		opts.Driver = driver
-
 	case store.DriverPostgres, store.DriverMySQL:
 		opts.Driver = driver
 		opts.DSN = secret.Literal(scratchDatabase(t, driver))
@@ -124,52 +116,16 @@ func storeOptions(t *testing.T) store.Options {
 	return opts
 }
 
-// skipUnlessSQL skips a test that is about an index kept in rows, when the
-// suite is being run against the index kept in the bucket.
+// assertTheHistorySurvivedALostBucket checks what a store can still promise
+// once its artifact bucket has gone away.
 //
-// The tests that call it are about a schema: the row layout that came before
-// the bucket, the migration that moved documents out of a column, the backfill
-// that derives references an upgrade could not. A store with no schema has
-// nothing for them to hold it to — and refusing to open one for them is not a
-// gap in its coverage, because what a store promises is asserted through the
-// interface by the tests that use open(t), which every store runs (AC15).
-//
-// It reads the environment rather than the driver of an already-open store,
-// because the point is not to open one.
-func skipUnlessSQL(t *testing.T) {
-	t.Helper()
-
-	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
-		t.Skip("this test is about a store that keeps its index in rows; the blob store keeps no schema")
-	}
-}
-
-// assertTheHistorySurvivedALostBucket checks what each kind of store can still
-// promise once its artifact bucket has gone away.
-//
-// For a store with a database the promise is the strong one the test around it
-// is named for: a prune that could not reclaim must not remove the rows that
-// say what there was to reclaim, so the history is read back and has to be
-// intact.
-//
-// The bucket-index store cannot promise that and must not pretend to. Its
-// index is objects in the same bucket, so an unmounted volume takes the history
-// with it — there is no second place for it to have survived in. What it can
-// promise is the half that matters: it says the store is unreachable rather
-// than reporting an empty history as though the target had never been scanned,
-// which is the inference Tenet 5 forbids and the one this test exists to
-// prevent. The prune's own refusal, asserted above this call, is the same
-// promise from the other end.
+// The index is rows in a database, so it is somewhere the missing volume is
+// not, and the promise is the strong one the test around it is named for: a
+// prune that could not reclaim must not remove the rows that say what there was
+// to reclaim, so the history is read back and has to be intact. The prune's own
+// refusal, asserted above this call, is the same promise from the other end.
 func assertTheHistorySurvivedALostBucket(t *testing.T, s store.Store) {
 	t.Helper()
-
-	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
-		if err := s.Ping(t.Context()); err == nil {
-			t.Error("a store whose bucket has gone away reported itself reachable")
-		}
-
-		return
-	}
 
 	rows, err := s.ListResults("site", model.ConsentReject, 0)
 	if err != nil {
@@ -179,34 +135,6 @@ func assertTheHistorySurvivedALostBucket(t *testing.T, s store.Store) {
 	if len(rows) != 1 {
 		t.Errorf("the store holds %d results after a prune that could not reach the bucket, want 1", len(rows))
 	}
-}
-
-// foreignToThisStore is how many of the objects a sweep test plants are foreign
-// to the store under test.
-//
-// Two of them are a bucket-index layout, which Story 8.10, AC16 explicitly
-// permits a SQL deployment to meet in a bucket whose index once lived beside
-// the evidence: to a SQL store all four are objects it did not write.
-//
-// The bucket-index store sees one of those two and not the other, and the
-// count is one lower for that reason rather than because it judges the missing
-// one safe. Its sweep walks the evidence plus the two index prefixes it needs
-// work lists for — the pins under ref/ and the scan keys under byid/ — and
-// never lists audit/ at all (the index tree is skipped whole; see the blob
-// sweep's kinds()). So the planted audit entry is out of the sweep's reach,
-// while the planted pin — a directory whose last segment is no owner that
-// grammar spells — is inside it and is counted as a stray. Both stores leave
-// all four exactly where they are, which is what the loop after this call
-// asserts and what the criterion is actually about.
-//
-// A sweep that later grew a pass over audit/ would have to judge that key, and
-// this comment is where to start.
-func foreignToThisStore(planted int) int {
-	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverBlob {
-		return planted - 1
-	}
-
-	return planted
 }
 
 // sqliteOptions is the on-disk store the schema tests need: they reopen it,
@@ -332,6 +260,41 @@ func result(id string, at time.Time, mode model.ConsentMode) *model.Result {
 			},
 		},
 	}
+}
+
+// digestOf is the content address the bucket gives some bytes.
+func digestOf(data []byte) string {
+	sum := sha256.Sum256(data)
+
+	return hex.EncodeToString(sum[:])
+}
+
+// resultWithEvidence is one scan that names a screenshot and a stored body, so
+// that the artifacts a stored result references are more than the document's
+// own.
+func resultWithEvidence(t *testing.T, s store.Store, id string, at time.Time) (*model.Result, string, string) {
+	t.Helper()
+
+	screenshot := []byte("a screenshot of " + id)
+	body := []byte("a response body for " + id)
+
+	screenshotRef, err := s.PutArtifact("screenshot-before-consent", screenshot)
+	if err != nil {
+		t.Fatalf("storing a screenshot: %v", err)
+	}
+
+	bodyRef, err := s.PutArtifact("body", body)
+	if err != nil {
+		t.Fatalf("storing a body: %v", err)
+	}
+
+	res := result(id, at, model.ConsentReject)
+	res.Screenshots = []model.Artifact{{
+		Kind: "screenshot-before-consent", Ref: screenshotRef, Bytes: int64(len(screenshot)),
+	}}
+	res.Requests[0].BodyRef = bodyRef
+
+	return res, screenshotRef, bodyRef
 }
 
 func TestPutAndGetResult(t *testing.T) {

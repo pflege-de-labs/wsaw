@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -50,22 +49,14 @@ import (
 // keeping a shadow copy of every object's listing facts beside memblob's own
 // would be the same map kept twice.
 //
-// Two of §8.2's knobs are still not here and one arrived with compaction.
-// failPage and corruptBody have no caller: a damaged body needs no injection,
-// because writing bad bytes to the object is what the tests that want one
-// already do, and a failed page needs a listing longer than one page, which
-// nothing in this build constructs. setModTime is the third, futureModTime,
-// generalised — it feeds the deletion rule whose only deleter is compaction,
-// and compaction landed in step 13.
+// Two of the sketched knobs are not here: failPage and corruptBody have no
+// caller, because a damaged body needs no injection — writing bad bytes to the
+// object is what the tests that want one already do — and a failed page needs a
+// listing longer than one page, which nothing in this build constructs.
 
 // lagScheme is what a URL has to say for openBucket to reach the fake. It is
 // registered in this file and in no other, and in no non-test file at all.
 const lagScheme = "lag"
-
-// lagEveryListing hides a key until the test reveals it again, for the tests
-// that care about a visible key set rather than about how many listings it took
-// to become visible.
-const lagEveryListing = math.MaxInt
 
 // lagBuckets is where a fake waits between the test that builds it and the
 // store that opens it, because a URL opener is handed a URL and nothing else.
@@ -304,23 +295,6 @@ func (b *lagBucket) hideFromListings(prefix string, listings int) {
 	b.hides = append(b.hides, lagHide{prefix: prefix, left: listings})
 }
 
-// reveal ends the concealment of everything under prefix, so that a test can
-// name the moment a key becomes visible instead of counting listings to it.
-func (b *lagBucket) reveal(prefix string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	kept := make([]lagHide, 0, len(b.hides))
-
-	for _, hide := range b.hides {
-		if !strings.HasPrefix(hide.prefix, prefix) {
-			kept = append(kept, hide)
-		}
-	}
-
-	b.hides = kept
-}
-
 // serveStaleListings pins the current key set and answers the next listings
 // from it: keys written afterwards are missing and keys deleted afterwards are
 // still there, which is a listing served from a replica that has not caught up.
@@ -337,39 +311,16 @@ func (b *lagBucket) serveStaleListings(listings int) {
 	b.stale = listings
 }
 
-// catchUpListings ends the pinned view, which is the replica catching up. It is
-// a separate call rather than a count of listings because what a test about
-// monotonicity wants to name is the moment the view changed, not how many
-// requests it took to get there.
-func (b *lagBucket) catchUpListings() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.stale = 0
-}
-
 // failNext makes the next operations on prefix fail without happening, with the
 // code a provider uses for a fault another attempt could fix.
 func (b *lagBucket) failNext(op lagOp, prefix string, times int) {
 	b.schedule(lagFault{op: op, prefix: prefix, mode: lagFailBefore, code: gcerrors.Internal, left: times})
 }
 
-// missNext makes a GET of prefix report the object as absent while it is there,
-// which is a provider with no read-after-write on that key.
-func (b *lagBucket) missNext(prefix string, times int) {
-	b.schedule(lagFault{op: lagGet, prefix: prefix, mode: lagFailBefore, code: gcerrors.NotFound, left: times})
-}
-
 // loseResponse lets the operation happen and reports it as failed, which is the
 // ambiguous failure every idempotence claim in this design is about (AC10).
 func (b *lagBucket) loseResponse(op lagOp, prefix string, times int) {
 	b.schedule(lagFault{op: op, prefix: prefix, mode: lagFailAfter, code: gcerrors.Internal, left: times})
-}
-
-// ignoreDeletes reports a delete as done without doing it, which is the
-// direction retention must survive: a key that comes back.
-func (b *lagBucket) ignoreDeletes(prefix string, times int) {
-	b.schedule(lagFault{op: lagDelete, prefix: prefix, mode: lagSkip, left: times})
 }
 
 // allowRewrites turns off I1, the rule that no key is written twice with
@@ -390,15 +341,6 @@ func (b *lagBucket) allowRewrites() {
 	defer b.mu.Unlock()
 
 	b.rewritable = true
-}
-
-// acceptEveryConditionalWrite makes IfNotExist a lie, as it is on a provider
-// that does not implement it.
-func (b *lagBucket) acceptEveryConditionalWrite() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.lying = true
 }
 
 // schedule adds one fault to the queue the operations draw from.
@@ -516,37 +458,6 @@ func (b *lagBucket) forget(key string) {
 	defer b.mu.Unlock()
 
 	delete(b.objects, key)
-}
-
-// setModTime rewrites the bucket's own timestamp for every key under prefix,
-// which is the one thing about an object that no request of the store's can
-// change and that compaction's every deletion is decided against.
-//
-// It is one knob where §8.2 named only futureModTime, because a general one has
-// both callers: a checkpoint dated far enough in the past is what puts a
-// deletion outside the grace period without a test waiting a day for it
-// (AGENTS §5), and a checkpoint dated in the future is the provider clock that
-// has to disable a deletion rather than enable one. Two names for one
-// mechanism would be two things to keep in step.
-//
-// It does not count as a request, for the same reason forget does not: it is
-// the bucket being a bucket rather than the store asking it for anything.
-func (b *lagBucket) setModTime(prefix string, at time.Time) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for key, object := range b.objects {
-		if strings.HasPrefix(key, prefix) {
-			object.modTime = at
-		}
-	}
-
-	for key, info := range b.pinned {
-		if strings.HasPrefix(key, prefix) {
-			info.modTime = at
-			b.pinned[key] = info
-		}
-	}
 }
 
 // violations is what the strict rules caught, for the test that is about the
@@ -898,7 +809,7 @@ func (b *lagBucket) Delete(ctx context.Context, key string) error {
 // never listed, and that is a probe cleaning up after itself rather than
 // retention making a decision.
 //
-// The rebuild marker is exempt for the same reason (Story 8.11, AC12). It is a
+// The rebuild marker is exempt for the same reason (Story 8.10, AC12). It is a
 // lease rather than a record: the process that wrote it deletes exactly the key
 // it wrote, by name, and nothing folds it or reads it as history. Requiring a
 // listing first would be worse than useless — a listing that has not caught up

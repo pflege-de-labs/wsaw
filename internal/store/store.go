@@ -66,23 +66,6 @@ var ErrCorrupt = errors.New("stored evidence is corrupt")
 // ErrNotFound) that matched it would restore the silence.
 var ErrEvidenceGone = errors.New("the stored evidence this result names is no longer in the artifact bucket")
 
-// ErrIndexIncomplete marks a read the index could not finish answering: an
-// object the index itself listed and then could not produce, or a fold that ran
-// out of budget part way through.
-//
-// It exists for the store whose index is objects in a bucket, where "the
-// history does not contain this" and "I could not see all of the history" are
-// different facts that a single listing can produce either of (Story 8.10,
-// AC6). The SQL stores cannot reach it: a query either answers or fails.
-//
-// It wraps neither ErrNotFound nor ErrEvidenceGone, so no caller reads it as
-// "there is no previous scan" and none reads it as an evidence loss. What it
-// buys today is a log line at Warn and a truthful HTTP status. It does not yet
-// change the comparison a scanner produces — scanner.compare treats every error
-// but ErrEvidenceGone the same way, and giving it a third answer is a change in
-// internal/scanner and internal/diff that belongs with them.
-var ErrIndexIncomplete = errors.New("the index could not be read completely")
-
 // SQL is a result store whose index is rows in a database — SQLite,
 // PostgreSQL or MySQL, behind one set of queries (dialect.go). It is safe
 // for concurrent use.
@@ -188,40 +171,6 @@ type Options struct {
 	// rather than guess whether it has hung (Story 8.4, AC3). Empty takes
 	// slog.Default().
 	Logger *slog.Logger
-
-	// Version identifies the build, for the one object a store writes that
-	// records who created it: the layout marker of the bucket index (Story
-	// 8.10). It is provenance rather than behaviour — nothing reads it back —
-	// and it exists because an operator looking at a bucket with no database
-	// beside it has nothing else to tell them which wsaw laid it out. Empty
-	// records that the build did not say.
-	Version string
-
-	// Now is the clock the store reads. It exists for the store whose index is
-	// in the bucket, where a timestamp is not decoration: it orders every key
-	// and it decides every grace period, so a test of ordering or of retention
-	// that could not move the clock would have to wait for one (AGENTS §5).
-	// Nil takes time.Now.
-	//
-	// The SQL stores ignore it. Their ordering is a column the database sorts
-	// and their retention takes its "now" as an argument.
-	Now func() time.Time
-
-	// CheckpointGrace is how long a compaction checkpoint must have been
-	// visible in the bucket before the loose index entries it covers may be
-	// deleted (Story 8.10). It is here rather than in configuration for the
-	// reason every other constant of that design is a constant — an operator
-	// has no basis on which to tune it — and it is here at all because a test
-	// of the rule cannot otherwise reach the far side of a day without
-	// sleeping through one. Zero takes the default.
-	//
-	// **Nothing reads it yet.** The rule it feeds belongs to compaction, which
-	// is the step of Story 8.10 that follows the index itself, so setting this
-	// today changes no behaviour. It is declared with the store it belongs to
-	// rather than with its consumer so that the option set an operator and a
-	// test see does not change shape when compaction lands; the deviation is
-	// recorded in the design's §7.6.
-	CheckpointGrace time.Duration
 }
 
 // Location names the store the way a log line or a command's output should:
@@ -247,15 +196,6 @@ func (o *Options) ArtifactLocation() string { return secret.RedactURL(o.Artifact
 func (o *Options) describe() string {
 	if o.Driver == "" || o.Driver == DriverSQLite {
 		return o.Path
-	}
-
-	if o.Driver == DriverBlob {
-		// There is no second location to name: the index is objects in the
-		// same bucket as the evidence, so the bucket is the store. The driver
-		// is kept in front of it so a log line still says which kind of store
-		// this is rather than printing the artifact location twice with no
-		// explanation.
-		return DriverBlob + " " + o.ArtifactLocation()
 	}
 
 	if o.DSN.IsSet() {
@@ -942,7 +882,7 @@ const underivedSummary = "this result names no stored document, so its summary c
 // from summarize() at write time (AC4). Where a derivation itself changes, the
 // repair is to recompute every summary from the stored documents — the
 // documents are the record and the columns are a view of them (Tenet 4) — and
-// that operation is Story 8.11's rebuild, which is not built yet. Until it is,
+// that operation is Story 8.10's rebuild, which is not built yet. Until it is,
 // changing summarize() leaves rows written before the change carrying the old
 // definition.
 func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]Summary, error) {

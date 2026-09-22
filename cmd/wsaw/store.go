@@ -22,7 +22,7 @@ import (
 // It is a command with subcommands rather than a flag on `run` because these
 // are deliberate acts on stored evidence: an upgrade that cannot be undone, a
 // deletion that does not come back, and a rebuild of the index from the bucket
-// (Story 8.11). An operator asks for those by name, at a time of their
+// (Story 8.10). An operator asks for those by name, at a time of their
 // choosing, and reads what happened before starting the daemon again.
 func cmdStore(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -97,8 +97,7 @@ history is real and sweeps anyway.
 object under the result prefix is read, decoded, and turned into the same index
 entry and the same summary the scan that stored it would have written. It is
 the recovery procedure for an index that was lost, restored without its bucket,
-or left incomplete, and it is the supported way to move a history between store
-kinds — point the new store at the same bucket and run it.
+or left incomplete.
 
 It merges and never deletes. An entry it does not find a document for is
 reported and left exactly where it is, because a bucket that lost an object and
@@ -119,9 +118,8 @@ empty index reports them as lost rather than presenting a store that merely
 looks intact.
 
 --verify changes nothing and compares the two in both directions: entries
-naming documents that are gone, documents with no entry, summaries that no
-longer match, and — for the bucket-index store — a baseline decision whose
-entry in the audit log never landed. It exits non-zero on any of those, and on
+naming documents that are gone, documents with no entry, and summaries that no
+longer match. It exits non-zero on any of those, and on
 any object under the result prefix it could not read or could not understand,
 so it can run on a schedule rather than being remembered after an incident. It
 does not exit non-zero over evidence a bucket lifecycle rule expired, which is a
@@ -516,16 +514,6 @@ func reportPrune(stats store.PruneStats, dryRun bool, limit int) {
 
 	reportKept(stats.ArtifactsFailed, stats.ArtifactsProtected, stats.UnknownReferences)
 
-	if stats.IndexKeysFailed > 0 {
-		// Named apart from the refused artifacts because it calls for something
-		// different: these results are out of every listing and still fetchable
-		// by scan ID, so a share link to one still resolves until a sweep
-		// collects the key.
-		fmt.Printf("reachable: %s could not be removed from the index and are still fetchable by scan ID;\n",
-			plural(stats.IndexKeysFailed, "pruned result"))
-		fmt.Println("           run \"wsaw store sweep\" to collect them")
-	}
-
 	if !dryRun {
 		return
 	}
@@ -716,7 +704,7 @@ func sweep(ctx context.Context, m *maintenance, opts store.SweepOptions) (store.
 
 // cmdStoreRebuildIndex derives the index from the documents in the bucket,
 // reports what doing so would change, or verifies the two against each other
-// (Story 8.11).
+// (Story 8.10).
 //
 // It shares openForMaintenance with the prune and the sweep, so it inherits the
 // same configuration, the same logging and the same way in — a rebuild of a SQL
@@ -928,19 +916,6 @@ func reportRebuiltIndex(stats store.RebuildStats, mode store.RebuildMode) {
 			plural(stats.Conflicts, "scan ID"), oneOf(stats.Conflicts, "names", "name"))
 		fmt.Println("           it, and neither was touched: resolving one means choosing which of")
 		fmt.Println("           two scans to discard, which is not a recovery command's decision")
-	}
-
-	if stats.IndexUnreadable > 0 {
-		fmt.Printf("unreadable: %s %s present and does not decode, at a key that is already\n",
-			plural(stats.IndexUnreadable, "index object"),
-			oneOf(stats.IndexUnreadable, "is", "are"))
-		fmt.Println("           taken, so it was reported and left where it is")
-	}
-
-	if stats.SummariesStale > 0 {
-		fmt.Printf("stale:     %s %s a summary the document no longer produces, and this store\n",
-			entries(stats.SummariesStale), oneOf(stats.SummariesStale, "carries", "carry"))
-		fmt.Println("           does not rewrite an index object, so it was left as it is")
 	}
 
 	if stats.EntriesStale > 0 {

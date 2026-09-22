@@ -26,8 +26,7 @@ import (
 )
 
 // TestAFullCycleAgainstAnObjectStore is Story 8.9, AC2: a real scan of a real
-// page, stored in a real object store, pruned, and read back — for each kind of
-// store, because the two put entirely different things in the bucket.
+// page, stored in a real object store, pruned, and read back.
 //
 // It is one test rather than four because the point is the *cycle*. Each step
 // alone is covered by the unit suites, which now run against MinIO too; what
@@ -37,16 +36,7 @@ import (
 func TestAFullCycleAgainstAnObjectStore(t *testing.T) {
 	needMinIO(t)
 
-	kinds := map[string]string{
-		"index in rows":            store.DriverSQLite,
-		"index in the same bucket": store.DriverBlob,
-	}
-
-	for name, driver := range kinds {
-		t.Run(name, func(t *testing.T) {
-			runCycle(t, driver)
-		})
-	}
+	runCycle(t, store.DriverSQLite)
 }
 
 // runCycle is the cycle itself, for one kind of store.
@@ -133,9 +123,8 @@ func runCycle(t *testing.T, driver string) {
 		t.Error("the prune removed no objects at all, so the older scan's evidence is still in the bucket")
 	}
 
-	if stats.ArtifactsFailed != 0 || stats.IndexKeysFailed != 0 {
-		t.Errorf("the object store refused %d deletes and %d index keys",
-			stats.ArtifactsFailed, stats.IndexKeysFailed)
+	if stats.ArtifactsFailed != 0 {
+		t.Errorf("the object store refused %d deletes", stats.ArtifactsFailed)
 	}
 
 	if stats.BytesFreed <= 0 {

@@ -16,10 +16,12 @@ it. Two dates, because they answer two questions:
 - The **module, licence and vulnerability** tables were measured on 2026-09-08
   against `gocloud.dev v0.46.0`, on the commit that introduced it. They are
   about what the dependency brings, and nothing since has touched `go.mod`.
-- The **byte counts** were re-measured on 2026-09-09, at the end of the epic,
-  with Stories 8.10 and 8.11 in the tree. They are about what the binary
-  weighs, and the epic's own code kept being added to it after the dependency
-  arrived.
+- The **byte counts** were re-measured on 2026-09-09, at the end of the epic.
+  They are about what the binary weighs, and the epic's own code kept being
+  added to it after the dependency arrived. They were taken while the
+  bucket-index store was still in the tree, and that store has since been
+  dropped from the epic, so the `+epic8` column below reads high: `make sizes`
+  is the live number.
 
 **This document is still a point-in-time measurement.** The byte counts and
 module versions below are what was true on those dates; they are not maintained
@@ -120,9 +122,9 @@ for the tag.
 
 `+epic8` grew by some 500 KB between the commit that introduced `gocloud.dev`
 and the end of the epic, and none of that is the dependency: `go.mod` did not
-move. It is Stories 8.10 and 8.11 — the store whose index is objects in the
-bucket, and the rebuild — which is why the column is named `+epic8` rather than
-`+gocloud`. `+cloud` barely moved over the same stretch, which is the same fact
+move. It is the epic's own code — the store whose index was objects in the bucket,
+since dropped, and the rebuild of Story 8.10 — which is why the column is named
+`+epic8` rather than `+gocloud`. `+cloud` barely moved over the same stretch, which is the same fact
 seen from the other side: the SDKs are a fixed cost, and the code wsaw added
 is linked into both variants.
 

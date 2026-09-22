@@ -467,20 +467,7 @@ MINIO_SECRET_KEY   ?= wsaw-test-secret-key
 MINIO_URL          := s3://$(MINIO_BUCKET)?endpoint=http://127.0.0.1:$(MINIO_PORT)&region=us-east-1&use_path_style=true&disable_https=true
 
 .PHONY: test-store-all
-test-store-all: test test-store-blob test-store-memory test-store-postgres test-store-mysql test-store-minio
-
-# test-store-blob runs the same shared suite against the store whose index is
-# objects in the artifact bucket (Story 8.10, AC15). It needs no container and
-# no service of any kind — a temporary directory is the bucket — so unlike the
-# two targets below it belongs in the default CI job.
-#
-# Without it the store suite proves nothing about that driver: `go test
-# ./internal/store/` runs every shared assertion against SQLite only, so an
-# edit that broke ListResults, PreviousResult or the prune under the bucket
-# index would leave every gate in this repository green.
-.PHONY: test-store-blob
-test-store-blob:
-	WSAW_TEST_STORE_DRIVER=blob go test -count=1 ./internal/store/
+test-store-all: test test-store-memory test-store-postgres test-store-mysql test-store-minio
 
 # test-store-memory runs the same suite again with the evidence in a bucket that
 # only exists in memory (Story 8.9, AC1).
@@ -497,7 +484,6 @@ test-store-blob:
 .PHONY: test-store-memory
 test-store-memory:
 	WSAW_TEST_ARTIFACT_BUCKET=memory go test -count=1 ./internal/store/
-	WSAW_TEST_ARTIFACT_BUCKET=memory WSAW_TEST_STORE_DRIVER=blob go test -count=1 ./internal/store/
 
 # The container-backed targets below all have the same shape, and the shape is
 # load-bearing: the server has to come down whether the tests passed or failed,
@@ -616,9 +602,6 @@ test-store-minio:
 	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' \
 	  go test -count=1 -tags $(CLOUD_TAGS) ./internal/store/ || status=$$?; \
 	AWS_ACCESS_KEY_ID=$(MINIO_ACCESS_KEY) AWS_SECRET_ACCESS_KEY=$(MINIO_SECRET_KEY) \
-	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' WSAW_TEST_STORE_DRIVER=blob \
-	  go test -count=1 -tags $(CLOUD_TAGS) ./internal/store/ || status=$$?; \
-	AWS_ACCESS_KEY_ID=$(MINIO_ACCESS_KEY) AWS_SECRET_ACCESS_KEY=$(MINIO_SECRET_KEY) \
 	  WSAW_TEST_ARTIFACT_BUCKET='$(MINIO_URL)' \
 	  go test -count=1 -timeout 15m -tags $(CLOUD_TAGS),objectstore ./test/e2e/objectstore/ || status=$$?; \
 	$(STORE_TEST_RUNTIME) rm -f wsaw-test-minio; \
@@ -633,10 +616,7 @@ cover:
 # from the regular suite (Story 6.8).
 #
 # It reports what the artifact bucket cost the run, in requests and bytes and
-# per scan (Story 8.9, AC6). WSAW_SOAK_STORE=blob runs the same soak against the
-# store whose index is objects in the bucket, which is where the per-scan
-# request count of *that* store comes from — some four times the SQL store's,
-# and the number its compaction thresholds should be reasoned about with.
+# per scan (Story 8.9, AC6).
 .PHONY: soak
 soak:
 	go test -tags soak -timeout 60m -run TestSoak ./internal/soak/

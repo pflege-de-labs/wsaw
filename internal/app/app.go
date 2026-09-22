@@ -171,11 +171,6 @@ func (a *App) openStore(ctx context.Context) error {
 	// a large store is minutes of work an operator has to be able to watch
 	// (Story 8.4, AC3).
 	opts.Logger = a.Logger
-	// Provenance for the one object a store writes about itself: the layout
-	// marker of a bucket index, which is all an operator staring at a bucket
-	// with no database beside it has to say which wsaw laid it out (Story
-	// 8.10). The SQL stores ignore it.
-	opts.Version = a.Version
 
 	st, err := store.Open(ctx, opts)
 	if err != nil {
@@ -237,17 +232,6 @@ func StoreOptions(cfg *config.Config, secrets *secret.Registry) (store.Options, 
 		ArtifactDir:  artifacts,
 		MaxAttempts:  cfg.Store.MaxAttempts,
 		RetryBackoff: cfg.Store.RetryBackoff.Duration(),
-	}
-
-	if cfg.Store.IsBucketStore() {
-		// Nothing else to resolve. There is no DSN, no file to place and no
-		// pool to size, and the artifact location is not defaulted the way it
-		// is for the other two: for this store the bucket is the store, so a
-		// deployment that did not name one is refused at load rather than
-		// started against a guess (Story 8.10, AC1).
-		opts.Driver = cfg.Store.StoreDriver()
-
-		return opts, nil
 	}
 
 	if cfg.Store.IsServerStore() {

@@ -10,12 +10,15 @@ import (
 	"gocloud.dev/gcerrors"
 )
 
-// This file is the index's door onto the same bucket the evidence lives in
-// (Story 8.10). It is a second door and not a widening of the first: bucket.go
-// admits exactly "<kind>/<sha256hex>" and nothing else, and the value of that
-// whitelist is that it has to be right about one shape. Relaxing it so index
-// keys could pass would trade a check that is provably right for a check that
-// is approximately right, on the one code path a crafted artifact reference
+// This file is the door onto the objects wsaw keeps in the artifact bucket
+// that are not artifacts — today the markers a rebuild of the index leaves
+// while it runs (Story 8.10, AC12).
+//
+// It is a second door and not a widening of the first: bucket.go admits exactly
+// "<kind>/<sha256hex>" and nothing else, and the value of that whitelist is
+// that it has to be right about one shape. Relaxing it so marker keys could
+// pass would trade a check that is provably right for a check that is
+// approximately right, on the one code path a crafted artifact reference
 // reaches (Tenet 9).
 //
 // What it deliberately does not duplicate is everything underneath the
@@ -25,13 +28,10 @@ import (
 // borrowed here, because a second copy of them would be a second answer to
 // "is this failure transient" that drifts from the first (AC8).
 //
-// The other difference from the artifact door is the write: an artifact key
-// that already exists holds those exact bytes, so bucket.write treats losing
-// the conditional-create race as the no-op it is. Index keys are not
-// content-addressed in general — a byid key is named after a scan, not after
-// its body — so swallowing that here would hide a scan ID reused for different
-// content. putIndex reports which of the two happened and lets its caller
-// decide.
+// The other difference from the artifact door is the write. These keys are not
+// content-addressed — a marker is named after the run, not after its body — so
+// the conditional create is what keeps one run from writing over another's,
+// rather than the key derivation alone.
 
 const (
 	// indexListPageSize bounds one listing round trip of the index. A thousand
@@ -45,41 +45,17 @@ const (
 	// strictly cheaper.
 	indexListPageSize = 1000
 
-	// indexContentType is what every index object is written as, including the
-	// zero-byte markers.
+	// indexContentType is what every object in this key space is written as.
 	//
-	// One type for the whole index, and the same one artifacts get, because no
-	// index object is ever served to a browser or signed into a URL — the HTTP
-	// layer has no route that reaches one — so the only thing a content type
-	// could do here is describe a tombstone as a document it is not.
+	// One type for all of them, and the same one artifacts get, because none of
+	// them is ever served to a browser or signed into a URL — the HTTP layer
+	// has no route that reaches one — so the only thing a content type could do
+	// here is describe a marker as a document it is not.
 	indexContentType = artifactContentType
 )
 
-// putOutcome says which of the two ways a conditional create succeeded.
-//
-// It is a returned value rather than a swallowed distinction because two
-// callers have to tell the cases apart: PutResult, so that a scan ID reused
-// for different content is refused rather than quietly shadowed, and
-// compaction, so that re-running an interrupted pass is reported as the no-op
-// it is instead of as fresh work (AC10).
-type putOutcome int
-
-const (
-	// putNothing is the zero value and means no write was attempted or none
-	// completed. It exists so that a caller reading the outcome without
-	// reading the error learns nothing rather than something false.
-	putNothing putOutcome = iota
-	// putCreated means this call wrote the key.
-	putCreated
-	// putExisted means the key was already there. The bytes are not compared:
-	// finding out would cost a GET on every write, and invariant I1 — that two
-	// distinct facts derive two distinct keys — is what makes the comparison
-	// unnecessary.
-	putExisted
-)
-
-// indexObject is one key a listing of the index reported, with what the bucket
-// said about it.
+// indexObject is one key a listing reported, with what the bucket said about
+// it.
 //
 // It carries the same three facts artifactObject does and is a separate type
 // on purpose: the two key spaces are disjoint by construction (see indexRoot),
@@ -87,10 +63,10 @@ const (
 // expects an artifact reference, or the reverse, without the compiler saying
 // so.
 //
-// modTime is not decoration. It is the bucket's own clock, and compaction's
-// rule for when a covered entry may be deleted is expressed against it rather
-// than against the host's, so that there is one clock in the decision and a
-// timestamp in the future disables a deletion instead of enabling it.
+// modTime is not decoration. It is the bucket's own clock, and the rule for
+// when a marker has outlived its run is expressed against it rather than
+// against the host's, so that there is one clock in the decision and a
+// timestamp in the future keeps a marker honoured instead of discarding it.
 type indexObject struct {
 	key     string
 	size    int64
@@ -118,11 +94,9 @@ func (c indexCursor) more() bool { return !c.spent }
 
 // indexPage is one page of a listing: what it found, and how to continue.
 //
-// A page at a time and not a callback, unlike bucket.list, because the index's
-// reads are bounded by what they want rather than by what exists: a fold that
-// needs the newest few entries reads one page and stops, and that is the
-// difference between a page render costing one request and costing a listing
-// of the whole history (AC11).
+// A page at a time and not a callback, unlike bucket.list, because these reads
+// are bounded by what they want rather than by what exists: a reader that needs
+// to know whether any marker is live reads one page and stops.
 type indexPage struct {
 	objects []indexObject
 
@@ -130,58 +104,46 @@ type indexPage struct {
 	next indexCursor
 }
 
-// putIndex creates one index key and never rewrites one.
+// putIndex creates one key and never rewrites one.
 //
-// Every index write in this store goes through it, which is where invariant I1
-// — no index object is ever overwritten, appended to, or deleted as part of an
-// ordinary write (AC3) — is enforced for the providers that honour the
-// condition. For a provider that does not, I1 still holds, because it is a
-// property of the key derivation and not of the condition: two distinct facts
-// derive two distinct keys, and two writers of the same fact write the same
-// bytes to the same key.
-func (b *bucket) putIndex(ctx context.Context, key string, body []byte) (putOutcome, error) {
+// Every write to this key space goes through it, which is where "no object here
+// is ever overwritten" is enforced for the providers that honour the condition.
+// For a provider that does not, it still holds, because it is a property of the
+// key derivation and not of the condition: two distinct runs derive two
+// distinct keys, and a retry of one write puts the same bytes at the same key.
+//
+// A key that is already there is not an error. The bytes are not compared:
+// finding out would cost a GET on every write, and two distinct runs cannot
+// collide on a key in the first place.
+func (b *bucket) putIndex(ctx context.Context, key string, body []byte) error {
 	if err := validateIndexKey(key); err != nil {
-		return putNothing, err
+		return err
 	}
-
-	outcome := putNothing
 
 	if err := b.do(ctx, "writing an index object", func(ctx context.Context) error {
-		// Reset per attempt, so a retry cannot inherit the verdict of the
-		// attempt before it.
-		outcome = putNothing
-
-		written, err := b.writeIndex(ctx, key, body)
-		if err != nil {
-			return err
-		}
-
-		outcome = written
-
-		return nil
+		return b.writeIndex(ctx, key, body)
 	}); err != nil {
-		return putNothing, indexError("writing", key, err)
+		return indexError("writing", key, err)
 	}
 
-	return outcome, nil
+	return nil
 }
 
-// writeIndex performs one attempt at creating an index key.
+// writeIndex performs one attempt at creating a key.
 //
 // Atomicity comes from the driver, exactly as it does for an artifact:
 // fileblob renames a temporary file into place on Close and the cloud drivers
 // publish an object only when the upload completes, so an interrupted write
-// leaves no key rather than a half-written one. A reader of this index
-// therefore never sees a torn object, which is what lets every read be a fold
-// over whatever is currently visible.
-func (b *bucket) writeIndex(ctx context.Context, key string, body []byte) (putOutcome, error) {
+// leaves no key rather than a half-written one. A reader therefore never sees
+// a torn object, which is what lets a listing be trusted as it arrives.
+func (b *bucket) writeIndex(ctx context.Context, key string, body []byte) error {
 	w, err := b.b.NewWriter(ctx, key, &blob.WriterOptions{
 		ContentType: indexContentType,
 		IfNotExist:  true,
 		BeforeWrite: restrictLocalFilePermissions,
 	})
 	if err != nil {
-		return putNothing, err
+		return err
 	}
 
 	if _, err := w.Write(body); err != nil {
@@ -190,29 +152,28 @@ func (b *bucket) writeIndex(ctx context.Context, key string, body []byte) (putOu
 		// actually happened.
 		_ = w.Close()
 
-		return putNothing, err
+		return err
 	}
 
 	if err := w.Close(); err != nil {
 		if gcerrors.Code(err) == gcerrors.FailedPrecondition {
 			// Somebody wrote this key first. That is a fact about the bucket
-			// and not a failure, and saying which of the two happened is the
-			// whole reason this function returns an outcome.
-			return putExisted, nil
+			// and not a failure.
+			return nil
 		}
 
-		return putNothing, err
+		return err
 	}
 
-	return putCreated, nil
+	return nil
 }
 
 // getIndex reads one index object whole.
 //
-// Whole rather than streamed, because index objects are small by design — an
-// entry is about 450 bytes and a checkpoint is capped — and because every
-// caller decodes what it reads rather than forwarding it. The artifacts, which
-// are the large objects, stream through bucket.newReader instead.
+// Whole rather than streamed, because these objects are small by design — a
+// marker is a few hundred bytes — and because every caller decodes what it
+// reads rather than forwarding it. The artifacts, which are the large objects,
+// stream through bucket.newReader instead.
 func (b *bucket) getIndex(ctx context.Context, key string) ([]byte, error) {
 	if err := validateIndexKey(key); err != nil {
 		return nil, err
@@ -236,45 +197,12 @@ func (b *bucket) getIndex(ctx context.Context, key string) ([]byte, error) {
 	return body, nil
 }
 
-// statIndex reports what the bucket knows about one index object without
-// reading it.
-//
-// It exists for the two questions that need an object's age rather than its
-// contents: whether a checkpoint has been visible long enough for what it
-// covers to be deleted, and whether a tombstone is old enough to collect.
-// Both are answered from the bucket's modification time, and paying a GET for
-// a timestamp the bucket will report in a HEAD would be a request per object
-// on the one path that walks many of them.
-func (b *bucket) statIndex(ctx context.Context, key string) (indexObject, error) {
-	if err := validateIndexKey(key); err != nil {
-		return indexObject{}, err
-	}
-
-	obj := indexObject{key: key}
-
-	if err := b.do(ctx, "reading index object attributes", func(ctx context.Context) error {
-		attrs, err := b.b.Attributes(ctx, key)
-		if err != nil {
-			return err
-		}
-
-		obj.size, obj.modTime = attrs.Size, attrs.ModTime
-
-		return nil
-	}); err != nil {
-		return indexObject{}, indexError("reading", key, err)
-	}
-
-	return obj, nil
-}
-
 // deleteIndex removes one index key.
 //
-// Deletion is not part of any ordinary write (AC3): the only callers are
-// compaction, collecting keys a durably visible checkpoint has absorbed, and
-// prune, collecting a tombstone nothing can still need. A key that is already
-// gone is reported as ErrNotFound so that "somebody else collected it" can be
-// treated as the success it is rather than as a failure to explain.
+// Deletion is not part of any write: the only caller is the rebuild clearing
+// its own marker on the way out. A key that is already gone is reported as
+// ErrNotFound so that "somebody else collected it" can be treated as the
+// success it is rather than as a failure to explain.
 func (b *bucket) deleteIndex(ctx context.Context, key string) error {
 	if err := validateIndexKey(key); err != nil {
 		return err
@@ -295,8 +223,8 @@ func (b *bucket) deleteIndex(ctx context.Context, key string) error {
 // The zero cursor starts the listing and the cursor a page carries continues
 // it; a spent cursor is refused, because serving it would silently restart a
 // listing a caller believed it had finished. limit asks for at most that many
-// keys and is clamped to indexListPageSize, so a fold that wants twenty
-// entries pays for twenty and not for a thousand.
+// keys and is clamped to indexListPageSize, so a caller that wants twenty keys
+// pays for twenty and not for a thousand.
 //
 // The cursor only advances on a successful page. A failed page leaves the
 // caller's cursor pointing at the page still to be fetched, which is what
@@ -306,10 +234,10 @@ func (b *bucket) deleteIndex(ctx context.Context, key string) error {
 // on fileblob it is lexicographic only where the grammar earns it.** fileblob
 // walks the directory tree and does not sort what the walk produces, so two
 // sibling directories where one name is a proper prefix of the other come back
-// in the walk's order and not the key's. §4.2's invariant, and the rule stated
-// with indexRefPrefix in blobkeys.go, are what keep every prefix this store
-// lists out of that case; a caller inventing a new prefix to list is the one
-// who has to check it still holds.
+// in the walk's order and not the key's. No prefix in indexkeys.go is in that
+// case — they are siblings under one directory, none a prefix of another — and
+// a caller inventing a new prefix to list is the one who has to check it still
+// holds.
 func (b *bucket) listIndexPage(ctx context.Context, prefix string, cursor indexCursor, limit int) (indexPage, error) {
 	if err := validateIndexPrefix(prefix); err != nil {
 		return indexPage{}, err
@@ -368,7 +296,7 @@ func (b *bucket) listIndexPage(ctx context.Context, prefix string, cursor indexC
 }
 
 // validateIndexKey refuses anything that is not a key the grammar in
-// blobkeys.go defines.
+// indexkeys.go defines.
 //
 // It is a whitelist, and a separate one from validateRef, for the reason
 // stated at the top of this file. Three checks, each with its own job:

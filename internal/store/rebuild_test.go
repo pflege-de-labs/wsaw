@@ -18,7 +18,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
-// The rebuild of an index from the documents in the bucket (Story 8.11).
+// The rebuild of an index from the documents in the bucket (Story 8.10).
 //
 // Every test here runs against whichever store the suite is being run against,
 // for the reason the rest of the suite does: what a store promises is the same
@@ -40,24 +40,14 @@ type rebuiltScan struct {
 
 // lostIndex names an empty index over the same artifact bucket.
 //
-// It is the state this whole command exists for, and each kind of store reaches
-// it differently: a database that was dropped, restored without its bucket, or
-// never existed is a fresh database beside the same evidence, while an index
-// that is objects in the bucket is lost by the objects being gone. Both leave
-// exactly what a rebuild has to work from — the documents — and nothing else.
-//
-// It is also, deliberately, how a history is moved between store kinds: point
-// the new store at the same bucket, and rebuild (Story 8.10, AC16).
+// It is the state this whole command exists for: a database that was dropped,
+// restored without its bucket, or never existed is a fresh database beside the
+// same evidence, which leaves exactly what a rebuild has to work from — the
+// documents — and nothing else.
 func lostIndex(t *testing.T, opts store.Options) store.Options {
 	t.Helper()
 
 	switch opts.Driver {
-	case store.DriverBlob:
-		// The whole index tree, layout object included. Reopening writes the
-		// layout again, which is what a bucket whose index was deleted looks
-		// like from the next start.
-		evidence(t, opts).RemoveAll("_wsaw/index/")
-
 	case store.DriverPostgres, store.DriverMySQL:
 		opts.DSN = secret.Literal(scratchDatabase(t, opts.Driver))
 

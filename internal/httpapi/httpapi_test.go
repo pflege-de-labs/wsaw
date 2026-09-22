@@ -345,7 +345,7 @@ func TestTargetsIncludeStalenessForNeverScanned(t *testing.T) {
 
 // TestTargetsReportWhichSeriesHaveABaseline covers the one question the
 // targets page asks about baselines. It is asked with HasBaseline rather than
-// by reading the approved result (Story 8.10), so the answer it gives is
+// by reading the approved result, so the answer it gives is
 // asserted here rather than assumed from the store's own tests.
 func TestTargetsReportWhichSeriesHaveABaseline(t *testing.T) {
 	t.Parallel()

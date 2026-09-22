@@ -13,11 +13,11 @@ import (
 // and it says so in a way an operator can act on.
 //
 // Every entry point that takes a bucket location is asserted, not just the
-// lowest one. Configuration validation, the bucket opener, and both store
-// constructors each consult the URL mux for themselves, so each could
-// independently grow a branch that opened an s3:// URL — and the two store
-// constructors are the ones an operator actually reaches, since a location that
-// got past validation arrives there.
+// lowest one. Configuration validation, the bucket opener, and the store
+// constructor each consult the URL mux for themselves, so each could
+// independently grow a branch that opened an s3:// URL — and the constructor is
+// the one an operator actually reaches, since a location that got past
+// validation arrives there.
 func TestTheDefaultBuildRefusesCloudSchemes(t *testing.T) {
 	t.Parallel()
 
@@ -38,15 +38,10 @@ func TestTheDefaultBuildRefusesCloudSchemes(t *testing.T) {
 
 			assertNamesTheWayOut(t, openBucketError(t, location), scheme)
 
-			// The bucket-index store, which is the whole store: its index and
-			// its evidence are both in the bucket the URL names.
-			_, err := Open(t.Context(), Options{Driver: DriverBlob, ArtifactDir: location})
-			assertNamesTheWayOut(t, err, scheme)
-
-			// And a SQL store whose evidence was pointed at a bucket. It is
+			// And a store whose evidence was pointed at a bucket. It is
 			// refused before the schema is touched, so the database is left as
 			// it was — see connect().
-			_, err = Open(t.Context(), Options{
+			_, err := Open(t.Context(), Options{
 				Driver:      DriverSQLite,
 				Path:        filepath.Join(t.TempDir(), "wsaw.db"),
 				ArtifactDir: location,

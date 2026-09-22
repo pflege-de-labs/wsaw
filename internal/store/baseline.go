@@ -179,10 +179,9 @@ func (s *SQL) GetBaseline(target string, mode model.ConsentMode) (*Baseline, err
 // It exists because that is the only question the targets page asks: once per
 // series, on every render, to decide whether to show the badge. Answering it
 // with GetBaseline means fetching the whole approved result — a copy of an
-// entire scan document — and throwing it away. Against a database that is a
-// wasted read; against a store whose baselines are objects it is a
-// multi-megabyte GET per series per page load, which is the difference between
-// a dashboard that renders and one that does not (Story 8.10).
+// entire scan document — out of the bucket and throwing it away, once per
+// series on every page load. That is the difference between a dashboard that
+// renders and one that does not.
 //
 // It is a narrowing of an existing question rather than a second way to ask
 // it: a store where HasBaseline and GetBaseline could disagree would be a

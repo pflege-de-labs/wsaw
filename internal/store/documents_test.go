@@ -63,8 +63,6 @@ var summaryColumnsAddedByMigration2 = []string{
 // would.
 func oldLayoutStore(t *testing.T) *oldLayout {
 	t.Helper()
-	skipUnlessSQL(t)
-
 	o := &oldLayout{opts: storeOptions(t), driver: os.Getenv("WSAW_TEST_STORE_DRIVER")}
 	if o.driver == "" {
 		o.driver = store.DriverSQLite

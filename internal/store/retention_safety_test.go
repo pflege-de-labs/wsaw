@@ -110,8 +110,6 @@ func rewindSchemaVersion(t *testing.T, db *sql.DB, opts store.Options, version i
 // SQL, so the exemption for that kind is sound.
 func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 	t.Parallel()
-	skipUnlessSQL(t)
-
 	opts := storeOptions(t)
 
 	s, err := store.OpenSQL(t.Context(), opts)
@@ -225,8 +223,6 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 // in one statement, before any document is read, and this is that guarantee.
 func TestTheDocumentOfALiveResultSurvivesAnUnfinishedBackfill(t *testing.T) {
 	t.Parallel()
-	skipUnlessSQL(t)
-
 	opts := storeOptions(t)
 
 	s, err := store.OpenSQL(t.Context(), opts)
@@ -469,7 +465,7 @@ func TestRetentionRefusesToRunWithoutTheArtifactBucket(t *testing.T) {
 // A sweep decides by reference. A store whose index holds nothing references
 // nothing, so every object in the bucket looks like garbage — which is what a
 // database restored without its bucket, or a fresh store pointed at somebody
-// else's, looks like. Rebuilding an index from the bucket is Story 8.11 and
+// else's, looks like. Rebuilding an index from the bucket is Story 8.10 and
 // does not exist yet, so that deletion has no way back and is refused until an
 // operator says the empty history is real.
 func TestASweepRefusesAnIndexThatKnowsNothing(t *testing.T) {
@@ -571,7 +567,7 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if want := foreignToThisStore(len(foreign)); stats.ForeignObjects != want {
+	if want := len(foreign); stats.ForeignObjects != want {
 		t.Errorf("ForeignObjects = %d, want %d", stats.ForeignObjects, want)
 	}
 

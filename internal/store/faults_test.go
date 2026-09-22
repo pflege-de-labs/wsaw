@@ -312,7 +312,7 @@ func TestAPingReportsABucketThatWillNotAnswer(t *testing.T) {
 }
 
 // TestAVerifySurvivesABucketThatFailsAListing is the rebuild's half of the same
-// rule (Story 8.11, AC7 and Story 8.9, AC3): a walk that cannot be completed is
+// rule (Story 8.10, AC7 and Story 8.9, AC3): a walk that cannot be completed is
 // reported as a failure, and never as a verify that found nothing wrong.
 //
 // The dangerous answer here is a clean one. A verify that returned "no drift"

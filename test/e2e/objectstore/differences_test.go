@@ -103,9 +103,9 @@ func write(t *testing.T, b *blob.Bucket, key string, body []byte) {
 	}
 }
 
-// TestListingOrderIsTheByteOrderOfTheKeys is the behaviour the whole
-// bucket-index layout rests on (Story 8.10, AC4): a fold reads a prefix listing
-// and trusts the order it arrives in, rather than sorting what the bucket holds.
+// TestListingOrderIsTheByteOrderOfTheKeys is the behaviour every prefix listing
+// in this project rests on: a reader trusts the order a listing arrives in,
+// rather than sorting what the bucket holds.
 //
 // It also pins down the one difference between a real object store and a
 // directory that this project has written down and never checked against a real
@@ -171,8 +171,8 @@ func TestListingOrderIsTheByteOrderOfTheKeys(t *testing.T) {
 	}
 }
 
-// TestAListingPagesThroughEverything is Story 8.10, AC11 against a provider
-// that really does page.
+// TestAListingPagesThroughEverything is a paged listing against a provider that
+// really does page.
 //
 // A directory and a memory bucket produce their pages from a slice they already
 // hold, so the page token is theirs to invent and no page is ever served from a
@@ -235,9 +235,8 @@ func TestAListingPagesThroughEverything(t *testing.T) {
 // back and the two it depends on.
 //
 // Size decides a Content-Length before a byte is served (Story 8.7, AC4), and
-// ModTime is the only clock compaction and the sweep's grace period are decided
-// against (Story 8.10, AC11). Both come from the provider, and neither is a
-// filesystem's.
+// ModTime is the only clock the sweep's grace period is decided against (Story
+// 8.5, AC3). Both come from the provider, and neither is a filesystem's.
 func TestWhatTheProviderSaysAboutAnObject(t *testing.T) {
 	needMinIO(t)
 
@@ -285,42 +284,6 @@ func TestWhatTheProviderSaysAboutAnObject(t *testing.T) {
 	// script a document (Story 5.17, AC5).
 	if attrs.ContentType != "application/octet-stream" {
 		t.Errorf("the provider reports content type %q, want the one that was written", attrs.ContentType)
-	}
-}
-
-// TestAnEmptyObjectIsAnObject is what the bucket index's reference pins are: a
-// zero-byte object whose whole content is its key (Story 8.10, §7.4).
-//
-// A directory stores an empty file without noticing. An object store, a proxy
-// in front of one, or an SDK that skips a body of length zero has more ways to
-// get it wrong, and a pin that did not exist would make retention delete
-// evidence a result still names.
-func TestAnEmptyObjectIsAnObject(t *testing.T) {
-	needMinIO(t)
-
-	b := openBucket(t, fmt.Sprintf("empty-%d/", time.Now().UnixNano()))
-
-	const key = "_wsaw/index/v1/ref/body/" +
-		"0000000000000000000000000000000000000000000000000000000000000000/r.scan-1"
-
-	write(t, b, key, nil)
-
-	found, err := b.Exists(t.Context(), key)
-	if err != nil || !found {
-		t.Fatalf("a zero-byte pin is not there: %v, %v", found, err)
-	}
-
-	attrs, err := b.Attributes(t.Context(), key)
-	if err != nil {
-		t.Fatalf("reading the pin's attributes: %v", err)
-	}
-
-	if attrs.Size != 0 {
-		t.Errorf("the pin is %d bytes, want 0", attrs.Size)
-	}
-
-	if keys := keysUnder(t, b, "_wsaw/"); !slices.Equal(keys, []string{key}) {
-		t.Errorf("a listing of the pins returned %v, want just the one", keys)
 	}
 }
 

@@ -11,13 +11,10 @@ import (
 // are recorded, with nothing in it about how that place records them.
 //
 // Tenet 12 names the result store as one of the boundaries that gets an
-// interface, and this is the story it was reserved for: how the index is kept
-// is a real choice, not a speculative one. SQL keeps it in rows in SQLite,
-// PostgreSQL or MySQL and is its only implementation today; the second — the
-// same index kept as objects in the bucket that already holds the evidence, so
-// that a deployment needs no database at all — is what the rest of Story 8.10
-// adds behind this interface. What a store has to answer is the same either
-// way, and this is the list.
+// interface, and this is the list of what wsaw asks across it. SQL keeps the
+// index in rows in SQLite, PostgreSQL or MySQL and is its only implementation;
+// what a store has to answer does not depend on which dialect holds those
+// rows, and none of it mentions where the evidence itself lives.
 //
 // It is declared in the package that implements it rather than at a consumer,
 // which AGENTS §4 otherwise asks for, because no single consumer uses all of
@@ -75,10 +72,9 @@ type Store interface {
 
 	// RebuildIndex derives this store's index from the documents in its
 	// bucket, reports what doing so would change, or verifies the two against
-	// each other (Story 8.11). It is on the seam because it is the supported
-	// way between store kinds as well as the recovery procedure for an index
-	// that was lost, and both of those are questions about the store an
-	// operator has rather than about the one they had.
+	// each other (Story 8.10). It is on the seam because it is the recovery
+	// procedure for an index that was lost, which is a question about the
+	// store an operator has rather than about the one they had.
 	RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildStats, error)
 
 	Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
@@ -91,35 +87,21 @@ type Store interface {
 // than an aspiration. A method added to the interface without an implementation
 // fails the build here, next to the contract, instead of at whichever consumer
 // happened to be assigned a store first.
-var (
-	_ Store = (*SQL)(nil)
-	_ Store = (*Blob)(nil)
-)
+var _ Store = (*SQL)(nil)
 
 // Open creates or opens the store the options name.
 //
 // It exists so that a consumer asks for "the store" and gets whichever one is
 // configured, rather than each of them naming a constructor and so pinning
-// itself to one kind. Three of the four drivers keep their index in rows and
-// are opened by OpenSQL; blob keeps it as objects in the artifact bucket and is
-// opened by OpenBlob (Story 8.10, AC1). Which one a deployment gets is the one
-// line of configuration that says so, and SQLite is still what it gets by
-// saying nothing.
+// itself to one kind. Every driver keeps its index in rows and is opened by
+// OpenSQL; which dialect a deployment gets is the one line of configuration
+// that says so, and SQLite is still what it gets by saying nothing.
 //
 // The error path returns a literal nil rather than the failed store, which
 // matters more than it looks: a (*SQL)(nil) returned as a Store is an interface
 // value that is not nil, and every consumer that checks `Store == nil` for "no
 // store configured" would sail past it and panic on the first call.
 func Open(ctx context.Context, opts Options) (Store, error) {
-	if opts.Driver == DriverBlob {
-		s, err := OpenBlob(ctx, opts)
-		if err != nil {
-			return nil, err
-		}
-
-		return s, nil
-	}
-
 	s, err := OpenSQL(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -150,19 +132,9 @@ func Open(ctx context.Context, opts Options) (Store, error) {
 //
 // It is "no more than a reader would" and not literally nothing: reading the
 // schema version creates the one-row bookkeeping table on PostgreSQL and MySQL,
-// which is the same idempotent DDL every other read of it performs, and opening
-// the bucket-index store writes its layout-version object if the bucket has
-// none (Story 8.10, AC14). Neither touches a scan, a row or a document.
+// which is the same idempotent DDL every other read of it performs. It touches
+// no scan, no row and no document.
 func OpenForInspection(ctx context.Context, opts Options) (Store, error) {
-	if opts.Driver == DriverBlob {
-		s, err := OpenBlob(ctx, opts)
-		if err != nil {
-			return nil, err
-		}
-
-		return s, nil
-	}
-
 	s, err := openSQLAtItsOwnSchema(ctx, opts)
 	if err != nil {
 		return nil, err

@@ -277,49 +277,6 @@ func verifyDocument(ref resultRef, document []byte) error {
 	return nil
 }
 
-// defaultCheckpointGrace is how long a compaction checkpoint must have been
-// visible before the loose entries it covers may be deleted.
-//
-// A day, because the deletion is irreversible and the thing it depends on —
-// that every reader now sees the checkpoint — is a property no provider
-// promises on any schedule. A day is far longer than the convergence window of
-// any object store gocloud reaches, and the cost of being generous is a
-// listing that carries a few hundred extra keys for a while (Story 8.10).
-const defaultCheckpointGrace = 24 * time.Hour
-
-// clock is the store's source of "now".
-//
-// Injectable rather than time.Now called in place, because the store whose
-// index is in the bucket derives its key order and its retention decisions
-// from a timestamp, and a test that had to wait for the real clock to reach a
-// grace period would be a sleeping test (AGENTS §5).
-func (o *Options) clock() func() time.Time {
-	if o.Now != nil {
-		return o.Now
-	}
-
-	return time.Now
-}
-
-func (o *Options) checkpointGrace() time.Duration {
-	if o.CheckpointGrace > 0 {
-		return o.CheckpointGrace
-	}
-
-	return defaultCheckpointGrace
-}
-
-// version identifies the build in the one object that records who wrote an
-// index. Empty is recorded as unknown rather than as an empty string, so the
-// object reads as a fact either way.
-func (o *Options) version() string {
-	if o.Version == "" {
-		return "unknown"
-	}
-
-	return o.Version
-}
-
 // The four artifact reads, shaped the way the store interface hands them out.
 //
 // They live here, on the bucket, rather than on either store, because reading
