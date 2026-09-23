@@ -239,3 +239,82 @@ func TestStorageDashboardRecomputesOnRequest(t *testing.T) {
 		t.Errorf("recompute=1 did not render a snapshot line; body:\n%s", third)
 	}
 }
+
+// TestStorageDashboardRedactsTheArtifactLocation: AC3 — the header names the
+// artifact location redacted, in the page and in the JSON it is derived from
+// (AC12). Deps carries the location as configured, and a bucket URL written
+// out in full carries its credential in the userinfo or the query string; the
+// operator needs the scheme, the bucket and the prefix, and nothing that
+// authenticates to them.
+func TestStorageDashboardRedactsTheArtifactLocation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		location string
+		secrets  []string
+		kept     []string
+	}{
+		{
+			name:     "s3 with a password in the userinfo and keys in the query",
+			location: "s3://minio:hunter2-userinfo@evidence-bucket/wsaw/prod?endpoint=minio.internal&secret_access_key=AKIA-QUERY-SECRET",
+			secrets:  []string{"hunter2-userinfo", "AKIA-QUERY-SECRET", "secret_access_key"},
+			kept:     []string{"s3://", "evidence-bucket/wsaw/prod"},
+		},
+		{
+			name:     "azblob with a SAS token",
+			location: "azblob://evidence/wsaw?sv=2022-11-02&sig=SAS-SIGNATURE-SECRET&se=2030-01-01",
+			secrets:  []string{"SAS-SIGNATURE-SECRET", "sig="},
+			kept:     []string{"azblob://", "evidence/wsaw"},
+		},
+		{
+			name:     "gs with a key path in the query",
+			location: "gs://evidence-bucket/wsaw?private_key_path=/etc/wsaw/GCS-KEY-SECRET.json",
+			secrets:  []string{"GCS-KEY-SECRET"},
+			kept:     []string{"gs://", "evidence-bucket/wsaw"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixtureWith(t, httpapi.Options{WebUI: true}, nil, nil, func(d *httpapi.Deps) {
+				withStorageDashboard(d)
+				d.ArtifactLocation = tc.location
+			})
+
+			f.seed("scan-a", model.ConsentReject, time.Now(), nil)
+
+			html := body(t, f.get("/storage", "Accept", "text/html"))
+			api := body(t, f.get("/api/v1/storage"))
+
+			var decoded struct {
+				ArtifactLocation string `json:"artifactLocation"`
+			}
+
+			if err := json.Unmarshal([]byte(api), &decoded); err != nil {
+				t.Fatalf("decoding /api/v1/storage: %v", err)
+			}
+
+			for surface, out := range map[string]string{"/storage": html, "/api/v1/storage": api} {
+				for _, s := range tc.secrets {
+					if strings.Contains(out, s) {
+						t.Errorf("%s shows %q from the artifact location; body:\n%s", surface, s, out)
+					}
+				}
+			}
+
+			for _, k := range tc.kept {
+				if !strings.Contains(decoded.ArtifactLocation, k) {
+					t.Errorf("artifactLocation = %q, want it to keep %q", decoded.ArtifactLocation, k)
+				}
+			}
+
+			if !strings.Contains(html, "<code>"+decoded.ArtifactLocation+"</code>") {
+				t.Errorf("the page's header does not show the location the JSON reports (%q); body:\n%s",
+					decoded.ArtifactLocation, html)
+			}
+		})
+	}
+}
