@@ -39,6 +39,14 @@ var reloadableKeys = map[string]struct{}{
 	"scheduler.cron":        {},
 	"scheduler.jitter":      {},
 	"scheduler.minInterval": {},
+
+	// The sweep schedule is read by the daemon's maintenance loop, which
+	// takes the new schedule on every reload that is accepted and recomputes
+	// when the next sweep is due from the last recorded one (Story 4.12,
+	// AC8). Nothing about it became a resource at startup: the store it
+	// sweeps is the same one either way.
+	"store.sweep":         {},
+	"store.sweepInterval": {},
 }
 
 // NonReloadableChanges returns the configuration keys that differ between the

@@ -84,6 +84,7 @@ func (c *Config) Validate() error {
 	c.validateScheduler(add)
 	c.validateArtifacts(add)
 	c.validateSignedURLs(add)
+	c.validateSweep(add)
 	c.validateNormalize(add)
 	c.validateCapture(add)
 	c.validateDetection(add)
@@ -782,6 +783,53 @@ func (c *Config) validateSignedURLs(add addFunc) {
 		add(st.Line("artifactSignedURLTTL"), "store.artifactSignedURLTTL",
 			"%s is longer than the %s maximum; a signed URL cannot be withdrawn before it expires",
 			ttl, MaxArtifactSignedURLTTL)
+	}
+}
+
+// validateSweep refuses a sweep schedule that cannot mean what it says
+// (Story 4.12, AC2).
+//
+// An interval that cannot be parsed never gets this far: Duration's own
+// decoder refuses it with the line, the way every other store duration is
+// refused. What is checked here is an interval that parsed and is still
+// wrong.
+func (c *Config) validateSweep(add addFunc) {
+	st := c.Store
+	written := st.Line("sweepInterval") > 0 || st.SweepInterval != 0
+
+	if !st.SweepEnabled() {
+		// An interval beside the switch that turns sweeping off would read as
+		// though a schedule were in force. The same reasoning refuses a
+		// signed-URL lifetime without its switch.
+		if written {
+			add(st.Line("sweepInterval"), "store.sweepInterval",
+				"an interval is set but scheduled sweeping is off (store.sweep: false%s); remove one of the two",
+				atLine(st.Line("sweep")))
+		}
+
+		return
+	}
+
+	if !written {
+		return
+	}
+
+	if st.SweepInterval == 0 {
+		// Written, and zero. Read as the default it would be the one spelling
+		// of "never" that sweeps daily; read as off it would be an off that
+		// nobody wrote as such. Neither is safe to guess.
+		add(st.Line("sweepInterval"), "store.sweepInterval",
+			"must be at least %s; leave it out for the default of %s, or set store.sweep: false to turn scheduled sweeping off",
+			MinSweepInterval, DefaultSweepInterval)
+
+		return
+	}
+
+	if st.SweepInterval.Duration() < MinSweepInterval {
+		add(st.Line("sweepInterval"), "store.sweepInterval",
+			"%s is shorter than the %s minimum; nothing younger than a day is collected however often the bucket "+
+				"is walked, and every sweep is a full listing of it",
+			st.SweepInterval.Duration(), MinSweepInterval)
 	}
 }
 

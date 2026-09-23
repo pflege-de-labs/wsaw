@@ -141,9 +141,10 @@ Reverting the offending line and signalling again reloads normally; nothing is
 sticky.
 
 What a reload does apply: `targets`, `defaults`, per-target overrides,
-`detection.severity`, `detection.allowHosts`, `detection.denyHosts`, and the
-schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`).
-Everything else needs a restart. A setting added to wsaw later is
+`detection.severity`, `detection.allowHosts`, `detection.denyHosts`, the
+schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`), and the
+bucket sweep's schedule (`store.sweep`, `store.sweepInterval`), whose next run
+is recomputed from the last recorded sweep. Everything else needs a restart. A setting added to wsaw later is
 non-reloadable until someone deliberately says otherwise, so the failure mode
 for new configuration is a loud refusal rather than a silent no-op.
 
@@ -902,7 +903,33 @@ wsaw store sweep              # collect them
 
 A dry run prints the first 20 entries with an exact count; `--limit=N` prints N of them and `--limit=0` prints all of them, which is what to use before applying a retention change you have not seen the consequence of.
 
-`prune` is what the daemon does on its own every hour. `sweep` is not: it walks every key in the bucket, which against object storage is a request per page, so it is asked for rather than scheduled. It exists for what a prune cannot see — an object left behind by a scan that was interrupted between writing the bucket and recording its index entry, and a key an earlier prune's delete was refused.
+`prune` is what the daemon does on its own every hour. `sweep` exists for what a prune cannot see — an object left behind by a scan that was interrupted between writing the bucket and recording its index entry, and a key an earlier prune's delete was refused — and the daemon runs it on its own too, once a day by default:
+
+```yaml
+store:
+  sweep: true          # the default; false turns the scheduled sweep off
+  sweepInterval: 24h   # the default; at least 1h
+```
+
+Leaving both out means a daily sweep, not no sweep: garbage nobody collects is a cost that grows without bound. To turn it off, write `sweep: false`; an interval next to it is refused rather than left looking effective, and so is an interval under an hour — nothing younger than a day is ever collected, so sweeping more often buys nothing and costs another listing.
+
+**What one sweep costs.** A sweep lists every key wsaw owns: against object storage that is one LIST request per thousand keys, plus one DELETE per object it actually collects. A bucket of a hundred thousand objects is about a hundred requests a day, well under a cent a month on S3, GCS or Azure. It reads no object bodies. Against a local artifact directory it costs a directory walk.
+
+**When it runs.** The next sweep is due one interval after the last *recorded* one — the maintenance log every prune and sweep writes to, whichever process ran it — not one interval after the daemon started, so a daemon restarted every night still sweeps. A store that has never been swept, or whose last sweep is overdue, is swept 10 to 20 minutes after startup: soon, but not in the same second as every other instance restarted by the same deploy, and not on every restart of one that is crash-looping. A sweep that fails, or is refused, is tried again one interval later, never in a loop. The daemon's prune and sweep never run at the same time, and a sweep that is still running when the next falls due is not started twice. On shutdown a sweep stops at the next key; what it had already deleted is recorded, and nothing it had not reached is touched.
+
+**What it will not do.** The scheduled sweep is the same sweep `wsaw store sweep` runs, and it never passes `--allow-empty-index`. A daemon whose store holds no results logs a warning naming that command on every scheduled run, records the refusal, and deletes nothing — deciding that an empty history is real is for an operator, not a timer.
+
+`wsaw store sweep` run by hand while the daemon is running is safe for the same reason a sweep is safe beside live scans: the grace period below protects anything a running scan could still be about to reference. There is no lock between the two processes, and none is needed.
+
+Every scheduled sweep is logged with its figures, counted as `wsaw_sweep_runs_total{outcome="success"|"error"}`, and its deletions join `wsaw_artifacts_deleted_total`, `wsaw_artifact_bytes_freed_total` and `wsaw_artifact_deletions_failed_total`. `wsaw_last_successful_sweep_timestamp_seconds` and `wsaw_last_successful_prune_timestamp_seconds` hold the Unix time of the last run of each that succeeded in this process, 0 until one has:
+
+```
+# Alert when a daemon that has been up for two days has not swept its bucket
+# successfully in that time. A gauge still at 0 counts as "not in two days".
+(time() - wsaw_last_successful_sweep_timestamp_seconds > 172800) and (wsaw_uptime_seconds > 172800)
+```
+
+The gauge starts at 0 in a fresh process — hence the uptime term — so the history across restarts is in the maintenance log, which the web interface's storage page (`/storage`, and `/api/v1/storage`) reads back.
 
 Both are safe to run while wsaw is scanning. An unreferenced object is left alone if it was written in the last 24 hours, and also if a scan running now has *taken* it: artifacts are content-addressed, so a scan that captures an unchanged asset writes nothing at all — the key is already there, dated by whichever scan first stored those bytes — and wsaw records the take so that neither a prune nor a sweep can collect an object the scan in progress is about to reference. Objects in the bucket that wsaw did not write are counted separately and never deleted.
 
