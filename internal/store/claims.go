@@ -55,8 +55,8 @@ func (s *SQL) claimArtifact(ctx context.Context, ref string, at time.Time) error
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	q := `insert into ` + artifactClaimsTable + ` (artifact_ref, ` + claimedAtColumn + `) values (?, ?)` +
-		s.d.upsert([]string{"artifact_ref"}, []string{claimedAtColumn})
+	q := `insert into ` + artifactClaimsTable + ` (` + artifactRefColumn + `, ` + claimedAtColumn + `) values (?, ?)` +
+		s.d.upsert([]string{artifactRefColumn}, []string{claimedAtColumn})
 
 	err := s.retry(ctx, "claiming an artifact", func(ctx context.Context) error {
 		_, err := s.db.ExecContext(ctx, s.q(q), ref, at.UnixNano())

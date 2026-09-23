@@ -258,7 +258,7 @@ func TestAPruneSurvivesABucketThatRefusesToDelete(t *testing.T) {
 
 	refuse(fake, lagDelete, shot)
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("a refused deletion failed the whole prune: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestAPruneSurvivesABucketThatRefusesToDelete(t *testing.T) {
 
 	// The next sweep finds the same key, because the refusal left it on the
 	// work list rather than forgetting it.
-	swept, err := s.Sweep(t.Context(), time.Now().Add(48*time.Hour), store.SweepOptions{})
+	swept, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(48*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

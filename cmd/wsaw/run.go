@@ -22,6 +22,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/share"
+	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
 // cmdRun runs wsaw as a daemon.
@@ -468,15 +469,68 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		MetricsPath:          a.Config.Metrics.Path,
 		Version:              a.Version,
 	}, httpapi.Deps{
-		Store:      a.Store,
-		Metrics:    a.Metrics,
-		Daemon:     d,
-		Trigger:    a,
-		URLScanner: a,
-		Rules:      a.Rules,
-		Logger:     a.Logger,
-		Targets:    targets,
-		Running:    a.RunningScans,
-		ConfigPath: a.Config.Path(),
+		Store:            a.Store,
+		Metrics:          a.Metrics,
+		Daemon:           d,
+		Trigger:          a,
+		URLScanner:       a,
+		Rules:            a.Rules,
+		Logger:           a.Logger,
+		Targets:          targets,
+		Retention:        a.Retention,
+		Running:          a.RunningScans,
+		ConfigPath:       a.Config.Path(),
+		ArtifactLocation: a.Config.Store.ArtifactLocation(),
+
+		// The storage dashboard's own narrow reads (Story 5.32), populated
+		// only when the store this daemon opened is the SQL index they need
+		// — the only implementation there is (internal/store/api.go's own
+		// doc comment), but a type assertion is what keeps that an
+		// observation rather than an assumption baked into the seam.
+		SeriesStorage:      sqlSeriesStorageFunc(a.Store),
+		MonthlyStorage:     sqlMonthlyStorageFunc(a.Store),
+		LastMaintenanceRun: sqlLastMaintenanceRunFunc(a.Store),
+		MaintenanceRuns:    sqlMaintenanceRunsFunc(a.Store),
 	})
+}
+
+// sqlSeriesStorageFunc, sqlMonthlyStorageFunc, sqlLastMaintenanceRunFunc and
+// sqlMaintenanceRunsFunc each report nil when st is not a *store.SQL, so the
+// storage dashboard can tell "not available for this store" apart from
+// "available and empty" (Tenet 5) rather than the server panicking on a type
+// assertion at request time.
+func sqlSeriesStorageFunc(st store.Store) func(context.Context) ([]store.SeriesStorage, error) {
+	sql, ok := st.(*store.SQL)
+	if !ok {
+		return nil
+	}
+
+	return sql.SeriesStorage
+}
+
+func sqlMonthlyStorageFunc(st store.Store) func(context.Context, time.Time) ([]store.MonthlyBytes, error) {
+	sql, ok := st.(*store.SQL)
+	if !ok {
+		return nil
+	}
+
+	return sql.MonthlyStorage
+}
+
+func sqlLastMaintenanceRunFunc(st store.Store) func(context.Context, string) (store.MaintenanceRun, bool, error) {
+	sql, ok := st.(*store.SQL)
+	if !ok {
+		return nil
+	}
+
+	return sql.LastMaintenanceRun
+}
+
+func sqlMaintenanceRunsFunc(st store.Store) func(context.Context, string, int) ([]store.MaintenanceRun, error) {
+	sql, ok := st.(*store.SQL)
+	if !ok {
+		return nil
+	}
+
+	return sql.MaintenanceRuns
 }

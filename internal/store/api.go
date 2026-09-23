@@ -82,9 +82,9 @@ type Store interface {
 	// asked for by a command, against whichever store an operator has.
 	CompactArtifacts(ctx context.Context, opts CompactOptions) (CompactStats, error)
 
-	Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
+	Prune(ctx context.Context, trigger string, now time.Time, r Retention) (PruneStats, error)
 	PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error)
-	Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error)
+	Sweep(ctx context.Context, trigger string, now time.Time, opts SweepOptions) (SweepStats, error)
 	PlanSweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error)
 }
 

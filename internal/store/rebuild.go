@@ -1030,7 +1030,7 @@ func (r *rebuildRun) checkEvidence(ctx context.Context, doc rebuiltDocument) err
 	// The empty document reference is what excludes it: artifactRefsOf drops
 	// an empty one, so what comes back is the screenshots and the stored
 	// bodies and nothing else.
-	refs := artifactRefsOf(doc.result, "")
+	refs := refsOnly(artifactRefsOf(doc.result, ""))
 	if len(refs) == 0 {
 		return nil
 	}

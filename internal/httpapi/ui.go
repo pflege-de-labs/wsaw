@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
@@ -42,6 +43,27 @@ func newUIRenderer() (*uiRenderer, error) {
 // contextual escaping must stay in force (Story 5.11).
 // neverRendered is what an unset time.Time shows as everywhere on the page.
 const neverRendered = "never"
+
+// formatBytes is the human units every size on the interface uses — the
+// template func below and the storage dashboard's inline SVG (Story 5.32,
+// AC9) both call it, so a bar's own text label can never disagree with the
+// number beside it.
+func formatBytes(n int64) string {
+	const unit = 1024
+
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+
+	div, exp := int64(unit), 0
+
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+}
 
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
@@ -89,26 +111,15 @@ func uiFuncs() template.FuncMap {
 		"since": func(t time.Time) string {
 			return time.Since(t).Round(time.Second).String()
 		},
-		"bytes": func(n int64) string {
-			const unit = 1024
-
-			if n < unit {
-				return fmt.Sprintf("%d B", n)
-			}
-
-			div, exp := int64(unit), 0
-
-			for m := n / unit; m >= unit; m /= unit {
-				div *= unit
-				exp++
-			}
-
-			return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
-		},
+		"bytes": formatBytes,
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},
 		"add": func(a, b int) int { return a + b },
+		// addBytes is "add" for the byte counts Story 5.31 adds to a history
+		// row: a document's size and its artifacts' are two int64 fields, and
+		// the row shows their sum next to each on its own (AC3).
+		"addBytes": func(a, b int64) int64 { return a + b },
 		// filterSeverities, filterOutcomes and filterModes enumerate the
 		// values the target list's filter panel offers (Story 5.22, AC1).
 		// They live here rather than as constants in the template so the
@@ -163,6 +174,7 @@ func (s *Server) uiRoutes() {
 	s.mux.HandleFunc("GET /results/{target}/{mode}/{scan}", s.handleUIResult)
 	s.mux.HandleFunc("GET /compare/{target}", s.handleUICompare)
 	s.mux.HandleFunc("GET /audit", s.handleUIAudit)
+	s.mux.HandleFunc("GET /storage", s.handleUIStorage)
 
 	s.mux.HandleFunc("POST /refresh", s.handleUIRefresh)
 	s.mux.HandleFunc("POST /filter", s.handleUIFilter)
@@ -550,6 +562,10 @@ type seriesData struct {
 	// that is happening right now is the one an operator is usually looking
 	// for and it is in no other view (Story 5.12, AC1).
 	Running []scanner.Running
+
+	// Size is what the listed rows hold together, and the estimate beneath
+	// them (Story 5.31, AC5-AC8).
+	Size seriesSize
 }
 
 // seriesRow is one scan in the history, and whether it is the one every other
@@ -588,8 +604,44 @@ func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
 
 	data.Results = s.seriesRows(results, data.Baseline)
 	s.describeBaseline(&data)
+	data.Size = s.seriesSize(target, data.Results)
 
 	s.renderPage(w, r, "series.html", target+" — "+string(mode), data, len(data.Running))
+}
+
+// seriesSize builds the size total and estimate beneath the history table
+// (Story 5.31, AC5-AC8), entirely from the rows already listed plus the
+// target's configured interval and the store's retention policy — neither of
+// which costs a second read of the store or the bucket.
+func (s *Server) seriesSize(target string, results []seriesRow) seriesSize {
+	sz := computeSeriesSize(results)
+
+	var targets []config.Resolved
+	if s.deps.Targets != nil {
+		targets = s.deps.Targets()
+	}
+
+	interval, hasInterval := targetInterval(targets, target)
+
+	sz.Estimate = computeSeriesEstimate(results, sz, interval, hasInterval)
+	if sz.Estimate == nil || s.deps.Retention == nil {
+		return sz
+	}
+
+	retention, err := s.deps.Retention()
+	if err != nil {
+		// The same failure app.PruneLoop already logs and declines to act
+		// on: an unusable policy is not evidence that none is configured,
+		// so the estimate is left unbounded rather than claiming a ceiling
+		// it cannot support.
+		s.deps.Logger.Warn("could not read the retention policy for the history page's estimate", "error", err)
+
+		return sz
+	}
+
+	applyRetentionCeiling(sz.Estimate, retention)
+
+	return sz
 }
 
 // seriesRows marks the history row that is the baseline.

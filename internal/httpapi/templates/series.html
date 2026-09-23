@@ -46,6 +46,7 @@
       <th class="num">Requests</th>
       <th class="num">3rd-party</th>
       <th class="num">Pre-consent</th>
+      <th class="num" title="what this scan holds: its own result document plus every screenshot and stored body it references">Size</th>
       <th></th>
     </tr>
   </thead>
@@ -61,6 +62,7 @@
       <td class="muted">running for {{since .StartedAt}}</td>
       <td><span class="term term-pending">pending</span></td>
       <td class="muted">not yet known</td>
+      <td class="num muted">—</td>
       <td class="num muted">—</td>
       <td class="num muted">—</td>
       <td class="num muted">—</td>
@@ -82,6 +84,15 @@
       <td class="num">{{.Requests}}</td>
       <td class="num">{{.ThirdPartyDomains}}</td>
       <td class="num {{if .PreConsentDomains}}warn{{end}}">{{.PreConsentDomains}}</td>
+      {{/* Story 5.31, AC3 and AC9: a scan with no evidence files shows its
+           document size alone, and that is a different statement from a
+           scan whose evidence predates size tracking (AC1, AC5) — only the
+           second is muted and says so. */}}
+      {{if .ArtifactBytesRecorded}}
+      <td class="num" title="document: {{bytes .DocumentBytes}}, artifacts: {{bytes .ArtifactBytes}}">{{bytes (addBytes .DocumentBytes .ArtifactBytes)}}</td>
+      {{else}}
+      <td class="num muted" title="this scan's evidence predates size tracking, so its artifact bytes are not recorded">{{bytes .DocumentBytes}} + unknown</td>
+      {{end}}
       <td>
         {{/* Approving the baseline again would write an audit record for a
              change that did not happen (Story 5.20, AC4). */}}
@@ -100,6 +111,47 @@
   {{end}}
   </tbody>
 </table>
+
+{{/* AC4: artifacts are content-addressed, so this is what each scan holds,
+     not what the bucket has to hold for it — two scans sharing an unchanged
+     screenshot are each charged for it here, while the bucket keeps one
+     copy. The storage dashboard (Story 5.32) is where the bucket-side
+     accounting lives; this note is what keeps the two from reading as a
+     disagreement. */}}
+<p class="note">Size is what each scan holds; artifacts are content-addressed, so evidence unchanged between
+  scans is counted for each of them here even though the bucket stores it once.</p>
+
+{{with .Size}}
+{{if .Listed}}
+<p class="series-total">
+  {{.Listed}} scan{{if ne .Listed 1}}s{{end}} listed{{if .Sized}}, holding {{bytes .TotalBytes}}
+  together{{end}}{{if .Unrecorded}} ({{.Unrecorded}} with size not recorded){{end}}, spanning
+  {{time .Oldest}} to {{time .Newest}}.
+</p>
+{{with .Estimate}}
+<p class="series-estimate">
+  Estimate: a typical scan here is {{bytes .MedianBytes}} (the median of the sized scans, not the
+  mean, so one outsized scan does not set the budget), at
+  {{if .Scheduled}}the configured schedule of{{else}}the cadence observed above,{{end}}
+  about {{printf "%.1f" .ScansPerMonth}} scans a month.
+  {{if .Bounded}}
+    Retention (<code>{{.PolicyName}}</code>) bounds this series to about
+    {{.CeilingResults}} result{{if ne .CeilingResults 1}}s{{end}}, roughly {{bytes .CeilingBytes}} — this
+    series' steady-state ceiling, not its current size.
+  {{else}}
+    That is about {{bytes .MonthBytes}} a month and {{bytes .YearBytes}} a year — <strong>unbounded</strong>:
+    no retention policy limits this series, so it grows without bound at that rate.
+  {{end}}
+</p>
+{{else}}
+{{/* AC7: no cadence, no rate — an invented denominator would be worse than
+     no estimate at all (Tenet 5), so the page says why one is withheld
+     rather than leaving a silent gap where the estimate would be. */}}
+<p class="series-estimate muted">No cost estimate: either no listed scan's size is recorded yet, or
+  this series has too little scheduled or observed history to say a cadence.</p>
+{{end}}
+{{end}}
+{{end}}
 
 {{end}}
 {{template "foot" $page}}

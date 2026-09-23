@@ -110,7 +110,7 @@ func runCycle(t *testing.T, driver string) {
 	// The older scan goes, and everything only it referenced goes with it
 	// (Story 8.5, AC1). Both scans are minutes old at most, so the count limit
 	// is what decides rather than an age.
-	stats, err := st.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 1})
+	stats, err := st.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxPerSeries: 1})
 	if err != nil {
 		t.Fatalf("pruning against the object store: %v", err)
 	}

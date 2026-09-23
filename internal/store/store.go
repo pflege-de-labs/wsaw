@@ -546,6 +546,15 @@ func (s *SQL) prepareMigration(ctx context.Context, version int) error {
 // rather than trips over what already exists. Pretending otherwise, by
 // wrapping MySQL in a transaction that cannot roll back, would be worse than
 // saying so.
+//
+// alreadyApplied is consulted in both branches, transactional or not: a
+// statement one dialect cannot phrase as "if not exists" — SQLite's ALTER
+// TABLE ADD COLUMN, here — can still meet its own prior work, whether that is
+// MySQL's implicit commit outliving its version record or a store whose
+// version record was deliberately rewound to replay a later migration.
+// Continuing after such a statement is safe inside SQLite's own transaction
+// because, unlike PostgreSQL, a failed statement there does not poison the
+// transaction it happened in.
 func (s *SQL) applyMigration(ctx context.Context, statements []string, version int) error {
 	if !s.d.ddlIsTransactional() {
 		for _, stmt := range statements {
@@ -581,6 +590,13 @@ func (s *SQL) applyMigration(ctx context.Context, statements []string, version i
 
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if s.d.alreadyApplied(err) {
+				s.log.Info("schema migration statement was already applied",
+					"version", version, "error", err)
+
+				continue
+			}
+
 			return fmt.Errorf("applying schema migration %d: %w", version, err)
 		}
 	}
@@ -890,6 +906,24 @@ type Summary struct {
 	Requests          int `json:"requests"`
 	ThirdPartyDomains int `json:"thirdPartyDomains"`
 	PreConsentDomains int `json:"preConsentDomains"`
+
+	// DocumentBytes is the result's own stored document — document_size on
+	// the row, never re-derived from the bucket (Story 8.2, AC2).
+	DocumentBytes int64 `json:"documentBytes"`
+	// ArtifactBytes is the sum of every screenshot and stored body this
+	// result references, joined from result_artifacts (Story 5.31, AC2).
+	// Artifacts are content-addressed, so two results sharing an unchanged
+	// screenshot are each charged for it here even though the bucket keeps
+	// one copy (Story 5.31, AC4) — this is what the result holds, not what
+	// the bucket has to hold for it.
+	ArtifactBytes int64 `json:"artifactBytes"`
+	// ArtifactBytesRecorded is false only for a result stored before Story
+	// 5.31's migration: it names screenshots or bodies, but none of the rows
+	// naming them carry a recorded size. It is true both when every named
+	// artifact's size is known and when the result names none at all — "no
+	// evidence files" and "size unknown" are different statements (AC9), and
+	// only this flag, not a bare zero, tells them apart.
+	ArtifactBytesRecorded bool `json:"artifactBytesRecorded"`
 }
 
 // Summarize derives a Summary from a result in memory, without going near
@@ -918,12 +952,18 @@ func summarize(res *model.Result) Summary {
 	}
 }
 
-// summaryColumns are the materialised summary, in the order scanSummary reads
-// them. Together they are everything Summary holds except the target and the
-// consent mode, which the caller already knows because it asked for them.
-const summaryColumns = `scan_id, started_at, duration_ns, termination, scan_error,
-	consent_outcome, consent_cmp, requests, third_party_domains,
-	pre_consent_domains, artifact_ref`
+// summaryColumns are the row's own columns scanSummary reads, in order.
+// Together with the target and consent mode the caller already knows because
+// it asked for them, they are everything Summary holds except ArtifactBytes
+// and ArtifactBytesRecorded, which ListResults' own join adds (Story 5.31,
+// AC2). A slice rather than a joined string because ListResults needs the
+// same list twice — once select-ed, once grouped by — and a query where
+// those two drifted would be a query no database accepts.
+var summaryColumns = []string{
+	scanIDColumn, "started_at", "duration_ns", "termination", "scan_error",
+	"consent_outcome", "consent_cmp", "requests", "third_party_domains",
+	"pre_consent_domains", artifactRefColumn, "document_size",
+}
 
 // underivedSummary explains a row that names no document. Reporting it beats
 // presenting a summary of zeroes, which would read as a scan that saw nothing
@@ -954,14 +994,37 @@ func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]S
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	q := `select ` + summaryColumns + ` from results
-		where target = ? and consent_mode = ?
-		order by started_at desc, scan_id desc`
+	// The join is the whole point of AC2: result_artifacts is summed per
+	// result in the one query this already runs, rather than a bucket read
+	// per row (Story 8.3, AC2's own argument, extended to cover this join).
+	// The document's own reference row is excluded from the sum by name
+	// (ra.artifact_ref <> r.artifact_ref) — it always carries 0 bytes by
+	// construction (references.go), but excluding it by value here as well
+	// is what lets count(ra.artifact_ref) tell "this result names no
+	// evidence" apart from "this result's evidence predates the bytes
+	// column" (AC5, AC9): a result with no non-document artifact rows joins
+	// nothing at all, where one written before the migration joins rows that
+	// are there but whose bytes are all 0.
+	qualified := make([]string, len(summaryColumns))
+	for i, c := range summaryColumns {
+		qualified[i] = "r." + c
+	}
+
+	cols := strings.Join(qualified, ", ")
+
+	q := `select ` + cols + `, count(ra.artifact_ref), coalesce(sum(ra.bytes), 0)
+		  from results r
+		  left join ` + resultArtifactsTable + ` ra
+		    on ra.target = r.target and ra.consent_mode = r.consent_mode
+		   and ra.scan_id = r.scan_id and ra.artifact_ref <> r.artifact_ref
+		 where r.target = ? and r.consent_mode = ?
+		 group by ` + cols + `
+		 order by r.started_at desc, r.scan_id desc`
 
 	args := []any{target, string(mode)}
 
 	if limit > 0 {
-		q += " limit ?"
+		q += limitClause
 		args = append(args, limit)
 	}
 
@@ -995,7 +1058,9 @@ func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]S
 	return out, nil
 }
 
-// scanSummary reads one row of summaryColumns.
+// scanSummary reads one row of summaryColumns plus the two columns
+// ListResults' own join adds: the artifact-reference count and byte sum
+// (Story 5.31, AC2).
 //
 // A row whose artifact reference is empty is one an older wsaw wrote and the
 // document migration has not reached yet. It is reported as such and kept in
@@ -1008,11 +1073,13 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 		startedAt, durationNS int64
 		termination, outcome  string
 		ref                   string
+		artifactRefs          int64
 	)
 
 	if err := rows.Scan(&sm.ScanID, &startedAt, &durationNS, &termination, &sm.Error,
 		&outcome, &sm.ConsentCMP, &sm.Requests, &sm.ThirdPartyDomains,
-		&sm.PreConsentDomains, &ref); err != nil {
+		&sm.PreConsentDomains, &ref, &sm.DocumentBytes,
+		&artifactRefs, &sm.ArtifactBytes); err != nil {
 		return Summary{}, err
 	}
 
@@ -1025,6 +1092,14 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 	sm.Duration = time.Duration(durationNS)
 	sm.Termination = model.TerminationReason(termination)
 	sm.ConsentOutcome = model.ConsentOutcome(outcome)
+
+	// A result that names no non-document artifact at all is genuinely
+	// zero — "this scan stored no evidence files" (AC9) — and so is one
+	// whose named artifacts' sizes are all recorded. Only a result that
+	// names artifacts yet sums to zero is the signature a pre-Story-5.31 row
+	// leaves: references written before the bytes column existed, defaulted
+	// to 0 and never revisited (AC1, AC5).
+	sm.ArtifactBytesRecorded = artifactRefs == 0 || sm.ArtifactBytes > 0
 
 	if ref == "" {
 		sm.Error = underivedSummary

@@ -322,7 +322,7 @@ func (s *SQL) Audit(limit int) ([]AuditEntry, error) {
 	var args []any
 
 	if limit > 0 {
-		q += " limit ?"
+		q += limitClause
 		args = append(args, limit)
 	}
 

@@ -501,8 +501,8 @@ type PruneStats struct {
 // It needs the bucket to be there, and says so rather than working around it:
 // a prune against a bucket that has gone away would delete rows and report
 // every artifact as already collected.
-func (s *SQL) Prune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
-	return s.prune(ctx, now, r, false)
+func (s *SQL) Prune(ctx context.Context, trigger string, now time.Time, r Retention) (PruneStats, error) {
+	return s.prune(ctx, trigger, now, r, false)
 }
 
 // PlanPrune reports what Prune would remove, and removes nothing (AC6).
@@ -514,11 +514,24 @@ func (s *SQL) Prune(ctx context.Context, now time.Time, r Retention) (PruneStats
 // is written and no artifact is touched — the bucket is only asked how large
 // the objects are, and only after the transaction has been rolled back.
 func (s *SQL) PlanPrune(ctx context.Context, now time.Time, r Retention) (PruneStats, error) {
-	return s.prune(ctx, now, r, true)
+	return s.prune(ctx, "", now, r, true)
 }
 
-func (s *SQL) prune(ctx context.Context, now time.Time, r Retention, plan bool) (PruneStats, error) {
-	var stats PruneStats
+// prune carries out Prune or PlanPrune. A real run (plan is false) records
+// its own receipt as the last thing it does, whether or not it returns an
+// error, from whatever stats it accumulated before failing (Story 4.11, AC3
+// and AC4) — never for a plan, which changed nothing and already printed its
+// own answer (Story 8.5, AC6).
+func (s *SQL) prune(ctx context.Context, trigger string, now time.Time, r Retention, plan bool) (stats PruneStats, err error) {
+	if !plan {
+		started := time.Now()
+
+		defer func() {
+			if recErr := s.RecordPruneRun(ctx, trigger, started, stats, err); recErr != nil {
+				s.log.Warn("a prune run could not be recorded", "error", recErr)
+			}
+		}()
+	}
 
 	if !r.Active() {
 		return stats, nil
@@ -1310,13 +1323,13 @@ type SweepOptions struct {
 // It is not on a timer. Walking a bucket is a listing of every key wsaw owns,
 // which against object storage is a request per page and a line on an invoice,
 // so it is something an operator asks for.
-func (s *SQL) Sweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
-	return s.sweep(ctx, now, opts, false)
+func (s *SQL) Sweep(ctx context.Context, trigger string, now time.Time, opts SweepOptions) (SweepStats, error) {
+	return s.sweep(ctx, trigger, now, opts, false)
 }
 
 // PlanSweep reports what Sweep would collect, and collects nothing (AC6).
 func (s *SQL) PlanSweep(ctx context.Context, now time.Time, opts SweepOptions) (SweepStats, error) {
-	return s.sweep(ctx, now, opts, true)
+	return s.sweep(ctx, "", now, opts, true)
 }
 
 // ErrEmptyIndex refuses a sweep of a bucket that the store holds no index for.
@@ -1330,8 +1343,19 @@ var ErrEmptyIndex = errors.New(
 	"this store's index holds nothing at all, so every artifact in the bucket looks unreferenced",
 )
 
-func (s *SQL) sweep(ctx context.Context, now time.Time, opts SweepOptions, plan bool) (SweepStats, error) {
-	var stats SweepStats
+// sweep carries out Sweep or PlanSweep. A real run (plan is false) records
+// its own receipt as the last thing it does, whether or not it returns an
+// error, the same contract prune keeps (Story 4.11, AC3 and AC4).
+func (s *SQL) sweep(ctx context.Context, trigger string, now time.Time, opts SweepOptions, plan bool) (stats SweepStats, err error) {
+	if !plan {
+		started := time.Now()
+
+		defer func() {
+			if recErr := s.RecordSweepRun(ctx, trigger, started, stats, err); recErr != nil {
+				s.log.Warn("a sweep run could not be recorded", "error", recErr)
+			}
+		}()
+	}
 
 	// The same reason the prune establishes it: the collection path reads a
 	// missing key as a key somebody else collected, which is true of one

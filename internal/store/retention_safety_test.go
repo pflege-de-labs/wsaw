@@ -169,7 +169,7 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Sweep(t.Context(), later, store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, later, store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestRetentionKeepsWhatAResultWithUnknownReferencesMightName(t *testing.T) {
 	// A prune sees the same guard and reports the same reason, so the dry run
 	// an operator reads before changing retention says why nothing was
 	// reclaimed.
-	pruned, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 1})
+	pruned, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxPerSeries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestTheDocumentOfALiveResultSurvivesAnUnfinishedBackfill(t *testing.T) {
 
 	t.Cleanup(func() { _ = s.Close() })
 
-	stats, err := s.Sweep(t.Context(), time.Now().Add(365*24*time.Hour), store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(365*24*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestRetentionKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 		t.Fatalf("the same bytes stored as %s and %s; content addressing is broken", body, again)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestASweepKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Sweep(t.Context(), time.Now(), store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now(), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestASweepKeepsAnArtifactARunningScanHasJustTaken(t *testing.T) {
 
 	// A day and a bit later the claim has aged out with the scan that took it,
 	// and the same object is the garbage it looks like.
-	stats, err = s.Sweep(t.Context(), time.Now().Add(25*time.Hour), store.SweepOptions{})
+	stats, err = s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(25*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestRetentionRefusesToRunWithoutTheArtifactBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err == nil {
 		t.Fatalf("a prune against a bucket that is gone reported %d results and %d artifacts deleted, want an error",
 			stats.ResultsDeleted, stats.ArtifactsDeleted)
@@ -454,7 +454,7 @@ func TestRetentionRefusesToRunWithoutTheArtifactBucket(t *testing.T) {
 
 	assertTheHistorySurvivedALostBucket(t, s)
 
-	if _, err := s.Sweep(t.Context(), time.Now(), store.SweepOptions{}); err == nil {
+	if _, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now(), store.SweepOptions{}); err == nil {
 		t.Error("a sweep against a bucket that is gone reported success")
 	}
 }
@@ -487,7 +487,7 @@ func TestASweepRefusesAnIndexThatKnowsNothing(t *testing.T) {
 
 	later := time.Now().Add(365 * 24 * time.Hour)
 
-	if _, err := s.Sweep(t.Context(), later, store.SweepOptions{}); !errors.Is(err, store.ErrEmptyIndex) {
+	if _, err := s.Sweep(t.Context(), store.TriggerCLI, later, store.SweepOptions{}); !errors.Is(err, store.ErrEmptyIndex) {
 		t.Fatalf("a sweep against an empty index returned %v, want ErrEmptyIndex", err)
 	}
 
@@ -496,7 +496,7 @@ func TestASweepRefusesAnIndexThatKnowsNothing(t *testing.T) {
 
 	// An operator who really does have a bucket of leftovers and no history
 	// says so, and the sweep proceeds.
-	stats, err := s.Sweep(t.Context(), later, store.SweepOptions{AllowEmptyIndex: true})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, later, store.SweepOptions{AllowEmptyIndex: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 		bucket.Write(key, data)
 	}
 
-	stats, err := s.Sweep(t.Context(), time.Now().Add(365*24*time.Hour), store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(365*24*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

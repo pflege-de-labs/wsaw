@@ -56,6 +56,22 @@ type Registry struct {
 	artifactBytesFreed int64
 	artifactDeleteErr  int64
 
+	// lastPruneSuccess is when a prune last completed without error — a gauge
+	// a live process can be alerted on without opening the database, next to
+	// sweepRuns below (Story 4.11, AC8). The history behind both, across a
+	// restart this pair cannot survive, is the receipt log a prune or a sweep
+	// writes to maintenance_runs regardless of which process ran it
+	// (store.SQL.RecordPruneRun, RecordSweepRun).
+	lastPruneSuccess time.Time
+	// sweepRuns counts completed sweeps by outcome ("success" or "error"),
+	// in whichever process called Sweep. Sweep is operator-invoked and never
+	// scheduled (see store.Sweep's own doc comment), so this reflects only
+	// what ran in a process holding this registry — today, never the daemon.
+	// A live process being silent about sweep is itself the correct answer
+	// when nothing in it has swept; the receipt log is where "never run" is
+	// told apart from "ran a while ago" (Story 5.32, AC7).
+	sweepRuns map[string]int64
+
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
 
@@ -93,6 +109,7 @@ func New(version string) *Registry {
 		requests:        make(map[labels]*histogram),
 		lastSuccess:     make(map[labels]time.Time),
 		lastAttempt:     make(map[labels]time.Time),
+		sweepRuns:       make(map[string]int64),
 	}
 }
 
@@ -258,6 +275,26 @@ func (r *Registry) ArtifactDeletionsFailed(n int) {
 	r.artifactDeleteErr += int64(n)
 }
 
+// PruneSucceeded records the Unix time of a prune that completed without
+// error. A gauge, not a counter: what an alert needs is how long ago the
+// last one succeeded, not how many have run — Pruned above already counts
+// what each one removed, and the maintenance run log counts runs across a
+// restart (Story 4.11, AC8).
+func (r *Registry) PruneSucceeded(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.lastPruneSuccess = at
+}
+
+// SweepRun counts one completed sweep by outcome, "success" or "error".
+func (r *Registry) SweepRun(outcome string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.sweepRuns[outcome]++
+}
+
 // SetQueueDepth records how many scans are waiting.
 func (r *Registry) SetQueueDepth(n int) {
 	r.mu.Lock()
@@ -380,6 +417,10 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 		float64(r.artifactBytesFreed))
 	writeGaugeValue(&b, "wsaw_artifact_deletions_failed_total",
 		"Artifact deletions the bucket refused, left for the next sweep.", float64(r.artifactDeleteErr))
+	writeGaugeValue(&b, "wsaw_last_successful_prune_timestamp_seconds",
+		"Unix time of the last prune that completed without error, 0 if none has in this process.",
+		float64(unixOrZero(r.lastPruneSuccess)))
+	writeSweepRuns(&b, r.sweepRuns)
 	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
 		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
 	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
@@ -420,6 +461,33 @@ func writeCounter(b *strings.Builder, name, help string, values map[labels]int64
 
 func writeGaugeValue(b *strings.Builder, name, help string, v float64) {
 	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n%s %g\n", name, help, name, name, v)
+}
+
+// unixOrZero reports a timestamp as Unix seconds, or 0 for the zero time —
+// which is what "no prune has succeeded in this process yet" must read as,
+// never the large negative number time.Time{}.Unix() actually returns.
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+
+	return t.Unix()
+}
+
+func writeSweepRuns(b *strings.Builder, values map[string]int64) {
+	fmt.Fprintf(b, "# HELP wsaw_sweep_runs_total Completed sweeps, by outcome.\n"+
+		"# TYPE wsaw_sweep_runs_total counter\n")
+
+	outcomes := make([]string, 0, len(values))
+	for outcome := range values {
+		outcomes = append(outcomes, outcome)
+	}
+
+	sort.Strings(outcomes)
+
+	for _, outcome := range outcomes {
+		fmt.Fprintf(b, "wsaw_sweep_runs_total{outcome=%q} %d\n", outcome, values[outcome])
+	}
 }
 
 func writeHistogram(b *strings.Builder, name, help string, values map[labels]*histogram) {

@@ -108,6 +108,40 @@ func TestCmdPruneAppliesTheConfiguredPolicy(t *testing.T) {
 	}
 }
 
+// TestCmdPruneRecordsACLITriggeredReceipt: "wsaw prune" is a CLI invocation,
+// not the daemon's scheduled loop, and Story 4.11's receipt log needs to say
+// which one ran (AC7).
+func TestCmdPruneRecordsACLITriggeredReceipt(t *testing.T) {
+	path := writeRetentionConfig(t, "  keep:\n    last: 1\n")
+
+	seedStore(t, storePath(path), "scan-1", "scan-2")
+
+	if err := cmdPrune(context.Background(), []string{"--config", path}); err != nil {
+		t.Fatalf("cmdPrune: %v", err)
+	}
+
+	s, err := store.OpenSQL(t.Context(),
+		store.Options{Path: storePath(path), ArtifactDir: filepath.Join(filepath.Dir(storePath(path)), "artifacts")})
+	if err != nil {
+		t.Fatalf("OpenSQL: %v", err)
+	}
+
+	defer func() { _ = s.Close() }()
+
+	run, found, err := s.LastMaintenanceRun(t.Context(), store.MaintenanceKindPrune)
+	if err != nil {
+		t.Fatalf("LastMaintenanceRun: %v", err)
+	}
+
+	if !found {
+		t.Fatal("wsaw prune left no receipt")
+	}
+
+	if run.Trigger != store.TriggerCLI {
+		t.Errorf("Trigger = %q, want %q", run.Trigger, store.TriggerCLI)
+	}
+}
+
 // TestCmdPruneRefusesWithoutAPolicy: deleting nothing while reporting success
 // would leave an operator believing retention is running when it is not.
 func TestCmdPruneRefusesWithoutAPolicy(t *testing.T) {

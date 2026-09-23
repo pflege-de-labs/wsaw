@@ -65,7 +65,7 @@ func cmdPrune(ctx context.Context, args []string) error {
 		return printPrunePlan(os.Stdout, stats.Plans, *verbose)
 	}
 
-	stats, err := a.Store.Prune(ctx, now, retention)
+	stats, err := a.Store.Prune(ctx, store.TriggerCLI, now, retention)
 
 	// What a partial prune managed to delete is reported before its error:
 	// those results are gone either way, and a bare failure would hide it.

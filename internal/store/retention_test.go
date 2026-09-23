@@ -107,7 +107,7 @@ func TestPruningDeletesTheArtifactsItStopsReferencing(t *testing.T) {
 	assertStored(t, s, shot, "the screenshot")
 	assertStored(t, s, body, "the stored body")
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestASharedArtifactSurvivesThePruneOfOneResult(t *testing.T) {
 			"the sharing this test is about does not exist", oldShot, oldBody, newShot, newBody)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestPruningKeepsWhatABaselineNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestADryRunListsWhatWouldGoAndRemovesNothing(t *testing.T) {
 	}
 
 	// And the prune it described does what it said.
-	stats, err := s.Prune(t.Context(), time.Now(), retention)
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), retention)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestSweepCollectsAnUnreferencedArtifactOnlyAfterTheGracePeriod(t *testing.T
 
 	now := time.Now()
 
-	stats, err := s.Sweep(t.Context(), now, store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, now, store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +322,7 @@ func TestSweepCollectsAnUnreferencedArtifactOnlyAfterTheGracePeriod(t *testing.T
 	// period is tested rather than waited out.
 	later := now.Add(25 * time.Hour)
 
-	stats, err = s.Sweep(t.Context(), later, store.SweepOptions{})
+	stats, err = s.Sweep(t.Context(), store.TriggerCLI, later, store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestASweepKeepsTheEvidenceOfAStoredResult(t *testing.T) {
 
 	// Long past any grace period, so nothing but the reference check is
 	// keeping these objects alive.
-	stats, err := s.Sweep(t.Context(), time.Now().Add(365*24*time.Hour), store.SweepOptions{})
+	stats, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now().Add(365*24*time.Hour), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestADeletionFailureDoesNotFailThePrune(t *testing.T) {
 	// Restored whatever the test does, so the temp directory can be removed.
 	t.Cleanup(func() { _ = os.Chmod(kind, 0o700) })
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("a refused deletion failed the whole prune: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestADeletionFailureDoesNotFailThePrune(t *testing.T) {
 		t.Fatalf("making the screenshot directory writable again: %v", err)
 	}
 
-	swept, err := s.Sweep(t.Context(), time.Now(), store.SweepOptions{})
+	swept, err := s.Sweep(t.Context(), store.TriggerCLI, time.Now(), store.SweepOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestPruningNothingRemovesNothing(t *testing.T) {
 	shot, body := withEvidence(t, s, "scan-1", time.Now().Add(-365*24*time.Hour),
 		[]byte("kept"), []byte("also kept"))
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestCountBasedPruningReclaimsEveryDocument(t *testing.T) {
 		}
 	}
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxPerSeries: 3})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxPerSeries: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +552,7 @@ func TestAMigratedStoreCanPrune(t *testing.T) {
 
 	assertStored(t, s, shot, "the migrated result's screenshot")
 
-	stats, err := s.Prune(t.Context(), time.Now(), store.Retention{MaxAge: 24 * time.Hour})
+	stats, err := s.Prune(t.Context(), store.TriggerCLI, time.Now(), store.Retention{MaxAge: 24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -768,7 +768,7 @@ func (s *SQL) indexOneResult(ctx context.Context, row unindexedResult) (derived 
 
 // refsForRow reads a row's document and lists what it names, falling back to
 // the document's own reference when the document cannot be read.
-func (s *SQL) refsForRow(ctx context.Context, row unindexedResult) (refs []string, derived bool) {
+func (s *SQL) refsForRow(ctx context.Context, row unindexedResult) (refs []artifactRefSize, derived bool) {
 	if row.ref.ref == "" {
 		// A row that names no document at all. Migration 3 refuses to finish
 		// while one exists, so this is a row edited outside wsaw: there is
@@ -782,7 +782,7 @@ func (s *SQL) refsForRow(ctx context.Context, row unindexedResult) (refs []strin
 			"scan_id", row.key.scanID, "target", row.key.target,
 			"consent_mode", row.key.mode, "artifact", row.ref.ref, "error", err)
 
-		return []string{row.ref.ref}, false
+		return []artifactRefSize{{ref: row.ref.ref}}, false
 	}
 
 	return artifactRefsOf(res, row.ref.ref), true
@@ -790,7 +790,7 @@ func (s *SQL) refsForRow(ctx context.Context, row unindexedResult) (refs []strin
 
 // recordResultRefs writes one row's references and marks the row accordingly,
 // in one transaction so that a row can never claim references it does not have.
-func (s *SQL) recordResultRefs(ctx context.Context, key resultRowKey, refs []string, state int) error {
+func (s *SQL) recordResultRefs(ctx context.Context, key resultRowKey, refs []artifactRefSize, state int) error {
 	err := s.retry(ctx, "recording a result's artifact references", func(ctx context.Context) error {
 		return s.recordResultRefsTx(ctx, key, refs, state)
 	})
@@ -801,7 +801,7 @@ func (s *SQL) recordResultRefs(ctx context.Context, key resultRowKey, refs []str
 	return nil
 }
 
-func (s *SQL) recordResultRefsTx(ctx context.Context, key resultRowKey, refs []string, state int) error {
+func (s *SQL) recordResultRefsTx(ctx context.Context, key resultRowKey, refs []artifactRefSize, state int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
