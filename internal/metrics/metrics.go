@@ -64,13 +64,16 @@ type Registry struct {
 	// (store.SQL.RecordPruneRun, RecordSweepRun).
 	lastPruneSuccess time.Time
 	// sweepRuns counts completed sweeps by outcome ("success" or "error"),
-	// in whichever process called Sweep. Sweep is operator-invoked and never
-	// scheduled (see store.Sweep's own doc comment), so this reflects only
-	// what ran in a process holding this registry — today, never the daemon.
-	// A live process being silent about sweep is itself the correct answer
-	// when nothing in it has swept; the receipt log is where "never run" is
-	// told apart from "ran a while ago" (Story 5.32, AC7).
+	// in whichever process called Sweep. In the daemon that is its own
+	// scheduled sweep (Story 4.12); a `wsaw store sweep` run from a shell is
+	// another process with its own registry, and is visible here only
+	// through the receipt log, which is where "never run" is told apart from
+	// "ran a while ago" across processes and restarts (Story 5.32, AC7).
 	sweepRuns map[string]int64
+	// lastSweepSuccess is lastPruneSuccess for the sweep: when a sweep in
+	// this process last completed without error, so "no sweep has succeeded
+	// in two days" is an alert rather than a query (Story 4.12, AC6).
+	lastSweepSuccess time.Time
 
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
@@ -287,12 +290,29 @@ func (r *Registry) PruneSucceeded(at time.Time) {
 	r.lastPruneSuccess = at
 }
 
-// SweepRun counts one completed sweep by outcome, "success" or "error".
+// Sweep outcomes, as SweepRun counts them.
+const (
+	SweepSuccess = "success"
+	SweepError   = "error"
+)
+
+// SweepRun counts one completed sweep by outcome, SweepSuccess or SweepError.
 func (r *Registry) SweepRun(outcome string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.sweepRuns[outcome]++
+}
+
+// SweepSucceeded records the Unix time of a sweep that completed without
+// error. A gauge for the reason PruneSucceeded is one: what an alert needs is
+// how long ago the last one succeeded. A sweep that failed, was refused or was
+// interrupted does not move it (Story 4.12, AC6).
+func (r *Registry) SweepSucceeded(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.lastSweepSuccess = at
 }
 
 // SetQueueDepth records how many scans are waiting.
@@ -421,6 +441,9 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 		"Unix time of the last prune that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastPruneSuccess)))
 	writeSweepRuns(&b, r.sweepRuns)
+	writeGaugeValue(&b, "wsaw_last_successful_sweep_timestamp_seconds",
+		"Unix time of the last sweep that completed without error, 0 if none has in this process.",
+		float64(unixOrZero(r.lastSweepSuccess)))
 	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
 		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
 	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
