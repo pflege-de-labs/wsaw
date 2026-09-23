@@ -581,6 +581,10 @@ func TestOpenServerStoreRegistersTheDSNAsASecretEvenWhenOpenFails(t *testing.T) 
 	cfg := config.New()
 	cfg.Store.Driver = "postgres"
 	cfg.Store.DSN = "postgres://user:s3cret@127.0.0.1:1/db"
+	// A server store with no artifact directory falls back to the per-user
+	// state directory, which is the developer's own; this test is about the
+	// DSN, not about that default.
+	cfg.Store.ArtifactDir = t.TempDir()
 
 	secrets := &secret.Registry{}
 	a := &App{Config: cfg, Logger: discardLogger(), Metrics: metrics.New("test"), Secrets: secrets}
