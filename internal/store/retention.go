@@ -1323,9 +1323,18 @@ type SweepOptions struct {
 // It refuses to walk the bucket for a store that holds no scans at all, unless
 // asked to in as many words: see SweepOptions.
 //
-// It is not on a timer. Walking a bucket is a listing of every key wsaw owns,
-// which against object storage is a request per page and a line on an invoice,
-// so it is something an operator asks for.
+// The daemon runs it on a timer, once a day by default (Story 4.12), and
+// `wsaw store sweep` runs it on request; both are this method, and a scheduled
+// run is no less careful than a typed one — it passes the same options, and
+// never AllowEmptyIndex, because a daemon cannot say out loud that it means to
+// empty a bucket. It was kept off a timer at first because walking a bucket is
+// a listing of every key wsaw owns, a request per thousand keys on an invoice.
+// That is a hundred requests a day for a bucket of a hundred thousand objects,
+// while garbage nobody collects is a cost without bound, so the trade was
+// decided the other way.
+//
+// Cancelling ctx stops the walk at the next key. What had been deleted by then
+// is still recorded (Story 4.11, AC4), and nothing not yet reached is touched.
 func (s *SQL) Sweep(ctx context.Context, trigger string, now time.Time, opts SweepOptions) (SweepStats, error) {
 	return s.sweep(ctx, trigger, now, opts, false)
 }

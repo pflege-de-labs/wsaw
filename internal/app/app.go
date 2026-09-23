@@ -888,37 +888,6 @@ func DefaultConfigPaths() []string {
 	return paths
 }
 
-// PruneLoop enforces retention on a schedule. Without it, a daemon that runs
-// for months grows without bound (NFR §1); with it, retention is observable
-// because every prune is logged.
-func (a *App) PruneLoop(ctx context.Context) {
-	retention, err := a.Retention()
-	if err != nil {
-		a.Logger.Error("retention is not usable; no history will be pruned", "error", err)
-
-		return
-	}
-
-	if !retention.Active() {
-		return
-	}
-
-	const interval = time.Hour
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		case now := <-ticker.C:
-			a.pruneOnce(ctx, now, retention)
-		}
-	}
-}
-
 // pruneOnce applies retention once and reports what it reclaimed.
 //
 // Pruning deletes artifacts as well as rows now (Story 8.5), so one number is

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
 	"github.com/pflege-de-labs/wsaw/internal/config"
@@ -337,13 +338,60 @@ func TestReloadAdoptsANewTargetList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	targets, err := reload(a, *cf)
+	targets, _, err := reload(a, *cf)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 
 	if len(targets) != 2 {
 		t.Fatalf("targets = %d, want 2", len(targets))
+	}
+}
+
+// TestReloadHandsOnTheSweepSchedule is Story 4.12, AC8: store.sweep and
+// store.sweepInterval are applied by a reload rather than refused as
+// startup-only, and reload returns the schedule for the maintenance loop.
+func TestReloadHandsOnTheSweepSchedule(t *testing.T) {
+	path := writeConfig(t, oneTargetConfig)
+
+	cf := parseFlags(t, "--config", path)
+
+	running, err := cf.load()
+	if err != nil {
+		t.Fatalf("loading the running configuration: %v", err)
+	}
+
+	a := testApp(t, running)
+
+	body := oneTargetConfig + "\nstore:\n  path: " + filepath.Join(filepath.Dir(path), "wsaw.db") +
+		"\n  sweepInterval: 6h\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, sweep, err := reload(a, *cf)
+	if err != nil {
+		t.Fatalf("reload refused a new sweep interval: %v", err)
+	}
+
+	if want := (app.SweepSchedule{Enabled: true, Interval: 6 * time.Hour}); sweep != want {
+		t.Errorf("reload handed on %+v, want %+v", sweep, want)
+	}
+}
+
+// TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest: the reload path must
+// not wait for a maintenance loop that is busy sweeping, and when two reloads
+// arrive before the loop takes either, the newer one is what it gets.
+func TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest(t *testing.T) {
+	t.Parallel()
+
+	sweeps := make(chan app.SweepSchedule, 1)
+
+	offerSweepSchedule(sweeps, app.SweepSchedule{Enabled: true, Interval: time.Hour})
+	offerSweepSchedule(sweeps, app.SweepSchedule{Enabled: false, Interval: time.Hour})
+
+	if got := <-sweeps; got.Enabled {
+		t.Errorf("the loop was handed %+v, want the later reload's schedule", got)
 	}
 }
 
@@ -368,7 +416,7 @@ func TestReloadRefusesWhatItCannotApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = reload(a, *cf)
+	_, _, err = reload(a, *cf)
 	if err == nil {
 		t.Fatal("reload accepted a change it cannot apply")
 	}
@@ -404,7 +452,7 @@ func TestReloadReportsABrokenFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := reload(a, *cf); err == nil {
+	if _, _, err := reload(a, *cf); err == nil {
 		t.Fatal("reload accepted a file it could not parse")
 	}
 }

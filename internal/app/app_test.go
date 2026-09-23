@@ -365,30 +365,8 @@ func TestTriggerRefusesWithoutAScanner(t *testing.T) {
 	}
 }
 
-func TestPruneLoopReturnsImmediatelyWithNoRetentionPolicy(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.New()
-	cfg.Store.MaxPerSeries = 0 // config.New() defaults this to 200; a "no policy" test needs it off
-
-	a := &App{Config: cfg}
-
-	done := make(chan struct{})
-
-	go func() {
-		a.PruneLoop(context.Background())
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("PruneLoop with no retention policy did not return")
-	}
-}
-
 // TestPruneOnceRecordsAScheduleTriggeredReceiptAndUpdatesTheGauge is the
-// scheduled half of Story 4.11, AC7 and AC8: PruneLoop's own prune records
+// scheduled half of Story 4.11, AC7 and AC8: the maintenance loop's prune records
 // itself with trigger "schedule", and a prune that succeeds moves the
 // last-successful-prune gauge.
 func TestPruneOnceRecordsAScheduleTriggeredReceiptAndUpdatesTheGauge(t *testing.T) {
@@ -459,29 +437,6 @@ func TestPruneOnceRecordsAScheduleTriggeredReceiptAndUpdatesTheGauge(t *testing.
 
 	if strings.Contains(out.String(), "wsaw_last_successful_prune_timestamp_seconds 0\n") {
 		t.Error("last-successful-prune gauge is still 0 after a prune that succeeded")
-	}
-}
-
-func TestPruneLoopReturnsOnContextCancel(t *testing.T) {
-	cfg := config.New()
-	cfg.Store.MaxPerSeries = 10 // a policy so the loop actually starts a ticker
-
-	a := &App{Config: cfg, Logger: discardLogger()}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	done := make(chan struct{})
-
-	go func() {
-		a.PruneLoop(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("PruneLoop did not return after its context was cancelled")
 	}
 }
 

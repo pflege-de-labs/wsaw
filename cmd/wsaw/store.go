@@ -85,8 +85,10 @@ any more: objects left by an interrupted write, and keys an earlier prune could
 not delete. It is safe to run while wsaw is scanning — an object written or
 taken by a running scan within the last day is left alone, because that is what
 a scan in progress looks like from outside. An object wsaw did not write is left
-alone too, and reported separately. It reads every key wsaw owns, which against
-object storage costs requests, so it is asked for rather than scheduled.
+alone too, and reported separately. The daemon already sweeps on its own, once
+a day unless store.sweepInterval says otherwise or store.sweep: false turns it
+off; this runs one now. It reads every key wsaw owns, which against object
+storage is a listing request per thousand keys.
 
 A sweep refuses to walk the bucket for a store that holds no results at all:
 that is what a lost or restored-without-its-bucket index looks like, and

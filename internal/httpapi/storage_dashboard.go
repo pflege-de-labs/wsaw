@@ -361,8 +361,9 @@ func (s *Server) noPruneReason(ctx context.Context) string {
 }
 
 // sweepPanel reads AC7's sweep panel. A sweep has never been run is an
-// expected and named state, not an error: it is operator-invoked and never
-// scheduled (store.Sweep's own doc comment).
+// expected and named state, not an error: the daemon's first scheduled sweep
+// comes shortly after it starts (Story 4.12), and a store may have been
+// configured with scheduled sweeping off.
 func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 	if s.deps.LastMaintenanceRun == nil {
 		return sweepPanel{Available: false}
@@ -375,7 +376,8 @@ func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 
 	if !found {
 		return sweepPanel{Available: true,
-			Reason: `a sweep has never been run ("wsaw store sweep" is operator-invoked, never scheduled)`}
+			Reason: `a sweep has never been run (the daemon sweeps on a schedule unless store.sweep is false, ` +
+				`and "wsaw store sweep" runs one now)`}
 	}
 
 	stats, err := run.SweepStats()
