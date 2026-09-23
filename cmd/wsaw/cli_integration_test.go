@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,7 +46,61 @@ func requireChrome(t *testing.T) browser.Info {
 		t.Skipf("skipping browser test: no usable Chrome found (%v)", err)
 	}
 
+	// Pinned before the home directory moves: on macOS discovery also looks
+	// under ~/Applications, and a test that isolates itself afterwards must
+	// still find the Chrome this check just found.
+	t.Setenv("WSAW_CHROME_PATH", info.Path)
+	isolateDirs(t)
+
 	return info
+}
+
+// isolateDirs points every directory wsaw derives from the environment — the
+// home directory, and the XDG config, state, data and cache directories — at
+// a fresh temporary directory, and returns the new home.
+//
+// These tests drive the commands the way a user does, and a command given no
+// store path falls back to the per-user state directory (Story 6.2). Without
+// this, `wsaw debug` wrote its scan into the developer's own
+// ~/Library/Application Support/wsaw/wsaw.db, and a test run on a branch
+// with a newer schema migrated that real store forward — after which every
+// build of main refused to open it. A test must never read or change the
+// data of the person running it.
+//
+// t.Setenv makes a test that calls this unable to run in parallel, which
+// these already cannot: capture swaps the process's stdout and stderr.
+func isolateDirs(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+
+	for name, dir := range map[string]string{
+		"HOME":            home,
+		"XDG_CONFIG_HOME": filepath.Join(root, "config"),
+		"XDG_STATE_HOME":  filepath.Join(root, "state"),
+		"XDG_DATA_HOME":   filepath.Join(root, "data"),
+		"XDG_CACHE_HOME":  filepath.Join(root, "cache"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv(name, dir)
+	}
+
+	return home
+}
+
+// defaultStoreUnder is where a command given no store path keeps its
+// database once isolateDirs has moved the home directory to home: the path
+// app.defaultStateDir resolves to, per platform (Story 6.2).
+func defaultStoreUnder(home string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "wsaw", "wsaw.db")
+	}
+
+	return filepath.Join(os.Getenv("XDG_STATE_HOME"), "wsaw", "wsaw.db")
 }
 
 // Fixture hostnames. Chrome's host-resolver-rules maps these onto the actual
@@ -234,6 +289,8 @@ func TestCmdScanExitCodesReflectFindingsAndOperationalFailure(t *testing.T) {
 // explicit path that does not exist fails discovery deterministically
 // wherever the test runs.
 func TestCmdScanExitsOperationalWhenNoBrowserIsUsable(t *testing.T) {
+	isolateDirs(t)
+
 	cfg := fmt.Sprintf(`targets:
   - name: fixture
     url: https://example.test/
@@ -258,6 +315,11 @@ browser:
 // errors).
 func TestCmdDebugScansAFixtureAndPrintsMarkdown(t *testing.T) {
 	requireChrome(t)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	fx := newCLIFixture(t, false)
 
@@ -286,6 +348,12 @@ func TestCmdDebugScansAFixtureAndPrintsMarkdown(t *testing.T) {
 	if !strings.Contains(stderr, "scanning "+fx.siteURL()) {
 		t.Errorf("stderr = %q, want the scanning announcement", stderr)
 	}
+
+	// cmdDebug takes no store path, so it is the one command here that
+	// exercises the default location — which must be the isolated one.
+	if _, err := os.Stat(defaultStoreUnder(home)); err != nil {
+		t.Errorf("the debug scan's store is not in the test's own state directory: %v", err)
+	}
 }
 
 // TestCmdShareEndToEndMintsAVerifiableLink needs no browser at all: sharing
@@ -293,6 +361,8 @@ func TestCmdDebugScansAFixtureAndPrintsMarkdown(t *testing.T) {
 // RequireBrowser left false), so a store seeded directly is enough to
 // exercise the whole command.
 func TestCmdShareEndToEndMintsAVerifiableLink(t *testing.T) {
+	isolateDirs(t)
+
 	path := writeConfig(t, oneTargetConfig+fmt.Sprintf(`
 api:
   share:
