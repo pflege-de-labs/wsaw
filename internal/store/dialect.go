@@ -46,6 +46,15 @@ type execer interface {
 // summaries by parsing the stored document in Go rather than in SQL, so
 // nothing in the store depends on `json_extract`, `->>` or `JSON_EXTRACT`.
 // That decision is what makes this seam small.
+//
+// Two more things are kept off the seam by writing SQL that every dialect
+// already agrees on, and they are recorded here because nothing on the
+// interface would otherwise say so (Story 7.5, AC6). No identifier is quoted:
+// a column is named outside every dialect's reserved words instead
+// (maintenance_runs.triggered_by, not trigger, which MySQL reserves), since
+// the quoting character itself differs between them. And no subquery under
+// IN carries a LIMIT, which MySQL refuses: a query that needs the Nth row
+// reads it first and compares against it (trimMaintenanceRunsTx).
 type dialect interface {
 	// name is the configured driver name.
 	name() string

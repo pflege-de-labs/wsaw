@@ -255,18 +255,21 @@ func (sqliteDialect) migrations() [][]string {
 		// the run's own stats struct is the record, encoded as JSON and
 		// decoded straight back into PruneStats or SweepStats on read, so a
 		// column here can never drift from what the struct already reports.
-		// kind and trigger are the two facts a listing needs without decoding
-		// the document, the same reason results carries termination and
-		// consent_outcome as columns of their own (Story 8.3).
+		// kind and triggered_by are the two facts a listing needs without
+		// decoding the document, the same reason results carries termination
+		// and consent_outcome as columns of their own (Story 8.3). The column
+		// is not called trigger because MySQL reserves that word; the
+		// comment on maintenance.go's header says why it is renamed rather
+		// than quoted.
 		{
 			`create table if not exists maintenance_runs (
-				id          integer primary key autoincrement,
-				kind        text    not null,
-				trigger     text    not null,
-				started_at  integer not null,
-				finished_at integer not null,
-				error       text    not null default '',
-				stats       text    not null
+				id           integer primary key autoincrement,
+				kind         text    not null,
+				triggered_by text    not null,
+				started_at   integer not null,
+				finished_at  integer not null,
+				error        text    not null default '',
+				stats        text    not null
 			) strict`,
 
 			// Every read is "the newest N runs of this kind", so the index

@@ -148,13 +148,13 @@ func (postgresDialect) migrations() [][]string {
 		// PostgreSQL's spelling.
 		{
 			`create table if not exists maintenance_runs (
-				id          bigserial primary key,
-				kind        text   not null,
-				trigger     text   not null,
-				started_at  bigint not null,
-				finished_at bigint not null,
-				error       text   not null default '',
-				stats       text   not null
+				id           bigserial primary key,
+				kind         text   not null,
+				triggered_by text   not null,
+				started_at   bigint not null,
+				finished_at  bigint not null,
+				error        text   not null default '',
+				stats        text   not null
 			)`,
 
 			`create index if not exists maintenance_runs_kind

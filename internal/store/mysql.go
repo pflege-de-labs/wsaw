@@ -234,13 +234,13 @@ func (mysqlDialect) migrations() [][]string {
 		// result_artifacts already does above.
 		{
 			`create table if not exists maintenance_runs (
-				id          bigint       not null auto_increment primary key,
-				kind        varchar(16)  not null,
-				trigger     varchar(16)  not null,
-				started_at  bigint       not null,
-				finished_at bigint       not null,
-				error       longtext     not null,
-				stats       longtext     not null,
+				id           bigint       not null auto_increment primary key,
+				kind         varchar(16)  not null,
+				triggered_by varchar(16)  not null,
+				started_at   bigint       not null,
+				finished_at  bigint       not null,
+				error        longtext     not null,
+				stats        longtext     not null,
 				key maintenance_runs_kind (kind, id desc)
 			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
 		},
