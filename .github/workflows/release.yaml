@@ -1,0 +1,183 @@
+# Release for wsaw.
+#
+# A pushed tag v* builds every released artifact, generates both SBOMs, and
+# opens a *draft* GitHub release holding them (Story 6.1, AC1 and AC3). A human
+# reads the draft and publishes it; nothing here makes a release public.
+#
+# Its own workflow rather than a job in ci.yaml, for two reasons. It is the only
+# thing in the repository that needs `contents: write`, and ci.yaml runs on
+# every pull request — keeping the write grant in a file that no pull request
+# triggers means a change to ci.yaml cannot reach it by accident. And the two
+# have nothing to share at run time: ci.yaml gates a change on its way to main,
+# this publishes a commit that is already there.
+#
+# What this workflow does not re-run is the merge gate — lint, vet, the race
+# suite, the licence check. The tag must point at a commit on main (checked
+# below), and every commit on main arrived through a pull request that ci.yaml
+# gated. What it does re-run is govulncheck, because a vulnerability can be
+# published against a dependency between the merge and the tag, and "no known
+# critical CVEs in a release" is about the day of the release (NFR §4).
+#
+# What is not here yet, and is recorded rather than faked: Story 7.6 requires
+# the end-to-end stack to run before a release and its failure to block it
+# (AC2, AC3). The assertions that stack would run (Stories 7.4 and 7.5) are not
+# on main, and the Compose targets that are — e2e-compose-up and
+# e2e-compose-scan — bring the stack up and trigger a scan without asserting on
+# anything it stored. A job that ran them and went green would read as the gate
+# the story asks for while checking nothing it cares about, so there is no such
+# job, and CHANGELOG.md lists the gap. When the suite lands, it becomes a job
+# here that `release` needs.
+#
+# No container image is published either; that is a separate change.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Read-only by default. The one job that creates the release asks for write
+# access itself, so a job added here later does not inherit it.
+permissions:
+  contents: read
+
+# One release per tag, never two racing to create the same draft. A second push
+# of the same tag waits rather than cancelling a build halfway through.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # All four are the values in ci.yaml, and must be kept in step with them —
+  # ci.yaml says why each is pinned, and to an exact patch. GO_VERSION matters
+  # most here: the release publishes measured binary sizes (Story 8.8, AC2), and
+  # a release built with a different toolchain from the one CI measures with
+  # would publish numbers nobody can compare with anything. The tool versions
+  # are also the Makefile's defaults; they are passed explicitly anyway, so the
+  # two files cannot silently disagree about what produced the SBOM.
+  GO_VERSION: "1.27.1"
+  GOVULNCHECK_VERSION: "v1.7.0"
+  CYCLONEDX_GOMOD_VERSION: "v1.12.0"
+
+jobs:
+  release:
+    name: build and draft the release
+    runs-on: ubuntu-latest
+    permissions:
+      # To create the draft release and upload its assets. Nothing else.
+      contents: write
+    steps:
+      # The whole history, not the default single commit: the check below asks
+      # whether the tag is on main, which needs main's history, and
+      # cyclonedx-gomod reads the main module's version from the tag through
+      # git.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # A tag on a commit that never reached main is a commit ci.yaml never
+      # gated — a branch someone tagged by mistake, or on purpose. Refusing it
+      # here is what lets this workflow skip the merge gate above.
+      - name: Refuse a tag that is not on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+
+      # The version the binaries carry, the release's name, and the CHANGELOG
+      # heading are all the tag. CHANGELOG.md writes the version without the v,
+      # as Keep a Changelog does.
+      #
+      # A tag whose version has no CHANGELOG section fails the release rather
+      # than publishing one with notes that say nothing about what changed.
+      # The section runs from its own heading to the next version heading or
+      # the link references at the bottom of the file, whichever comes first.
+      - name: Take the release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/changelog-section.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/changelog-section.md"; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+
+      # Both variants, because govulncheck reports only what the analysed build
+      # can reach, and the cloud SDKs are reachable only with the tag
+      # (Story 8.8, AC5).
+      - name: govulncheck
+        run: make vulncheck GOVULNCHECK_VERSION="${{ env.GOVULNCHECK_VERSION }}"
+
+      # All four platforms in both variants — the Makefile's full
+      # CLOUD_PLATFORMS default, not the narrowed set a pull request builds.
+      # `make release` also runs `make verify-variants`, so a default binary
+      # that links a cloud SDK fails the release here (Story 8.8, AC4), and
+      # writes SIZES, RELEASE-NOTES.md and the SHA256SUMS that covers them.
+      #
+      # VERSION is the tag exactly, rather than whatever `git describe` makes of
+      # the checkout, so the binaries' `wsaw version` and the release's name
+      # cannot differ.
+      - name: Build all platforms, both variants
+        run: make release VERSION="$GITHUB_REF_NAME"
+
+      # One SBOM per variant (Story 6.1, AC3; Story 8.8, AC5). After `make
+      # release`, because release starts with `make clean`.
+      - name: Generate the SBOMs
+        run: make sbom CYCLONEDX_GOMOD_VERSION="${{ env.CYCLONEDX_GOMOD_VERSION }}"
+
+      # `make release` wrote SHA256SUMS before the SBOMs existed. The SBOMs are
+      # published beside the binaries, and a published file a reader cannot
+      # verify is one they have to take on trust — so they are added to the
+      # same file rather than to a second one, and `shasum -c` then checks every
+      # line against what is about to be uploaded. One checksum file is one
+      # command for a reader, too.
+      - name: Cover the SBOMs by SHA256SUMS
+        working-directory: dist
+        run: |
+          shasum -a 256 wsaw.cdx.json wsaw-cloudblob.cdx.json >> SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+
+      # The body is the CHANGELOG section followed by what `make release`
+      # rendered — the measured sizes and the artifact list (Story 8.8, AC2). It
+      # is assembled outside dist/, because RELEASE-NOTES.md is itself covered
+      # by SHA256SUMS and published unchanged.
+      #
+      # A draft, so a human reads it before anyone can download it. A version
+      # with a pre-release suffix (v1.2.0-rc.1) is marked as a pre-release too.
+      # Re-running this job for a tag that already has a draft fails at create;
+      # delete the draft first — that is deliberate, so a re-run can never
+      # quietly replace assets someone has already looked at.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            cat "$RUNNER_TEMP/changelog-section.md"
+            echo
+            echo '---'
+            echo
+            cat dist/RELEASE-NOTES.md
+          } > "$RUNNER_TEMP/release-body.md"
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --draft $prerelease \
+            --verify-tag \
+            --title "wsaw $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/release-body.md" \
+            dist/wsaw_* \
+            dist/SHA256SUMS \
+            dist/SIZES \
+            dist/RELEASE-NOTES.md \
+            dist/wsaw.cdx.json \
+            dist/wsaw-cloudblob.cdx.json

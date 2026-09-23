@@ -56,6 +56,8 @@ make release          # both variants, all four platforms, with checksums and si
 
 Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: take the default one unless you intend to keep evidence in object storage, in which case see [the artifact bucket](#the-artifact-bucket).
 
+Tagged releases publish the same artifacts on the repository's GitHub Releases page, with `SHA256SUMS` and a CycloneDX SBOM per variant. [CHANGELOG.md](CHANGELOG.md) says what each release changed and what it still lacks. No container image is published yet, so the image below is one you build yourself with `make docker`, which tags it with the version rather than `latest`.
+
 Or run the container:
 
 ```sh
