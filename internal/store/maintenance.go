@@ -15,9 +15,9 @@ import (
 // stats report what changed and App.pruneOnce already sends them to metrics
 // before checking the error. What neither has is memory — a Prometheus
 // counter resets on restart and answers "how many, ever", never "what did
-// last Tuesday's run do", and a sweep is deliberately not on a timer
-// (see Sweep's own doc comment), so its history exists nowhere at all unless
-// an operator happened to be watching the log when it ran.
+// last Tuesday's run do". The receipts are also what the daemon's sweep
+// schedule is kept by: the next sweep falls due an interval after the last
+// one recorded here, so a restart does not reset it (Story 4.12).
 //
 // maintenanceRuns records every real run — never a plan, which changed
 // nothing and already printed its own answer — in the shape the audit table
