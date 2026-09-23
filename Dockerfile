@@ -19,7 +19,7 @@
 # precisely so that cross-compiling it is exact (Tenet 14), and `make release`
 # builds the released binaries the same way; emulating the compiler for arm64
 # would make a multi-arch build several times slower and buy nothing.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 
 # Set by BuildKit from --platform. Empty in a plain `docker build`, where the
 # target is the builder's own platform and go build's defaults are right.
@@ -52,13 +52,29 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/wsaw ./cmd/wsaw
 
-FROM alpine:3.24
+# By digest, and Chromium by exact package version (Story 6.3, AC1). The
+# browser is what renders every result, so an image whose Chromium moved
+# between two builds of the same release would produce results that are not
+# comparable, and nothing in the image would say so. A tag pins neither: the
+# base tag is re-pushed with every Alpine point release, and apk installs
+# whatever the branch holds on the day of the build.
+#
+# The cost is deliberate. Alpine keeps only the newest build of a package in a
+# stable branch, and Chromium's security releases replace it every week or
+# two, so this build — and with it ci.yaml's container-sandbox job — stops
+# resolving CHROMIUM_VERSION the day the branch moves on, failing with apk's
+# "unable to select packages". That is the signal to bump it: to the version
+# `apk policy chromium` reports in a fresh alpine:3.24 container, in the same
+# change as whatever else that release needs. Dependabot moves both digests.
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+ARG CHROMIUM_VERSION=152.0.7977.82-r0
 
 # Chromium and the fonts a page needs to render text at all. Without fonts,
 # layout differs enough that element-visibility checks — which is how consent
 # banners are found — behave differently from a real browser.
 RUN apk add --no-cache \
-      chromium \
+      "chromium=${CHROMIUM_VERSION}" \
       ca-certificates \
       font-noto \
       font-noto-emoji \
@@ -78,7 +94,8 @@ RUN addgroup -g 10001 -S wsaw \
 # able to answer the question itself — the two differ by that same 28 MB of
 # cloud SDK, and by which URL schemes the binary can reach (Story 8.8, AC3).
 ARG BUILD_TAGS=""
-LABEL org.opencontainers.image.variant="${BUILD_TAGS:-default}"
+LABEL org.opencontainers.image.variant="${BUILD_TAGS:-default}" \
+      de.pflege.wsaw.chromium.version="${CHROMIUM_VERSION}"
 
 COPY --from=build /out/wsaw /usr/local/bin/wsaw
 

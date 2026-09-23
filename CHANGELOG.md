@@ -25,6 +25,13 @@ criteria, and any that are still open, are written down.
 - The `Dockerfile` cross-compiles the Go binary on the build machine instead of
   compiling it under emulation for each target architecture, as `make release`
   already does for the binaries.
+- The image pins what it is built from: both base images by digest, and
+  Chromium by exact package version (152.0.7977.82-r0), which the image
+  records in its `de.pflege.wsaw.chromium.version` label (Story 6.3, AC1).
+  Before, `apk add chromium` installed whatever Alpine's branch held on the
+  day of the build. Alpine keeps only the newest Chromium in a stable branch,
+  so the build fails when a new one replaces it; the `Dockerfile` says how to
+  bump the pin.
 
 ## [0.1.0] - 2026-09-23
 
