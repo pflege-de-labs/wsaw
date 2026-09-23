@@ -79,8 +79,11 @@ const (
 	minioContainer = "wsaw-test-minio"
 
 	// minioPort is deliberately not 9000: a developer running MinIO for their
-	// own reasons must not have it emptied by a test run.
-	minioPort = "59000"
+	// own reasons must not have it emptied by a test run. It is also below
+	// 32768, out of the operating system's ephemeral range, where an earlier
+	// outgoing connection could already hold it. Keep it equal to MINIO_PORT
+	// in the Makefile.
+	minioPort = "19000"
 
 	// bucketName is the bucket inside MinIO. It is created before the server
 	// starts, by making the directory the single-drive backend keeps its
