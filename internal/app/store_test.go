@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,7 +19,12 @@ import (
 // the artifacts directory beside the database, so an upgrade to the bucket
 // world needs no configuration edit at all (Tenet 14).
 func TestArtifactsDefaultToTheDirectoryBesideTheStore(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: the empty configuration resolves the per-user state
+	// directory, and creates it, so the home it resolves against is this
+	// test's own rather than the developer's.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
 
 	cases := map[string]*config.Config{
 		// The state directory is deliberately not asserted by name: it differs
@@ -35,8 +41,6 @@ func TestArtifactsDefaultToTheDirectoryBesideTheStore(t *testing.T) {
 
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
 			opts, err := app.StoreOptions(cfg, nil)
 			if err != nil {
 				t.Fatalf("StoreOptions: %v", err)
@@ -45,6 +49,10 @@ func TestArtifactsDefaultToTheDirectoryBesideTheStore(t *testing.T) {
 			want := filepath.Join(filepath.Dir(opts.Path), "artifacts")
 			if opts.ArtifactDir != want {
 				t.Errorf("artifacts resolve to %q, want %q", opts.ArtifactDir, want)
+			}
+
+			if !strings.HasPrefix(opts.Path, home) && !strings.HasPrefix(opts.Path, os.TempDir()) {
+				t.Errorf("the database resolves to %q, outside this test's own directories", opts.Path)
 			}
 		})
 	}

@@ -139,9 +139,29 @@ func TestLoadRefusesAnEmptyTargetList(t *testing.T) {
 	}
 }
 
+// isolateDefaultConfig gives a test that exercises the default config lookup
+// its own home and user config directory, so the lookup never reads the
+// configuration of the person running the tests.
+//
+// The system path cannot be moved, since it is not derived from the
+// environment. On a machine that has one, the lookup would find it before
+// the working directory, and the answer would describe that machine rather
+// than the code, so the test says so and skips.
+func isolateDefaultConfig(t *testing.T) {
+	t.Helper()
+
+	isolateDirs(t)
+
+	if _, err := os.Stat("/etc/wsaw/wsaw.yaml"); err == nil {
+		t.Skip("/etc/wsaw/wsaw.yaml exists on this machine, and the default lookup would read it")
+	}
+}
+
 func TestLoadFromDefaultPathsNamesWhereItLooked(t *testing.T) {
-	// An empty working directory means the relative default cannot match
-	// either, so every candidate is missing.
+	// An empty working directory and an empty user config directory mean
+	// neither the relative default nor the per-user one can match, so every
+	// candidate is missing.
+	isolateDefaultConfig(t)
 	t.Chdir(t.TempDir())
 
 	cf := parseFlags(t)
@@ -162,6 +182,10 @@ func TestLoadFromDefaultPathsNamesWhereItLooked(t *testing.T) {
 }
 
 func TestLoadFromDefaultPathsUsesTheWorkingDirectory(t *testing.T) {
+	// The per-user file is looked for first, so a developer's own wsaw.yaml
+	// would otherwise be the one loaded.
+	isolateDefaultConfig(t)
+
 	dir := t.TempDir()
 	t.Chdir(dir)
 
