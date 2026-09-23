@@ -258,6 +258,12 @@ func (sqliteDialect) migrations() [][]string {
 		// kind and trigger are the two facts a listing needs without decoding
 		// the document, the same reason results carries termination and
 		// consent_outcome as columns of their own (Story 8.3).
+		//
+		// The column is called trigger here and renamed to triggered_by by
+		// version 8, rather than created with the new name. This statement
+		// was already on main, and stores opened by those builds carry
+		// version 6 as written; editing it would leave them with a column no
+		// query names. Version 8 carries the reasoning.
 		{
 			`create table if not exists maintenance_runs (
 				id          integer primary key autoincrement,
@@ -301,6 +307,27 @@ func (sqliteDialect) migrations() [][]string {
 		{
 			`alter table result_artifacts add column bytes integer not null default 0`,
 		},
+
+		// Version 8 (Story 4.11): maintenance_runs.trigger becomes
+		// triggered_by.
+		//
+		// TRIGGER is a reserved word in MySQL, so version 6 as first written
+		// could never be applied there, and the store quotes no identifier in
+		// any dialect — the quote character differs between them — so the
+		// column takes a name none of them reserves. SQLite and PostgreSQL
+		// accept trigger as a column name, and stores opened by a build
+		// between Story 4.11 and this fix already have it, so here the column
+		// is renamed; MySQL's version 6 creates it as triggered_by directly,
+		// since no MySQL store can have applied the statement that failed,
+		// and its version 8 does nothing.
+		//
+		// RENAME COLUMN cannot say `if exists`. A store whose version is
+		// rewound to replay this migration meets its own prior work as "no
+		// such column", which alreadyApplied recognises.
+		{
+			`alter table ` + maintenanceRunsTable + ` rename column ` +
+				maintenanceRunsOldTriggerColumn + ` to triggered_by`,
+		},
 	}
 }
 
@@ -319,6 +346,11 @@ func (sqliteDialect) migrations() [][]string {
 // accident MySQL's errDupFieldName absorbs. SQLite's result code for it is
 // the generic SQLITE_ERROR, so the message is the only way to tell it apart
 // from every other statement that code covers.
+//
+// The second exception is version 8's RENAME COLUMN, which has no `if exists`
+// form either: replayed, it meets the column it already renamed as "no such
+// column". Only that column's name is recognised, so a later statement that
+// names a column which genuinely is not there still fails.
 func (sqliteDialect) alreadyApplied(err error) bool {
 	var sqliteErr *sqlite.Error
 
@@ -326,7 +358,10 @@ func (sqliteDialect) alreadyApplied(err error) bool {
 		return false
 	}
 
-	return strings.Contains(sqliteErr.Error(), "duplicate column name")
+	msg := sqliteErr.Error()
+
+	return strings.Contains(msg, "duplicate column name") ||
+		strings.Contains(msg, `no such column: "`+maintenanceRunsOldTriggerColumn+`"`)
 }
 
 // hasColumn reads SQLite's own table description. pragma_table_info is the
