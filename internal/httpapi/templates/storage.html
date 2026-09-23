@@ -19,7 +19,7 @@
   <strong>{{bytes .GrandTotalBytes}}</strong> referenced across {{len .Rows}} series, on the
   <strong>{{.Driver}}</strong> store, evidence in <code>{{.ArtifactLocation}}</code>.
   {{/* AC3: what the index knows is referenced, not a claim about the bucket itself — only a sweep's own
-       bucket-wide listing can answer that, and it is never run on a schedule or from this page. */}}
+       bucket-wide listing can answer that, and it runs on the daemon's own schedule (Story 4.12), never from this page. */}}
   <p class="note">This total is what the index currently references, not a listing of the bucket itself.</p>
   {{if .SweepFoundExtra}}
   <p class="note warn">The last sweep found protected or foreign objects this total does not include —
