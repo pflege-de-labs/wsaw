@@ -186,10 +186,12 @@ type Deps struct {
 	LastMaintenanceRun func(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
 	MaintenanceRuns    func(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)
 
-	// ArtifactLocation names where the evidence bucket is, redacted the same
-	// way a log line or a command's own report already is
-	// (store.Options.ArtifactLocation) — shown in the storage dashboard's
-	// header (AC3).
+	// ArtifactLocation names where the evidence bucket is, as configured —
+	// shown in the storage dashboard's header (AC3). It may carry a
+	// credential in its userinfo or query string; the dashboard redacts it
+	// the same way a log line or a command's own report already is
+	// (secret.RedactURL, as store.Options.ArtifactLocation does), so a caller
+	// must not redact it first.
 	ArtifactLocation string
 
 	// ConfigPath is shown in the UI so a write action can say where a

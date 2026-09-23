@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -173,9 +174,12 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 	}
 
 	data := storageData{
-		Available:        true,
-		Driver:           s.deps.Store.Driver(),
-		ArtifactLocation: s.deps.ArtifactLocation,
+		Available: true,
+		Driver:    s.deps.Store.Driver(),
+		// Redacted here, where it is rendered, rather than trusted to arrive
+		// that way: the page and the JSON are both built from this field, so
+		// this is the one place that covers both (AC3, AC12).
+		ArtifactLocation: secret.RedactURL(s.deps.ArtifactLocation),
 	}
 
 	series, err := s.deps.SeriesStorage(ctx)
