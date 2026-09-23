@@ -47,7 +47,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            test-flags: ""
+          - os: macos-latest
+            # cmd/wsaw, internal/app, internal/browser and internal/scanner
+            # each launch a real Chrome in their tests; `go test ./...`
+            # otherwise runs their package binaries in parallel up to
+            # GOMAXPROCS, and macOS runners have few enough cores that all
+            # four competing for CPU at once has been enough to starve one
+            # past its navigation timeout — the intermittent
+            # termination=timeout, requests=0 failures on this job. Capping
+            # parallelism here, where the CPU is actually scarce, costs wall
+            # clock but not correctness.
+            test-flags: "-p 2"
     steps:
       - uses: actions/checkout@v7
 
@@ -79,7 +92,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race -timeout 15m ./...
+        run: go test -race ${{ matrix.test-flags }} -timeout 15m ./...
 
       # The other axis of the same suite: where the evidence goes, rather than
       # where the index is kept (Story 8.9, AC1). It runs the whole store suite
