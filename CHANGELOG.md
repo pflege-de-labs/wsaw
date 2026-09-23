@@ -9,6 +9,11 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-23
+
+The first release with a container image. The binaries behave exactly as
+0.1.0's do.
+
 ### Added
 
 - Container images on the GitHub Container Registry, for linux/amd64 and
@@ -17,8 +22,9 @@ criteria, and any that are still open, are written down.
   release is published — not when its tag is — so an image never goes out
   ahead of the release it belongs to. Each push is pulled back by digest and
   checked: both architectures must report the release's version, and Chromium's
-  sandbox must start under `deploy/chromium-seccomp.json`. 0.1.0 predates this, and
-  its images are published by running the workflow by hand for its tag.
+  sandbox must start under `deploy/chromium-seccomp.json`. 0.1.0 has no image: its
+  `Dockerfile` predates the pins below, and an image built from it would carry
+  whichever Chromium Alpine held on the day it was built.
 
 ### Changed
 
@@ -248,5 +254,6 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.0

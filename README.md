@@ -58,7 +58,7 @@ Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: tak
 
 Tagged releases publish the same artifacts on the repository's GitHub Releases page, with `SHA256SUMS` and a CycloneDX SBOM per variant. [CHANGELOG.md](CHANGELOG.md) says what each release changed and what it still lacks.
 
-Or run the container. Each published release has images for linux/amd64 and linux/arm64 on the GitHub Container Registry, in both variants — `ghcr.io/pflege-de-labs/wsaw` and `ghcr.io/pflege-de-labs/wsaw-cloudblob` — tagged with the full version (`0.1.0`), with major.minor (`0.1`), and, for the newest release, `latest`. A tag can move; for a deployment, pin the digest instead, which the package page and each publish run's summary show:
+Or run the container. Every release from 0.1.1 on has images for linux/amd64 and linux/arm64 on the GitHub Container Registry, in both variants — `ghcr.io/pflege-de-labs/wsaw` and `ghcr.io/pflege-de-labs/wsaw-cloudblob` — tagged with the full version (`0.1.0`), with major.minor (`0.1`), and, for the newest release, `latest`. A tag can move; for a deployment, pin the digest instead, which the package page and each publish run's summary show:
 
 ```sh
 docker run --rm \
