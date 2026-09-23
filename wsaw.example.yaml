@@ -333,6 +333,30 @@ store:
   # prunes, and deleting evidence cannot be undone:
   #
   #   wsaw prune --dry-run --all
+
+  # The daemon sweeps the artifact bucket on its own: it walks every key wsaw
+  # owns and deletes what no stored result references — objects left by a scan
+  # interrupted between writing the bucket and recording its row, and keys an
+  # earlier prune's delete was refused. Leaving both settings out sweeps once a
+  # day; it is not off.
+  #
+  # One sweep against object storage is one LIST request per thousand keys,
+  # plus a DELETE per object collected: about a hundred requests a day for a
+  # bucket of a hundred thousand objects, well under a cent a month. It reads
+  # no object bodies.
+  #
+  # The next sweep is due one interval after the last recorded one (whichever
+  # process ran it), so restarts do not postpone it; a store never swept is
+  # swept 10–20 minutes after startup. The interval may not be under 1h:
+  # nothing younger than a day is ever collected, so more often buys nothing.
+  # It never deletes on behalf of a store whose index is empty — that takes
+  # "wsaw store sweep --allow-empty-index", typed by a person. Both settings
+  # are applied by SIGHUP.
+  #
+  # sweep: false turns the scheduled sweep off; "wsaw store sweep" still works.
+  sweep: true
+  sweepInterval: 24h
+
   writeReport: false
   writeHar: false
 
