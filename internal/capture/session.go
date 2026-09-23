@@ -470,6 +470,17 @@ func (s *session) navigate() error {
 	ctx, cancel := context.WithTimeout(s.runCtx, s.opts.NavTimeout)
 	defer cancel()
 
+	// The top-level frame ID is known before navigation starts and does not
+	// change across it, unlike the loader ID chromedp.Navigate tracks
+	// internally to detect a failed load — a detection race that lets a
+	// connection-level failure (e.g. connection refused) go unreported when
+	// the frame's lifecycle events lose that race. Recording it here lets
+	// finish check the recorder's own, independent view of whether the
+	// document actually loaded.
+	if tree, err := page.GetFrameTree().Do(ctx); err == nil {
+		s.rec.setMainFrame(tree.Frame.ID)
+	}
+
 	if err := chromedp.Run(ctx, chromedp.Navigate(s.opts.URL)); err != nil {
 		return fmt.Errorf("navigating to %s: %w", s.opts.URL, err)
 	}
@@ -879,11 +890,22 @@ func (s *session) finish(runErr error) {
 	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)
 
 	_, exceeded := s.rec.snapshot()
+	mainDocFailed, mainDocFailure := s.rec.mainDocumentFailure()
 
 	switch {
 	case runErr != nil && !errors.Is(runErr, context.DeadlineExceeded):
 		s.res.Termination = model.TermError
 		s.res.Error = s.scrub(runErr.Error())
+
+	// The document never loaded, whatever chromedp's own navigation error
+	// detection concluded — see the comment in navigate. Checked ahead of
+	// the timeout/idle cases below because those are exactly the outcomes
+	// this masks: a page that failed to load reads as one that settled
+	// quietly, or ran out the clock waiting for traffic that was never
+	// going to arrive.
+	case mainDocFailed:
+		s.res.Termination = model.TermError
+		s.res.Error = s.scrub(fmt.Sprintf("navigating to %s: page load error %s", s.opts.URL, mainDocFailure))
 
 	case exceeded == capRequests:
 		s.res.Termination = model.TermRequestCap

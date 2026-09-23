@@ -89,6 +89,23 @@ type recorder struct {
 	bodyWanted chan network.RequestID
 
 	warnings []string
+
+	// mainFrame is the top-level frame this session navigates, set once
+	// before the navigation begins. It lets the recorder tell a failed
+	// top-level document load apart from a failed subresource or iframe,
+	// independent of whatever chromedp's own navigation wait decides.
+	mainFrame cdp.FrameID
+	// mainDocIDs holds every request ID seen for a Document-type request in
+	// mainFrame — normally one, but a redirect chain keeps the same ID.
+	mainDocIDs map[network.RequestID]struct{}
+	// mainDocFailed and mainDocFailure record whether one of those requests
+	// failed, and why. A connection-level failure (e.g. connection refused)
+	// is otherwise invisible at the session level: chromedp's Navigate can
+	// return successfully even though the document never loaded, because
+	// its own error detection is itself a race against the same event this
+	// field is filled from (see finish).
+	mainDocFailed  bool
+	mainDocFailure string
 }
 
 // record is one request hop, plus the bookkeeping needed to finalize it.
@@ -127,7 +144,26 @@ func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalize
 		phase:        model.PhasePre,
 		idleSignal:   make(chan struct{}, 1),
 		bodyWanted:   make(chan network.RequestID, 256),
+		mainDocIDs:   make(map[network.RequestID]struct{}),
 	}
+}
+
+// setMainFrame records which frame is the top-level one being navigated, so
+// requestWillBeSent and loadingFailed can recognise the document request
+// that decides whether the scan actually loaded anything.
+func (r *recorder) setMainFrame(id cdp.FrameID) {
+	r.mu.Lock()
+	r.mainFrame = id
+	r.mu.Unlock()
+}
+
+// mainDocumentFailure reports whether the top-level document request failed,
+// and the CDP error text if so.
+func (r *recorder) mainDocumentFailure() (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.mainDocFailed, r.mainDocFailure
 }
 
 // setPhase marks subsequent requests as belonging to a different consent
@@ -243,6 +279,10 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 	dataBody := r.extractDataURI(ev.Request.URL)
 
 	r.mu.Lock()
+
+	if ev.Type == network.ResourceTypeDocument && r.mainFrame != "" && ev.FrameID == r.mainFrame {
+		r.mainDocIDs[ev.RequestID] = struct{}{}
+	}
 
 	if ev.RedirectResponse != nil {
 		if prev, ok := r.current[ev.RequestID]; ok && !prev.finished {
@@ -410,6 +450,11 @@ func (r *recorder) loadingFinished(ev *network.EventLoadingFinished) {
 func (r *recorder) loadingFailed(ev *network.EventLoadingFailed) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if _, ok := r.mainDocIDs[ev.RequestID]; ok && !r.mainDocFailed {
+		r.mainDocFailed = true
+		r.mainDocFailure = ev.ErrorText
+	}
 
 	rec, ok := r.current[ev.RequestID]
 	if !ok || rec.finished {
