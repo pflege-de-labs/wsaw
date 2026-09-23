@@ -991,6 +991,71 @@ docker:
 		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
 		-t $(IMAGE_NAME):$(VERSION) .
 
+# The seccomp profile that lets Chromium keep its own sandbox inside the image
+# (Story 6.3, AC2 and AC3).
+#
+# Docker's default profile allows clone only without namespace flags, and
+# unshare and setns not at all, unless the container holds CAP_SYS_ADMIN.
+# Chromium's namespace sandbox needs exactly those three to put each renderer
+# in a user namespace of its own, and chroot to drop it into an empty
+# directory — so under the default profile the sandbox cannot start, and the
+# only way left to run is --no-sandbox, which AC3 rules out. Granting
+# CAP_SYS_ADMIN would open the same syscalls and a great deal more, to a
+# process rendering hostile pages.
+#
+# So the profile is Docker's own, pinned by tag and by digest, with those four
+# syscalls allowed unconditionally and nothing else changed. It is derived
+# rather than hand-written so that what it adds to the default is a jq program
+# a reviewer can read in one screen, not a diff across four hundred syscall
+# names; `make seccomp-profile-check` proves the committed file is what this
+# recipe produces, and CI proves the sandbox actually starts under it.
+#
+# The masked clone rules and the CAP_SYS_CHROOT chroot rule are removed rather
+# than left beside the new allow, so no syscall has two rules whose conditions
+# a reader has to reconcile. clone3 keeps upstream's ENOSYS: callers fall back
+# to clone, which is the one the profile decides about.
+SECCOMP_UPSTREAM_TAG    := seccomp/v0.2.3
+SECCOMP_UPSTREAM_SHA256 := 536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74
+SECCOMP_UPSTREAM_URL    := https://raw.githubusercontent.com/moby/profiles/$(SECCOMP_UPSTREAM_TAG)/seccomp/default.json
+SECCOMP_PROFILE         := deploy/chromium-seccomp.json
+
+define SECCOMP_JQ
+.syscalls |= map(
+	if (.includes.caps // []) == ["CAP_SYS_ADMIN"]
+	then .names -= ["clone", "setns", "unshare"]
+	else . end)
+| .syscalls |= map(select(
+	((.names == ["clone"]) and (.args != null)) or
+	((.names == ["chroot"]) and ((.includes.caps // []) == ["CAP_SYS_CHROOT"]))
+	| not))
+| .syscalls += [{
+	names: ["chroot", "clone", "setns", "unshare"],
+	action: "SCMP_ACT_ALLOW",
+	comment: "wsaw: Chromium's namespace sandbox. Docker's default profile ($(SECCOMP_UPSTREAM_TAG)) with these four allowed without CAP_SYS_ADMIN; see seccomp-profile in the Makefile."
+}]
+endef
+export SECCOMP_JQ
+
+.PHONY: seccomp-profile
+seccomp-profile:
+	@tmp=$$(mktemp) && trap 'rm -f $$tmp' EXIT && \
+	curl -fsSL $(SECCOMP_UPSTREAM_URL) -o $$tmp && \
+	echo "$(SECCOMP_UPSTREAM_SHA256)  $$tmp" | shasum -a 256 -c - >/dev/null && \
+	jq --indent 2 "$$SECCOMP_JQ" $$tmp > $(SECCOMP_PROFILE)
+	@echo "wrote $(SECCOMP_PROFILE) from $(SECCOMP_UPSTREAM_TAG)"
+
+# Regenerates into a temporary file and compares, so a hand edit to the
+# committed profile — or a recipe change nobody re-ran — fails rather than
+# shipping a profile nobody can reproduce.
+.PHONY: seccomp-profile-check
+seccomp-profile-check:
+	@tmp=$$(mktemp) && out=$$(mktemp) && trap 'rm -f $$tmp $$out' EXIT && \
+	curl -fsSL $(SECCOMP_UPSTREAM_URL) -o $$tmp && \
+	echo "$(SECCOMP_UPSTREAM_SHA256)  $$tmp" | shasum -a 256 -c - >/dev/null && \
+	jq --indent 2 "$$SECCOMP_JQ" $$tmp > $$out && \
+	diff -u $(SECCOMP_PROFILE) $$out && \
+	echo "$(SECCOMP_PROFILE) is what $(SECCOMP_UPSTREAM_TAG) and the recipe produce"
+
 .PHONY: clean
 clean:
 	rm -rf $(DIST) coverage.out
