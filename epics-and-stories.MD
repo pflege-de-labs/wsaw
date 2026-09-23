@@ -19,7 +19,7 @@ Roles used:
 
 Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 
-**Implementation status.** A story heading with no note is built and covered by tests. A heading marked *not implemented* has no code behind it; one marked *partly implemented* names the acceptance criteria that are still open. The notes were written by auditing the tree at commit `8bc0ce3` (8 September 2026) and go stale the moment the gap is closed — close the gap, drop the note.
+**Implementation status.** A story heading with no note is built and covered by tests. A heading marked *not implemented* has no code behind it; one marked *partly implemented* names the acceptance criteria that are still open. The notes were written by auditing the tree at commit `fe48afd` (23 September 2026) and go stale the moment the gap is closed — close the gap, drop the note.
 
 ---
 
@@ -542,7 +542,7 @@ The risk this story has to handle is that it is the one operation in wsaw that m
 
 ---
 
-### Story 4.11 — Prune and sweep leave a receipt (not implemented)
+### Story 4.11 — Prune and sweep leave a receipt (partly implemented: the MySQL migration fails on the unquoted reserved word `trigger`, and the trim's `limit` subquery is one MySQL rejects, AC1 and AC5; the sweep-run counter is defined but never incremented, AC8; AC9's sweep trigger, counter and gauge-before-first-prune tests are missing)
 
 *As an Operator, I want every prune and every sweep recorded — not just logged in passing — so that "retention is working" and "the last sweep found nothing to clean up" are figures a dashboard can read back months later, not lines that have scrolled off a log.*
 
@@ -593,7 +593,7 @@ Get results and change events out of the daemon and into humans and other system
 - AC1: A Markdown (and plain-text) report per scan: target, consent mode and outcome, counts by resource type, third-party host table with request counts, pre-consent findings, and the diff versus baseline.
 - AC2: A CSV export of the host/asset table for spreadsheet use.
 
-### Story 5.4 — HTTP API (partly implemented: ad-hoc scans are not rate-limited, AC3)
+### Story 5.4 — HTTP API (partly implemented: ad-hoc scans of configured targets are not rate-limited — only scans of a typed URL have a budget, Story 5.27 — AC3)
 
 *As a Developer, I want an API so that other systems can query and trigger wsaw.*
 
@@ -990,7 +990,7 @@ The tile's severity is the worst change in the last scan's diff against its comp
 
 ---
 
-### Story 5.31 — The history page states what a scan holds, and what a year of the series will cost (not implemented)
+### Story 5.31 — The history page states what a scan holds, and what a year of the series will cost (partly implemented: a cron-scheduled series gets no rate from its schedule, AC6; with too little history the page gives a generic "no estimate" rather than saying the series is not scheduled, AC7; AC11's HTML tests for the shared-artifact note and the no-evidence row are missing)
 
 *As an Operator reading a target's history, I want each scan to state how much storage it holds and the page to state what a month and a year of this series costs, so that a retention policy is a decision I can price before I take it rather than one I discover through a full disk.*
 
@@ -1012,7 +1012,7 @@ Since Story 8.2 a result's document is an artifact in the bucket, not a column, 
 
 ---
 
-### Story 5.32 — A storage dashboard: where the storage goes, and what the last prune gave back (not implemented)
+### Story 5.32 — A storage dashboard: where the storage goes, and what the last prune gave back (partly implemented: the artifact location is shown as configured, not redacted, AC3; the growth chart's first month counts only from the same day eleven months ago, AC5; the monthly growth and per-run prune figures exist only inside the SVG and are absent from the JSON, AC9 and AC12; no link to the retention documentation, AC11; most of AC13's tests are missing)
 
 *As an Operator, I want one page that ranks every target by the storage it holds, plots how that has grown, and states what the last prune and sweep removed, so that I can see where the storage goes and whether retention is actually holding it.*
 
@@ -1191,7 +1191,7 @@ Prove that wsaw works as a deployed system — its own container, a server datab
 - AC7: The stack runs unprivileged and holds no real credentials. The passwords in it are obviously fixtures, and the file says so, so that nobody copies it into production and inherits them.
 - AC8: Bringing the stack down removes its volumes, so a stale database from an earlier run cannot make a test pass or fail for reasons that are not in the code.
 
-### Story 7.3 — A Podman pod
+### Story 7.3 — A Podman pod (not implemented: PR #19 merged into a stacked feature branch, not into main)
 
 *As an Operator, I want the same stack as a Podman pod so that the rootless runtime we prefer is a first-class path and not an afterthought.*
 
@@ -1203,7 +1203,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC4: The same assertions run against the pod as against Compose. Two stacks that are tested differently are two systems.
 - AC5: If `podman kube play` is used, the manifest is close enough to Story 6.10's Kubernetes manifests to be worth comparing, and the documentation says where they differ and why.
 
-### Story 7.4 — End-to-end test against Postgres
+### Story 7.4 — End-to-end test against Postgres (not implemented: PR #20 merged into a stacked feature branch, not into main, and its test still reads the `results.document` column Story 8.2 removed)
 
 *As a Compliance Officer, I want proof that a wsaw deployment backed by Postgres records what it observed, so that the evidence chain holds outside a developer's laptop.*
 
@@ -1216,7 +1216,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC7: Baseline approval and its audit entry are asserted to be atomic under Postgres, not merely assumed to have carried over from SQLite.
 - AC8: The test cleans up after itself — containers, volumes, networks — whether it passes or fails, and reports the container logs of every service on failure. A red end-to-end test that says only "assertion failed" costs more time than it saves.
 
-### Story 7.5 — End-to-end test against MySQL
+### Story 7.5 — End-to-end test against MySQL (not implemented: PR #21 merged into a stacked feature branch, not into main)
 
 *As an Operator running MySQL rather than Postgres, I want the same guarantees, so that the choice of database is a deployment decision and not a support tier.*
 
@@ -1227,7 +1227,7 @@ Story 1.8 already prefers Podman where a runtime is being detected. The deployme
 - AC5: Timestamps survive a round trip at the precision wsaw relies on for ordering. MySQL's default `DATETIME` drops fractional seconds, and "the scan before this one" is decided by that ordering.
 - AC6: Where MySQL cannot do something the same way, the difference is recorded in the dialect documentation rather than worked around silently in the test.
 
-### Story 7.6 — Run the stack in CI, and keep it out of the fast suite
+### Story 7.6 — Run the stack in CI, and keep it out of the fast suite (not implemented: PR #22 merged into a stacked feature branch, not into main; no CI job runs the stack, so nothing gates a release on it, AC2 and AC3)
 
 *As a Developer, I want the end-to-end tests to run automatically without slowing down the loop I work in.*
 
@@ -1254,7 +1254,7 @@ The second half is that "where artifacts live" stops being "a directory". One se
 
 **Out of scope:** for the SQL-backed stores, moving baselines, audit entries or change events out of the database — they are small, they are queried, and they stay rows. Multi-node operation (Story 4.7, AC8 still holds). Encryption of artifacts at rest beyond what the bucket itself provides.
 
-### Story 8.1 — Reach artifacts through a bucket, not a directory (not implemented)
+### Story 8.1 — Reach artifacts through a bucket, not a directory
 
 *As a Developer, I want artifact access to go through one bucket abstraction so that where evidence lives becomes a URL rather than a set of filesystem calls spread through the store.*
 
@@ -1270,7 +1270,7 @@ Today `PutArtifact`, `GetArtifact` and `StatArtifact` call `os.MkdirAll`, `os.Cr
 - AC8: Transient bucket failures are retried on the same policy as the database — `maxAttempts` and `retryBackoff` — and permanent ones (missing key, access denied) are not. Retries are logged and counted, as store retries already are.
 - AC9: A missing artifact is still `ErrNotFound`, so every caller that distinguishes "pruned" from "broken" today keeps that distinction (Story 5.17, AC3).
 
-### Story 8.2 — Store the result document as an artifact, reference it in the database (not implemented)
+### Story 8.2 — Store the result document as an artifact, reference it in the database (partly implemented: the result document an interrupted write leaves is kept by the sweep as a rebuild candidate and counted, not collected, AC4)
 
 *As an Operator, I want scan documents kept in the bucket and referenced from the database so that my database holds an index rather than gigabytes of evidence.*
 
@@ -1283,7 +1283,7 @@ Today `PutArtifact`, `GetArtifact` and `StatArtifact` call `os.MkdirAll`, `os.Cr
 - AC7: The transactional guarantees that exist today survive. Approving a baseline and writing its audit entry remain one transaction (Story 4.6, AC7), and a bucket write is never inside a database transaction, because it cannot roll back.
 - AC8: The JSONL, HAR and Markdown outputs written to the output directory are unchanged. They are derived views of the same document (Tenet 16) and are not what this epic moves.
 
-### Story 8.3 — List and summarise without fetching a single document (not implemented)
+### Story 8.3 — List and summarise without fetching a single document
 
 *As a Site Owner, I want the results list to stay fast so that browsing history does not become one object-storage request per row.*
 
@@ -1295,7 +1295,7 @@ Today `PutArtifact`, `GetArtifact` and `StatArtifact` call `os.MkdirAll`, `os.Cr
 - AC4: The summary columns are produced by the same code that renders a summary now, so the two cannot disagree. Adding or changing a summary field later is a migration that recomputes, not a second definition.
 - AC5: Recomputing every summary from the stored documents is available as an explicit operation (Story 8.10), so a bad derivation is repairable without rescanning. Derived data is disposable; the document is not (Tenet 4).
 
-### Story 8.4 — Migrate stores that keep documents in rows (not implemented)
+### Story 8.4 — Migrate stores that keep documents in rows (partly implemented: a row whose JSON will not decode is moved and counted, its scan ID only in the log, rather than reported and left in place, AC4)
 
 *As an Operator, I want my existing history preserved across the upgrade so that a change of storage layout is not a change of dataset.*
 
@@ -1310,7 +1310,7 @@ Story 4.6 could discard existing stores because bbolt held little that mattered 
 - AC7: The migration is verified for every dialect — SQLite, Postgres, MySQL — by a test that writes results in the old layout, migrates, and reads every result back byte-identically.
 - AC8: The upgrade is documented in the README, with the one-way nature stated plainly: an older wsaw cannot read a migrated store, and the supported rollback is a database backup taken before the upgrade.
 
-### Story 8.5 — Retention deletes what it stops referencing (not implemented)
+### Story 8.5 — Retention deletes what it stops referencing (partly implemented: the sweep collects screenshots and bodies but never an unreferenced result document, AC3 — see Story 8.2, AC4)
 
 *As an Operator, I want pruning to reclaim storage so that a bucket that now holds every document does not grow without bound.*
 
@@ -1324,7 +1324,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC6: A dry run lists what would be deleted. Deleting evidence is irreversible, and an operator changing retention should see the consequence before it happens.
 - AC7: Retention configuration is unchanged (`maxAge`, `maxPerSeries`). This story changes what pruning removes, not how it is asked for.
 
-### Story 8.6 — Configure the bucket, and document it (not implemented)
+### Story 8.6 — Configure the bucket, and document it
 
 *As an Operator, I want the bucket configured by URL, with examples I can copy, so that pointing wsaw at my object storage is a one-line change.*
 
@@ -1337,7 +1337,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC7: The README states the operational consequences honestly: object storage is remote, so a write can fail for reasons a local disk would not; requests cost money and latency; and a lifecycle rule configured on the bucket will delete evidence behind wsaw's back if it is set to.
 - AC8: `wsaw.example.yaml` carries the same examples, commented, so the shipped configuration and the README cannot drift apart.
 
-### Story 8.7 — Serve artifacts that live in a bucket (not implemented)
+### Story 8.7 — Serve artifacts that live in a bucket
 
 *As a Compliance Officer, I want screenshots and downloads to work in the web interface whether the evidence sits on disk or in a bucket, so that where it is stored is not my problem.*
 
@@ -1348,7 +1348,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC5: A missing artifact renders as evidence that is no longer stored, not as an error page. Retention removing evidence is expected, and absence is recorded rather than inferred (Tenet 5).
 - AC6: Bucket latency stays confined to the request that caused it: an artifact fetch is bounded by a timeout, and its failure does not degrade the rest of the interface.
 
-### Story 8.8 — Keep the single-binary promise, on the record (not implemented)
+### Story 8.8 — Keep the single-binary promise, on the record
 
 *As a Developer, I want the cost of this dependency stated and bounded, so that a convenience library does not quietly end cross-compilation or double the binary.*
 
@@ -1360,7 +1360,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC4: The default build with nothing configured opens no cloud SDK, resolves no credential chain, and makes no network call at startup. A local deployment must not acquire cloud behaviour merely by being linked against it.
 - AC5: The SBOM published per release (Story 6.1, AC3) covers the new dependency tree, and the added modules are reviewed once, explicitly, rather than arriving as transitive noise.
 
-### Story 8.9 — Test both paths, and one real object store (not implemented)
+### Story 8.9 — Test both paths, and one real object store (partly implemented: MinIO is not a service in the Compose stack, and the MinIO cycle runs for SQLite only, AC2; the migration tests are dialect-parametric but CI runs them on SQLite alone, AC4)
 
 *As a Developer, I want the bucket path covered by the same tests as the directory path, so that a provider difference surfaces in CI rather than in production.*
 
@@ -1371,7 +1371,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC5: A test asserts that listing results performs no bucket operations (Story 8.3, AC2). That regression is invisible until it arrives as a production latency complaint.
 - AC6: The soak test reports bucket operations and bytes transferred alongside its existing figures, so the storage cost of a long run is a measured number rather than a surprise on an invoice.
 
-### Story 8.10 — Rebuild the index from what the bucket holds (not implemented)
+### Story 8.10 — Rebuild the index from what the bucket holds (partly implemented: an interrupted rebuild keeps what it wrote but re-reads the whole bucket, AC3; lost change-event history is not counted, AC6; CI runs the tests on SQLite alone, AC13)
 
 *As an Operator, I want to rebuild the whole index from the artifacts in the bucket, so that a lost, corrupted, or out-of-date index is a recovery procedure rather than a lost history.*
 
