@@ -72,8 +72,7 @@ banner first, and reports what changed since the last scan.
 
 - Results, baselines and audit entries in a `database/sql` store: SQLite by
   default, with PostgreSQL and MySQL drivers behind a dialect seam
-  (Stories 4.1, 4.6, 4.7). MySQL is broken in this release; see Known
-  limitations.
+  (Stories 4.1, 4.6, 4.7). CI runs the store suite against all three.
 - URL normalization, baselines and diffs, allow and deny lists, and change
   events ranked by severity (Stories 4.2–4.5).
 - Artifacts stored compressed, and `wsaw artifacts compress` for those already
@@ -81,6 +80,14 @@ banner first, and reports what changed since the last scan.
 - Thinning retention in the style of restic, which never keeps a broken scan in
   place of a good one, and receipts for what a prune or sweep removed
   (Stories 4.10, 4.11).
+- The daemon sweeps the artifact bucket on its own, every 24 hours by default,
+  collecting what an interrupted write or a refused delete left behind
+  (Story 4.12). The schedule is kept across restarts, never overrides the
+  refusal to sweep an empty store, never overlaps a prune, and is reported by
+  `wsaw_last_successful_sweep_timestamp_seconds` and `wsaw_sweep_runs_total`.
+  Set `store.sweepInterval` (one hour at least) to change it, or
+  `store.sweep: false` to turn it off. Against object storage one sweep costs a
+  listing request per thousand keys.
 
 #### Reporting, export, alerting and the web interface (Epic 5)
 
@@ -98,6 +105,11 @@ banner first, and reports what changed since the last scan.
   expiring share links, a history page that states what a year of scans costs,
   and a storage dashboard (Stories 5.7–5.32; see the stories for the ones
   superseded along the way).
+- The storage dashboard and `/api/v1/storage` describe the installation — its
+  database driver, its bucket and the shape of its history — so they are
+  served only when `api.token` is set, on a loopback listener too, and answer
+  `403` naming the setting otherwise. The bucket location they show is
+  redacted (Story 5.32).
 - `wsaw ui` opens the web interface already signed in (Story 5.21).
 
 #### Operations and packaging (Epic 6)
@@ -105,7 +117,12 @@ banner first, and reports what changed since the last scan.
 - Cross-compiled, CGo-free binaries for linux and darwin on amd64 and arm64,
   with version, commit and build date embedded (Story 6.1).
 - A hardened systemd unit and a launchd plist (Story 6.2), and a multi-arch
-  container image definition with Chromium bundled (Story 6.3).
+  container image definition with Chromium bundled (Story 6.3). Chromium keeps
+  its own sandbox in the image: under Docker, run it with
+  `--security-opt seccomp=deploy/chromium-seccomp.json`, Docker's default
+  profile plus the four syscalls the sandbox needs. `make seccomp-profile`
+  derives it from a pinned upstream, and CI checks on Docker that the sandbox
+  starts under it and does not start without it.
 - Structured `log/slog` logs with secret scrubbing, readable console output when
   a human is watching, self-metrics with a last-successful-scan timestamp per
   target, health and readiness endpoints, and a diagnostics mode
@@ -132,7 +149,7 @@ banner first, and reports what changed since the last scan.
   checks the difference on every release, and the measured size cost is in the
   release notes (Story 8.8).
 - The store suite runs against a directory, an in-memory bucket and a real
-  MinIO (Story 8.9), and `wsaw store rebuild-index` rebuilds a lost index from
+  MinIO, and CI runs it on SQLite, PostgreSQL and MySQL (Story 8.9), and `wsaw store rebuild-index` rebuilds a lost index from
   the documents in the bucket (Story 8.10).
 
 ### Release artifacts
@@ -170,15 +187,10 @@ is most likely to meet:
 - **Release artifacts are not signed, and macOS notarization is not
   documented** (Story 6.1, AC3 and AC4). Verify downloads with `SHA256SUMS`.
 - **No container image is published.** Build one with `make docker`.
-- **The Chromium seccomp profile the `Dockerfile` refers to,
-  `deploy/chromium-seccomp.json`, is landing in a separate PR before this
-  release is tagged** (Story 1.8, AC5; Story 6.3, AC2).
-- **MySQL stores do not open.** Schema migration 6 (Story 4.11) declares a
-  column named `trigger`, a reserved word in MySQL, without quoting it. The trim
-  that keeps 200 receipts uses `limit` inside an `in` subquery, which MySQL
-  also rejects. SQLite and PostgreSQL are unaffected. CI does not run the
-  PostgreSQL or MySQL store suites, which is why this was not caught
-  (Stories 8.9, AC4 and 8.10, AC13).
+- **The per-scan browser container runs Chrome with `--no-sandbox`**
+  (Story 1.8, AC5). Its `chromedp/headless-shell` image forces the flag, so
+  there the container is the only boundary. The wsaw image itself keeps
+  Chromium's sandbox (Story 6.3).
 - **The end-to-end suite does not gate this release** (Story 7.6, AC2 and AC3).
   The Klaro fixture (Story 7.1) and the Compose stack (Story 7.2) are on main.
   The Podman pod, the assertions against PostgreSQL and MySQL, and their CI job
@@ -189,12 +201,8 @@ is most likely to meet:
 - The unreferenced result document that an interrupted write leaves behind is
   counted by `wsaw store sweep` but never collected. It is kept as input for
   `wsaw store rebuild-index` (Stories 8.2, AC4 and 8.5, AC3).
-- The storage dashboard shows the artifact location as it was configured,
-  without redaction; do not put credentials in `store.artifactURL`. Its
-  growth and prune charts also carry figures that the JSON API does not
-  report (Story 5.32, AC3, AC9 and AC12).
-- `wsaw_sweep_runs_total` is registered but never incremented (Story 4.11,
-  AC8).
+- The storage dashboard's growth and prune charts carry figures that its JSON
+  form does not report (Story 5.32, AC9 and AC12).
 - Ad-hoc API scans of configured targets are not rate-limited; only scans of a
   typed URL have a budget (Story 5.4, AC3).
 - Reload is on `SIGHUP` only, with no file watch (Story 3.4, AC1). Browsers are
@@ -203,8 +211,18 @@ is most likely to meet:
 - There are no Kubernetes manifests (Story 6.10). Remaining web-interface
   gaps are in Stories 5.8–5.10 and 5.31.
 - Test coverage gaps: no test checks that Chrome processes return to baseline
-  (Story 1.1, AC5), and the soak test does not count file descriptors or child
-  processes (Story 6.8, AC2).
+  (Story 1.1, AC5), the soak test does not count file descriptors or child
+  processes (Story 6.8, AC2), and two of Story 4.11's receipt tests are
+  missing (AC9).
+
+### Stores created before 0.1.0
+
+A SQLite or PostgreSQL store opened by a build of main between the receipt
+log's arrival (#64) and this release has a `maintenance_runs.trigger` column.
+Schema migration 8 renames it to `triggered_by` when 0.1.0 first opens the
+store, and the receipts already recorded survive the rename. There is nothing
+to do by hand. No MySQL store could have got that far, since the migration that
+added the column never applied there.
 
 [Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.0
