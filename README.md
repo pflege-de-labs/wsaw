@@ -59,8 +59,12 @@ Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: tak
 Or run the container:
 
 ```sh
-docker run --rm -v "$PWD/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro" wsaw:latest
+docker run --rm \
+  --security-opt seccomp=deploy/chromium-seccomp.json \
+  -v "$PWD/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro" wsaw:latest
 ```
+
+The seccomp profile is what lets Chromium keep its own sandbox in the container, and under Docker it is not optional: Docker's default profile refuses the `clone`, `unshare` and `setns` calls the sandbox is built from, so without it the browser cannot start. [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) is Docker's default with those three and `chroot` allowed and nothing else changed — `make seccomp-profile` derives it from a pinned upstream, and CI checks both that the committed file is what that produces and that the sandbox starts under it. Podman's default profile already allows user namespaces, so under Podman the flag is harmless but not needed. Do not reach for `--privileged`, `--cap-add SYS_ADMIN` or `browser.noSandbox` instead: each one makes the browser start by giving up more isolation than the profile does.
 
 ## Quick start
 
@@ -662,7 +666,7 @@ Poll that endpoint rather than the `wsaw_ready` gauge for readiness. The gauge c
 
 - **systemd**: [`deploy/wsaw.service`](deploy/wsaw.service), hardened for a process that renders hostile pages. `RestrictNamespaces` is deliberately off: the Chrome sandbox depends on unprivileged user namespaces, and disabling them would push operators to turn off the sandbox instead — trading a real boundary for a nominal one.
 - **launchd**: [`deploy/de.pflege.wsaw.plist`](deploy/de.pflege.wsaw.plist).
-- **Container**: multi-arch, Chromium bundled and pinned, runs as a non-root user, sandbox enabled.
+- **Container**: multi-arch, Chromium bundled and pinned, runs as a non-root user, sandbox enabled — under Docker, with [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) (see [Install](#install)).
 
 ### Where results are stored
 
