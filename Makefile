@@ -442,12 +442,19 @@ test-cloudblob:
 # developer needs a container runtime for them but not for `make test`.
 #
 # Ports are deliberately not the defaults, so a local PostgreSQL or MySQL is
-# never touched by a test run.
+# never touched by a test run, and deliberately below 32768: every port from
+# there up is in an operating system's ephemeral range (32768–60999 on Linux,
+# 49152–65535 on macOS), where any outgoing connection the suite made before
+# the database started can already hold it. 53306 did, once, on a CI runner.
+#
+# Both are published on loopback only. These are throwaway databases with a
+# password in this file, and a laptop on a shared network has no business
+# offering them to it.
 STORE_TEST_RUNTIME ?= podman
 PG_IMAGE           ?= docker.io/library/postgres:17-alpine
 MYSQL_IMAGE        ?= docker.io/library/mysql:8.4
-PG_PORT            ?= 55432
-MYSQL_PORT         ?= 53306
+PG_PORT            ?= 15432
+MYSQL_PORT         ?= 13306
 
 # MinIO, for the store suite against a real object store (Story 8.9, AC2).
 #
@@ -458,9 +465,10 @@ MYSQL_PORT         ?= 53306
 # starts for itself when this target has not already provided one.
 #
 # The port is not 9000, so a MinIO somebody is running for their own reasons is
-# never emptied by a test run.
+# never emptied by a test run, and below the ephemeral range for the reason the
+# database ports are.
 MINIO_IMAGE        ?= quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
-MINIO_PORT         ?= 59000
+MINIO_PORT         ?= 19000
 MINIO_BUCKET       ?= wsaw
 MINIO_ACCESS_KEY   ?= wsaw-test-access-key
 MINIO_SECRET_KEY   ?= wsaw-test-secret-key
@@ -499,7 +507,7 @@ test-store-memory:
 test-store-postgres:
 	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-pg \
 		-e POSTGRES_PASSWORD=wsaw -e POSTGRES_USER=wsaw -e POSTGRES_DB=wsaw \
-		-p $(PG_PORT):5432 $(PG_IMAGE)
+		-p 127.0.0.1:$(PG_PORT):5432 $(PG_IMAGE)
 	@echo "waiting for postgres"
 	@for i in $$(seq 1 60); do \
 		$(STORE_TEST_RUNTIME) exec wsaw-test-pg pg_isready -U wsaw >/dev/null 2>&1 && break; \
@@ -523,7 +531,7 @@ test-store-postgres:
 test-store-mysql:
 	$(STORE_TEST_RUNTIME) run -d --rm --name wsaw-test-mysql \
 		-e MYSQL_ROOT_PASSWORD=wsaw -e MYSQL_DATABASE=wsaw \
-		-p $(MYSQL_PORT):3306 $(MYSQL_IMAGE)
+		-p 127.0.0.1:$(MYSQL_PORT):3306 $(MYSQL_IMAGE)
 	@echo "waiting for mysql"
 	@for i in $$(seq 1 120); do \
 		if $(STORE_TEST_RUNTIME) logs wsaw-test-mysql 2>&1 | grep -q "port: 3306" && \

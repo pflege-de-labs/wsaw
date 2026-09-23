@@ -98,10 +98,16 @@ func TestNextLabel(t *testing.T) {
 func TestCyclePercent(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
+	// Each case reads the clock itself, just before it builds its row.
+	// CyclePercent measures against time.Now, and parallel subtests only
+	// start once this function has returned, so a now taken here could be
+	// older than 1% of the hour-long interval by the time a case runs on a
+	// loaded runner — and "start of interval" then reads 1, not 0.
 
 	t.Run("start of interval", func(t *testing.T) {
 		t.Parallel()
+
+		now := time.Now()
 
 		row := modeRow{
 			LastRun: now,
@@ -116,6 +122,8 @@ func TestCyclePercent(t *testing.T) {
 
 	t.Run("mid-interval", func(t *testing.T) {
 		t.Parallel()
+
+		now := time.Now()
 
 		row := modeRow{
 			LastRun: now.Add(-30 * time.Minute),
@@ -132,6 +140,8 @@ func TestCyclePercent(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		t.Parallel()
 
+		now := time.Now()
+
 		row := modeRow{
 			LastRun: now.Add(-30 * time.Minute),
 			NextRun: now.Add(30 * time.Minute),
@@ -146,6 +156,8 @@ func TestCyclePercent(t *testing.T) {
 	t.Run("overdue", func(t *testing.T) {
 		t.Parallel()
 
+		now := time.Now()
+
 		row := modeRow{
 			LastRun: now.Add(-2 * time.Hour),
 			NextRun: now.Add(-time.Hour),
@@ -158,6 +170,8 @@ func TestCyclePercent(t *testing.T) {
 
 	t.Run("total is age plus time-to-next, not NextRun minus LastRun", func(t *testing.T) {
 		t.Parallel()
+
+		now := time.Now()
 
 		// LastRun is 3h in the past (a stale schedule entry), but the shown
 		// scan is only 10m old and next in 10m — the bar must read from
@@ -176,6 +190,8 @@ func TestCyclePercent(t *testing.T) {
 
 	t.Run("zero interval does not panic", func(t *testing.T) {
 		t.Parallel()
+
+		now := time.Now()
 
 		// NextRun == LastRun, both still in the future: not overdue, but the
 		// interval they imply is zero, which must short-circuit to 0 rather
