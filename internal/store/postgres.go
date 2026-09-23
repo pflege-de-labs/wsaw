@@ -145,16 +145,17 @@ func (postgresDialect) migrations() [][]string {
 
 		// Version 6 (Story 4.11): a receipt for every prune and every sweep.
 		// The sqlite dialect carries the reasoning; this is the same schema in
-		// PostgreSQL's spelling.
+		// PostgreSQL's spelling. Its trigger column is renamed by version 8,
+		// for the reason the sqlite dialect gives there.
 		{
 			`create table if not exists maintenance_runs (
-				id           bigserial primary key,
-				kind         text   not null,
-				triggered_by text   not null,
-				started_at   bigint not null,
-				finished_at  bigint not null,
-				error        text   not null default '',
-				stats        text   not null
+				id          bigserial primary key,
+				kind        text   not null,
+				trigger     text   not null,
+				started_at  bigint not null,
+				finished_at bigint not null,
+				error       text   not null default '',
+				stats       text   not null
 			)`,
 
 			`create index if not exists maintenance_runs_kind
@@ -166,6 +167,27 @@ func (postgresDialect) migrations() [][]string {
 		// a rerun after a lost version record a no-op here.
 		{
 			`alter table result_artifacts add column if not exists bytes bigint not null default 0`,
+		},
+
+		// Version 8 (Story 4.11): maintenance_runs.trigger becomes
+		// triggered_by. The sqlite dialect carries the reasoning. RENAME
+		// COLUMN has no `if exists` form here either, so the condition is
+		// written in SQL, as every other migration in this dialect writes
+		// its own: a rerun after a rewound version record finds the column
+		// already renamed and does nothing.
+		{
+			`do $$
+			begin
+				if exists (
+					select 1 from information_schema.columns
+					 where table_schema = current_schema()
+					   and table_name = 'maintenance_runs'
+					   and column_name = 'trigger'
+				) then
+					alter table maintenance_runs rename column trigger to triggered_by;
+				end if;
+			end
+			$$`,
 		},
 	}
 }

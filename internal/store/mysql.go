@@ -232,6 +232,13 @@ func (mysqlDialect) migrations() [][]string {
 		// The sqlite dialect carries the reasoning for the table; what is
 		// MySQL's own is the index declared inside the CREATE, as
 		// result_artifacts already does above.
+		//
+		// It is also the one migration edited after it reached main, and
+		// the only dialect where that is safe. As first written it named a
+		// column trigger, which MySQL reserves, so the CREATE failed with
+		// error 1064, nothing was created, and no MySQL store can have
+		// recorded version 6. The column is therefore created here under the
+		// name the other dialects reach by renaming it in version 8.
 		{
 			`create table if not exists maintenance_runs (
 				id           bigint       not null auto_increment primary key,
@@ -254,6 +261,13 @@ func (mysqlDialect) migrations() [][]string {
 		{
 			`alter table result_artifacts add column bytes bigint not null default 0`,
 		},
+
+		// Version 8 (Story 4.11): the rename of maintenance_runs.trigger to
+		// triggered_by in the other two dialects. Version 6 already creates
+		// the column under that name here, so there is nothing to do; the
+		// empty version keeps every dialect's migrations the same length
+		// (Story 4.7, AC4) and records the same version number.
+		{},
 	}
 }
 

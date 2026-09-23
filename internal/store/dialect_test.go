@@ -111,10 +111,16 @@ func TestSchemaVersionsAreConsecutiveAndCurrent(t *testing.T) {
 			schemaMaintenanceRuns, schemaArtifactClaims)
 	}
 
-	if got := len(sqliteDialect{}.migrations()); got != schemaMaintenanceRuns+1 {
-		t.Errorf("the schema has %d migrations; maintenance_runs is version %d and result_artifacts.bytes "+
-			"is the one migration after it, so the schema should have %d",
-			got, schemaMaintenanceRuns, schemaMaintenanceRuns+1)
+	// result_artifacts.bytes (Story 5.31) is the one migration between them.
+	if schemaMaintenanceRunsTriggeredBy != schemaMaintenanceRuns+2 {
+		t.Errorf("the triggered_by rename is version %d and maintenance_runs is version %d; "+
+			"result_artifacts.bytes is the one migration between them",
+			schemaMaintenanceRunsTriggeredBy, schemaMaintenanceRuns)
+	}
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaMaintenanceRunsTriggeredBy {
+		t.Errorf("the schema has %d migrations; the triggered_by rename is version %d and the latest",
+			got, schemaMaintenanceRunsTriggeredBy)
 	}
 }
 

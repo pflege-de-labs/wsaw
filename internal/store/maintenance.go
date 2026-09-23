@@ -29,10 +29,21 @@ import (
 // reserved word in MySQL, and the store's SQL is one text for every dialect:
 // quoting it would mean a backtick in one database and a double quote in
 // another, in every query that names it. A name no dialect reserves needs
-// neither.
+// neither. Version 6 first shipped to main with the old name, so SQLite and
+// PostgreSQL reach the new one through the rename in version 8; see the
+// sqlite dialect's version 8 for why MySQL does not.
 
 // schemaMaintenanceRuns is the schema version that adds the receipt log.
 const schemaMaintenanceRuns = 6
+
+// schemaMaintenanceRunsTriggeredBy is the schema version that renames the
+// trigger column to triggered_by where version 6 created it as trigger.
+const schemaMaintenanceRunsTriggeredBy = 8
+
+// maintenanceRunsOldTriggerColumn is the name version 6 gave the column in
+// SQLite and PostgreSQL. It is named so the rename and the sqlite dialect's
+// recognition of a replayed rename cannot spell it differently.
+const maintenanceRunsOldTriggerColumn = "trigger"
 
 // maintenanceRunsTable records every completed Prune and Sweep.
 const maintenanceRunsTable = "maintenance_runs"
