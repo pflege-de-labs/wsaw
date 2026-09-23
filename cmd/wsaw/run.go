@@ -159,14 +159,18 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		}()
 	}
 
-	// Retention runs on its own schedule: without it, a long-running daemon
-	// grows without bound (NFR §1).
+	// Retention and the sweep run on their own schedules: without them, a
+	// long-running daemon grows without bound (NFR §1). One loop runs both, so
+	// a prune and a sweep never overlap (Story 4.12, AC5); a reload hands it
+	// the new sweep schedule through sweeps.
+	sweeps := make(chan app.SweepSchedule, 1)
+
 	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
 
-		a.PruneLoop(runCtx)
+		a.MaintenanceLoop(runCtx, sweeps)
 	}()
 
 	// SIGHUP reloads configuration. An invalid new config is rejected and the
@@ -199,7 +203,7 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 			return err
 
 		case <-hup:
-			newTargets, err := reload(a, cf)
+			newTargets, sweep, err := reload(a, cf)
 			if err != nil {
 				a.Logger.Error("reload rejected, keeping the running configuration", "error", err)
 
@@ -211,6 +215,27 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 			targetsMu.Unlock()
 
 			d.Reload(newTargets)
+			offerSweepSchedule(sweeps, sweep)
+		}
+	}
+}
+
+// offerSweepSchedule hands the maintenance loop a reloaded sweep schedule
+// without waiting for it. The loop may be in the middle of a sweep that takes
+// minutes, and the reload path must never block on maintenance (NFR §1), so
+// the channel holds one schedule and a newer one replaces one the loop has not
+// taken yet: only the latest reload is worth applying.
+func offerSweepSchedule(sweeps chan app.SweepSchedule, s app.SweepSchedule) {
+	for {
+		select {
+		case sweeps <- s:
+			return
+		default:
+		}
+
+		select {
+		case <-sweeps:
+		default:
 		}
 	}
 }
@@ -219,20 +244,21 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 // swap the store, browser pool, or notifiers: those are process-level
 // resources, and silently rebuilding them on a signal would make a reload
 // riskier than a restart.
-func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
+func reload(a *app.App, cf configFlags) ([]config.Resolved, app.SweepSchedule, error) {
 	cfg, err := cf.load()
 	if err != nil {
-		return nil, err
+		return nil, app.SweepSchedule{}, err
 	}
 
-	// A reload can only replace the target list. Everything else became a
-	// browser pool, a normalizer, an HTTP server or a scheduler at startup,
-	// so a change to it cannot take effect in this process — and adopting the
-	// half that can while logging "configuration reloaded" would leave the
-	// operator believing the rest had applied too (Tenet 5). Refusing names
-	// what moved and keeps the running configuration.
+	// A reload can only replace the target list and the sweep schedule.
+	// Everything else became a browser pool, a normalizer, an HTTP server or
+	// a scheduler at startup, so a change to it cannot take effect in this
+	// process — and adopting the half that can while logging "configuration
+	// reloaded" would leave the operator believing the rest had applied too
+	// (Tenet 5). Refusing names what moved and keeps the running
+	// configuration.
 	if changed := config.NonReloadableChanges(a.Config, cfg); len(changed) > 0 {
-		return nil, fmt.Errorf(
+		return nil, app.SweepSchedule{}, fmt.Errorf(
 			"%s cannot change without a restart; the running configuration is unchanged. "+
 				"Restart wsaw to apply %s",
 			strings.Join(changed, ", "),
@@ -241,12 +267,15 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, error) {
 
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
-		return nil, err
+		return nil, app.SweepSchedule{}, err
 	}
 
-	a.Logger.Info("configuration reloaded", "targets", len(targets))
+	sweep := app.SweepScheduleFor(cfg)
 
-	return targets, nil
+	a.Logger.Info("configuration reloaded", "targets", len(targets),
+		"sweep", sweep.Enabled, "sweep_interval", sweep.Interval.String())
+
+	return targets, sweep, nil
 }
 
 func pluralSettings(n int) string {

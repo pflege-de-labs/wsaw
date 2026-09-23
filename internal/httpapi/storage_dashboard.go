@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -173,9 +174,12 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 	}
 
 	data := storageData{
-		Available:        true,
-		Driver:           s.deps.Store.Driver(),
-		ArtifactLocation: s.deps.ArtifactLocation,
+		Available: true,
+		Driver:    s.deps.Store.Driver(),
+		// Redacted here, where it is rendered, rather than trusted to arrive
+		// that way: the page and the JSON are both built from this field, so
+		// this is the one place that covers both (AC3, AC12).
+		ArtifactLocation: secret.RedactURL(s.deps.ArtifactLocation),
 	}
 
 	series, err := s.deps.SeriesStorage(ctx)
@@ -361,8 +365,9 @@ func (s *Server) noPruneReason(ctx context.Context) string {
 }
 
 // sweepPanel reads AC7's sweep panel. A sweep has never been run is an
-// expected and named state, not an error: it is operator-invoked and never
-// scheduled (store.Sweep's own doc comment).
+// expected and named state, not an error: the daemon's first scheduled sweep
+// comes shortly after it starts (Story 4.12), and a store may have been
+// configured with scheduled sweeping off.
 func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 	if s.deps.LastMaintenanceRun == nil {
 		return sweepPanel{Available: false}
@@ -375,7 +380,8 @@ func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 
 	if !found {
 		return sweepPanel{Available: true,
-			Reason: `a sweep has never been run ("wsaw store sweep" is operator-invoked, never scheduled)`}
+			Reason: `a sweep has never been run (the daemon sweeps on a schedule unless store.sweep is false, ` +
+				`and "wsaw store sweep" runs one now)`}
 	}
 
 	stats, err := run.SweepStats()
@@ -394,8 +400,15 @@ func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 }
 
 // handleUIStorage serves the dashboard (AC1), behind the same session as the
-// rest of the interface.
+// rest of the interface, and only when there is a token for that session to
+// be made from (storageAllowed).
 func (s *Server) handleUIStorage(w http.ResponseWriter, r *http.Request) {
+	if ok, reason := s.storageAllowed(); !ok {
+		s.uiError(w, r, http.StatusForbidden, reason)
+
+		return
+	}
+
 	force := r.URL.Query().Get("recompute") == "1"
 
 	data, computedAt, err := s.storage.get(r.Context(), force, s.computeStorageData)
@@ -414,6 +427,12 @@ func (s *Server) handleUIStorage(w http.ResponseWriter, r *http.Request) {
 // page renders — additive to the API, no version bump (Tenet 16, AGENTS.md
 // §8).
 func (s *Server) handleStorageAPI(w http.ResponseWriter, r *http.Request) {
+	if ok, reason := s.storageAllowed(); !ok {
+		writeJSONError(w, http.StatusForbidden, reason)
+
+		return
+	}
+
 	force := r.URL.Query().Get("recompute") == "1"
 
 	data, computedAt, err := s.storage.get(r.Context(), force, s.computeStorageData)

@@ -76,11 +76,14 @@ WORKDIR /var/lib/wsaw
 
 ENV WSAW_CHROME_PATH=/usr/bin/chromium-browser
 
-# The Chrome sandbox stays enabled. It needs unprivileged user namespaces,
-# which most runtimes allow; where they do not, run with
+# The Chrome sandbox stays enabled (Story 6.3, AC3). It builds each renderer a
+# user namespace of its own, which Podman's default seccomp profile allows and
+# Docker's does not, so under Docker run with
 #   --security-opt seccomp=deploy/chromium-seccomp.json
-# or, as a last resort, set browser.noSandbox in the configuration and accept
-# the weaker isolation. wsaw warns loudly when that is done.
+# — Docker's default with the four syscalls the sandbox needs, derived by
+# `make seccomp-profile`. As a last resort, set browser.noSandbox in the
+# configuration and accept the weaker isolation; wsaw warns loudly when that
+# is done.
 EXPOSE 8712
 
 ENTRYPOINT ["/usr/local/bin/wsaw"]

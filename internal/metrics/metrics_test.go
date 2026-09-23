@@ -281,3 +281,41 @@ func TestRetentionCountsAreExposed(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSweepGaugeReadsZeroUntilASweepSucceeds is Story 4.12, AC6: the gauge
+// an alert on "no sweep has succeeded in two days" reads is 0 until one does,
+// is not moved by a sweep that failed, and the outcome counter counts both.
+func TestTheSweepGaugeReadsZeroUntilASweepSucceeds(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	if out := render(t, r); !strings.Contains(out, "wsaw_last_successful_sweep_timestamp_seconds 0\n") {
+		t.Errorf("before any sweep the gauge is not 0:\n%s", out)
+	}
+
+	r.SweepRun(metrics.SweepError)
+
+	out := render(t, r)
+	if !strings.Contains(out, "wsaw_last_successful_sweep_timestamp_seconds 0\n") {
+		t.Error("a failed sweep moved the last-successful-sweep gauge")
+	}
+
+	if !strings.Contains(out, `wsaw_sweep_runs_total{outcome="error"} 1`) {
+		t.Errorf("a failed sweep was not counted:\n%s", out)
+	}
+
+	at := time.Unix(1_790_000_000, 0)
+
+	r.SweepRun(metrics.SweepSuccess)
+	r.SweepSucceeded(at)
+
+	out = render(t, r)
+	if !strings.Contains(out, "wsaw_last_successful_sweep_timestamp_seconds 1.79e+09\n") {
+		t.Errorf("the gauge does not read the successful sweep's time:\n%s", out)
+	}
+
+	if !strings.Contains(out, `wsaw_sweep_runs_total{outcome="success"} 1`) {
+		t.Errorf("a successful sweep was not counted:\n%s", out)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -22,10 +23,27 @@ import (
 // nothing and already printed its own answer — in the shape the audit table
 // already uses for a self-describing record nothing needs to query by
 // column: an id, a timestamp, and the run's own stats as JSON. kind and
-// trigger are the two columns a listing needs without decoding it.
+// triggered_by are the two columns a listing needs without decoding it.
+//
+// The column is triggered_by rather than trigger because TRIGGER is a
+// reserved word in MySQL, and the store's SQL is one text for every dialect:
+// quoting it would mean a backtick in one database and a double quote in
+// another, in every query that names it. A name no dialect reserves needs
+// neither. Version 6 first shipped to main with the old name, so SQLite and
+// PostgreSQL reach the new one through the rename in version 8; see the
+// sqlite dialect's version 8 for why MySQL does not.
 
 // schemaMaintenanceRuns is the schema version that adds the receipt log.
 const schemaMaintenanceRuns = 6
+
+// schemaMaintenanceRunsTriggeredBy is the schema version that renames the
+// trigger column to triggered_by where version 6 created it as trigger.
+const schemaMaintenanceRunsTriggeredBy = 8
+
+// maintenanceRunsOldTriggerColumn is the name version 6 gave the column in
+// SQLite and PostgreSQL. It is named so the rename and the sqlite dialect's
+// recognition of a replayed rename cannot spell it differently.
+const maintenanceRunsOldTriggerColumn = "trigger"
 
 // maintenanceRunsTable records every completed Prune and Sweep.
 const maintenanceRunsTable = "maintenance_runs"
@@ -43,8 +61,8 @@ const (
 )
 
 // maintenanceRunsKept bounds the receipt log itself: the newest N runs of
-// each kind survive a write, older ones are trimmed in the same statement. A
-// log growing without bound, inside the feature whose purpose is bounding
+// each kind survive a write, older ones are trimmed in the same transaction.
+// A log growing without bound, inside the feature whose purpose is bounding
 // growth, would be self-refuting.
 const maintenanceRunsKept = 200
 
@@ -157,7 +175,7 @@ func (s *SQL) recordMaintenanceRun(
 		defer func() { _ = tx.Rollback() }()
 
 		const insert = `insert into ` + maintenanceRunsTable +
-			` (kind, trigger, started_at, finished_at, error, stats) values (?, ?, ?, ?, ?, ?)`
+			` (kind, triggered_by, started_at, finished_at, error, stats) values (?, ?, ?, ?, ?, ?)`
 
 		if _, err := tx.ExecContext(ctx, s.q(insert),
 			kind, trigger, started.UnixNano(), finished.UnixNano(), errText, string(statsJSON)); err != nil {
@@ -175,17 +193,40 @@ func (s *SQL) recordMaintenanceRun(
 // trimMaintenanceRunsTx deletes every row of kind older than the newest
 // maintenanceRunsKept, so the log a dashboard reads back stays bounded
 // whatever runs on whatever schedule.
+//
+// It finds the oldest run that survives and deletes everything of that kind
+// before it, as two statements rather than one `id not in (select … limit ?)`.
+// MySQL refuses a LIMIT inside an IN subquery (error 1235) and refuses a
+// delete that selects from its own table in a subquery (error 1093), and the
+// derived-table wrapping that gets past both is a trick that works only as
+// long as its optimizer keeps materialising it. Reading the cutoff first is
+// plain SQL in every dialect, and ids only ever grow, so a run recorded
+// concurrently can only be newer than the cutoff, never trimmed by it.
 func (s *SQL) trimMaintenanceRunsTx(ctx context.Context, tx *sql.Tx, kind string) error {
-	const del = `delete from ` + maintenanceRunsTable + ` where kind = ? and id not in (
-		select id from ` + maintenanceRunsTable + ` where kind = ? order by id desc limit ?)`
+	const cutoff = `select id from ` + maintenanceRunsTable +
+		` where kind = ? order by id desc limit 1 offset ?`
 
-	_, err := tx.ExecContext(ctx, s.q(del), kind, kind, maintenanceRunsKept)
+	var oldestKept int64
+
+	err := tx.QueryRowContext(ctx, s.q(cutoff), kind, maintenanceRunsKept-1).Scan(&oldestKept)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Fewer than maintenanceRunsKept runs of this kind: nothing to trim.
+		return nil
+	case err != nil:
+		return err
+	}
+
+	const del = `delete from ` + maintenanceRunsTable + ` where kind = ? and id < ?`
+
+	_, err = tx.ExecContext(ctx, s.q(del), kind, oldestKept)
 
 	return err
 }
 
 // maintenanceRunColumns are the columns scanMaintenanceRun reads, in order.
-const maintenanceRunColumns = `id, kind, trigger, started_at, finished_at, error, stats`
+const maintenanceRunColumns = `id, kind, triggered_by, started_at, finished_at, error, stats`
 
 func scanMaintenanceRun(rows *sql.Rows) (MaintenanceRun, error) {
 	var (

@@ -186,10 +186,12 @@ type Deps struct {
 	LastMaintenanceRun func(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
 	MaintenanceRuns    func(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)
 
-	// ArtifactLocation names where the evidence bucket is, redacted the same
-	// way a log line or a command's own report already is
-	// (store.Options.ArtifactLocation) — shown in the storage dashboard's
-	// header (AC3).
+	// ArtifactLocation names where the evidence bucket is, as configured —
+	// shown in the storage dashboard's header (AC3). It may carry a
+	// credential in its userinfo or query string; the dashboard redacts it
+	// the same way a log line or a command's own report already is
+	// (secret.RedactURL, as store.Options.ArtifactLocation does), so a caller
+	// must not redact it first.
 	ArtifactLocation string
 
 	// ConfigPath is shown in the UI so a write action can say where a
@@ -513,6 +515,27 @@ func (r *statusRecorder) WriteHeader(code int) {
 func (s *Server) writeAllowed() (bool, string) {
 	if s.opts.ReadOnly {
 		return false, "wsaw is running in read-only mode"
+	}
+
+	return true, ""
+}
+
+// storageAllowed reports whether the storage dashboard and its JSON form may
+// be served at all, and why not.
+//
+// Everything else in the interface may run without a token on a loopback
+// listener, because what it shows is what the scanned sites already publish.
+// The storage figures are about the installation instead: the database
+// driver, where the evidence bucket is and how its paths are laid out, which
+// targets are watched and how much history each one holds. Redaction keeps
+// the credentials out of that, but not the rest, and loopback is a weaker
+// fence than it sounds: every local user, and every page a local browser
+// renders, can send it a request. So these two paths want a token to exist
+// before they answer, rather than taking an unset one as permission, and
+// they name the setting to change rather than looking broken.
+func (s *Server) storageAllowed() (bool, string) {
+	if !s.opts.Token.IsSet() {
+		return false, "the storage figures describe this installation and are only served when an API token is configured; set api.token"
 	}
 
 	return true, ""

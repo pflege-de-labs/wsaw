@@ -51,7 +51,14 @@ func TestTargetAndDefaultChangesAreReloadable(t *testing.T) {
 		"scheduler minInterval": func(c *Config) {
 			c.Scheduler.MinInterval = Duration(30 * time.Minute)
 		},
-		"scheduler cron": func(c *Config) { c.Scheduler.Interval = 0; c.Scheduler.Cron = "0 * * * *" },
+		// The daemon's maintenance loop takes both on reload (Story 4.12,
+		// AC8), so neither may be refused as startup-only.
+		"store sweep off": func(c *Config) {
+			off := false
+			c.Store.Sweep = &off
+		},
+		"store sweepInterval": func(c *Config) { c.Store.SweepInterval = Duration(6 * time.Hour) },
+		"scheduler cron":      func(c *Config) { c.Scheduler.Interval = 0; c.Scheduler.Cron = "0 * * * *" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

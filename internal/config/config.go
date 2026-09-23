@@ -306,6 +306,19 @@ type Store struct {
 	// older file would quietly defeat a policy asked to keep five years.
 	Keep *Keep `yaml:"keep,omitempty"`
 
+	// Sweep is whether the daemon collects unreferenced artifacts on its own
+	// schedule (Story 4.12). On unless set to false, and that is the point of
+	// it being a pointer: garbage nobody collects is a cost that grows without
+	// bound, so leaving the setting out has to mean the default rather than
+	// "off", and turning it off is something an operator writes down.
+	Sweep *bool `yaml:"sweep,omitempty"`
+	// SweepInterval is how long after the last recorded sweep the next one
+	// is due. Empty takes DefaultSweepInterval; anything under
+	// MinSweepInterval is refused, because the grace period holds every
+	// object younger than a day regardless and each extra sweep is another
+	// full listing of the bucket.
+	SweepInterval Duration `yaml:"sweepInterval,omitempty"`
+
 	// WriteJSONL mirrors results to newline-delimited JSON files.
 	WriteJSONL bool `yaml:"writeJsonl,omitempty"`
 	// WriteHAR emits a HAR file per scan. Off by default because of size.
@@ -406,6 +419,33 @@ const (
 // default.
 func (s Store) SignedURLTTL() time.Duration {
 	return s.ArtifactSignedURLTTL.Or(DefaultArtifactSignedURLTTL)
+}
+
+// Scheduled sweep bounds (Story 4.12).
+//
+// A day is the default because it matches the grace period a sweep leaves any
+// unreferenced object in (store's unreferencedArtifactGrace): garbage becomes
+// collectable a day after it was written, and a daily sweep collects it within
+// a day after that. The cost is one listing request per thousand keys, so a
+// bucket of a hundred thousand objects is about a hundred requests a day.
+//
+// An hour is the floor rather than a suggestion. Sweeping more often cannot
+// collect anything sooner than the grace period allows, and each extra sweep
+// is another full listing on an invoice.
+const (
+	DefaultSweepInterval = 24 * time.Hour
+	MinSweepInterval     = time.Hour
+)
+
+// SweepEnabled reports whether the daemon sweeps on a schedule, which it does
+// unless the configuration explicitly says sweep: false.
+func (s Store) SweepEnabled() bool {
+	return s.Sweep == nil || *s.Sweep
+}
+
+// SweepEvery returns how often the daemon sweeps, or the default.
+func (s Store) SweepEvery() time.Duration {
+	return s.SweepInterval.Or(DefaultSweepInterval)
 }
 
 // Keep is a retention policy in the terms restic's forget command uses: keep

@@ -2,6 +2,8 @@ package store_test
 
 import (
 	"errors"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -287,4 +289,155 @@ func TestMaintenanceRunsAreTrimmedToTheNewest200(t *testing.T) {
 	if len(sweepRuns) != 1 {
 		t.Errorf("len(sweepRuns) = %d, want 1", len(sweepRuns))
 	}
+}
+
+// TestAStoreWithTheOldTriggerColumnKeepsItsReceipts: version 6 reached main
+// naming its column trigger, and SQLite and PostgreSQL stores opened by those
+// builds carry it. The rename in version 8 must bring such a store up to the
+// column every query names, and a receipt written before it must survive the
+// rename and read back with the trigger it was recorded with.
+//
+// Rewound to 7, that is a store exactly as those builds left it; rewound to 6,
+// version 7 is replayed on the way as well, which is the other state the old
+// column can be met in.
+func TestAStoreWithTheOldTriggerColumnKeepsItsReceipts(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("WSAW_TEST_STORE_DRIVER") == store.DriverMySQL {
+		t.Skip("MySQL's version 6 could never be applied with the old column, so no MySQL store has one")
+	}
+
+	for _, rewound := range []int{6, 7} {
+		t.Run("from version "+strconv.Itoa(rewound), func(t *testing.T) {
+			t.Parallel()
+
+			opts := storeOptions(t)
+			s := openWithTheOldTriggerColumn(t, opts, rewound)
+
+			assertTheOldReceiptSurvived(t, s)
+
+			if err := s.RecordPruneRun(t.Context(), store.TriggerCLI, time.Now(),
+				store.PruneStats{ResultsDeleted: 8}, nil); err != nil {
+				t.Fatalf("RecordPruneRun after the rename: %v", err)
+			}
+
+			runs, err := s.MaintenanceRuns(t.Context(), store.MaintenanceKindPrune, 0)
+			if err != nil {
+				t.Fatalf("MaintenanceRuns: %v", err)
+			}
+
+			if len(runs) != 2 || runs[0].Trigger != store.TriggerCLI || runs[1].Trigger != store.TriggerSchedule {
+				t.Errorf("runs after the rename = %+v, want the new cli run and then the old schedule run", runs)
+			}
+
+			if got, want := recordedSchemaVersion(t, opts), freshVersion(t); got != want {
+				t.Errorf("the migrated store records schema version %d, want %d as a fresh store does", got, want)
+			}
+		})
+	}
+}
+
+// openWithTheOldTriggerColumn builds a store as a build of main between
+// Story 4.11 and the rename left it — the column called trigger, one receipt
+// written under that name — rewinds its version to rewound, and opens it, which
+// is what migrates it.
+func openWithTheOldTriggerColumn(t *testing.T, opts store.Options, rewound int) *store.SQL {
+	t.Helper()
+
+	fresh, err := store.OpenSQL(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("creating the store to take back: %v", err)
+	}
+
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db := rawDB(t, opts)
+
+	// No placeholders, so the statements are the same text in both dialects.
+	for _, stmt := range []string{
+		`alter table maintenance_runs rename column triggered_by to trigger`,
+		`insert into maintenance_runs (kind, trigger, started_at, finished_at, error, stats)
+			values ('prune', 'schedule', 1000, 2000, '', '{"resultsDeleted":7}')`,
+	} {
+		if _, err := db.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatalf("building a store with the old column: %s: %v", stmt, err)
+		}
+	}
+
+	rewindSchemaVersion(t, db, opts, rewound)
+
+	s, err := store.OpenSQL(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("migrating a store with the old trigger column: %v", err)
+	}
+
+	t.Cleanup(func() { _ = s.Close() })
+
+	return s
+}
+
+// assertTheOldReceiptSurvived checks that the receipt openWithTheOldTriggerColumn
+// wrote before the rename reads back exactly as it was written.
+func assertTheOldReceiptSurvived(t *testing.T, s *store.SQL) {
+	t.Helper()
+
+	old, found, err := s.LastMaintenanceRun(t.Context(), store.MaintenanceKindPrune)
+	if err != nil {
+		t.Fatalf("LastMaintenanceRun: %v", err)
+	}
+
+	if !found {
+		t.Fatal("the receipt written before the rename is gone")
+	}
+
+	stats, err := old.PruneStats()
+	if err != nil {
+		t.Fatalf("PruneStats: %v", err)
+	}
+
+	if old.Trigger != store.TriggerSchedule || stats.ResultsDeleted != 7 ||
+		!old.StartedAt.Equal(time.Unix(0, 1000)) || !old.FinishedAt.Equal(time.Unix(0, 2000)) {
+		t.Errorf("the receipt written before the rename reads back as %+v (%+v), "+
+			"want trigger %q, 7 results deleted, 1000..2000ns", old, stats, store.TriggerSchedule)
+	}
+}
+
+// recordedSchemaVersion reads the schema version a store records, from
+// wherever its dialect keeps it.
+func recordedSchemaVersion(t *testing.T, opts store.Options) int {
+	t.Helper()
+
+	query := "select version from wsaw_schema_version where id = 1"
+	if opts.Driver == "" || opts.Driver == store.DriverSQLite {
+		query = "pragma user_version"
+	}
+
+	var version int
+
+	if err := rawDB(t, opts).QueryRowContext(t.Context(), query).Scan(&version); err != nil {
+		t.Fatalf("reading the schema version: %v", err)
+	}
+
+	return version
+}
+
+// freshVersion is the version a store created by this build records, read
+// rather than written here so that the next migration does not make it stale.
+func freshVersion(t *testing.T) int {
+	t.Helper()
+
+	opts := storeOptions(t)
+
+	s, err := store.OpenSQL(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("creating a store to read the current schema version from: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return recordedSchemaVersion(t, opts)
 }
