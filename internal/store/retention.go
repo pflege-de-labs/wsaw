@@ -527,7 +527,10 @@ func (s *SQL) prune(ctx context.Context, trigger string, now time.Time, r Retent
 		started := time.Now()
 
 		defer func() {
-			if recErr := s.RecordPruneRun(ctx, trigger, started, stats, err); recErr != nil {
+			recCtx, cancel := receiptCtx(ctx)
+			defer cancel()
+
+			if recErr := s.RecordPruneRun(recCtx, trigger, started, stats, err); recErr != nil {
 				s.log.Warn("a prune run could not be recorded", "error", recErr)
 			}
 		}()
@@ -1351,7 +1354,10 @@ func (s *SQL) sweep(ctx context.Context, trigger string, now time.Time, opts Swe
 		started := time.Now()
 
 		defer func() {
-			if recErr := s.RecordSweepRun(ctx, trigger, started, stats, err); recErr != nil {
+			recCtx, cancel := receiptCtx(ctx)
+			defer cancel()
+
+			if recErr := s.RecordSweepRun(recCtx, trigger, started, stats, err); recErr != nil {
 				s.log.Warn("a sweep run could not be recorded", "error", recErr)
 			}
 		}()
@@ -1416,6 +1422,20 @@ func (s *SQL) sweep(ctx context.Context, trigger string, now time.Time, opts Swe
 	}
 
 	return stats, nil
+}
+
+// receiptCtx is the context a run's receipt is written under: the caller's
+// values, none of its cancellation, and the deadline every store operation
+// has.
+//
+// A run that was cancelled — a daemon shutting down in the middle of a sweep
+// is the ordinary case (Story 4.12, AC7) — has still deleted whatever it
+// deleted, and Story 4.11, AC4 says that is recorded. Writing the receipt
+// under the cancelled context would fail at once and leave no trace of the
+// deletions, the quiet omission Tenet 5 forbids. The deadline keeps the write
+// from holding up a shutdown for longer than one statement may take anyway.
+func receiptCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return opCtxFrom(context.WithoutCancel(ctx))
 }
 
 // indexCanJudgeTheBucket refuses a sweep when the index has nothing to judge
@@ -1623,6 +1643,15 @@ func (s *SQL) collectUnreferenced(
 	}
 
 	for _, obj := range page {
+		// Checked per key, as the listing and collectDangling do. A page is
+		// decided before it is collected, so without this a cancelled sweep
+		// would go on to try every remaining delete of the page with a dead
+		// context and count each one as a delete the bucket refused — a
+		// shutdown reported as a bucket misbehaving (Story 4.12, AC7).
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("collecting unreferenced artifacts: %w", err)
+		}
+
 		if _, referenced := named[obj.ref]; referenced {
 			continue
 		}

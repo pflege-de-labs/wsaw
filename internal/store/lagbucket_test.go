@@ -232,6 +232,12 @@ type lagBucket struct {
 	// expected suppresses the report at the end of the test, for the one test
 	// that is about the strict rules themselves.
 	expected bool
+
+	// deleted, when set, is told of every delete that removed an object, in
+	// the same critical section. It is how a test interrupts an operation
+	// part way through at a point it chose — after the first delete, say —
+	// rather than at whatever moment a timer happens to fire.
+	deleted func(key string)
 }
 
 // newLagBucket builds a fake bucket and registers it for the duration of one
@@ -341,6 +347,14 @@ func (b *lagBucket) allowRewrites() {
 	defer b.mu.Unlock()
 
 	b.rewritable = true
+}
+
+// onDelete installs the hook b.deleted describes.
+func (b *lagBucket) onDelete(fn func(key string)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.deleted = fn
 }
 
 // schedule adds one fault to the queue the operations draw from.
@@ -787,6 +801,10 @@ func (b *lagBucket) Delete(ctx context.Context, key string) error {
 
 	b.checkDeletion(key)
 	delete(b.objects, key)
+
+	if b.deleted != nil {
+		b.deleted(key)
+	}
 
 	if mode == lagFailAfter {
 		return b.fault(lagDelete, key, code)
