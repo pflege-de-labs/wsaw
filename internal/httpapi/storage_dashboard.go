@@ -398,8 +398,15 @@ func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 }
 
 // handleUIStorage serves the dashboard (AC1), behind the same session as the
-// rest of the interface.
+// rest of the interface, and only when there is a token for that session to
+// be made from (storageAllowed).
 func (s *Server) handleUIStorage(w http.ResponseWriter, r *http.Request) {
+	if ok, reason := s.storageAllowed(); !ok {
+		s.uiError(w, r, http.StatusForbidden, reason)
+
+		return
+	}
+
 	force := r.URL.Query().Get("recompute") == "1"
 
 	data, computedAt, err := s.storage.get(r.Context(), force, s.computeStorageData)
@@ -418,6 +425,12 @@ func (s *Server) handleUIStorage(w http.ResponseWriter, r *http.Request) {
 // page renders — additive to the API, no version bump (Tenet 16, AGENTS.md
 // §8).
 func (s *Server) handleStorageAPI(w http.ResponseWriter, r *http.Request) {
+	if ok, reason := s.storageAllowed(); !ok {
+		writeJSONError(w, http.StatusForbidden, reason)
+
+		return
+	}
+
 	force := r.URL.Query().Get("recompute") == "1"
 
 	data, computedAt, err := s.storage.get(r.Context(), force, s.computeStorageData)

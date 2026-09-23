@@ -298,6 +298,8 @@ Both are served by the same process and the same port; the web interface is a cl
 
 It binds to loopback by default. A non-loopback listener **requires** a token — configuration validation refuses to start without one, because scan results can contain personal data.
 
+The storage dashboard (`/storage`) and its JSON form (`/api/v1/storage`) require a token on every listener, loopback included. They describe the installation rather than the sites it watches — the database driver, where the evidence bucket is, which targets are kept and how much history each holds — and loopback is reachable by every local user and every page a local browser renders. Without `api.token` both answer `403` and name the setting; everything else on a loopback listener keeps working as before.
+
 That token also protects the loopback case, which means normally typing it into a login form. `wsaw ui` skips that: it reads the token from the same config file the daemon runs with — which an operator running the command can already read — and opens the browser at a one-time sign-in link instead of the plain address:
 
 ```
