@@ -519,3 +519,24 @@ func (s *Server) writeAllowed() (bool, string) {
 
 	return true, ""
 }
+
+// storageAllowed reports whether the storage dashboard and its JSON form may
+// be served at all, and why not.
+//
+// Everything else in the interface may run without a token on a loopback
+// listener, because what it shows is what the scanned sites already publish.
+// The storage figures are about the installation instead: the database
+// driver, where the evidence bucket is and how its paths are laid out, which
+// targets are watched and how much history each one holds. Redaction keeps
+// the credentials out of that, but not the rest, and loopback is a weaker
+// fence than it sounds: every local user, and every page a local browser
+// renders, can send it a request. So these two paths want a token to exist
+// before they answer, rather than taking an unset one as permission, and
+// they name the setting to change rather than looking broken.
+func (s *Server) storageAllowed() (bool, string) {
+	if !s.opts.Token.IsSet() {
+		return false, "the storage figures describe this installation and are only served when an API token is configured; set api.token"
+	}
+
+	return true, ""
+}
