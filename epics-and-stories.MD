@@ -19,7 +19,7 @@ Roles used:
 
 Companion documents: `non-functional-requirements.MD`, `architecture-tenets.MD`.
 
-**Implementation status.** A story heading with no note is built and covered by tests. A heading marked *not implemented* has no code behind it; one marked *partly implemented* names the acceptance criteria that are still open. The notes were written by auditing the tree at commit `fe48afd` (23 September 2026) and go stale the moment the gap is closed — close the gap, drop the note.
+**Implementation status.** A story heading with no note is built and covered by tests. A heading marked *not implemented* has no code behind it; one marked *partly implemented* names the acceptance criteria that are still open. The notes were written by auditing the tree at commit `fe48afd`, and those for Stories 1.8, 4.11, 4.12, 5.32, 6.3, 8.9 and 8.10 rechecked at `15c4be8` (both 23 September 2026) and go stale the moment the gap is closed — close the gap, drop the note.
 
 ---
 
@@ -542,7 +542,7 @@ The risk this story has to handle is that it is the one operation in wsaw that m
 
 ---
 
-### Story 4.11 — Prune and sweep leave a receipt (partly implemented: the MySQL migration fails on the unquoted reserved word `trigger`, and the trim's `limit` subquery is one MySQL rejects, AC1 and AC5; the sweep-run counter is defined but never incremented, AC8; AC9's sweep trigger, counter and gauge-before-first-prune tests are missing)
+### Story 4.11 — Prune and sweep leave a receipt (partly implemented: AC9's tests that `wsaw store sweep` records a `cli` trigger, and that the prune gauge reads zero before the first prune, are missing)
 
 *As an Operator, I want every prune and every sweep recorded — not just logged in passing — so that "retention is working" and "the last sweep found nothing to clean up" are figures a dashboard can read back months later, not lines that have scrolled off a log.*
 
@@ -1039,7 +1039,7 @@ Since Story 8.2 a result's document is an artifact in the bucket, not a column, 
 
 ---
 
-### Story 5.32 — A storage dashboard: where the storage goes, and what the last prune gave back (partly implemented: the artifact location is shown as configured, not redacted, AC3; the growth chart's first month counts only from the same day eleven months ago, AC5; the monthly growth and per-run prune figures exist only inside the SVG and are absent from the JSON, AC9 and AC12; no link to the retention documentation, AC11; most of AC13's tests are missing)
+### Story 5.32 — A storage dashboard: where the storage goes, and what the last prune gave back (partly implemented: the growth chart's first month counts only from the same day eleven months ago, AC5; the monthly growth and per-run prune figures exist only inside the SVG and are absent from the JSON, AC9 and AC12; no link to the retention documentation, AC11; most of AC13's tests are missing)
 
 *As an Operator, I want one page that ranks every target by the storage it holds, plots how that has grown, and states what the last prune and sweep removed, so that I can see where the storage goes and whether retention is actually holding it.*
 
@@ -1387,7 +1387,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC4: The default build with nothing configured opens no cloud SDK, resolves no credential chain, and makes no network call at startup. A local deployment must not acquire cloud behaviour merely by being linked against it.
 - AC5: The SBOM published per release (Story 6.1, AC3) covers the new dependency tree, and the added modules are reviewed once, explicitly, rather than arriving as transitive noise.
 
-### Story 8.9 — Test both paths, and one real object store (partly implemented: MinIO is not a service in the Compose stack, and the MinIO cycle runs for SQLite only, AC2; the migration tests are dialect-parametric but CI runs them on SQLite alone, AC4)
+### Story 8.9 — Test both paths, and one real object store (partly implemented: MinIO is not a service in the Compose stack, and the MinIO cycle runs for SQLite only, AC2)
 
 *As a Developer, I want the bucket path covered by the same tests as the directory path, so that a provider difference surfaces in CI rather than in production.*
 
@@ -1398,7 +1398,7 @@ Retention deletes rows today and leaves artifacts behind — a tolerable leak wh
 - AC5: A test asserts that listing results performs no bucket operations (Story 8.3, AC2). That regression is invisible until it arrives as a production latency complaint.
 - AC6: The soak test reports bucket operations and bytes transferred alongside its existing figures, so the storage cost of a long run is a measured number rather than a surprise on an invoice.
 
-### Story 8.10 — Rebuild the index from what the bucket holds (partly implemented: an interrupted rebuild keeps what it wrote but re-reads the whole bucket, AC3; lost change-event history is not counted, AC6; CI runs the tests on SQLite alone, AC13)
+### Story 8.10 — Rebuild the index from what the bucket holds (partly implemented: an interrupted rebuild keeps what it wrote but re-reads the whole bucket, AC3; lost change-event history is not counted, AC6)
 
 *As an Operator, I want to rebuild the whole index from the artifacts in the bucket, so that a lost, corrupted, or out-of-date index is a recovery procedure rather than a lost history.*
 
