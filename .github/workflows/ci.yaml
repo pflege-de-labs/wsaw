@@ -145,6 +145,29 @@ jobs:
         if: runner.os == 'Linux'
         run: make test-store-minio STORE_TEST_RUNTIME=docker
 
+      # The store suite against the other two databases it supports (Story 4.7,
+      # AC5). The suite has been parameterised by dialect since the dialects
+      # were written, but until now only a developer who remembered to run
+      # these targets ever ran it anywhere but SQLite — and Story 4.11 merged a
+      # migration MySQL could not apply at all, a column named with one of its
+      # reserved words, because nothing on the way to main asked MySQL. A
+      # dialect nobody tests is a dialect a deployment finds broken first.
+      #
+      # Through the make targets rather than as service containers, so that CI
+      # and a developer start the same image, on the same port, with the same
+      # readiness probe — MySQL's is subtle enough (see the note above
+      # test-store-mysql) that a second copy of it here would be the one that
+      # drifts. The images are pinned there. Linux only, and docker, for the
+      # same reasons as the object-store step above; each is a small image and
+      # well under a minute.
+      - name: Test the store against PostgreSQL
+        if: runner.os == 'Linux'
+        run: make test-store-postgres STORE_TEST_RUNTIME=docker
+
+      - name: Test the store against MySQL
+        if: runner.os == 'Linux'
+        run: make test-store-mysql STORE_TEST_RUNTIME=docker
+
       # A gate, not a readout: below COVER_MIN this fails. The minimum is a
       # ratchet held in the Makefile, and it is calibrated against this job —
       # a developer machine with Podman and Chrome covers container paths that
