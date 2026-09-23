@@ -12,7 +12,19 @@
 # The patch is exact and matches GO_VERSION in .github/workflows/ci.yaml, so
 # the image and the released binaries are built by the same compiler. Bump the
 # two together.
-FROM golang:1.27.1-alpine AS build
+#
+# The build stage runs on the builder's own platform and cross-compiles for the
+# target, rather than running the Go toolchain under emulation for every
+# architecture the image is built for. The binary is pure Go and CGo-free
+# precisely so that cross-compiling it is exact (Tenet 14), and `make release`
+# builds the released binaries the same way; emulating the compiler for arm64
+# would make a multi-arch build several times slower and buy nothing.
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
+
+# Set by BuildKit from --platform. Empty in a plain `docker build`, where the
+# target is the builder's own platform and go build's defaults are right.
+ARG TARGETOS
+ARG TARGETARCH
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -36,7 +48,7 @@ RUN go mod download
 COPY . .
 
 # CGO stays off: the single static binary is the whole deployment story.
-RUN CGO_ENABLED=0 go build -trimpath -tags "${BUILD_TAGS}" \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags "${BUILD_TAGS}" \
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/wsaw ./cmd/wsaw
 
