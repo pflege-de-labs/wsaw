@@ -9,6 +9,36 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-23
+
+The first release with a container image. The binaries behave exactly as
+0.1.0's do.
+
+### Added
+
+- Container images on the GitHub Container Registry, for linux/amd64 and
+  linux/arm64 in both variants: `ghcr.io/pflege-de-labs/wsaw` and
+  `ghcr.io/pflege-de-labs/wsaw-cloudblob` (Story 6.3). They are pushed when a
+  release is published — not when its tag is — so an image never goes out
+  ahead of the release it belongs to. Each push is pulled back by digest and
+  checked: both architectures must report the release's version, and Chromium's
+  sandbox must start under `deploy/chromium-seccomp.json`. 0.1.0 has no image: its
+  `Dockerfile` predates the pins below, and an image built from it would carry
+  whichever Chromium Alpine held on the day it was built.
+
+### Changed
+
+- The `Dockerfile` cross-compiles the Go binary on the build machine instead of
+  compiling it under emulation for each target architecture, as `make release`
+  already does for the binaries.
+- The image pins what it is built from: both base images by digest, and
+  Chromium by exact package version (152.0.7977.82-r0), which the image
+  records in its `de.pflege.wsaw.chromium.version` label (Story 6.3, AC1).
+  Before, `apk add chromium` installed whatever Alpine's branch held on the
+  day of the build. Alpine keeps only the newest Chromium in a stable branch,
+  so the build fails when a new one replaces it; the `Dockerfile` says how to
+  bump the pin.
+
 ## [0.1.0] - 2026-09-23
 
 The first release. wsaw loads a list of URLs in headless Chrome, records every
@@ -224,5 +254,6 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.0

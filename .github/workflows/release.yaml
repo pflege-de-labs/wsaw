@@ -28,7 +28,8 @@
 # job, and CHANGELOG.md lists the gap. When the suite lands, it becomes a job
 # here that `release` needs.
 #
-# No container image is published either; that is a separate change.
+# Container images are published by image.yaml, once a human publishes the
+# release this workflow drafts.
 
 name: Release
 
