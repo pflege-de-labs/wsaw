@@ -56,15 +56,17 @@ make release          # both variants, all four platforms, with checksums and si
 
 Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: take the default one unless you intend to keep evidence in object storage, in which case see [the artifact bucket](#the-artifact-bucket).
 
-Tagged releases publish the same artifacts on the repository's GitHub Releases page, with `SHA256SUMS` and a CycloneDX SBOM per variant. [CHANGELOG.md](CHANGELOG.md) says what each release changed and what it still lacks. No container image is published yet, so the image below is one you build yourself with `make docker`, which tags it with the version rather than `latest`.
+Tagged releases publish the same artifacts on the repository's GitHub Releases page, with `SHA256SUMS` and a CycloneDX SBOM per variant. [CHANGELOG.md](CHANGELOG.md) says what each release changed and what it still lacks.
 
-Or run the container:
+Or run the container. Each published release has images for linux/amd64 and linux/arm64 on the GitHub Container Registry, in both variants — `ghcr.io/pflege-de-labs/wsaw` and `ghcr.io/pflege-de-labs/wsaw-cloudblob` — tagged with the full version (`0.1.0`), with major.minor (`0.1`), and, for the newest release, `latest`. A tag can move; for a deployment, pin the digest instead, which the package page and each publish run's summary show:
 
 ```sh
 docker run --rm \
   --security-opt seccomp=deploy/chromium-seccomp.json \
-  -v "$PWD/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro" wsaw:latest
+  -v "$PWD/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro" ghcr.io/pflege-de-labs/wsaw:0.1
 ```
+
+`make docker` builds the same image from a checkout.
 
 The seccomp profile is what lets Chromium keep its own sandbox in the container, and under Docker it is not optional: Docker's default profile refuses the `clone`, `unshare` and `setns` calls the sandbox is built from, so without it the browser cannot start. [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) is Docker's default with those three and `chroot` allowed and nothing else changed — `make seccomp-profile` derives it from a pinned upstream, and CI checks both that the committed file is what that produces and that the sandbox starts under it. Podman's default profile already allows user namespaces, so under Podman the flag is harmless but not needed. Do not reach for `--privileged`, `--cap-add SYS_ADMIN` or `browser.noSandbox` instead: each one makes the browser start by giving up more isolation than the profile does.
 

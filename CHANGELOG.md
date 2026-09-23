@@ -9,6 +9,23 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- Container images on the GitHub Container Registry, for linux/amd64 and
+  linux/arm64 in both variants: `ghcr.io/pflege-de-labs/wsaw` and
+  `ghcr.io/pflege-de-labs/wsaw-cloudblob` (Story 6.3). They are pushed when a
+  release is published — not when its tag is — so an image never goes out
+  ahead of the release it belongs to. Each push is pulled back by digest and
+  checked: both architectures must report the release's version, and Chromium's
+  sandbox must start under `deploy/chromium-seccomp.json`. 0.1.0 predates this, and
+  its images are published by running the workflow by hand for its tag.
+
+### Changed
+
+- The `Dockerfile` cross-compiles the Go binary on the build machine instead of
+  compiling it under emulation for each target architecture, as `make release`
+  already does for the binaries.
+
 ## [0.1.0] - 2026-09-23
 
 The first release. wsaw loads a list of URLs in headless Chrome, records every
