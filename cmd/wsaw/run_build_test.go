@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/certtest"
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
@@ -395,13 +396,16 @@ func TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest(t *testing.T) {
 	}
 }
 
+// tlsAPI is an api section serving the given pair.
+func tlsAPI(certPath, keyPath string) string {
+	return "\napi:\n  enabled: true\n  tlsCert: " + certPath + "\n  tlsKey: " + keyPath + "\n"
+}
+
 // TestReloadMovesTheCertificateButDoesNotTurnTLSOff is Story 5.33, AC6: new
 // paths are handed on for the server to load, while turning TLS off would
 // need a new listener and is refused like any other startup-only change.
 func TestReloadMovesTheCertificateButDoesNotTurnTLSOff(t *testing.T) {
-	const withTLS = "\napi:\n  enabled: true\n  tlsCert: /etc/wsaw/cert.pem\n  tlsKey: /etc/wsaw/key.pem\n"
-
-	path := writeConfig(t, oneTargetConfig+withTLS)
+	path := writeConfig(t, oneTargetConfig+tlsAPI(certtest.Write(t)))
 
 	cf := parseFlags(t, "--config", path)
 
@@ -413,8 +417,8 @@ func TestReloadMovesTheCertificateButDoesNotTurnTLSOff(t *testing.T) {
 	a := testApp(t, running)
 	store := "\nstore:\n  path: " + filepath.Join(filepath.Dir(path), "wsaw.db") + "\n"
 
-	moved := "\napi:\n  enabled: true\n  tlsCert: /run/secrets/tls.crt\n  tlsKey: /run/secrets/tls.key\n"
-	if err := os.WriteFile(path, []byte(oneTargetConfig+moved+store), 0o600); err != nil {
+	movedCert, movedKey := certtest.Write(t)
+	if err := os.WriteFile(path, []byte(oneTargetConfig+tlsAPI(movedCert, movedKey)+store), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -423,7 +427,7 @@ func TestReloadMovesTheCertificateButDoesNotTurnTLSOff(t *testing.T) {
 		t.Fatalf("reload refused a moved certificate: %v", err)
 	}
 
-	if want := (tlsPaths{cert: "/run/secrets/tls.crt", key: "/run/secrets/tls.key"}); next.certPaths != want {
+	if want := (tlsPaths{cert: movedCert, key: movedKey}); next.certPaths != want {
 		t.Errorf("reload handed on %+v, want %+v", next.certPaths, want)
 	}
 
@@ -434,6 +438,35 @@ func TestReloadMovesTheCertificateButDoesNotTurnTLSOff(t *testing.T) {
 	_, err = reload(a, *cf)
 	if err == nil || !strings.Contains(err.Error(), "api.tlsCert") {
 		t.Errorf("turning TLS off by reload returned %v, want a refusal naming api.tlsCert", err)
+	}
+}
+
+// TestReloadRefusesACertificateTheServerCouldNotLoad is Story 5.33, AC11: a
+// reload whose certificate is unusable is refused, naming the setting,
+// rather than logged as "configuration reloaded" over a pair that is not
+// being served.
+func TestReloadRefusesACertificateTheServerCouldNotLoad(t *testing.T) {
+	certPath, keyPath := certtest.Write(t)
+	path := writeConfig(t, oneTargetConfig+tlsAPI(certPath, keyPath))
+
+	cf := parseFlags(t, "--config", path)
+
+	running, err := cf.load()
+	if err != nil {
+		t.Fatalf("loading the running configuration: %v", err)
+	}
+
+	a := testApp(t, running)
+
+	// The same paths, and a certificate that no longer matches its key: the
+	// renewal nobody finished.
+	if err := os.WriteFile(certPath, certtest.Issue(t, time.Now(), time.Hour).Cert, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = reload(a, *cf)
+	if err == nil || !strings.Contains(err.Error(), "api.tlsCert") {
+		t.Errorf("reload with an unusable certificate returned %v, want a refusal naming api.tlsCert", err)
 	}
 }
 

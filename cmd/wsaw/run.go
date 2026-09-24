@@ -298,6 +298,14 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 			pluralSettings(len(changed)))
 	}
 
+	// A certificate the new configuration names but the server could not
+	// load is refused with the rest of the file, so "configuration reloaded"
+	// is never logged over a pair that is not being served (Story 5.33,
+	// AC11). The pair already served stays in place either way.
+	if err := cfg.CheckTLSFiles(time.Now()); err != nil {
+		return reloaded{}, err
+	}
+
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
 		return reloaded{}, err

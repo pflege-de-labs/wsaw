@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pflege-de-labs/wsaw/internal/certtest"
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
@@ -376,6 +377,33 @@ func TestCmdConfigPrintsTheResolvedView(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout does not contain %q; got:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestCmdConfigChecksTheCertificateFiles is Story 5.33, AC11: `wsaw config
+// --check` answers "would the daemon serve this", so a certificate that does
+// not match its key fails the check, naming the setting.
+func TestCmdConfigChecksTheCertificateFiles(t *testing.T) {
+	certPath, keyPath := certtest.Write(t)
+	_, otherKey := certtest.Write(t)
+
+	good := writeConfig(t, oneTargetConfig+
+		"\napi:\n  enabled: true\n  tlsCert: "+certPath+"\n  tlsKey: "+keyPath+"\n")
+	mismatched := writeConfig(t, oneTargetConfig+
+		"\napi:\n  enabled: true\n  tlsCert: "+certPath+"\n  tlsKey: "+otherKey+"\n")
+
+	var err error
+
+	capture(t, func() { err = cmdConfig([]string{"--config", good, "--check"}) })
+
+	if err != nil {
+		t.Errorf("a usable pair failed the check: %v", err)
+	}
+
+	capture(t, func() { err = cmdConfig([]string{"--config", mismatched, "--check"}) })
+
+	if err == nil || !strings.Contains(err.Error(), "api.tlsCert") {
+		t.Errorf("a mismatched pair returned %v, want an error naming api.tlsCert", err)
 	}
 }
 

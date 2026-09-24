@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -236,6 +237,13 @@ func cmdConfig(args []string) error {
 
 	cfg, err := cf.load()
 	if err != nil {
+		return err
+	}
+
+	// The certificate files are read here and not in Load, which every
+	// command runs: this is the command whose answer is "the daemon would
+	// start and serve this" (Story 5.33, AC11).
+	if err := cfg.CheckTLSFiles(time.Now()); err != nil {
 		return err
 	}
 

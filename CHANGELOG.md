@@ -9,6 +9,15 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- `wsaw config`, including `--check`, and a SIGHUP reload now read the TLS
+  certificate and key and refuse a configuration whose pair could not be
+  served: unreadable, not PEM, mismatched, or already expired (Story 5.33,
+  AC11). A refused reload leaves the certificate already being served in
+  place. Run `wsaw config --check` as the daemon's user, since the key is
+  usually readable only by that user. No other command reads the files.
+
 ## [0.2.0] - 2026-09-24
 
 A renewed TLS certificate is served without a restart, and the metrics are no
