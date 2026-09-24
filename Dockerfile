@@ -65,7 +65,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags
 # resolving CHROMIUM_VERSION the day the branch moves on, failing with apk's
 # "unable to select packages". That is the signal to bump it: to the version
 # `apk policy chromium` reports in a fresh alpine:3.24 container, in the same
-# change as whatever else that release needs. Dependabot moves both digests.
+# change as whatever else that release needs. .github/workflows/chromium.yaml
+# checks the branch daily and opens that pull request before the build breaks.
+# Dependabot moves both digests.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 ARG CHROMIUM_VERSION=152.0.7977.82-r0
