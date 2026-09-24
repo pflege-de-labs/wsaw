@@ -148,7 +148,9 @@ What a reload does apply: `targets`, `defaults`, per-target overrides,
 `detection.severity`, `detection.allowHosts`, `detection.denyHosts`, the
 schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`), and the
 bucket sweep's schedule (`store.sweep`, `store.sweepInterval`), whose next run
-is recomputed from the last recorded sweep. Everything else needs a restart. A setting added to wsaw later is
+is recomputed from the last recorded sweep, and where the interface's
+certificate is read from (`api.tlsCert`, `api.tlsKey`) — though not whether TLS
+is on at all. Everything else needs a restart. A setting added to wsaw later is
 non-reloadable until someone deliberately says otherwise, so the failure mode
 for new configuration is a loud refusal rather than a silent no-op.
 
@@ -374,6 +376,29 @@ running scan reload themselves; pages with nothing running stay still. Starting
 a second scan of a target and consent mode that is already scanning is refused
 (`409`) rather than queued, because two concurrent scans of one series would
 produce two results for the same moment and double the load on the scanned site.
+
+### HTTPS
+
+Give the interface a certificate and a key, both PEM, and it is served over HTTPS instead of plain HTTP:
+
+```yaml
+api:
+  tlsCert: /etc/wsaw/tls/cert.pem
+  tlsKey: /etc/wsaw/tls/key.pem
+  tlsReloadInterval: 1m   # the default; at least 10s
+```
+
+The pair is loaded before anything listens, so a missing file, a PEM that does not parse, or a key that does not belong to the certificate stops `wsaw run` with the setting and the path, rather than surfacing as a failed handshake later. HTTPS also turns on `Strict-Transport-Security` and marks the session cookie `Secure`.
+
+**A renewed certificate is served without a restart.** wsaw reads both files again every `tlsReloadInterval` and loads the pair when their contents have changed; connections already open keep the certificate they negotiated, and the next handshake gets the new one. SIGHUP loads the pair at once, whether or not the files look changed, and it does so even when the rest of the reloaded configuration is refused. How the usual renewers are picked up:
+
+- **certbot** points the symlinks under `live/` at new files; point `tlsCert` at `fullchain.pem` and `tlsKey` at `privkey.pem`, and either wait for the next check or add `--deploy-hook "pkill -HUP -x wsaw"`.
+- **cert-manager** updates the mounted secret by swapping its `..data` symlink. The files' own modification times do not change, which is why wsaw compares contents: the swap is picked up at the next check.
+- **A plain `cp`** of a new certificate and key is picked up at the next check, or at once with `kill -HUP`.
+
+A reload that fails leaves the certificate being served where it is. A renewal writes the certificate and the key as two separate writes, so between them the files briefly disagree, and a listener that stopped serving at that moment would turn every renewal into an outage. The same goes for a replacement that does not parse, does not match its key, or has already expired: wsaw logs a warning naming the file and the reason, and tries again when either file changes or on SIGHUP. It logs an error once less than a fifth of the served certificate's lifetime is left — about 18 days of a 90-day certificate, about 5 hours of a 24-hour one — because that is when somebody has to act.
+
+Moving the pair to new paths is a reload like any other. Turning HTTPS on or off is not: it changes what the listener is, so it needs a restart, and a reload that tries is refused naming `api.tlsCert` and `api.tlsKey`.
 
 ### Scanning a URL that is not a target
 
@@ -666,6 +691,17 @@ time() - max by (target, consent_mode) (wsaw_last_successful_scan_timestamp_seco
 `/api/v1/ready` separates "the process is alive" from "wsaw can actually scan and store the result": Chrome is usable, configuration is loaded, the store answers and the artifact bucket is still there. It lists stale targets with it. The dashboard flags a series as stale when it has never been scanned, when its last scan failed, or when it is simply old.
 
 Poll that endpoint rather than the `wsaw_ready` gauge for readiness. The gauge covers what the process knows about itself — Chrome usable, configuration loaded — and deliberately not the store, because asking a store and a bucket whether they answer costs a round trip each and a metrics scrape is not the place to spend it. A wsaw whose store or bucket has gone away reports 503 on `/api/v1/ready` while `wsaw_ready` stays 1; the reason it gives says which half is unreachable, and the detail — which bucket, which directory — goes to the log rather than into a response body that is unauthenticated when no API token is configured.
+
+With HTTPS on, `wsaw_tls_certificate_expiry_timestamp_seconds` is the Unix time the certificate being served expires, and `wsaw_tls_certificate_reloads_total{outcome="success"|"failure"}` counts attempts to load a renewed one. A check that finds nothing changed is not an attempt, and neither is the load at startup. The gauge is left out on a plain-HTTP listener rather than reading 0:
+
+```
+# Less than a day of the served certificate is left. Pick the margin from
+# the certificate's lifetime: a day is late for a 90-day one, early for a 24-hour one.
+wsaw_tls_certificate_expiry_timestamp_seconds - time() < 86400
+
+# A renewal is on disk but cannot be loaded.
+increase(wsaw_tls_certificate_reloads_total{outcome="failure"}[1h]) > 0
+```
 
 ## Deployment
 

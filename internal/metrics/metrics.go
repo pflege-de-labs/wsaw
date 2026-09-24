@@ -75,6 +75,14 @@ type Registry struct {
 	// in two days" is an alert rather than a query (Story 4.12, AC6).
 	lastSweepSuccess time.Time
 
+	// tlsReloads counts attempts to load a renewed certificate by outcome,
+	// and tlsExpiry is the not-after time of the one being served — zero
+	// when the interface is not served over TLS, so the gauge is left out
+	// rather than reading as a certificate that expired in 1970 (Story
+	// 5.33, AC7).
+	tlsReloads map[string]int64
+	tlsExpiry  time.Time
+
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
 
@@ -113,6 +121,7 @@ func New(version string) *Registry {
 		lastSuccess:     make(map[labels]time.Time),
 		lastAttempt:     make(map[labels]time.Time),
 		sweepRuns:       make(map[string]int64),
+		tlsReloads:      make(map[string]int64),
 	}
 }
 
@@ -315,6 +324,33 @@ func (r *Registry) SweepSucceeded(at time.Time) {
 	r.lastSweepSuccess = at
 }
 
+// Certificate reload outcomes, as TLSCertificateReloaded counts them.
+const (
+	TLSReloadSuccess = "success"
+	TLSReloadFailure = "failure"
+)
+
+// TLSCertificateReloaded counts one attempt to load a renewed certificate by
+// outcome, TLSReloadSuccess or TLSReloadFailure. Loading the certificate at
+// startup is not a reload, and a check that finds nothing changed is not an
+// attempt.
+func (r *Registry) TLSCertificateReloaded(outcome string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.tlsReloads[outcome]++
+}
+
+// SetTLSCertificateExpiry records the not-after time of the certificate being
+// served, so "the certificate is close to expiry" is an alert rather than a
+// log search.
+func (r *Registry) SetTLSCertificateExpiry(notAfter time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.tlsExpiry = notAfter
+}
+
 // SetQueueDepth records how many scans are waiting.
 func (r *Registry) SetQueueDepth(n int) {
 	r.mu.Lock()
@@ -440,10 +476,22 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_last_successful_prune_timestamp_seconds",
 		"Unix time of the last prune that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastPruneSuccess)))
-	writeSweepRuns(&b, r.sweepRuns)
+	writeOutcomes(&b, "wsaw_sweep_runs_total", "Completed sweeps, by outcome.", r.sweepRuns)
 	writeGaugeValue(&b, "wsaw_last_successful_sweep_timestamp_seconds",
 		"Unix time of the last sweep that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastSweepSuccess)))
+	writeOutcomes(&b, "wsaw_tls_certificate_reloads_total",
+		"Attempts to load a renewed TLS certificate, by outcome.", r.tlsReloads)
+
+	// Written as an integer, the way the scan timestamp is: %g keeps six
+	// significant digits, which rounds a Unix time to the nearest few hours
+	// — most of a 24-hour certificate's margin.
+	if !r.tlsExpiry.IsZero() {
+		fmt.Fprintf(&b, "# HELP wsaw_tls_certificate_expiry_timestamp_seconds Unix time the certificate being served expires.\n"+
+			"# TYPE wsaw_tls_certificate_expiry_timestamp_seconds gauge\n"+
+			"wsaw_tls_certificate_expiry_timestamp_seconds %d\n", r.tlsExpiry.Unix())
+	}
+
 	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
 		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
 	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
@@ -497,9 +545,10 @@ func unixOrZero(t time.Time) int64 {
 	return t.Unix()
 }
 
-func writeSweepRuns(b *strings.Builder, values map[string]int64) {
-	fmt.Fprintf(b, "# HELP wsaw_sweep_runs_total Completed sweeps, by outcome.\n"+
-		"# TYPE wsaw_sweep_runs_total counter\n")
+// writeOutcomes renders a counter labelled only by outcome, in a stable
+// order.
+func writeOutcomes(b *strings.Builder, name, help string, values map[string]int64) {
+	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
 
 	outcomes := make([]string, 0, len(values))
 	for outcome := range values {
@@ -509,7 +558,7 @@ func writeSweepRuns(b *strings.Builder, values map[string]int64) {
 	sort.Strings(outcomes)
 
 	for _, outcome := range outcomes {
-		fmt.Fprintf(b, "wsaw_sweep_runs_total{outcome=%q} %d\n", outcome, values[outcome])
+		fmt.Fprintf(b, "%s{outcome=%q} %d\n", name, outcome, values[outcome])
 	}
 }
 

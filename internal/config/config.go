@@ -686,8 +686,15 @@ type API struct {
 	// Token protects the API and UI. May be a secret reference.
 	Token string `yaml:"token,omitempty"`
 
+	// TLSCert and TLSKey name a PEM certificate and key. Both set serves
+	// HTTPS; neither serves plain HTTP. The files are read again whenever
+	// they change, so a renewed certificate is served without a restart
+	// (Story 5.33).
 	TLSCert string `yaml:"tlsCert,omitempty"`
 	TLSKey  string `yaml:"tlsKey,omitempty"`
+	// TLSReloadInterval is how often the two files are checked for a
+	// renewed pair. Empty takes DefaultTLSReloadInterval.
+	TLSReloadInterval Duration `yaml:"tlsReloadInterval,omitempty"`
 
 	// WebUI serves the browser interface.
 	WebUI *bool `yaml:"webui,omitempty"`
@@ -710,6 +717,30 @@ type API struct {
 	// typing it into the web interface (Story 5.27). Off by default: it turns
 	// wsaw into a service that fetches an address somebody else chose.
 	AdHocURLs AdHocURLs `yaml:"adHocUrls,omitempty"`
+}
+
+// How often the certificate files are checked for a renewal (Story 5.33).
+//
+// A minute is the default because it costs two reads of files a few
+// kilobytes long, and it bounds how long a renewed certificate waits to be
+// served well inside any renewal window, a 24-hour certificate's included.
+// Ten seconds is the floor: a check more often than that serves nobody
+// sooner in any way that matters, and a renewal hook that cannot wait has
+// SIGHUP.
+const (
+	DefaultTLSReloadInterval = time.Minute
+	MinTLSReloadInterval     = 10 * time.Second
+)
+
+// TLSEnabled reports whether the interface is served over HTTPS.
+func (a API) TLSEnabled() bool {
+	return a.TLSCert != "" && a.TLSKey != ""
+}
+
+// TLSReloadEvery returns how often the certificate files are checked, or the
+// default.
+func (a API) TLSReloadEvery() time.Duration {
+	return a.TLSReloadInterval.Or(DefaultTLSReloadInterval)
 }
 
 // AdHocURLs configures scanning a URL that nobody put in the configuration

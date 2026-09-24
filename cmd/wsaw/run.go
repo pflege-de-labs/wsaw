@@ -141,8 +141,10 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		}
 	}()
 
+	var srv *httpapi.Server
+
 	if a.Config.API.Enabled {
-		srv, err := buildServer(a, d, currentTargets)
+		srv, err = buildServer(a, d, currentTargets)
 		if err != nil {
 			return err
 		}
@@ -172,6 +174,9 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 
 		a.MaintenanceLoop(runCtx, sweeps)
 	}()
+
+	// Where the certificate is read from, which a reload may move.
+	certPaths := tlsPaths{cert: a.Config.API.TLSCert, key: a.Config.API.TLSKey}
 
 	// SIGHUP reloads configuration. An invalid new config is rejected and the
 	// running one stays active (Story 3.4).
@@ -203,19 +208,28 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 			return err
 
 		case <-hup:
-			newTargets, sweep, err := reload(a, cf)
+			next, err := reload(a, cf)
 			if err != nil {
 				a.Logger.Error("reload rejected, keeping the running configuration", "error", err)
+
+				// SIGHUP is also how a renewal hook says the new certificate
+				// is on disk, and a configuration that did not reload says
+				// nothing about that: the pair is loaded again from the
+				// paths already in force (Story 5.33, AC3).
+				reloadCertificate(runCtx, srv, certPaths)
 
 				continue
 			}
 
 			targetsMu.Lock()
-			targets = newTargets
+			targets = next.targets
 			targetsMu.Unlock()
 
-			d.Reload(newTargets)
-			offerSweepSchedule(sweeps, sweep)
+			d.Reload(next.targets)
+			offerSweepSchedule(sweeps, next.sweep)
+
+			certPaths = next.certPaths
+			reloadCertificate(runCtx, srv, certPaths)
 		}
 	}
 }
@@ -240,17 +254,36 @@ func offerSweepSchedule(sweeps chan app.SweepSchedule, s app.SweepSchedule) {
 	}
 }
 
+// tlsPaths is where the interface's certificate and key are read from.
+type tlsPaths struct{ cert, key string }
+
+// reloadCertificate loads the certificate again, when the interface is
+// served at all.
+func reloadCertificate(ctx context.Context, srv *httpapi.Server, p tlsPaths) {
+	if srv != nil {
+		srv.ReloadCertificate(ctx, p.cert, p.key)
+	}
+}
+
+// reloaded is what an accepted reload hands the running daemon.
+type reloaded struct {
+	targets   []config.Resolved
+	sweep     app.SweepSchedule
+	certPaths tlsPaths
+}
+
 // reload re-reads and re-validates configuration. It deliberately does not
 // swap the store, browser pool, or notifiers: those are process-level
 // resources, and silently rebuilding them on a signal would make a reload
 // riskier than a restart.
-func reload(a *app.App, cf configFlags) ([]config.Resolved, app.SweepSchedule, error) {
+func reload(a *app.App, cf configFlags) (reloaded, error) {
 	cfg, err := cf.load()
 	if err != nil {
-		return nil, app.SweepSchedule{}, err
+		return reloaded{}, err
 	}
 
-	// A reload can only replace the target list and the sweep schedule.
+	// A reload can only replace the target list, the sweep schedule and
+	// where the certificate is read from.
 	// Everything else became a browser pool, a normalizer, an HTTP server or
 	// a scheduler at startup, so a change to it cannot take effect in this
 	// process — and adopting the half that can while logging "configuration
@@ -258,7 +291,7 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, app.SweepSchedule, e
 	// (Tenet 5). Refusing names what moved and keeps the running
 	// configuration.
 	if changed := config.NonReloadableChanges(a.Config, cfg); len(changed) > 0 {
-		return nil, app.SweepSchedule{}, fmt.Errorf(
+		return reloaded{}, fmt.Errorf(
 			"%s cannot change without a restart; the running configuration is unchanged. "+
 				"Restart wsaw to apply %s",
 			strings.Join(changed, ", "),
@@ -267,7 +300,7 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, app.SweepSchedule, e
 
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
-		return nil, app.SweepSchedule{}, err
+		return reloaded{}, err
 	}
 
 	sweep := app.SweepScheduleFor(cfg)
@@ -275,7 +308,11 @@ func reload(a *app.App, cf configFlags) ([]config.Resolved, app.SweepSchedule, e
 	a.Logger.Info("configuration reloaded", "targets", len(targets),
 		"sweep", sweep.Enabled, "sweep_interval", sweep.Interval.String())
 
-	return targets, sweep, nil
+	return reloaded{
+		targets:   targets,
+		sweep:     sweep,
+		certPaths: tlsPaths{cert: cfg.API.TLSCert, key: cfg.API.TLSKey},
+	}, nil
 }
 
 func pluralSettings(n int) string {
@@ -473,13 +510,16 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 	adHoc := a.Config.API.AdHocURLs
 
 	return httpapi.New(httpapi.Options{
-		Listen:         a.Config.API.Listen,
-		Token:          token,
-		TLSCert:        a.Config.API.TLSCert,
-		TLSKey:         a.Config.API.TLSKey,
-		WebUI:          webUI,
-		ReadOnly:       a.Config.API.ReadOnly,
-		AllowAdHocScan: allowAdHoc,
+		Listen:  a.Config.API.Listen,
+		Token:   token,
+		TLSCert: a.Config.API.TLSCert,
+		TLSKey:  a.Config.API.TLSKey,
+		// Read again when the files change, so a renewal needs no restart
+		// (Story 5.33).
+		TLSReloadInterval: a.Config.API.TLSReloadEvery(),
+		WebUI:             webUI,
+		ReadOnly:          a.Config.API.ReadOnly,
+		AllowAdHocScan:    allowAdHoc,
 		// Typed URLs are their own switch, not a consequence of ad-hoc
 		// scanning being on: one lets a reader rescan a target somebody
 		// configured, the other lets them choose the address (Story 5.27).
