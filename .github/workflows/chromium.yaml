@@ -10,7 +10,11 @@
 #
 # This workflow reads the version straight out of the branch's APKINDEX for
 # both architectures the image is built for, and opens a pull request bumping
-# CHROMIUM_VERSION when it has moved. It reads the index rather than running
+# CHROMIUM_VERSION when it has moved — in the Dockerfile and in
+# deploy/browser/Dockerfile together, since the per-scan browser image pins
+# the same Chromium (ci.yaml's browser-image job refuses the two drifting).
+# Alpine builds chromium and chromium-headless-shell from one source package,
+# so the version read for chromium is the one both install. It reads the index rather than running
 # `apk policy` in a container because the arm64 answer would otherwise need
 # QEMU, and the two architectures are built separately by Alpine's builders:
 # for a few hours after a release one can carry the new version while the
@@ -97,11 +101,13 @@ jobs:
             exit 0
           fi
 
-          sed -i "s/^ARG CHROMIUM_VERSION=.*/ARG CHROMIUM_VERSION=$LATEST/" Dockerfile
-          git diff --exit-code --quiet Dockerfile && {
-            echo "::error::the Dockerfile did not change"
-            exit 1
-          }
+          sed -i "s/^ARG CHROMIUM_VERSION=.*/ARG CHROMIUM_VERSION=$LATEST/" Dockerfile deploy/browser/Dockerfile
+          for f in Dockerfile deploy/browser/Dockerfile; do
+            git diff --exit-code --quiet "$f" && {
+              echo "::error::$f did not change"
+              exit 1
+            }
+          done
 
           git config user.name "github-actions[bot]"
           git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
@@ -115,9 +121,9 @@ jobs:
             --body "$(cat <<EOF
           Alpine $BRANCH now carries \`chromium=$LATEST\` for both x86_64 and aarch64; the image pins \`$PINNED\`, which the branch no longer serves, so the image build stops resolving it.
 
-          This changes \`CHROMIUM_VERSION\` in the Dockerfile and nothing else. Before merging:
+          This changes \`CHROMIUM_VERSION\` in the Dockerfile and in deploy/browser/Dockerfile, and nothing else. Before merging:
 
-          - CI's container-sandbox job must pass: it builds the image with this version and checks the sandbox still starts under \`deploy/chromium-seccomp.json\`.
+          - CI's container-sandbox and browser-image jobs must pass: they build both images with this version and check the sandbox still starts under \`deploy/chromium-seccomp.json\`.
           - Read the release notes for anything that changes what a scan sees, and record the bump in CHANGELOG.md — results across this change are rendered by a different browser.
 
           Chrome releases: https://chromereleases.googleblog.com/search?q=$major

@@ -22,6 +22,9 @@ criteria, and any that are still open, are written down.
   Chromium refuses to start. Published with each release as
   `ghcr.io/pflege-de-labs/wsaw-browser`, and built locally with
   `make docker-browser`. The default image is unchanged.
+- The Chromium bump workflow updates the browser image together with the
+  wsaw image, and CI refuses a change that lets their Alpine base or
+  Chromium version drift apart.
 
 ### Changed
 
