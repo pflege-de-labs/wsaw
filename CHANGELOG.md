@@ -9,6 +9,62 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A renewed TLS certificate is served without a restart (Story 5.33). wsaw
+  checks `api.tlsCert` and `api.tlsKey` every `api.tlsReloadInterval`
+  (new; default 1m, at least 10s) and loads the pair when the files' contents
+  change. It compares contents rather than modification times, so the
+  symlink swap of a Kubernetes secret mount is picked up too. SIGHUP loads the
+  pair at once, including when the rest of the reloaded configuration is
+  refused. Open connections keep the certificate they negotiated.
+- A renewal that cannot be loaded — half-written, unparseable, mismatched with
+  its key, or already expired — leaves the served certificate in place. It is
+  logged as a warning, and as an error once less than a fifth of the served
+  certificate's lifetime is left.
+- `wsaw_tls_certificate_expiry_timestamp_seconds`, the Unix time the served
+  certificate expires, and `wsaw_tls_certificate_reloads_total{outcome}`. The
+  gauge is left out when the interface is served over plain HTTP.
+
+### Changed
+
+- A missing, unparseable or mismatched TLS certificate or key now stops
+  `wsaw run` before it listens, with the setting and the path in the error.
+  Before, it surfaced only once the listener tried to start serving TLS.
+- `api.tlsCert` and `api.tlsKey` may change on SIGHUP while TLS stays on.
+  Turning TLS on or off still needs a restart, and a reload that tries is
+  refused, naming both settings.
+- The embedded SQLite driver, `modernc.org/sqlite`, is updated from 1.58.0 to
+  1.59.0, and with it `modernc.org/libc` from 1.75.6 to 1.75.7 (#81). It is
+  still pure Go, and no module was added.
+
+### Fixed
+
+- Metric values above a million are written exactly. They were formatted
+  with six significant digits, which put `wsaw_last_successful_prune_timestamp_seconds`
+  and `wsaw_last_successful_sweep_timestamp_seconds` up to about 1.4 hours
+  off. It also rounded the artifact byte totals and histogram `_sum` values.
+  The text on `/metrics` changes from, for example, `1.79e+09` to
+  `1790000123`. Metric names, types and labels, and the histograms' `le`
+  bucket labels, are unchanged.
+
+### Known issues
+
+- Twelve metrics named as counters are declared `# TYPE … gauge` on
+  `/metrics`: `wsaw_browser_restarts_total`, `wsaw_notifications_sent_total`,
+  `wsaw_notifications_failed_total`, `wsaw_store_retries_total`,
+  `wsaw_results_pruned_total`, `wsaw_scan_retries_total`,
+  `wsaw_scan_retries_exhausted_total`, `wsaw_artifacts_deleted_total`,
+  `wsaw_artifact_bytes_freed_total`, `wsaw_artifact_deletions_failed_total`,
+  `wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total`. Their
+  values only ever rise, and they reset only when the process restarts, so
+  `rate()` and `increase()` over them are correct. But tooling that reads the
+  declared type — `promtool check metrics`, an OpenMetrics parser, a
+  dashboard that picks its query from the type — treats them as gauges.
+  Declaring them `counter` is a change to the metrics interface
+  (AGENTS.md §8), so it waits for its own release and will be listed there
+  under Changed. The other `_total` metrics are already declared counters.
+
 ## [0.1.1] - 2026-09-23
 
 The first release with a container image. The binaries behave exactly as
