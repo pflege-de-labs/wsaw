@@ -34,6 +34,9 @@ criteria, and any that are still open, are written down.
 - `api.tlsCert` and `api.tlsKey` may change on SIGHUP while TLS stays on.
   Turning TLS on or off still needs a restart, and a reload that tries is
   refused, naming both settings.
+- The embedded SQLite driver, `modernc.org/sqlite`, is updated from 1.58.0 to
+  1.59.0, and with it `modernc.org/libc` from 1.75.6 to 1.75.7 (#81). It is
+  still pure Go, and no module was added.
 
 ### Fixed
 
