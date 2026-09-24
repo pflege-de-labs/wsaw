@@ -310,7 +310,7 @@
         },
         "browserSandbox": {
           "type": "boolean",
-          "description": "Whether Chrome's own sandbox was active. In a container the container is the boundary and the inner sandbox is normally off, which is a material fact about the scan."
+          "description": "Whether Chrome's own sandbox was active. In a container it depends on the image: the default image turns it off, leaving the container as the only boundary, while an image that declares de.pflege.wsaw.browser.sandbox=enabled (deploy/browser) keeps it, unless a sandbox-weakening switch was passed in browser.container.browserArgs. Either way it is a material fact about the scan."
         },
         "browserReused": {
           "type": "boolean",

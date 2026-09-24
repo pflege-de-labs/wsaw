@@ -9,6 +9,34 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A per-scan browser image that keeps Chrome's own sandbox inside the
+  container (Story 1.8, AC5). `deploy/browser` builds Alpine's
+  `chromium-headless-shell` — the same Alpine digest and Chromium version as
+  the wsaw image — running as an unprivileged user, and speaks the contract
+  `chromedp/headless-shell` set: CDP on port 9222, extra arguments appended,
+  `--version` on the last line. Rootless Podman's default seccomp profile
+  allows the sandbox; under Docker pass `deploy/chromium-seccomp.json`
+  through `browser.container.extraArgs`. Where the sandbox cannot be built,
+  Chromium refuses to start. Published with each release as
+  `ghcr.io/pflege-de-labs/wsaw-browser`, and built locally with
+  `make docker-browser`. The default image is unchanged.
+- The Chromium bump workflow updates the browser image together with the
+  wsaw image, and CI refuses a change that lets their Alpine base or
+  Chromium version drift apart.
+
+### Changed
+
+- `browserSandbox` in a result, and the startup log, now report Chrome's
+  sandbox as active in a container when the image declares it with the
+  label `de.pflege.wsaw.browser.sandbox=enabled` and no sandbox-weakening
+  switch (`--no-sandbox`, `--no-zygote-sandbox`, `--disable-namespace-sandbox`,
+  `--disable-seccomp-filter-sandbox`) is in `browser.container.browserArgs`.
+  Before, every containerised scan was recorded as unsandboxed. Results
+  from the default image are unchanged. A label that cannot be read is
+  logged and recorded as unsandboxed.
+
 ## [0.2.1] - 2026-09-24
 
 A certificate the server could not load is caught when the configuration is

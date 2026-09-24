@@ -48,12 +48,21 @@ func TestBrowserSandboxed(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "containerised, sandbox never reported active",
+			name: "containerised, image disables the sandbox",
 			app: &App{
 				Config:  &config.Config{Browser: config.Browser{NoSandbox: false}},
 				Runtime: &container.Runtime{Kind: container.KindDocker},
 			},
 			want: false,
+		},
+		{
+			name: "containerised, image keeps the sandbox",
+			app: &App{
+				Config:           &config.Config{Browser: config.Browser{NoSandbox: false}},
+				Runtime:          &container.Runtime{Kind: container.KindPodman},
+				ContainerSandbox: true,
+			},
+			want: true,
 		},
 	}
 
@@ -63,6 +72,36 @@ func TestBrowserSandboxed(t *testing.T) {
 
 			if got := tc.app.BrowserSandboxed(); got != tc.want {
 				t.Errorf("BrowserSandboxed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDisablesSandbox(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "no arguments", args: nil, want: false},
+		{name: "unrelated arguments", args: []string{"--lang=de-DE", "--disable-gpu"}, want: false},
+		{name: "--no-sandbox", args: []string{"--lang=de-DE", "--no-sandbox"}, want: true},
+		{name: "--no-sandbox with a value", args: []string{"--no-sandbox=1"}, want: true},
+		{name: "--no-zygote-sandbox", args: []string{"--no-zygote-sandbox"}, want: true},
+		{name: "--disable-namespace-sandbox", args: []string{"--disable-namespace-sandbox"}, want: true},
+		{name: "--disable-seccomp-filter-sandbox", args: []string{"--disable-seccomp-filter-sandbox"}, want: true},
+		{name: "--disable-setuid-sandbox leaves the namespace sandbox", args: []string{"--disable-setuid-sandbox"}, want: false},
+		{name: "a longer flag that only starts alike", args: []string{"--no-sandbox-and-more"}, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := disablesSandbox(tc.args); got != tc.want {
+				t.Errorf("disablesSandbox(%q) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
 	}

@@ -6,6 +6,15 @@
 #   ghcr.io/pflege-de-labs/wsaw            the default build
 #   ghcr.io/pflege-de-labs/wsaw-cloudblob  with the S3, GCS and Azure drivers
 #
+# and, alongside them, the per-scan browser image deploy/browser builds
+# (Story 1.8, AC5) — Chromium with its own sandbox, for a wsaw that runs on the
+# host and starts the browser in a container:
+#
+#   ghcr.io/pflege-de-labs/wsaw-browser
+#
+# It is versioned with the release it was built from, like the other two, so
+# a pinned wsaw and a pinned browser can be read as a pair.
+#
 # The names follow `make docker`: the variant is in the image name, not only in
 # a tag, because an image is pulled by name and two that differ by some 28 MB of
 # cloud SDK and by which URL schemes they can reach must not share one
@@ -64,10 +73,22 @@ jobs:
         include:
           - variant: default
             name: wsaw
+            context: .
             build_tags: ""
+            description: wsaw, the website asset watcher (default build)
+            chrome_path: /usr/bin/chromium-browser
           - variant: cloudblob
             name: wsaw-cloudblob
+            context: .
             build_tags: cloudblob
+            description: wsaw, the website asset watcher (cloudblob build)
+            chrome_path: /usr/bin/chromium-browser
+          - variant: browser
+            name: wsaw-browser
+            context: deploy/browser
+            build_tags: ""
+            description: Headless Chromium with its own sandbox, for wsaw's per-scan browser containers
+            chrome_path: /usr/bin/chromium-headless-shell
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -147,7 +168,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.TAGS }}
@@ -158,7 +179,7 @@ jobs:
             BUILD_TAGS=${{ matrix.build_tags }}
           labels: |
             org.opencontainers.image.title=${{ matrix.name }}
-            org.opencontainers.image.description=wsaw, the website asset watcher (${{ matrix.variant }} build)
+            org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ env.SHA }}
@@ -192,6 +213,7 @@ jobs:
           done
 
       - name: The pushed image runs and reports the release
+        if: matrix.variant != 'browser'
         run: |
           for arch in amd64 arm64; do
             var="DIGEST_${arch^^}"
@@ -203,10 +225,27 @@ jobs:
             esac
           done
 
+      # The browser image has no wsaw in it; what it has to report is the
+      # Chromium it was built with, on each architecture, as the last line of
+      # --version — which is what internal/container reads.
+      - name: The pushed browser image runs and reports its Chromium
+        if: matrix.variant == 'browser'
+        run: |
+          want=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' deploy/browser/Dockerfile)
+          for arch in amd64 arm64; do
+            var="DIGEST_${arch^^}"
+            out=$(docker run --rm --platform "linux/$arch" "$IMAGE@${!var}" --version | tail -n 1)
+            echo "linux/$arch: $out"
+            case "$out" in
+              "Chromium ${want%-r*}"*) ;;
+              *) echo "::error::linux/$arch reports '$out', want Chromium ${want%-r*}"; exit 1 ;;
+            esac
+          done
       - name: The pushed image keeps Chromium's sandbox
         run: |
           docker run --rm --platform linux/amd64 \
             --security-opt seccomp=deploy/chromium-seccomp.json \
+            -e WSAW_CHROME_PATH=${{ matrix.chrome_path }} \
             -v "$PWD/test/sandbox/probe.sh:/probe.sh:ro" \
             --entrypoint sh "$IMAGE@$DIGEST_AMD64" /probe.sh
 

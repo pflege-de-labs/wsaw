@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,6 +59,10 @@ type App struct {
 	Runtime *container.Runtime
 	// BrowserImage is the container image in use, empty when local.
 	BrowserImage string
+	// ContainerSandbox is true when Chrome keeps its own sandbox inside the
+	// container: the image declares it (container.LabelSandbox) and the
+	// operator has not appended --no-sandbox. Meaningless without Runtime.
+	ContainerSandbox bool
 
 	Version string
 
@@ -512,8 +517,20 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 		a.Logger.Info("cleaned up orphaned browser containers", "removed", removed)
 	}
 
+	// Whether Chrome's own sandbox survives inside the container is the
+	// image's to say, not something to assume either way (AC5, AC7). A label
+	// that cannot be read is not fatal, since the image already ran above,
+	// but it is recorded as unsandboxed: claiming a boundary nobody verified
+	// is the one answer that must not be given by default.
+	keeps, err := runtime.ImageKeepsSandbox(ctx, image)
+	if err != nil {
+		a.Logger.Warn("could not read whether the browser image keeps Chrome's sandbox; recording scans as unsandboxed",
+			"image", image, "error", err)
+	}
+
 	a.Runtime = runtime
 	a.BrowserImage = image
+	a.ContainerSandbox = keeps && !disablesSandbox(a.Config.Browser.Container.BrowserArgs)
 	a.Chrome = browser.Info{Version: version, Path: image}
 
 	launch.Container = &containerLauncher{
@@ -539,11 +556,15 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 		"browser", version,
 	)
 
-	// Stated rather than left implicit: the shipped image disables Chrome's
-	// own sandbox, because nesting it inside a container needs privileges
-	// that would weaken the container boundary itself. The container is the
-	// boundary here, and a reader of the result can see which it was.
-	a.Logger.Info("the container is the isolation boundary; Chrome's in-container sandbox is disabled by the image")
+	// Stated rather than left implicit, because it decides how many
+	// boundaries a hostile page has to cross, and a reader of the result can
+	// see which it was.
+	if a.ContainerSandbox {
+		a.Logger.Info("Chrome keeps its own sandbox inside the container; the container is a second boundary")
+	} else {
+		a.Logger.Info("the container is the isolation boundary; Chrome's in-container sandbox is disabled",
+			"image_keeps_sandbox", keeps)
+	}
 
 	return nil
 }
@@ -597,15 +618,41 @@ func (a *App) BrowserRuntimeName() string {
 
 // BrowserSandboxed reports whether Chrome's own sandbox is active.
 //
-// In a container it is not: the shipped image disables it, because nesting a
-// namespace sandbox needs privileges that would weaken the container boundary
-// that replaced it.
+// In a container it depends on the image. container.DefaultImage
+// (chromedp/headless-shell) forces --no-sandbox, leaving the container as the
+// only boundary; the image built from deploy/browser keeps the sandbox and
+// says so with container.LabelSandbox (Story 1.8, AC5 and AC7).
 func (a *App) BrowserSandboxed() bool {
 	if a.Runtime != nil {
-		return false
+		return a.ContainerSandbox
 	}
 
 	return !a.Config.Browser.NoSandbox
+}
+
+// sandboxWeakeningFlags are the Chrome switches that turn its sandbox off or
+// take a layer of it away. Any of them makes a scan unsandboxed for the
+// record: the answer errs towards reporting less isolation, never more.
+// --disable-setuid-sandbox is deliberately absent; it removes only the
+// fallback that the namespace sandbox makes unnecessary.
+var sandboxWeakeningFlags = []string{
+	"--no-sandbox",
+	"--no-zygote-sandbox",
+	"--disable-namespace-sandbox",
+	"--disable-seccomp-filter-sandbox",
+}
+
+// disablesSandbox reports whether browser arguments weaken Chrome's sandbox,
+// which no image label can see.
+func disablesSandbox(args []string) bool {
+	for _, arg := range args {
+		name, _, _ := strings.Cut(arg, "=")
+		if slices.Contains(sandboxWeakeningFlags, name) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (a *App) buildScanner() error {
