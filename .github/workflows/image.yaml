@@ -170,13 +170,32 @@ jobs:
       # and the amd64 image must start Chromium's sandbox under the shipped
       # seccomp profile — the property ci.yaml's container-sandbox job checks on
       # a locally built image, here checked on the one people will pull.
-      - name: The pushed image runs and reports the release
+      # Each architecture is run by its own manifest digest, read out of the
+      # index that was pushed. Running the index digest with --platform is what
+      # this step first did, and Docker's containerd image store refuses it
+      # ("cannot overwrite digest") once the index has been pulled for one
+      # platform. The per-architecture digests are still exactly what was
+      # pushed: they are the ones the index names.
+      - name: Find each architecture's manifest in the pushed image
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          ref="$IMAGE@$DIGEST"
+          index=$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw)
           for arch in amd64 arm64; do
-            out=$(docker run --rm --platform "linux/$arch" "$ref" version)
+            d=$(printf '%s' "$index" | jq -r --arg a "$arch" \
+              '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest')
+            if [ -z "$d" ] || [ "$(printf '%s\n' "$d" | wc -l)" -ne 1 ]; then
+              echo "::error::the pushed index names no single linux/$arch manifest"
+              exit 1
+            fi
+            echo "DIGEST_${arch^^}=$d" >> "$GITHUB_ENV"
+          done
+
+      - name: The pushed image runs and reports the release
+        run: |
+          for arch in amd64 arm64; do
+            var="DIGEST_${arch^^}"
+            out=$(docker run --rm --platform "linux/$arch" "$IMAGE@${!var}" version)
             echo "linux/$arch: $out"
             case "$out" in
               *"wsaw $TAG (commit $COMMIT,"*) ;;
@@ -185,13 +204,11 @@ jobs:
           done
 
       - name: The pushed image keeps Chromium's sandbox
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           docker run --rm --platform linux/amd64 \
             --security-opt seccomp=deploy/chromium-seccomp.json \
             -v "$PWD/test/sandbox/probe.sh:/probe.sh:ro" \
-            --entrypoint sh "$IMAGE@$DIGEST" /probe.sh
+            --entrypoint sh "$IMAGE@$DIGEST_AMD64" /probe.sh
 
       - name: Record what was published
         env:
