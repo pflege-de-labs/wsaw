@@ -9,6 +9,11 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
+A renewed TLS certificate is served without a restart, and the metrics are no
+longer rounded before a scraper reads them.
+
 ### Added
 
 - A renewed TLS certificate is served without a restart (Story 5.33). wsaw
@@ -48,7 +53,7 @@ criteria, and any that are still open, are written down.
   `1790000123`. Metric names, types and labels, and the histograms' `le`
   bucket labels, are unchanged.
 
-### Known issues
+### Known limitations
 
 - Twelve metrics named as counters are declared `# TYPE … gauge` on
   `/metrics`: `wsaw_browser_restarts_total`, `wsaw_notifications_sent_total`,
@@ -310,6 +315,7 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.0
 [0.1.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.0
