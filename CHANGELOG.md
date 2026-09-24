@@ -9,6 +9,42 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A renewed TLS certificate is served without a restart (Story 5.33). wsaw
+  checks `api.tlsCert` and `api.tlsKey` every `api.tlsReloadInterval`
+  (new; default 1m, at least 10s) and loads the pair when the files' contents
+  change. It compares contents rather than modification times, so the
+  symlink swap of a Kubernetes secret mount is picked up too. SIGHUP loads the
+  pair at once, including when the rest of the reloaded configuration is
+  refused. Open connections keep the certificate they negotiated.
+- A renewal that cannot be loaded — half-written, unparseable, mismatched with
+  its key, or already expired — leaves the served certificate in place. It is
+  logged as a warning, and as an error once less than a fifth of the served
+  certificate's lifetime is left.
+- `wsaw_tls_certificate_expiry_timestamp_seconds`, the Unix time the served
+  certificate expires, and `wsaw_tls_certificate_reloads_total{outcome}`. The
+  gauge is left out when the interface is served over plain HTTP.
+
+### Changed
+
+- A missing, unparseable or mismatched TLS certificate or key now stops
+  `wsaw run` before it listens, with the setting and the path in the error.
+  Before, it surfaced only once the listener tried to start serving TLS.
+- `api.tlsCert` and `api.tlsKey` may change on SIGHUP while TLS stays on.
+  Turning TLS on or off still needs a restart, and a reload that tries is
+  refused, naming both settings.
+
+### Fixed
+
+- Metric values above a million are written exactly. They were formatted
+  with six significant digits, which put `wsaw_last_successful_prune_timestamp_seconds`
+  and `wsaw_last_successful_sweep_timestamp_seconds` up to about 1.4 hours
+  off. It also rounded the artifact byte totals and histogram `_sum` values.
+  The text on `/metrics` changes from, for example, `1.79e+09` to
+  `1790000123`. Metric names, types and labels, and the histograms' `le`
+  bucket labels, are unchanged.
+
 ### Known issues
 
 - Twelve metrics named as counters are declared `# TYPE … gauge` on
