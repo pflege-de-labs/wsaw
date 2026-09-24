@@ -311,7 +311,7 @@ func TestTheSweepGaugeReadsZeroUntilASweepSucceeds(t *testing.T) {
 	r.SweepSucceeded(at)
 
 	out = render(t, r)
-	if !strings.Contains(out, "wsaw_last_successful_sweep_timestamp_seconds 1.79e+09\n") {
+	if !strings.Contains(out, "wsaw_last_successful_sweep_timestamp_seconds 1790000000\n") {
 		t.Errorf("the gauge does not read the successful sweep's time:\n%s", out)
 	}
 
@@ -345,6 +345,39 @@ func TestTheCertificateMetricsAreLeftOutUntilTLSIsServed(t *testing.T) {
 		`wsaw_tls_certificate_reloads_total{outcome="failure"} 1` + "\n",
 		`wsaw_tls_certificate_reloads_total{outcome="success"} 2` + "\n",
 		"# TYPE wsaw_tls_certificate_reloads_total counter\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestLargeValuesAreWrittenExactly is the regression for sample values
+// written with %g, which keeps six significant digits: a Unix time came out
+// rounded to the nearest thousand seconds or more, and a byte total to the
+// nearest kilobyte and worse as it grew. An alert on "no sweep in two days"
+// or on bucket growth was reading a number that had quietly been rounded.
+func TestLargeValuesAreWrittenExactly(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	r.SweepSucceeded(time.Unix(1_790_000_123, 0))
+	r.PruneSucceeded(time.Unix(1_790_000_456, 0))
+	r.ArtifactStored(1_234_567_891, 987_654_321)
+
+	res := result(true)
+	res.Duration = 1_234_567_891 * time.Millisecond
+	r.ScanFinished("site", model.ConsentReject, res)
+
+	out := render(t, r)
+
+	for _, want := range []string{
+		"wsaw_last_successful_sweep_timestamp_seconds 1790000123\n",
+		"wsaw_last_successful_prune_timestamp_seconds 1790000456\n",
+		"wsaw_artifact_bytes_total 1234567891\n",
+		"wsaw_artifact_stored_bytes_total 987654321\n",
+		`wsaw_scan_duration_seconds_sum{target="site",consent_mode="reject"} 1234567.891` + "\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

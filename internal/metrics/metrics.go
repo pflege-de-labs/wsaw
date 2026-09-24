@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -483,13 +484,9 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeOutcomes(&b, "wsaw_tls_certificate_reloads_total",
 		"Attempts to load a renewed TLS certificate, by outcome.", r.tlsReloads)
 
-	// Written as an integer, the way the scan timestamp is: %g keeps six
-	// significant digits, which rounds a Unix time to the nearest few hours
-	// — most of a 24-hour certificate's margin.
 	if !r.tlsExpiry.IsZero() {
-		fmt.Fprintf(&b, "# HELP wsaw_tls_certificate_expiry_timestamp_seconds Unix time the certificate being served expires.\n"+
-			"# TYPE wsaw_tls_certificate_expiry_timestamp_seconds gauge\n"+
-			"wsaw_tls_certificate_expiry_timestamp_seconds %d\n", r.tlsExpiry.Unix())
+		writeGaugeValue(&b, "wsaw_tls_certificate_expiry_timestamp_seconds",
+			"Unix time the certificate being served expires.", float64(r.tlsExpiry.Unix()))
 	}
 
 	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
@@ -531,7 +528,15 @@ func writeCounter(b *strings.Builder, name, help string, values map[labels]int64
 }
 
 func writeGaugeValue(b *strings.Builder, name, help string, v float64) {
-	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n%s %g\n", name, help, name, name, v)
+	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n%s %s\n", name, help, name, name, formatSample(v))
+}
+
+// formatSample writes a sample value exactly. %g keeps six significant
+// digits, which rounded a Unix time by up to hours and a byte total by
+// kilobytes or more; the shortest decimal that parses back to v loses
+// nothing, and reads as the plain integer most of these values are.
+func formatSample(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 // unixOrZero reports a timestamp as Unix seconds, or 0 for the zero time —
@@ -578,7 +583,7 @@ func writeHistogram(b *strings.Builder, name, help string, values map[labels]*hi
 
 		cumulative += h.counts[len(h.counts)-1]
 		fmt.Fprintf(b, "%s_bucket%s %d\n", name, withLabel(base, "le", "+Inf"), cumulative)
-		fmt.Fprintf(b, "%s_sum%s %g\n", name, base, h.sum)
+		fmt.Fprintf(b, "%s_sum%s %s\n", name, base, formatSample(h.sum))
 		fmt.Fprintf(b, "%s_count%s %d\n", name, base, cumulative)
 	}
 }

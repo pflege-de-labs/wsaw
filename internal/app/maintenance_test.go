@@ -587,7 +587,7 @@ func TestTheSweepMetricsMoveOnSuccessAndNotOnFailure(t *testing.T) {
 	st.sweepErr = nil
 	a.sweepOnce(t.Context(), time.Unix(1_800_000_000, 0))
 
-	if got := gauge(t, a.Metrics, "wsaw_last_successful_sweep_timestamp_seconds"); got != "wsaw_last_successful_sweep_timestamp_seconds 1.8e+09" {
+	if got := gauge(t, a.Metrics, "wsaw_last_successful_sweep_timestamp_seconds"); got != "wsaw_last_successful_sweep_timestamp_seconds 1800000000" {
 		t.Errorf("after a successful sweep the gauge reads %q, want its time", got)
 	}
 
