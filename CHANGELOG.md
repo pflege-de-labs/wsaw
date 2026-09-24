@@ -9,6 +9,20 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A per-scan browser image that keeps Chrome's own sandbox inside the
+  container (Story 1.8, AC5). `deploy/browser` builds Alpine's
+  `chromium-headless-shell` — the same Alpine digest and Chromium version as
+  the wsaw image — running as an unprivileged user, and speaks the contract
+  `chromedp/headless-shell` set: CDP on port 9222, extra arguments appended,
+  `--version` on the last line. Rootless Podman's default seccomp profile
+  allows the sandbox; under Docker pass `deploy/chromium-seccomp.json`
+  through `browser.container.extraArgs`. Where the sandbox cannot be built,
+  Chromium refuses to start. Published with each release as
+  `ghcr.io/pflege-de-labs/wsaw-browser`, and built locally with
+  `make docker-browser`. The default image is unchanged.
+
 ### Changed
 
 - `browserSandbox` in a result, and the startup log, now report Chrome's
