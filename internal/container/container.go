@@ -34,6 +34,15 @@ import (
 // scans, and a diff would report the change as the site's (Tenet 6).
 const DefaultImage = "docker.io/chromedp/headless-shell@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04"
 
+// LabelSandbox is the image label with which a browser image declares that
+// its entrypoint keeps Chrome's own sandbox on (deploy/browser, Story 1.8
+// AC5). DefaultImage does not carry it: its entrypoint forces --no-sandbox.
+const LabelSandbox = "de.pflege.wsaw.browser.sandbox"
+
+// SandboxEnabled is the value of LabelSandbox on an image that keeps the
+// sandbox. Any other value, or none, means it does not.
+const SandboxEnabled = "enabled"
+
 // cdpPort is the port the browser image listens on inside the container.
 const cdpPort = "9222"
 
@@ -430,6 +439,45 @@ func (r *Runtime) publishedPort(ctx context.Context, inst *Instance) (string, er
 	}
 
 	return line[idx+1:], nil
+}
+
+// ImageKeepsSandbox reports whether image declares, through LabelSandbox,
+// that Chrome's sandbox stays on inside it.
+//
+// The label is the image's promise about its entrypoint, and it is enough
+// to go on: Chrome refuses to start when it cannot build its sandbox rather
+// than falling back to running without one, so a browser from such an image
+// that answered CDP is a sandboxed one. What the label cannot see is a
+// --no-sandbox the operator appends through Spec.BrowserArgs; the caller
+// accounts for that.
+func (r *Runtime) ImageKeepsSandbox(ctx context.Context, image string) (bool, error) {
+	if image == "" {
+		image = DefaultImage
+	}
+
+	const inspectTimeout = 30 * time.Second
+
+	inspectCtx, cancel := context.WithTimeout(ctx, inspectTimeout)
+	defer cancel()
+
+	// .Config.Labels answers the same way under Docker and Podman; an absent
+	// label prints as an empty line.
+	out, err := run(inspectCtx, r.Path, "image", "inspect",
+		"--format", `{{ index .Config.Labels "`+LabelSandbox+`" }}`, image)
+	if err != nil {
+		return false, fmt.Errorf("reading the labels of browser image %s: %w", image, err)
+	}
+
+	return keepsSandbox(out), nil
+}
+
+// keepsSandbox reads LabelSandbox out of `image inspect` output. The output
+// is combined with stderr, where a runtime may print warnings first, so only
+// the last non-empty line is the label's value.
+func keepsSandbox(out string) bool {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+
+	return strings.TrimSpace(lines[len(lines)-1]) == SandboxEnabled
 }
 
 // BrowserVersion reports the browser version in the image, which doubles as a

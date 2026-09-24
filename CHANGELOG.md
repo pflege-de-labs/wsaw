@@ -9,6 +9,17 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- `browserSandbox` in a result, and the startup log, now report Chrome's
+  sandbox as active in a container when the image declares it with the
+  label `de.pflege.wsaw.browser.sandbox=enabled` and no sandbox-weakening
+  switch (`--no-sandbox`, `--no-zygote-sandbox`, `--disable-namespace-sandbox`,
+  `--disable-seccomp-filter-sandbox`) is in `browser.container.browserArgs`.
+  Before, every containerised scan was recorded as unsandboxed. Results
+  from the default image are unchanged. A label that cannot be read is
+  logged and recorded as unsandboxed.
+
 ## [0.2.1] - 2026-09-24
 
 A certificate the server could not load is caught when the configuration is

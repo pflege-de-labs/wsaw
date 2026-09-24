@@ -3,6 +3,7 @@ package container_test
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -157,6 +158,40 @@ func TestBrowserVersionReportsTheImagesBrowser(t *testing.T) {
 
 	if strings.Contains(version, "exec ") {
 		t.Errorf("version = %q; the entrypoint's own output leaked into it", version)
+	}
+}
+
+// TestImageKeepsSandbox is AC7's half that depends on the image: the result
+// must say whether Chrome's own sandbox ran, and DefaultImage forces it off.
+// The image deploy/browser builds keeps it on; CI builds that image and names
+// it in WSAW_TEST_BROWSER_IMAGE, and without it that half is skipped.
+func TestImageKeepsSandbox(t *testing.T) {
+	rt := requireRuntime(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	keeps, err := rt.ImageKeepsSandbox(ctx, "")
+	if err != nil {
+		t.Fatalf("ImageKeepsSandbox(DefaultImage): %v", err)
+	}
+
+	if keeps {
+		t.Error("DefaultImage forces --no-sandbox but was reported as keeping the sandbox")
+	}
+
+	image := os.Getenv("WSAW_TEST_BROWSER_IMAGE")
+	if image == "" {
+		t.Skip("WSAW_TEST_BROWSER_IMAGE is not set; build deploy/browser and name it there to check that image too")
+	}
+
+	keeps, err = rt.ImageKeepsSandbox(ctx, image)
+	if err != nil {
+		t.Fatalf("ImageKeepsSandbox(%s): %v", image, err)
+	}
+
+	if !keeps {
+		t.Errorf("%s does not declare %s=%s", image, container.LabelSandbox, container.SandboxEnabled)
 	}
 }
 

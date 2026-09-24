@@ -217,9 +217,10 @@ type Environment struct {
 	// BrowserImage is the container image, when containerised.
 	BrowserImage string `json:"browserImage,omitempty"`
 	// BrowserSandbox reports whether Chrome's own sandbox was active. In a
-	// container the container is the boundary and the inner sandbox is
-	// usually off, which is a material fact about the scan rather than an
-	// implementation detail.
+	// container that depends on the image: the default one turns it off and
+	// leaves the container as the only boundary, one that declares
+	// container.LabelSandbox keeps it. Either way it is a material fact about
+	// the scan rather than an implementation detail.
 	BrowserSandbox bool `json:"browserSandbox"`
 
 	// BrowserReused is true when this scan ran on a browser process that had
