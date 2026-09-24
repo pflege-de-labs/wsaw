@@ -298,6 +298,23 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 			pluralSettings(len(changed)))
 	}
 
+	// A certificate the new configuration names but the server could not
+	// load is refused with the rest of the file, so "configuration reloaded"
+	// is never logged over a pair that is not being served (Story 5.33,
+	// AC11). The pair already served stays in place either way.
+	notAfter, err := cfg.CheckTLSFiles()
+	if err != nil {
+		return reloaded{}, err
+	}
+
+	// An expired one is not refused, because startup does not refuse it
+	// either: a restart would accept this file, so a reload must too. It is
+	// an error all the same, because clients will refuse the certificate.
+	if !notAfter.IsZero() && !time.Now().Before(notAfter) {
+		a.Logger.Error("the configured TLS certificate has expired; renew it and wsaw will load the new one",
+			"cert", cfg.API.TLSCert, "not_after", notAfter.UTC())
+	}
+
 	targets, err := cfg.ResolveTargets(a.Secrets)
 	if err != nil {
 		return reloaded{}, err

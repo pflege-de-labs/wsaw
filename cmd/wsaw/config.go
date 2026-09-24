@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -237,6 +238,22 @@ func cmdConfig(args []string) error {
 	cfg, err := cf.load()
 	if err != nil {
 		return err
+	}
+
+	// The certificate files are read here and not in Load, which every
+	// command runs: this is the command whose answer is "the daemon would
+	// start and serve this" (Story 5.33, AC11).
+	notAfter, err := cfg.CheckTLSFiles()
+	if err != nil {
+		return err
+	}
+
+	// The daemon would start with an expired certificate and log an error,
+	// so the check passes and says the same thing where it is being read.
+	if !notAfter.IsZero() && !time.Now().Before(notAfter) {
+		fmt.Fprintf(os.Stderr, "error: api.tlsCert: the certificate in %s expired at %s; "+
+			"wsaw would serve it, and clients will refuse it\n",
+			cfg.API.TLSCert, notAfter.UTC().Format(time.RFC3339))
 	}
 
 	targets, err := cfg.ResolveTargets(nil)

@@ -1085,6 +1085,7 @@ Stories 5.4 and 5.11 give the API and the web interface TLS: `api.tlsCert` and `
   - a changed path is picked up on SIGHUP, and turning TLS off is reported as not reloadable
   - the gauge and the counter move on success and failure
   - cancelling the context stops the loop, checked with `-race`
+- AC11: A configuration that names a certificate the server could not load is caught when the configuration is checked, not first as a failed reload in the daemon's log. `wsaw config`, `--check` included, and a SIGHUP reload read both files and refuse the configuration naming the setting, for any of: a file that cannot be read, a PEM that does not parse, or a key that does not match its certificate. A refused reload leaves the pair already being served in place, as AC4 does. A certificate that has already expired does not fail the check, because startup serves one and logs an error rather than refusing to run (AC1). A reload that refused a file a restart would accept would block every target change until someone renewed the certificate. Instead the reload logs the expiry at `Error` and `wsaw config` prints it on stderr, and both carry on. The check is not part of `config.Validate`, which every command runs as whatever user runs it. The key file is usually readable only by the user the daemon runs as, and `wsaw scan` or `wsaw ui` must not fail over a file they never use. `wsaw run` at startup keeps AC1's check.
 
 ---
 

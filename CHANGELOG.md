@@ -9,6 +9,23 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-24
+
+A certificate the server could not load is caught when the configuration is
+checked, not first as a failed reload in the daemon's log.
+
+### Changed
+
+- `wsaw config`, including `--check`, and a SIGHUP reload now read the TLS
+  certificate and key and refuse a configuration whose pair could not be
+  served: unreadable, not PEM, or mismatched (Story 5.33, AC11). A refused
+  reload leaves the certificate already being served in place.
+- An expired certificate is reported but not refused, as at startup: the
+  reload logs an error and goes ahead, and `wsaw config` prints the expiry on
+  stderr and passes.
+- Run `wsaw config --check` as the daemon's user, since the key is usually
+  readable only by that user. No other command reads the files.
+
 ## [0.2.0] - 2026-09-24
 
 A renewed TLS certificate is served without a restart, and the metrics are no
@@ -315,7 +332,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.1
 [0.2.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.0
 [0.1.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.0

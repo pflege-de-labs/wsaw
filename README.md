@@ -398,6 +398,8 @@ The pair is loaded before anything listens, so a missing file, a PEM that does n
 
 A reload that fails leaves the certificate being served where it is. A renewal writes the certificate and the key as two separate writes, so between them the files briefly disagree, and a listener that stopped serving at that moment would turn every renewal into an outage. The same goes for a replacement that does not parse, does not match its key, or has already expired: wsaw logs a warning naming the file and the reason, and tries again when either file changes or on SIGHUP. It logs an error once less than a fifth of the served certificate's lifetime is left — about 18 days of a 90-day certificate, about 5 hours of a 24-hour one — because that is when somebody has to act.
 
+`wsaw config --check` reads the certificate and the key, and fails, naming the setting, if they could not be served: a file it cannot read, a PEM that does not parse, or a key that does not match. A SIGHUP reload runs the same check and refuses the configuration on any of them, so "configuration reloaded" is never logged over a certificate that is not being served. An expired certificate is reported, not refused. `wsaw run` starts with one and logs an error, so the reload logs the same error and goes ahead, and `--check` prints it on stderr and still passes. Run the check as the user the daemon runs as, since the key is usually readable only by that user. No other command reads the files.
+
 Moving the pair to new paths is a reload like any other. Turning HTTPS on or off is not: it changes what the listener is, so it needs a restart, and a reload that tries is refused naming `api.tlsCert` and `api.tlsKey`.
 
 ### Scanning a URL that is not a target
