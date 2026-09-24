@@ -9,6 +9,23 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Known issues
+
+- Twelve metrics named as counters are declared `# TYPE … gauge` on
+  `/metrics`: `wsaw_browser_restarts_total`, `wsaw_notifications_sent_total`,
+  `wsaw_notifications_failed_total`, `wsaw_store_retries_total`,
+  `wsaw_results_pruned_total`, `wsaw_scan_retries_total`,
+  `wsaw_scan_retries_exhausted_total`, `wsaw_artifacts_deleted_total`,
+  `wsaw_artifact_bytes_freed_total`, `wsaw_artifact_deletions_failed_total`,
+  `wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total`. Their
+  values only ever rise, and they reset only when the process restarts, so
+  `rate()` and `increase()` over them are correct. But tooling that reads the
+  declared type — `promtool check metrics`, an OpenMetrics parser, a
+  dashboard that picks its query from the type — treats them as gauges.
+  Declaring them `counter` is a change to the metrics interface
+  (AGENTS.md §8), so it waits for its own release and will be listed there
+  under Changed. The other `_total` metrics are already declared counters.
+
 ## [0.1.1] - 2026-09-23
 
 The first release with a container image. The binaries behave exactly as
