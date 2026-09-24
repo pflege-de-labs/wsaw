@@ -1059,7 +1059,7 @@ Story 5.31 prices one series for the reader already looking at it; this page ans
 - AC12: `GET /api/v1/storage` reports the same figures as JSON — per-series sizes and counts, the grand total, the driver and artifact location, and the recorded prune and sweep runs — because the HTML is derived from machine output and not the other way round (Tenet 16). It is additive to the API and carries no version bump (AGENTS.md §8).
 - AC13: Regression coverage, against a fixture store: rows ordered by total descending with shares summing to 100 and the grand total matching their sum; the monthly chart from scans spanning a year boundary, with a thinned month rendering small and the caption present; the prune chart rendering a zero-freed run rather than skipping it; the prune panel showing a failed run's error and each of its distinct empty states (no policy, policy not yet run); the sweep panel showing artifacts protected and foreign objects from a fixture run, and its own "never run" state; every chart asserted to carry its values as text and its `aria-label`, with one test rendering the page with no SVG at all and asserting no figure is lost; the snapshot served twice without re-reading the store and recomputed when asked; no mutating control anywhere in the page's markup; and the JSON endpoint agreeing figure for figure with the HTML built from the same fixture.
 
-### Story 5.33 — Pick up a renewed TLS certificate without a restart (not implemented)
+### Story 5.33 — Pick up a renewed TLS certificate without a restart
 
 *As an Operator, I want wsaw to serve a renewed certificate as soon as it is on disk, so that rotating the API's certificate does not mean restarting the daemon or waiting for it to expire.*
 

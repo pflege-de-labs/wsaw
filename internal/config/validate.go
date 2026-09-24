@@ -564,12 +564,38 @@ func (c *Config) validateAPI(add addFunc) {
 		add(0, "api", "tlsCert and tlsKey must be set together")
 	}
 
+	c.validateTLSReload(add)
+
 	// Binding beyond localhost without authentication would expose scan
 	// results, which can contain personal data, to the network.
 	if isRemoteListen(c.API.Listen) && c.API.Token == "" {
 		add(0, "api",
 			"listen address %q is not loopback but no token is set; remote exposure requires authentication",
 			c.API.Listen)
+	}
+}
+
+// validateTLSReload refuses a certificate check interval that cannot do what
+// it says (Story 5.33, AC2). An interval that cannot be parsed never gets
+// this far: Duration's own decoder refuses it with the line.
+func (c *Config) validateTLSReload(add addFunc) {
+	every := c.API.TLSReloadInterval.Duration()
+	if every == 0 {
+		return
+	}
+
+	// An interval beside a plain-HTTP listener would read as though a
+	// certificate were being watched.
+	if !c.API.TLSEnabled() {
+		add(0, "api.tlsReloadInterval", "is set but TLS is off; set api.tlsCert and api.tlsKey, or remove it")
+
+		return
+	}
+
+	if every < MinTLSReloadInterval {
+		add(0, "api.tlsReloadInterval",
+			"%s is shorter than the %s minimum; send wsaw SIGHUP to load a renewed certificate at once",
+			every, MinTLSReloadInterval)
 	}
 }
 

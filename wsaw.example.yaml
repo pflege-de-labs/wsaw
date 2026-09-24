@@ -461,6 +461,14 @@ api:
   # validation refuses to start without one.
   listen: 127.0.0.1:8712
   token: "${env:WSAW_API_TOKEN}"
+  # HTTPS: a PEM certificate and key, set together. Both files are read again
+  # when their contents change, so a renewed certificate is served without a
+  # restart; SIGHUP loads them at once. A renewal that cannot be loaded leaves
+  # the served certificate in place. Turning TLS on or off needs a restart.
+  # tlsCert: /etc/wsaw/tls/cert.pem
+  # tlsKey: /etc/wsaw/tls/key.pem
+  # How often the two files are checked (default 1m, at least 10s).
+  # tlsReloadInterval: 1m
   webui: true
   # How often the interface reloads itself, for a viewer who has not chosen
   # otherwise on the page. 0 disables it; the floor is 5s, because every

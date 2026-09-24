@@ -47,6 +47,14 @@ var reloadableKeys = map[string]struct{}{
 	// sweeps is the same one either way.
 	"store.sweep":         {},
 	"store.sweepInterval": {},
+
+	// The certificate pair is read from these paths on every reload, not
+	// only at startup (Story 5.33, AC6), so a new path takes effect the same
+	// way new content at the old one does. Whether TLS is on at all is a
+	// different matter — it decides what the listener is — and
+	// NonReloadableChanges reports that separately.
+	"api.tlsCert": {},
+	"api.tlsKey":  {},
 }
 
 // NonReloadableChanges returns the configuration keys that differ between the
@@ -96,6 +104,12 @@ func NonReloadableChanges(running, next *Config) []string {
 		if !reflect.DeepEqual(a.Interface(), b.Interface()) {
 			changed = append(changed, name)
 		}
+	}
+
+	// Turning TLS on or off needs a new listener, which only a restart
+	// makes, however reloadable the paths themselves are.
+	if running.API.TLSEnabled() != next.API.TLSEnabled() {
+		changed = append(changed, "api.tlsCert", "api.tlsKey")
 	}
 
 	sort.Strings(changed)

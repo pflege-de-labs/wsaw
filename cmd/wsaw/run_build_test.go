@@ -338,13 +338,13 @@ func TestReloadAdoptsANewTargetList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	targets, _, err := reload(a, *cf)
+	next, err := reload(a, *cf)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
 
-	if len(targets) != 2 {
-		t.Fatalf("targets = %d, want 2", len(targets))
+	if len(next.targets) != 2 {
+		t.Fatalf("targets = %d, want 2", len(next.targets))
 	}
 }
 
@@ -369,13 +369,13 @@ func TestReloadHandsOnTheSweepSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, sweep, err := reload(a, *cf)
+	next, err := reload(a, *cf)
 	if err != nil {
 		t.Fatalf("reload refused a new sweep interval: %v", err)
 	}
 
-	if want := (app.SweepSchedule{Enabled: true, Interval: 6 * time.Hour}); sweep != want {
-		t.Errorf("reload handed on %+v, want %+v", sweep, want)
+	if want := (app.SweepSchedule{Enabled: true, Interval: 6 * time.Hour}); next.sweep != want {
+		t.Errorf("reload handed on %+v, want %+v", next.sweep, want)
 	}
 }
 
@@ -392,6 +392,48 @@ func TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest(t *testing.T) {
 
 	if got := <-sweeps; got.Enabled {
 		t.Errorf("the loop was handed %+v, want the later reload's schedule", got)
+	}
+}
+
+// TestReloadMovesTheCertificateButDoesNotTurnTLSOff is Story 5.33, AC6: new
+// paths are handed on for the server to load, while turning TLS off would
+// need a new listener and is refused like any other startup-only change.
+func TestReloadMovesTheCertificateButDoesNotTurnTLSOff(t *testing.T) {
+	const withTLS = "\napi:\n  enabled: true\n  tlsCert: /etc/wsaw/cert.pem\n  tlsKey: /etc/wsaw/key.pem\n"
+
+	path := writeConfig(t, oneTargetConfig+withTLS)
+
+	cf := parseFlags(t, "--config", path)
+
+	running, err := cf.load()
+	if err != nil {
+		t.Fatalf("loading the running configuration: %v", err)
+	}
+
+	a := testApp(t, running)
+	store := "\nstore:\n  path: " + filepath.Join(filepath.Dir(path), "wsaw.db") + "\n"
+
+	moved := "\napi:\n  enabled: true\n  tlsCert: /run/secrets/tls.crt\n  tlsKey: /run/secrets/tls.key\n"
+	if err := os.WriteFile(path, []byte(oneTargetConfig+moved+store), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := reload(a, *cf)
+	if err != nil {
+		t.Fatalf("reload refused a moved certificate: %v", err)
+	}
+
+	if want := (tlsPaths{cert: "/run/secrets/tls.crt", key: "/run/secrets/tls.key"}); next.certPaths != want {
+		t.Errorf("reload handed on %+v, want %+v", next.certPaths, want)
+	}
+
+	if err := os.WriteFile(path, []byte(oneTargetConfig+"\napi:\n  enabled: true\n"+store), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = reload(a, *cf)
+	if err == nil || !strings.Contains(err.Error(), "api.tlsCert") {
+		t.Errorf("turning TLS off by reload returned %v, want a refusal naming api.tlsCert", err)
 	}
 }
 
@@ -416,7 +458,7 @@ func TestReloadRefusesWhatItCannotApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = reload(a, *cf)
+	_, err = reload(a, *cf)
 	if err == nil {
 		t.Fatal("reload accepted a change it cannot apply")
 	}
@@ -452,7 +494,7 @@ func TestReloadReportsABrokenFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := reload(a, *cf); err == nil {
+	if _, err := reload(a, *cf); err == nil {
 		t.Fatal("reload accepted a file it could not parse")
 	}
 }

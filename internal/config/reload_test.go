@@ -107,8 +107,13 @@ func TestStartupOnlySettingsAreRefusedByName(t *testing.T) {
 		"scheduler.shutdownGrace": func(c *Config) {
 			c.Scheduler.ShutdownGrace = Duration(time.Minute)
 		},
-		"store.maxAge":      func(c *Config) { c.Store.MaxAge = Duration(24 * time.Hour) },
-		"api.listen":        func(c *Config) { c.API.Listen = "127.0.0.1:9999" },
+		"store.maxAge": func(c *Config) { c.Store.MaxAge = Duration(24 * time.Hour) },
+		"api.listen":   func(c *Config) { c.API.Listen = "127.0.0.1:9999" },
+		// Turning TLS on needs a new listener (Story 5.33, AC6).
+		"api.tlsCert": func(c *Config) { c.API.TLSCert, c.API.TLSKey = "cert.pem", "key.pem" },
+		"api.tlsReloadInterval": func(c *Config) {
+			c.API.TLSReloadInterval = Duration(time.Hour)
+		},
 		"consent.onFailure": func(c *Config) { c.Consent.OnFailure = "fail" },
 		"logging.level":     func(c *Config) { c.Logging.Level = "debug" },
 		"metrics.path":      func(c *Config) { c.Metrics.Path = "/m" },
@@ -256,5 +261,34 @@ func TestEveryTopLevelSectionIsAccountedFor(t *testing.T) {
 		if accounted == 0 {
 			t.Errorf("section %q has no nameable fields, so a change to it would go unreported", name)
 		}
+	}
+}
+
+// TestANewCertificatePathIsReloadableWhileTLSStaysOn is Story 5.33, AC6: the
+// pair is read from its paths on every reload, so moving it is no different
+// from renewing it in place. Turning TLS off is, and has to name both keys.
+func TestANewCertificatePathIsReloadableWhileTLSStaysOn(t *testing.T) {
+	t.Parallel()
+
+	withTLS := func() *Config {
+		c := base()
+		c.API.TLSCert, c.API.TLSKey = "/etc/wsaw/cert.pem", "/etc/wsaw/key.pem"
+
+		return c
+	}
+
+	moved := withTLS()
+	moved.API.TLSCert, moved.API.TLSKey = "/run/secrets/tls.crt", "/run/secrets/tls.key"
+
+	if got := NonReloadableChanges(withTLS(), moved); len(got) != 0 {
+		t.Errorf("moving the certificate was refused: %v", got)
+	}
+
+	off := withTLS()
+	off.API.TLSCert, off.API.TLSKey = "", ""
+
+	got := NonReloadableChanges(withTLS(), off)
+	if !slices.Equal(got, []string{"api.tlsCert", "api.tlsKey"}) {
+		t.Errorf("turning TLS off reported %v, want [api.tlsCert api.tlsKey]", got)
 	}
 }

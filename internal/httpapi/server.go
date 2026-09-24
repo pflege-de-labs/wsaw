@@ -12,6 +12,7 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,8 +46,13 @@ type Options struct {
 	// listener, which config validation enforces.
 	Token secret.Value
 
+	// TLSCert and TLSKey serve HTTPS when both are set. The pair is loaded
+	// in New and loaded again whenever the files change (Story 5.33).
 	TLSCert string
 	TLSKey  string
+	// TLSReloadInterval is how often the two files are checked for a
+	// renewal. Zero takes config.DefaultTLSReloadInterval.
+	TLSReloadInterval time.Duration
 
 	// WebUI serves the browser interface in addition to the API.
 	WebUI bool
@@ -209,6 +215,9 @@ type Server struct {
 
 	ui *uiRenderer
 
+	// certs serves the certificate when TLS is on, nil when it is not.
+	certs *certReloader
+
 	// noSigning records that the artifact bucket cannot produce signed URLs,
 	// so the fallback to serving the bytes costs one attempt for the life of
 	// the process rather than one per request. Whether a provider signs is a
@@ -260,6 +269,10 @@ func New(opts Options, deps Deps) (*Server, error) {
 		opts.URLScanPerHour = config.DefaultAdHocMaxPerHour
 	}
 
+	if opts.TLSReloadInterval <= 0 {
+		opts.TLSReloadInterval = config.DefaultTLSReloadInterval
+	}
+
 	s := &Server{
 		opts:          opts,
 		deps:          deps,
@@ -278,6 +291,15 @@ func New(opts Options, deps Deps) (*Server, error) {
 		s.ui = ui
 	}
 
+	if opts.TLSCert != "" && opts.TLSKey != "" {
+		certs, err := newCertReloader(opts.TLSCert, opts.TLSKey, deps.Logger, deps.Metrics, time.Now)
+		if err != nil {
+			return nil, err
+		}
+
+		s.certs = certs
+	}
+
 	s.routes()
 
 	s.http = &http.Server{
@@ -291,7 +313,29 @@ func New(opts Options, deps Deps) (*Server, error) {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	if s.certs != nil {
+		// TLS 1.2 is what the standard library's server already requires;
+		// stating it keeps that a decision here rather than a default that
+		// could move under us.
+		s.http.TLSConfig = &tls.Config{
+			GetCertificate: s.certs.getCertificate,
+			MinVersion:     tls.VersionTLS12,
+		}
+	}
+
 	return s, nil
+}
+
+// ReloadCertificate loads the TLS pair from the given paths at once, whether
+// or not the files look changed — what SIGHUP does (Story 5.33, AC3). A pair
+// that cannot be loaded leaves the one being served in place, and says why in
+// the log. Without TLS it does nothing: turning TLS on needs a restart.
+func (s *Server) ReloadCertificate(ctx context.Context, certPath, keyPath string) {
+	if s.certs == nil {
+		return
+	}
+
+	s.certs.reload(ctx, certPath, keyPath)
 }
 
 // Handler returns the fully wrapped handler, including authentication and
@@ -333,13 +377,37 @@ func (s *Server) Serve(ctx context.Context) error {
 		"authenticated", s.opts.Token.IsSet(),
 	)
 
+	if s.certs != nil {
+		// The watcher's lifetime is the server's: it stops when Serve
+		// returns, however it returns (Story 5.33, AC8).
+		watchCtx, stopWatch := context.WithCancel(ctx)
+
+		ticker := time.NewTicker(s.opts.TLSReloadInterval)
+
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+
+			s.certs.watch(watchCtx, ticker.C)
+		}()
+
+		defer func() {
+			stopWatch()
+			ticker.Stop()
+			<-done
+		}()
+	}
+
 	errCh := make(chan error, 1)
 
 	go func() {
 		var serveErr error
 
-		if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
-			serveErr = s.http.ServeTLS(ln, s.opts.TLSCert, s.opts.TLSKey)
+		if s.certs != nil {
+			// Empty paths: the certificate comes from TLSConfig, so that a
+			// renewal is served without reopening the listener.
+			serveErr = s.http.ServeTLS(ln, "", "")
 		} else {
 			serveErr = s.http.Serve(ln)
 		}

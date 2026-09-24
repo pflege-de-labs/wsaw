@@ -282,6 +282,94 @@ func TestServeUsesTLSWhenACertificateIsConfigured(t *testing.T) {
 	}
 }
 
+// TestServeServesARenewedCertificateWithoutRestarting is Story 5.33 through
+// the path production takes: the pair is replaced on disk while Serve runs,
+// SIGHUP's ReloadCertificate picks it up, and the next client that trusts
+// only the new certificate connects.
+func TestServeServesARenewedCertificateWithoutRestarting(t *testing.T) {
+	t.Parallel()
+
+	certPath, keyPath := selfSignedCert(t)
+	addr := freePort(t)
+
+	srv := newServer(t, httpapi.Options{Listen: addr, TLSCert: certPath, TLSKey: keyPath})
+
+	cancel, errCh := serveInBackground(t, srv)
+	defer cancel()
+
+	awaitListener(t, addr)
+
+	newCert, newKey := selfSignedCert(t)
+
+	for from, to := range map[string]string{newCert: certPath, newKey: keyPath} {
+		data, err := os.ReadFile(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(to, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv.ReloadCertificate(t.Context(), certPath, keyPath)
+
+	pool := x509.NewCertPool()
+
+	renewed, err := os.ReadFile(newCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pool.AppendCertsFromPEM(renewed)
+
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+addr+"/api/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("a client trusting only the renewed certificate could not connect: %v", err)
+	}
+
+	_ = resp.Body.Close()
+
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Errorf("Serve returned %v on cancellation, want nil", err)
+	}
+}
+
+// TestNewRefusesAPairThatDoesNotMatch is Story 5.33, AC1: the mismatch is
+// found before anything listens, not on the first handshake.
+func TestNewRefusesAPairThatDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	certPath, _ := selfSignedCert(t)
+	_, otherKey := selfSignedCert(t)
+
+	st, err := store.Open(t.Context(), store.Options{
+		Path:        filepath.Join(t.TempDir(), "wsaw.db"),
+		ArtifactDir: filepath.Join(t.TempDir(), "artifacts"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = st.Close() })
+
+	_, err = httpapi.New(httpapi.Options{TLSCert: certPath, TLSKey: otherKey}, httpapi.Deps{Store: st})
+	if err == nil || !strings.Contains(err.Error(), "api.tlsKey") {
+		t.Errorf("New with a mismatched pair returned %v, want an error naming api.tlsKey", err)
+	}
+}
+
 // selfSignedCert writes a certificate and key valid for 127.0.0.1 and
 // returns their paths.
 func selfSignedCert(t *testing.T) (certPath, keyPath string) {

@@ -319,3 +319,35 @@ func TestTheSweepGaugeReadsZeroUntilASweepSucceeds(t *testing.T) {
 		t.Errorf("a successful sweep was not counted:\n%s", out)
 	}
 }
+
+// TestTheCertificateMetricsAreLeftOutUntilTLSIsServed is Story 5.33, AC7. A
+// plain-HTTP listener has no certificate to expire, and a gauge reading 0
+// would fire every "expires soon" alert there is.
+func TestTheCertificateMetricsAreLeftOutUntilTLSIsServed(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	if out := render(t, r); strings.Contains(out, "wsaw_tls_certificate_expiry_timestamp_seconds ") {
+		t.Errorf("an expiry gauge was rendered with no certificate served:\n%s", out)
+	}
+
+	r.SetTLSCertificateExpiry(time.Unix(1_790_000_123, 0))
+	r.TLSCertificateReloaded(metrics.TLSReloadFailure)
+	r.TLSCertificateReloaded(metrics.TLSReloadSuccess)
+	r.TLSCertificateReloaded(metrics.TLSReloadSuccess)
+
+	out := render(t, r)
+
+	for _, want := range []string{
+		// To the second: a rounded timestamp is hours off.
+		"wsaw_tls_certificate_expiry_timestamp_seconds 1790000123\n",
+		`wsaw_tls_certificate_reloads_total{outcome="failure"} 1` + "\n",
+		`wsaw_tls_certificate_reloads_total{outcome="success"} 2` + "\n",
+		"# TYPE wsaw_tls_certificate_reloads_total counter\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
