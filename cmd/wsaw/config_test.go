@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/certtest"
 	"github.com/pflege-de-labs/wsaw/internal/config"
@@ -404,6 +405,22 @@ func TestCmdConfigChecksTheCertificateFiles(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "api.tlsCert") {
 		t.Errorf("a mismatched pair returned %v, want an error naming api.tlsCert", err)
+	}
+
+	// An expired pair passes, because the daemon would start with it, and
+	// the check says what startup would log.
+	expiredCert, expiredKey := certtest.WritePair(t, certtest.Issue(t, time.Now().Add(-48*time.Hour), 24*time.Hour))
+	expired := writeConfig(t, oneTargetConfig+
+		"\napi:\n  enabled: true\n  tlsCert: "+expiredCert+"\n  tlsKey: "+expiredKey+"\n")
+
+	_, stderr := capture(t, func() { err = cmdConfig([]string{"--config", expired, "--check"}) })
+
+	if err != nil {
+		t.Errorf("an expired pair failed the check: %v", err)
+	}
+
+	if !strings.Contains(stderr, "api.tlsCert") || !strings.Contains(stderr, "expired at") {
+		t.Errorf("stderr = %q, want it to say the certificate expired", stderr)
 	}
 }
 

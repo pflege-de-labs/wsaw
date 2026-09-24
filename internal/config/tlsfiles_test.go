@@ -26,10 +26,35 @@ func withTLSFiles(certPath, keyPath string) *config.Config {
 func TestAUsablePairPassesTheCheck(t *testing.T) {
 	t.Parallel()
 
-	certPath, keyPath := certtest.Write(t)
+	now := time.Now()
+	certPath, keyPath := certtest.WritePair(t, certtest.Issue(t, now.Add(-time.Minute), time.Hour))
 
-	if err := withTLSFiles(certPath, keyPath).CheckTLSFiles(time.Now()); err != nil {
-		t.Errorf("a usable pair was refused: %v", err)
+	notAfter, err := withTLSFiles(certPath, keyPath).CheckTLSFiles()
+	if err != nil {
+		t.Fatalf("a usable pair was refused: %v", err)
+	}
+
+	if want := now.Add(-time.Minute).Add(time.Hour); !notAfter.Equal(want.Truncate(time.Second)) {
+		t.Errorf("the check reported expiry %s, want %s", notAfter, want)
+	}
+}
+
+// TestAnExpiredPairPassesTheCheckAndSaysWhen matches startup, which serves an
+// expired certificate and logs an error rather than refusing to run: the check
+// reports when it expired and leaves the verdict to the caller.
+func TestAnExpiredPairPassesTheCheckAndSaysWhen(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	certPath, keyPath := certtest.WritePair(t, certtest.Issue(t, now.Add(-48*time.Hour), 24*time.Hour))
+
+	notAfter, err := withTLSFiles(certPath, keyPath).CheckTLSFiles()
+	if err != nil {
+		t.Fatalf("an expired but otherwise usable pair was refused: %v", err)
+	}
+
+	if !notAfter.Before(now) {
+		t.Errorf("the check reported expiry %s, want a time before %s", notAfter, now)
 	}
 }
 
@@ -46,8 +71,9 @@ func TestThereIsNothingToCheckWithoutTLS(t *testing.T) {
 	off.API.Enabled = false
 
 	for name, cfg := range map[string]*config.Config{"plain HTTP": plain, "API off": off} {
-		if err := cfg.CheckTLSFiles(time.Now()); err != nil {
-			t.Errorf("%s: %v", name, err)
+		notAfter, err := cfg.CheckTLSFiles()
+		if err != nil || !notAfter.IsZero() {
+			t.Errorf("%s: CheckTLSFiles = %s, %v; want nothing checked", name, notAfter, err)
 		}
 	}
 }
@@ -58,7 +84,6 @@ func TestAnUnusablePairFailsTheCheckNamingTheSetting(t *testing.T) {
 	now := time.Now()
 	good := certtest.Issue(t, now.Add(-time.Minute), time.Hour)
 	other := certtest.Issue(t, now.Add(-time.Minute), time.Hour)
-	expired := certtest.Issue(t, now.Add(-48*time.Hour), 24*time.Hour)
 
 	for name, tc := range map[string]struct {
 		pair    certtest.Pair
@@ -75,7 +100,6 @@ func TestAnUnusablePairFailsTheCheckNamingTheSetting(t *testing.T) {
 			pair: certtest.Pair{Cert: good.Cert, Key: other.Key},
 			want: []string{"api.tlsCert:", "api.tlsKey", "does not match"},
 		},
-		"expired": {pair: expired, want: []string{"api.tlsCert:", "expired at"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -89,7 +113,7 @@ func TestAnUnusablePairFailsTheCheckNamingTheSetting(t *testing.T) {
 				mustRemove(t, keyPath)
 			}
 
-			err := withTLSFiles(certPath, keyPath).CheckTLSFiles(now)
+			_, err := withTLSFiles(certPath, keyPath).CheckTLSFiles()
 			if err == nil {
 				t.Fatal("an unusable pair passed the check")
 			}

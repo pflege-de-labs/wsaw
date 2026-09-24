@@ -2,16 +2,22 @@ package config
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"time"
 )
 
 // CheckTLSFiles reads the certificate and key the interface is configured
-// with and reports whether they would be served: both readable, both PEM that
-// parses, the key belonging to the certificate, and the certificate not yet
-// expired (Story 5.33, AC11). Without TLS, or without the API, there is
-// nothing to check.
+// with and reports whether they could be served: both readable, both PEM that
+// parses, and the key belonging to the certificate (Story 5.33, AC11). On
+// success it returns when the certificate expires. Without TLS, or without
+// the API, there is nothing to check, and the time is zero.
+//
+// An expired certificate is not an error here. The daemon serves one at
+// startup and logs an error rather than refusing to start, and a check that
+// failed where startup does not would block a reload over something a restart
+// accepts. The caller compares the time with the clock and says so.
 //
 // It is separate from Validate on purpose. Validate is what every command
 // runs, from any user, and never touches anything but the configuration
@@ -22,9 +28,9 @@ import (
 //
 // The paths are the operator's configuration, never anything a scanned page
 // chose.
-func (c *Config) CheckTLSFiles(now time.Time) error {
+func (c *Config) CheckTLSFiles() (notAfter time.Time, err error) {
 	if !c.API.Enabled || !c.API.TLSEnabled() {
-		return nil
+		return time.Time{}, nil
 	}
 
 	var errs Errors
@@ -44,7 +50,7 @@ func (c *Config) CheckTLSFiles(now time.Time) error {
 	}
 
 	if len(errs) > 0 {
-		return errs
+		return time.Time{}, errs
 	}
 
 	// X509KeyPair rejects a PEM that does not parse and a key that does not
@@ -54,15 +60,20 @@ func (c *Config) CheckTLSFiles(now time.Time) error {
 	if err != nil {
 		add("api.tlsCert", "%s and api.tlsKey %s are not a usable pair: %v", c.API.TLSCert, c.API.TLSKey, err)
 
-		return errs
+		return time.Time{}, errs
 	}
 
-	if pair.Leaf != nil && !now.Before(pair.Leaf.NotAfter) {
-		add("api.tlsCert", "the certificate in %s expired at %s", c.API.TLSCert,
-			pair.Leaf.NotAfter.UTC().Format(time.RFC3339))
+	// X509KeyPair fills in Leaf, and refuses a file without a certificate.
+	// Parsing it again only matters under GODEBUG=x509keypairleaf=0.
+	leaf := pair.Leaf
+	if leaf == nil {
+		leaf, err = x509.ParseCertificate(pair.Certificate[0])
+		if err != nil {
+			add("api.tlsCert", "%s: %v", c.API.TLSCert, err)
 
-		return errs
+			return time.Time{}, errs
+		}
 	}
 
-	return nil
+	return leaf.NotAfter, nil
 }

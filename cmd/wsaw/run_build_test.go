@@ -470,6 +470,42 @@ func TestReloadRefusesACertificateTheServerCouldNotLoad(t *testing.T) {
 	}
 }
 
+// TestReloadAcceptsAnExpiredCertificateAndSaysSo is Story 5.33, AC11:
+// startup serves an expired certificate and logs an error, so a reload
+// accepts one too, logging the same thing. A restart would accept the file,
+// and a reload refusing it would block every target change until someone
+// renewed a certificate.
+func TestReloadAcceptsAnExpiredCertificateAndSaysSo(t *testing.T) {
+	certPath, keyPath := certtest.Write(t)
+	path := writeConfig(t, oneTargetConfig+tlsAPI(certPath, keyPath))
+
+	cf := parseFlags(t, "--config", path)
+
+	running, err := cf.load()
+	if err != nil {
+		t.Fatalf("loading the running configuration: %v", err)
+	}
+
+	a := testApp(t, running)
+	logged := &strings.Builder{}
+	a.Logger = slog.New(slog.NewTextHandler(logged, nil))
+
+	expiredCert, expiredKey := certtest.WritePair(t, certtest.Issue(t, time.Now().Add(-48*time.Hour), 24*time.Hour))
+	store := "\nstore:\n  path: " + filepath.Join(filepath.Dir(path), "wsaw.db") + "\n"
+
+	if err := os.WriteFile(path, []byte(oneTargetConfig+tlsAPI(expiredCert, expiredKey)+store), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := reload(a, *cf); err != nil {
+		t.Fatalf("reload refused an expired certificate: %v", err)
+	}
+
+	if !strings.Contains(logged.String(), "level=ERROR") || !strings.Contains(logged.String(), "has expired") {
+		t.Errorf("the expired certificate was not logged as an error:\n%s", logged.String())
+	}
+}
+
 // TestReloadRefusesWhatItCannotApply is the regression this behaviour exists
 // for: adopting the reloadable half while reporting "configuration reloaded"
 // would leave an operator believing the rest had applied too.
