@@ -458,6 +458,11 @@ MYSQL_PORT         ?= 13306
 
 # MinIO, for the store suite against a real object store (Story 8.9, AC2).
 #
+# The image is PGSTY Silo, a maintained fork of the MinIO server: MinIO, Inc.
+# stopped distributing community images, and quay.io/minio/minio no longer
+# allows an anonymous pull. The protocol, the MINIO_* variables and the health
+# endpoint are MinIO's; only the binary is renamed, to silo.
+#
 # Pinned by the digest of the manifest list rather than of one architecture's
 # image, so the same line resolves on an arm64 laptop and an amd64 runner. Keep
 # it in step with minioImage in test/e2e/objectstore/minio_test.go, which is
@@ -467,7 +472,7 @@ MYSQL_PORT         ?= 13306
 # The port is not 9000, so a MinIO somebody is running for their own reasons is
 # never emptied by a test run, and below the ephemeral range for the reason the
 # database ports are.
-MINIO_IMAGE        ?= quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+MINIO_IMAGE        ?= docker.io/pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
 MINIO_PORT         ?= 19000
 MINIO_BUCKET       ?= wsaw
 MINIO_ACCESS_KEY   ?= wsaw-test-access-key
@@ -591,7 +596,7 @@ test-store-minio:
 		-e MINIO_ROOT_USER=$(MINIO_ACCESS_KEY) \
 		-e MINIO_ROOT_PASSWORD=$(MINIO_SECRET_KEY) \
 		--entrypoint /bin/sh $(MINIO_IMAGE) \
-		-c "mkdir -p /data/$(MINIO_BUCKET) && exec minio server /data --address :9000"
+		-c "mkdir -p /data/$(MINIO_BUCKET) && exec silo server /data --address :9000"
 	@printf 'waiting for minio '
 	@for i in $$(seq 1 90); do \
 		if curl -fsS "http://127.0.0.1:$(MINIO_PORT)/minio/health/live" >/dev/null 2>&1; then \
