@@ -44,6 +44,10 @@ criteria, and any that are still open, are written down.
   Before, every containerised scan was recorded as unsandboxed. Results
   from the default image are unchanged. A label that cannot be read is
   logged and recorded as unsandboxed.
+- `make test-store-minio` and the object-store end-to-end suite run the
+  MinIO server from the PGSTY Silo image, `docker.io/pgsty/silo`, pinned to
+  RELEASE.2026-09-16T00-00-00Z. MinIO's own image on quay.io no longer allows
+  an anonymous pull, which failed every CI run.
 
 ## [0.2.1] - 2026-09-24
 
