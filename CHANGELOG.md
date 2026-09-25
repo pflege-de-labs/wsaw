@@ -22,6 +22,14 @@ criteria, and any that are still open, are written down.
   Chromium refuses to start. Published with each release as
   `ghcr.io/pflege-de-labs/wsaw-browser`, and built locally with
   `make docker-browser`. The default image is unchanged.
+- `wsaw mcp`, a read-only Model Context Protocol server over stdio, so an
+  LLM client can read the stored results (Story 5.34). Its tools list the
+  watched series and their scans, read one scan and page through its
+  requests, compare a scan with its baseline or the previous one, and read a
+  stored body or screenshot. The server is given a read-only view of the
+  store, opens it without applying migrations, and refuses a store that does
+  not exist instead of creating one. Page content is marked as untrusted in
+  every answer that carries it. Standard library only; no new dependency.
 - The Chromium bump workflow updates the browser image together with the
   wsaw image, and CI refuses a change that lets their Alpine base or
   Chromium version drift apart.

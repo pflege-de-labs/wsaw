@@ -1087,6 +1087,30 @@ Stories 5.4 and 5.11 give the API and the web interface TLS: `api.tlsCert` and `
   - cancelling the context stops the loop, checked with `-race`
 - AC11: A configuration that names a certificate the server could not load is caught when the configuration is checked, not first as a failed reload in the daemon's log. `wsaw config`, `--check` included, and a SIGHUP reload read both files and refuse the configuration naming the setting, for any of: a file that cannot be read, a PEM that does not parse, or a key that does not match its certificate. A refused reload leaves the pair already being served in place, as AC4 does. A certificate that has already expired does not fail the check, because startup serves one and logs an error rather than refusing to run (AC1). A reload that refused a file a restart would accept would block every target change until someone renewed the certificate. Instead the reload logs the expiry at `Error` and `wsaw config` prints it on stderr, and both carry on. The check is not part of `config.Validate`, which every command runs as whatever user runs it. The key file is usually readable only by the user the daemon runs as, and `wsaw scan` or `wsaw ui` must not fail over a file they never use. `wsaw run` at startup keeps AC1's check.
 
+### Story 5.34 — Let an LLM read the stored results, and nothing else
+
+*As an Analyst, I want to point an LLM client at wsaw's store, so that I can ask questions about what a site loads and what changed without exporting results by hand, and without giving the model a way to change anything.*
+
+The web interface and the API answer a person. An assistant such as Claude Code, Claude Desktop or an IDE agent asks through the Model Context Protocol (MCP), and today the only way to hand one a result is to copy a JSON export into the conversation. `wsaw mcp` is an MCP server over stdio: the client starts it as a subprocess, and it answers from the configured store.
+
+- AC1: `wsaw mcp` speaks MCP over stdio — newline-delimited JSON-RPC 2.0 on stdin and stdout — and implements `initialize`, `ping`, `tools/list` and `tools/call`. It negotiates the protocol version: a version it supports is echoed, any other is answered with the newest it supports. Nothing but protocol messages is written to stdout; logs go to stderr. Standard library only: the protocol subset is small, and a tool that exists to detect supply-chain change does not add an SDK for it (AGENTS.md §6, Tenet 18).
+- AC2: **Read-only by construction, not by convention.** The server is given an interface holding only read methods of the store, so a write is a compile error, not a code-review finding. The store is opened with `store.OpenForInspection`, which applies no migration and refuses a store whose schema is behind or ahead. A SQLite path or a local artifact directory that does not exist is refused before anything is opened, because opening would create them.
+- AC3: The tools are:
+  - `list_series`: every stored target and consent mode, with the approved baseline where there is one.
+  - `list_scans`: the summaries of one series, newest first, bounded.
+  - `get_scan`: one result without its request list, with the request count and the third-party domains per phase, so a model can decide what to page through.
+  - `list_requests`: one result's requests, paged, filterable by party, phase and registrable domain.
+  - `diff_scans`: the comparison of one result against its baseline, the previous scan or a named scan, by the same `diff.Compare` and default rules the web interface uses.
+  - `get_artifact`: a stored body as text, or a screenshot as an image, up to a byte cap.
+
+  A scan is named by its ID, by `latest`, or by `baseline`. `baseline` reads the copy the baseline keeps, which survives retention.
+- AC4: **Nothing is silently shortened** (Tenet 5, Tenet 6). A paged request list states the total, the offset and how many were returned. A body cut at the cap says it was cut, and at how many of how many bytes. A result that is not `OK()` says so in the tool's output, so a failed scan's empty request list cannot be read as "nothing was loaded". A missing or pruned scan or artifact is a tool error naming it, not an empty answer.
+- AC5: **Page content is marked as untrusted.** Response bodies, URLs, cookie values and DOM text are written by the scanned site, which is hostile input (Tenet 9) and may contain text written to steer a model. Tool descriptions and every output that carries page content say so. Artifact references are validated by the store, which confines them to the bucket; a reference supplied by the client never picks a path.
+- AC6: Every call runs under the command's context and each store operation's own deadline (Tenet 1). A tool that fails or panics answers that call with an error and leaves the server running (Tenet 7). The server exits cleanly when stdin closes or on SIGTERM.
+- AC7: The README lists the command and shows how to register it with an MCP client.
+- AC8: Tested without Chrome and without a network: the protocol handshake, version negotiation, unknown methods, malformed input, each tool against a fake store, paging and truncation notices, a failed scan marked as such, a missing scan reported as an error, a panicking tool answered as an error, and the command refusing a missing store without creating it.
+- AC9: Out of scope: HTTP transport (it would need the API's authentication and TLS story), MCP resources and prompts, triggering scans or approving baselines (both write), and per-target severity rules in `diff_scans`.
+
 ---
 
 # Epic 6 — Operations, Packaging & Distribution
