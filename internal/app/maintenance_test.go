@@ -135,6 +135,10 @@ type maintenanceStore struct {
 	sweepErr error
 }
 
+// Driver names the fake, for the startup line that says no vacuum applies
+// to it (Story 4.13, AC2).
+func (s *maintenanceStore) Driver() string { return "fake" }
+
 func (s *maintenanceStore) enter(op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,7 +256,7 @@ func runLoop(t *testing.T, a *App, clock *fakeClock) (chan SweepSchedule, func()
 	go func() {
 		defer close(done)
 
-		a.maintenanceLoop(ctx, sweeps, clock.clock())
+		a.maintenanceLoop(ctx, sweeps, nil, clock.clock())
 	}()
 
 	stop := func() {

@@ -48,6 +48,12 @@ var reloadableKeys = map[string]struct{}{
 	"store.sweep":         {},
 	"store.sweepInterval": {},
 
+	// The vacuum schedule is the sweep's twin, read by the same loop in the
+	// same way (Story 4.13, AC11).
+	"store.vacuum":             {},
+	"store.vacuumInterval":     {},
+	"store.vacuumMinFreeRatio": {},
+
 	// The certificate pair is read from these paths on every reload, not
 	// only at startup (Story 5.33, AC6), so a new path takes effect the same
 	// way new content at the old one does. Whether TLS is on at all is a

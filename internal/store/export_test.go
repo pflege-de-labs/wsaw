@@ -267,3 +267,32 @@ const RebuildBatchSize = rebuildBatchSize
 // RebuildMarkerTTL is how long a marker keeps a sweep off a bucket before it is
 // treated as the leftover of a run that was killed.
 const RebuildMarkerTTL = rebuildMarkerTTL
+
+// SetFreeSpace makes every vacuum of s see the free space fn reports instead
+// of the disk's, so a refusal can be tested without filling one.
+func SetFreeSpace(s *SQL, fn func(dir string) (int64, error)) { s.freeSpaceFn = fn }
+
+// FillAndFree writes about n bytes into a table of its own and drops it, which
+// leaves those pages on the SQLite freelist: the state a prune or the Story
+// 8.4 migration leaves behind, without needing either to produce it.
+func FillAndFree(t *testing.T, s *SQL, n int) {
+	t.Helper()
+
+	ctx := t.Context()
+
+	if _, err := s.db.ExecContext(ctx, `create table filler (b blob not null)`); err != nil {
+		t.Fatalf("creating filler: %v", err)
+	}
+
+	chunk := bytes.Repeat([]byte{0xa5}, 64<<10)
+
+	for written := 0; written < n; written += len(chunk) {
+		if _, err := s.db.ExecContext(ctx, `insert into filler (b) values (?)`, chunk); err != nil {
+			t.Fatalf("filling: %v", err)
+		}
+	}
+
+	if _, err := s.db.ExecContext(ctx, `drop table filler`); err != nil {
+		t.Fatalf("dropping filler: %v", err)
+	}
+}

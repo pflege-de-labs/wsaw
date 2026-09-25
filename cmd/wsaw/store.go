@@ -41,6 +41,9 @@ func cmdStore(ctx context.Context, args []string) error {
 	case "sweep":
 		return cmdStoreSweep(ctx, rest)
 
+	case "vacuum":
+		return cmdStoreVacuum(ctx, rest)
+
 	case "rebuild-index":
 		return cmdStoreRebuildIndex(ctx, rest)
 
@@ -64,6 +67,8 @@ Usage:
   wsaw store migrate       [--dry-run]   Bring the store's schema up to date
   wsaw store prune         [--dry-run]   Apply retention and reclaim what it orphans
   wsaw store sweep         [--dry-run]   Delete artifacts nothing references any more
+  wsaw store vacuum        [--dry-run] [--force]
+                                         Shrink the SQLite file to the data it holds
   wsaw store rebuild-index [--dry-run]   Rebuild the index from the bucket
   wsaw store rebuild-index --verify      Check the index against the bucket
 
@@ -94,6 +99,19 @@ A sweep refuses to walk the bucket for a store that holds no results at all:
 that is what a lost or restored-without-its-bucket index looks like, and
 deleting on that basis cannot be undone. --allow-empty-index says the empty
 history is real and sweeps anyway.
+
+"vacuum" gives a SQLite database file back the space the store no longer
+uses. SQLite keeps the pages a deleted row leaves on a freelist and never
+shrinks the file on its own, so after a prune — or after the upgrade that moved
+every result document into the bucket — the file stays as large as it ever
+was. A vacuum rewrites it without those pages and truncates the WAL. It skips a
+file whose free share is below store.vacuumMinFreeRatio (0.2 unless set);
+--force rewrites it anyway. It refuses to start without free disk for the copy
+it builds, and --dry-run reports what it would reclaim and what it needs. The
+daemon already vacuums on its own, weekly unless store.vacuumInterval says
+otherwise or store.vacuum: false turns it off. Against a running daemon it may
+have to wait for the database lock and give up; stop the daemon, or leave it to
+the schedule. PostgreSQL and MySQL reclaim space themselves and are refused.
 
 "rebuild-index" derives the index from the documents in the bucket: every
 object under the result prefix is read, decoded, and turned into the same index
@@ -743,6 +761,106 @@ func sweep(ctx context.Context, m *maintenance, opts store.SweepOptions) (store.
 	}
 
 	return m.store.Sweep(ctx, store.TriggerCLI, time.Now(), opts)
+}
+
+// vacuumStore is what `wsaw store vacuum` needs of a store. It is asserted
+// rather than added to maintenanceStore, because only a SQLite store has it,
+// and the command says so by name rather than failing to compile a promise
+// the seam cannot keep (Story 4.13, AC2).
+type vacuumStore interface {
+	SupportsVacuum() bool
+	Vacuum(ctx context.Context, trigger string, opts store.VacuumOptions) (store.VacuumStats, error)
+	PlanVacuum(ctx context.Context, opts store.VacuumOptions) (store.VacuumStats, error)
+}
+
+// cmdStoreVacuum compacts the SQLite file, or reports what doing so would
+// reclaim (Story 4.13, AC1).
+//
+// --dry-run opens the store for inspection, so a store whose schema is behind
+// is refused rather than migrated: the plan promises to write nothing.
+func cmdStoreVacuum(ctx context.Context, args []string) error {
+	var force bool
+
+	m, err := openStoreFor(ctx, "vacuum", args, func(fs *flag.FlagSet) {
+		fs.BoolVar(&force, "force", false,
+			"rewrite the file however little of it is free")
+	}, func(dryRun bool) bool { return dryRun })
+	if err != nil {
+		return err
+	}
+
+	defer m.close()
+
+	fmt.Printf("store:     %s\n", m.opts.Location())
+
+	v, ok := m.store.(vacuumStore)
+	if !ok || !v.SupportsVacuum() {
+		return fmt.Errorf("store vacuum: this store is %s: %w; nothing was done", m.opts.Driver, store.ErrVacuumUnsupported)
+	}
+
+	opts := store.VacuumOptions{MinFreeRatio: m.cfg.Store.VacuumFreeRatio(), Force: force}
+
+	var stats store.VacuumStats
+
+	if m.dryRun {
+		stats, err = v.PlanVacuum(ctx, opts)
+	} else {
+		stats, err = v.Vacuum(ctx, store.TriggerCLI, opts)
+	}
+
+	// Printed before the failure is returned: a refusal's figures are the
+	// reason for it.
+	reportVacuum(stats, m.dryRun)
+
+	if errors.Is(err, store.ErrDatabaseLocked) {
+		fmt.Println()
+		fmt.Println("Another connection held the database's write lock for longer than the busy timeout —")
+		fmt.Println("most likely a running wsaw daemon, which vacuums on its own schedule. Stop it and")
+		fmt.Println("run this again, or leave the vacuum to store.vacuumInterval.")
+	}
+
+	return err
+}
+
+func reportVacuum(stats store.VacuumStats, dryRun bool) {
+	if stats.PagesBefore == 0 {
+		return
+	}
+
+	fmt.Printf("file:      %d bytes, %s of %d bytes\n",
+		stats.FileBytesBefore, plural(int(stats.PagesBefore), "page"), stats.PageSize)
+	fmt.Printf("free:      %s (%.1f%%), %d bytes\n",
+		plural(int(stats.FreePagesBefore), "page"), 100*stats.FreeRatio, stats.ReclaimableBytes())
+	fmt.Printf("wal:       %d bytes\n", stats.WALBytesBefore)
+
+	switch stats.Outcome {
+	case store.VacuumSkipped:
+		fmt.Printf("skipped:   %.1f%% of the file is free, below the %.1f%% threshold (store.vacuumMinFreeRatio); "+
+			"nothing was rewritten\n", 100*stats.FreeRatio, 100*stats.MinFreeRatio)
+		fmt.Println("           --force vacuums anyway")
+
+	case store.VacuumRefused:
+		fmt.Printf("refused:   the rewrite needs %d bytes free and there are %d\n",
+			stats.BytesNeeded, stats.BytesAvailable)
+
+	case store.VacuumVacuumed:
+		if dryRun {
+			fmt.Printf("needs:     %d bytes free, %d available\n", stats.BytesNeeded, stats.BytesAvailable)
+			fmt.Println()
+			fmt.Println("Nothing was written. Run \"wsaw store vacuum\" without --dry-run to reclaim it.")
+
+			return
+		}
+
+		fmt.Printf("after:     %d bytes, %s; wal %d bytes\n",
+			stats.FileBytesAfter, plural(int(stats.PagesAfter), "page"), stats.WALBytesAfter)
+		fmt.Printf("reclaimed: %d bytes in %s\n", stats.ReclaimedBytes(), stats.Duration.Round(time.Millisecond))
+
+		if stats.CheckpointIncomplete {
+			fmt.Println("wal:       another connection was reading, so the WAL could not be truncated yet;")
+			fmt.Println("           its space comes back at the next checkpoint")
+		}
+	}
 }
 
 // cmdStoreRebuildIndex derives the index from the documents in the bucket,

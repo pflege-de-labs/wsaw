@@ -320,6 +320,51 @@ func TestTheSweepGaugeReadsZeroUntilASweepSucceeds(t *testing.T) {
 	}
 }
 
+// TestTheVacuumMetricsCountEveryOutcome is Story 4.13, AC9: the outcome
+// counter counts all four, only the rewrite's bytes are added up, and the
+// gauge is 0 until a vacuum vacuums or skips.
+func TestTheVacuumMetricsCountEveryOutcome(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	out := render(t, r)
+	for _, want := range []string{
+		"wsaw_last_successful_vacuum_timestamp_seconds 0\n",
+		"# TYPE wsaw_vacuum_bytes_reclaimed_total counter\nwsaw_vacuum_bytes_reclaimed_total 0\n",
+		"# TYPE wsaw_vacuum_runs_total counter\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("before any vacuum the output does not contain %q:\n%s", want, out)
+		}
+	}
+
+	r.VacuumRun("refused", 0)
+	r.VacuumRun("error", 0)
+
+	if out := render(t, r); !strings.Contains(out, "wsaw_last_successful_vacuum_timestamp_seconds 0\n") {
+		t.Error("a refused or failed vacuum moved the gauge")
+	}
+
+	r.VacuumRun("vacuumed", 455_000_000)
+	r.VacuumSucceeded(time.Unix(1_790_000_000, 0))
+	r.VacuumRun("skipped", 0)
+
+	out = render(t, r)
+	for _, want := range []string{
+		`wsaw_vacuum_runs_total{outcome="error"} 1`,
+		`wsaw_vacuum_runs_total{outcome="refused"} 1`,
+		`wsaw_vacuum_runs_total{outcome="skipped"} 1`,
+		`wsaw_vacuum_runs_total{outcome="vacuumed"} 1`,
+		"wsaw_vacuum_bytes_reclaimed_total 455000000\n",
+		"wsaw_last_successful_vacuum_timestamp_seconds 1790000000\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics do not contain %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestTheCertificateMetricsAreLeftOutUntilTLSIsServed is Story 5.33, AC7. A
 // plain-HTTP listener has no certificate to expire, and a gauge reading 0
 // would fire every "expires soon" alert there is.

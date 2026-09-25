@@ -85,6 +85,7 @@ func (c *Config) Validate() error {
 	c.validateArtifacts(add)
 	c.validateSignedURLs(add)
 	c.validateSweep(add)
+	c.validateVacuum(add)
 	c.validateNormalize(add)
 	c.validateCapture(add)
 	c.validateDetection(add)
@@ -856,6 +857,48 @@ func (c *Config) validateSweep(add addFunc) {
 			"%s is shorter than the %s minimum; nothing younger than a day is collected however often the bucket "+
 				"is walked, and every sweep is a full listing of it",
 			st.SweepInterval.Duration(), MinSweepInterval)
+	}
+}
+
+// validateVacuum refuses a vacuum schedule that cannot mean what it says
+// (Story 4.13, AC3 and AC4), the way validateSweep refuses a sweep's.
+func (c *Config) validateVacuum(add addFunc) {
+	st := c.Store
+	intervalWritten := st.Line("vacuumInterval") > 0 || st.VacuumInterval != 0
+	ratioWritten := st.Line("vacuumMinFreeRatio") > 0 || st.VacuumMinFreeRatio != 0
+
+	if !st.VacuumEnabled() {
+		for _, set := range []struct {
+			key     string
+			written bool
+		}{{"vacuumInterval", intervalWritten}, {"vacuumMinFreeRatio", ratioWritten}} {
+			if set.written {
+				add(st.Line(set.key), "store."+set.key,
+					"is set but scheduled vacuuming is off (store.vacuum: false%s); remove one of the two",
+					atLine(st.Line("vacuum")))
+			}
+		}
+
+		return
+	}
+
+	switch {
+	case !intervalWritten:
+	case st.VacuumInterval == 0:
+		add(st.Line("vacuumInterval"), "store.vacuumInterval",
+			"must be at least %s; leave it out for the default of %s, or set store.vacuum: false to turn scheduled vacuuming off",
+			MinVacuumInterval, DefaultVacuumInterval)
+	case st.VacuumInterval.Duration() < MinVacuumInterval:
+		add(st.Line("vacuumInterval"), "store.vacuumInterval",
+			"%s is shorter than the %s minimum; a vacuum rewrites the whole database file",
+			st.VacuumInterval.Duration(), MinVacuumInterval)
+	}
+
+	if ratioWritten && (st.VacuumMinFreeRatio <= 0 || st.VacuumMinFreeRatio > 1) {
+		add(st.Line("vacuumMinFreeRatio"), "store.vacuumMinFreeRatio",
+			"%g is outside (0, 1]; it is the share of the database file that must be free pages before a vacuum "+
+				"rewrites it, and the default is %g",
+			st.VacuumMinFreeRatio, store.DefaultVacuumMinFreeRatio)
 	}
 }
 

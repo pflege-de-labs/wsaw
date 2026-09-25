@@ -161,18 +161,19 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		}()
 	}
 
-	// Retention and the sweep run on their own schedules: without them, a
-	// long-running daemon grows without bound (NFR §1). One loop runs both, so
-	// a prune and a sweep never overlap (Story 4.12, AC5); a reload hands it
-	// the new sweep schedule through sweeps.
+	// Retention, the sweep and the vacuum run on their own schedules: without
+	// them, a long-running daemon grows without bound (NFR §1). One loop runs
+	// all three, so none of them overlap (Story 4.12, AC5; Story 4.13, AC6); a
+	// reload hands it the new sweep and vacuum schedules.
 	sweeps := make(chan app.SweepSchedule, 1)
+	vacuums := make(chan app.VacuumSchedule, 1)
 
 	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
 
-		a.MaintenanceLoop(runCtx, sweeps)
+		a.MaintenanceLoop(runCtx, sweeps, vacuums)
 	}()
 
 	// Where the certificate is read from, which a reload may move.
@@ -226,7 +227,8 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 			targetsMu.Unlock()
 
 			d.Reload(next.targets)
-			offerSweepSchedule(sweeps, next.sweep)
+			offerSchedule(sweeps, next.sweep)
+			offerSchedule(vacuums, next.vacuum)
 
 			certPaths = next.certPaths
 			reloadCertificate(runCtx, srv, certPaths)
@@ -234,21 +236,21 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 	}
 }
 
-// offerSweepSchedule hands the maintenance loop a reloaded sweep schedule
-// without waiting for it. The loop may be in the middle of a sweep that takes
-// minutes, and the reload path must never block on maintenance (NFR §1), so
-// the channel holds one schedule and a newer one replaces one the loop has not
-// taken yet: only the latest reload is worth applying.
-func offerSweepSchedule(sweeps chan app.SweepSchedule, s app.SweepSchedule) {
+// offerSchedule hands the maintenance loop a reloaded schedule without
+// waiting for it. The loop may be in the middle of a sweep or a vacuum that
+// takes minutes, and the reload path must never block on maintenance (NFR §1),
+// so the channel holds one schedule and a newer one replaces one the loop has
+// not taken yet: only the latest reload is worth applying.
+func offerSchedule[S any](ch chan S, s S) {
 	for {
 		select {
-		case sweeps <- s:
+		case ch <- s:
 			return
 		default:
 		}
 
 		select {
-		case <-sweeps:
+		case <-ch:
 		default:
 		}
 	}
@@ -269,6 +271,7 @@ func reloadCertificate(ctx context.Context, srv *httpapi.Server, p tlsPaths) {
 type reloaded struct {
 	targets   []config.Resolved
 	sweep     app.SweepSchedule
+	vacuum    app.VacuumSchedule
 	certPaths tlsPaths
 }
 
@@ -282,8 +285,8 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 		return reloaded{}, err
 	}
 
-	// A reload can only replace the target list, the sweep schedule and
-	// where the certificate is read from.
+	// A reload can only replace the target list, the sweep and vacuum
+	// schedules and where the certificate is read from.
 	// Everything else became a browser pool, a normalizer, an HTTP server or
 	// a scheduler at startup, so a change to it cannot take effect in this
 	// process — and adopting the half that can while logging "configuration
@@ -321,13 +324,16 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 	}
 
 	sweep := app.SweepScheduleFor(cfg)
+	vacuum := app.VacuumScheduleFor(cfg)
 
 	a.Logger.Info("configuration reloaded", "targets", len(targets),
-		"sweep", sweep.Enabled, "sweep_interval", sweep.Interval.String())
+		"sweep", sweep.Enabled, "sweep_interval", sweep.Interval.String(),
+		"vacuum", vacuum.Enabled, "vacuum_interval", vacuum.Interval.String())
 
 	return reloaded{
 		targets:   targets,
 		sweep:     sweep,
+		vacuum:    vacuum,
 		certPaths: tlsPaths{cert: cfg.API.TLSCert, key: cfg.API.TLSKey},
 	}, nil
 }

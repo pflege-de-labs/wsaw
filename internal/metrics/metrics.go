@@ -75,6 +75,14 @@ type Registry struct {
 	// this process last completed without error, so "no sweep has succeeded
 	// in two days" is an alert rather than a query (Story 4.12, AC6).
 	lastSweepSuccess time.Time
+	// vacuumRuns counts completed vacuums by outcome ("vacuumed",
+	// "skipped", "refused" or "error"), and vacuumBytesReclaimed what the
+	// ones that rewrote the file gave back. lastVacuumSuccess is when one
+	// last vacuumed or skipped: a skip is what a healthy schedule does most
+	// weeks, so it counts as success for the alert (Story 4.13, AC9).
+	vacuumRuns           map[string]int64
+	vacuumBytesReclaimed int64
+	lastVacuumSuccess    time.Time
 
 	// tlsReloads counts attempts to load a renewed certificate by outcome,
 	// and tlsExpiry is the not-after time of the one being served — zero
@@ -122,6 +130,7 @@ func New(version string) *Registry {
 		lastSuccess:     make(map[labels]time.Time),
 		lastAttempt:     make(map[labels]time.Time),
 		sweepRuns:       make(map[string]int64),
+		vacuumRuns:      make(map[string]int64),
 		tlsReloads:      make(map[string]int64),
 	}
 }
@@ -325,6 +334,28 @@ func (r *Registry) SweepSucceeded(at time.Time) {
 	r.lastSweepSuccess = at
 }
 
+// VacuumRun counts one completed vacuum by its outcome, and the bytes it
+// reclaimed. The outcome is store.VacuumStats.Outcome.
+func (r *Registry) VacuumRun(outcome string, reclaimed int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.vacuumRuns[outcome]++
+
+	if reclaimed > 0 {
+		r.vacuumBytesReclaimed += reclaimed
+	}
+}
+
+// VacuumSucceeded records the Unix time of a vacuum that rewrote the file or
+// found no need to. One that failed or was refused does not move it.
+func (r *Registry) VacuumSucceeded(at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.lastVacuumSuccess = at
+}
+
 // Certificate reload outcomes, as TLSCertificateReloaded counts them.
 const (
 	TLSReloadSuccess = "success"
@@ -481,6 +512,12 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_last_successful_sweep_timestamp_seconds",
 		"Unix time of the last sweep that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastSweepSuccess)))
+	writeOutcomes(&b, "wsaw_vacuum_runs_total", "Completed vacuums of the SQLite database, by outcome.", r.vacuumRuns)
+	fmt.Fprintf(&b, "# HELP %[1]s %[2]s\n# TYPE %[1]s counter\n%[1]s %[3]d\n", "wsaw_vacuum_bytes_reclaimed_total",
+		"Bytes the database file and its WAL shrank by across vacuums.", r.vacuumBytesReclaimed)
+	writeGaugeValue(&b, "wsaw_last_successful_vacuum_timestamp_seconds",
+		"Unix time of the last vacuum that rewrote the file or found no need to, 0 if none has in this process.",
+		float64(unixOrZero(r.lastVacuumSuccess)))
 	writeOutcomes(&b, "wsaw_tls_certificate_reloads_total",
 		"Attempts to load a renewed TLS certificate, by outcome.", r.tlsReloads)
 
