@@ -116,6 +116,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw store migrate` | Bring the store's schema up to date; `--dry-run` reports what would move |
 | `wsaw store prune` | Apply retention and reclaim the artifacts it orphans; `--dry-run` lists them |
 | `wsaw store sweep` | Delete artifacts nothing references any more; `--dry-run` lists them |
+| `wsaw store vacuum` | Shrink the SQLite file to the data it holds; `--dry-run` shows what it would reclaim, `--force` ignores the threshold |
 | `wsaw store rebuild-index` | Rebuild the index from the documents in the bucket; `--verify` checks it and exits non-zero on drift |
 | `wsaw artifacts compress` | Compress the artifacts already in the bucket, in place |
 | `wsaw prune` | Apply retention once; `--dry-run` shows what it would delete |
@@ -148,7 +149,9 @@ What a reload does apply: `targets`, `defaults`, per-target overrides,
 `detection.severity`, `detection.allowHosts`, `detection.denyHosts`, the
 schedule shape (`scheduler.interval`, `cron`, `jitter`, `minInterval`), and the
 bucket sweep's schedule (`store.sweep`, `store.sweepInterval`), whose next run
-is recomputed from the last recorded sweep, and where the interface's
+is recomputed from the last recorded sweep, the database vacuum's schedule
+(`store.vacuum`, `store.vacuumInterval`, `store.vacuumMinFreeRatio`), recomputed
+the same way, and where the interface's
 certificate is read from (`api.tlsCert`, `api.tlsKey`) — though not whether TLS
 is on at all. Everything else needs a restart. A setting added to wsaw later is
 non-reloadable until someone deliberately says otherwise, so the failure mode
@@ -987,6 +990,29 @@ One case holds artifact collection back on purpose. If a stored result's documen
 
 That state is sticky, and worth knowing about: it lasts as long as the affected results do, so a bucket lifecycle rule that removed one result document stops screenshot and body reclamation for the whole store until they are gone. Deleting them — tightening `store.maxAge` so they expire, or removing them from the store — is the remedy available today.
 
+#### The SQLite file shrinks only when it is vacuumed
+
+SQLite never gives freed space back to the filesystem on its own. The pages a deleted row leaves go on a freelist inside the file, later writes reuse them, and the file stays at the largest size it ever reached. So a prune does not make `wsaw.db` smaller, and neither does [the upgrade that moves every result document into the bucket](#upgrading-a-store-that-predates-the-bucket): after it, a store can be a file of hundreds of megabytes that is almost entirely free pages. `wsaw store vacuum --dry-run` shows how many there are and what a vacuum would give back.
+
+A vacuum rewrites the database without its free pages and then truncates the WAL. The daemon does it on its own, once a week:
+
+```yaml
+store:
+  vacuum: true             # the default; false turns the scheduled vacuum off
+  vacuumInterval: 168h     # the default; at least 1h
+  vacuumMinFreeRatio: 0.2  # the default; the share of the file that must be free, in (0, 1]
+```
+
+**When it runs.** Like the sweep, the next vacuum is due one interval after the last one recorded in the maintenance log, and a store that has never been vacuumed — every store that went through the upgrade above — is vacuumed 10 to 20 minutes after the daemon starts. A vacuum runs after that hour's prune and sweep, never at the same time as either. If less than `vacuumMinFreeRatio` of the file is free, it is skipped and recorded as skipped: most weeks, that is what a healthy schedule does. All three settings are applied by SIGHUP.
+
+**What it costs.** A vacuum holds the database's write lock while it rewrites the file: a fraction of a second for tens of megabytes, longer for gigabytes. Scans that finish during it wait for it and are then stored as usual. It also needs free disk: the rewrite builds a copy of the live data in SQLite's temporary directory (`SQLITE_TMPDIR`, then `TMPDIR`, then `/var/tmp`) and writes it once more into the WAL beside the database, so it needs about the live data free in each place, or twice that if they are on one filesystem. It checks before it starts and refuses — logged, recorded and counted as `refused` — rather than run out of disk part way. An interrupted vacuum leaves the file exactly as it was.
+
+`wsaw store vacuum` runs one now, and `--force` rewrites the file whatever its free share. It is safe beside a running daemon, but it has to take the same write lock: if the daemon is writing for longer than the busy timeout, the command gives up and says so. Stop the daemon first, or leave it to the schedule.
+
+Only SQLite is vacuumed. PostgreSQL and MySQL reclaim space themselves; `wsaw store vacuum` refuses them by name, and the daemon logs once at startup that no vacuum applies.
+
+Every vacuum is logged with its figures and counted as `wsaw_vacuum_runs_total{outcome="vacuumed"|"skipped"|"refused"|"error"}`; `wsaw_vacuum_bytes_reclaimed_total` adds up what the file and its WAL shrank by, and `wsaw_last_successful_vacuum_timestamp_seconds` is the Unix time of the last vacuum that rewrote the file or found no need to, 0 until one has in this process.
+
 #### Rebuilding an index from the bucket
 
 The bucket holds the record. The index — a pointer per scan plus the handful of counts a listing shows — is derived from it, and `wsaw store rebuild-index` re-derives it: every object under the `result/` prefix is read, decoded, and turned into the same index entry and the same summary the scan that stored it wrote, by the same code.
@@ -1058,6 +1084,8 @@ What to expect from the migration itself:
 - A row that will not move — a document that is not valid JSON, or a bucket that keeps refusing the write — is reported with its scan ID and left exactly as it is. The column is not dropped while any such row remains, so nothing is lost by fixing the cause and starting again. A document that moves but does not decode keeps its bytes in the bucket, and its row says that its summary could not be derived rather than showing zeros.
 
 **The upgrade is one-way.** An older wsaw cannot read a migrated store: it would look for a column that is no longer there. There is no downgrade migration, and there will not be one — the supported rollback is a database backup taken before the upgrade, restored alongside the older binary. Take that backup. The artifacts the migration writes are harmless to an older wsaw and can be left where they are.
+
+**The database file does not shrink on its own.** Moving the documents out leaves their pages free inside a SQLite file, which stays as large as it was. The daemon's first scheduled vacuum, 10 to 20 minutes after it starts, gives that space back; `wsaw store vacuum` does it now. See [the SQLite file shrinks only when it is vacuumed](#the-sqlite-file-shrinks-only-when-it-is-vacuumed).
 
 ## Being a good citizen
 

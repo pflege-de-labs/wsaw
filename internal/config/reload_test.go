@@ -58,7 +58,14 @@ func TestTargetAndDefaultChangesAreReloadable(t *testing.T) {
 			c.Store.Sweep = &off
 		},
 		"store sweepInterval": func(c *Config) { c.Store.SweepInterval = Duration(6 * time.Hour) },
-		"scheduler cron":      func(c *Config) { c.Scheduler.Interval = 0; c.Scheduler.Cron = "0 * * * *" },
+		// And so does the vacuum schedule (Story 4.13, AC11).
+		"store vacuum off": func(c *Config) {
+			off := false
+			c.Store.Vacuum = &off
+		},
+		"store vacuumInterval":     func(c *Config) { c.Store.VacuumInterval = Duration(24 * time.Hour) },
+		"store vacuumMinFreeRatio": func(c *Config) { c.Store.VacuumMinFreeRatio = 0.5 },
+		"scheduler cron":           func(c *Config) { c.Scheduler.Interval = 0; c.Scheduler.Cron = "0 * * * *" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

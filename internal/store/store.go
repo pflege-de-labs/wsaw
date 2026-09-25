@@ -99,6 +99,11 @@ type SQL struct {
 	// runs it from can report it rather than reconstruct it from the log.
 	// Nil when this open applied no such migration.
 	documents *DocumentMigration
+
+	// freeSpaceFn replaces the free-space check a vacuum makes, so a test
+	// can refuse one without filling a disk (Story 4.13, AC13). Nil in every
+	// store that is not a test's.
+	freeSpaceFn func(dir string) (int64, error)
 }
 
 // Options configures a store.

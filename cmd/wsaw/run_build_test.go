@@ -380,16 +380,46 @@ func TestReloadHandsOnTheSweepSchedule(t *testing.T) {
 	}
 }
 
-// TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest: the reload path must
+// TestReloadHandsOnTheVacuumSchedule is Story 4.13, AC11: a reload that
+// changes the vacuum schedule is accepted and hands the new one on.
+func TestReloadHandsOnTheVacuumSchedule(t *testing.T) {
+	path := writeConfig(t, oneTargetConfig)
+
+	cf := parseFlags(t, "--config", path)
+
+	running, err := cf.load()
+	if err != nil {
+		t.Fatalf("loading the running configuration: %v", err)
+	}
+
+	a := testApp(t, running)
+
+	body := oneTargetConfig + "\nstore:\n  path: " + filepath.Join(filepath.Dir(path), "wsaw.db") +
+		"\n  vacuumInterval: 24h\n  vacuumMinFreeRatio: 0.5\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := reload(a, *cf)
+	if err != nil {
+		t.Fatalf("reload refused a new vacuum schedule: %v", err)
+	}
+
+	if want := (app.VacuumSchedule{Enabled: true, Interval: 24 * time.Hour, MinFreeRatio: 0.5}); next.vacuum != want {
+		t.Errorf("reload handed on %+v, want %+v", next.vacuum, want)
+	}
+}
+
+// TestOfferScheduleNeverBlocksAndKeepsTheLatest: the reload path must
 // not wait for a maintenance loop that is busy sweeping, and when two reloads
 // arrive before the loop takes either, the newer one is what it gets.
-func TestOfferSweepScheduleNeverBlocksAndKeepsTheLatest(t *testing.T) {
+func TestOfferScheduleNeverBlocksAndKeepsTheLatest(t *testing.T) {
 	t.Parallel()
 
 	sweeps := make(chan app.SweepSchedule, 1)
 
-	offerSweepSchedule(sweeps, app.SweepSchedule{Enabled: true, Interval: time.Hour})
-	offerSweepSchedule(sweeps, app.SweepSchedule{Enabled: false, Interval: time.Hour})
+	offerSchedule(sweeps, app.SweepSchedule{Enabled: true, Interval: time.Hour})
+	offerSchedule(sweeps, app.SweepSchedule{Enabled: false, Interval: time.Hour})
 
 	if got := <-sweeps; got.Enabled {
 		t.Errorf("the loop was handed %+v, want the later reload's schedule", got)

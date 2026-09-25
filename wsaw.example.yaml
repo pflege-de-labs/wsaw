@@ -357,6 +357,27 @@ store:
   sweep: true
   sweepInterval: 24h
 
+  # The daemon also vacuums a SQLite database file: SQLite keeps the pages a
+  # deleted row leaves on a freelist and never shrinks the file itself, so
+  # after a prune, or after the upgrade that moved result documents into the
+  # bucket, the file stays as large as it ever was. A vacuum rewrites it
+  # without those pages and truncates the WAL. Leaving the settings out
+  # vacuums once a week; it is not off.
+  #
+  # A vacuum is skipped, and recorded as skipped, while less than
+  # vacuumMinFreeRatio of the file is free. It holds the database's write lock
+  # while it rewrites the file, so scans that finish meanwhile wait for it, and
+  # it refuses to start without free disk for the copy it builds. The next one
+  # is due one interval after the last recorded one; a store never vacuumed is
+  # vacuumed 10–20 minutes after startup. The interval may not be under 1h.
+  # All three are applied by SIGHUP. PostgreSQL and MySQL are never vacuumed.
+  #
+  # vacuum: false turns the scheduled vacuum off; "wsaw store vacuum" still
+  # works.
+  vacuum: true
+  vacuumInterval: 168h
+  vacuumMinFreeRatio: 0.2
+
   writeReport: false
   writeHar: false
 

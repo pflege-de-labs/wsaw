@@ -13,11 +13,16 @@ import (
 )
 
 // This file is the daemon's maintenance: the hourly prune that enforces
-// retention (Story 8.5) and the scheduled sweep that collects what a prune
-// cannot see (Story 4.12).
+// retention (Story 8.5), the scheduled sweep that collects what a prune
+// cannot see (Story 4.12), and the scheduled vacuum that gives a SQLite file
+// back the pages both leave free (Story 4.13).
 //
-// Both run in one goroutine, one after the other, and that is the whole of how
-// they are kept apart (AC5). A prune and a sweep on the same store at the same
+// All three run in one goroutine, one after the other, and that is the whole
+// of how they are kept apart (Story 4.12, AC5; Story 4.13, AC6). A vacuum
+// holds the database's write lock for as long as it rewrites the file, so
+// scans that finish meanwhile queue behind it on the store's one connection;
+// running it after the prune and the sweep is also when it has most to
+// reclaim. A prune and a sweep on the same store at the same
 // time would each be correct — both are already safe beside live scans — but
 // they would compete for the same database and the same bucket, and a sweep
 // walking a bucket while a prune deletes from it would report counts that
@@ -51,6 +56,33 @@ const (
 	sweepStartupDelay  = 10 * time.Minute
 	sweepStartupJitter = 10 * time.Minute
 )
+
+// VacuumSchedule is whether the daemon vacuums on a schedule, how often, and
+// how much of the file must be free before a vacuum rewrites it.
+type VacuumSchedule struct {
+	Enabled      bool
+	Interval     time.Duration
+	MinFreeRatio float64
+}
+
+// VacuumScheduleFor reads the vacuum schedule out of configuration, for the
+// reason SweepScheduleFor is a function of configuration alone (Story 4.13,
+// AC11).
+func VacuumScheduleFor(cfg *config.Config) VacuumSchedule {
+	return VacuumSchedule{
+		Enabled:      cfg.Store.VacuumEnabled(),
+		Interval:     cfg.Store.VacuumEvery(),
+		MinFreeRatio: cfg.Store.VacuumFreeRatio(),
+	}
+}
+
+// vacuumer is the part of a store a scheduled vacuum needs, declared where it
+// is consumed rather than added to store.Store: only a SQLite store has one to
+// offer, and the loop asks rather than assumes.
+type vacuumer interface {
+	SupportsVacuum() bool
+	Vacuum(ctx context.Context, trigger string, opts store.VacuumOptions) (store.VacuumStats, error)
+}
 
 // SweepSchedule is whether the daemon sweeps on a schedule, and how often.
 type SweepSchedule struct {
@@ -119,18 +151,21 @@ func randomJitter(window time.Duration) time.Duration {
 	return time.Duration(n.Int64())
 }
 
-// MaintenanceLoop prunes and sweeps on their schedules until ctx is
+// MaintenanceLoop prunes, sweeps and vacuums on their schedules until ctx is
 // cancelled. Without it a daemon that runs for months grows without bound
-// (NFR §1); with it, both are observable, because every run is logged,
+// (NFR §1); with it, all three are observable, because every run is logged,
 // counted and recorded.
 //
 // A schedule received on sweeps replaces the sweep schedule in force, which is
-// how a reload applies store.sweep and store.sweepInterval (Story 4.12, AC8).
-func (a *App) MaintenanceLoop(ctx context.Context, sweeps <-chan SweepSchedule) {
-	a.maintenanceLoop(ctx, sweeps, systemClock())
+// how a reload applies store.sweep and store.sweepInterval (Story 4.12, AC8);
+// one received on vacuums does the same for the vacuum's (Story 4.13, AC11).
+func (a *App) MaintenanceLoop(ctx context.Context, sweeps <-chan SweepSchedule, vacuums <-chan VacuumSchedule) {
+	a.maintenanceLoop(ctx, sweeps, vacuums, systemClock())
 }
 
-func (a *App) maintenanceLoop(ctx context.Context, sweeps <-chan SweepSchedule, clock maintenanceClock) {
+func (a *App) maintenanceLoop(
+	ctx context.Context, sweeps <-chan SweepSchedule, vacuums <-chan VacuumSchedule, clock maintenanceClock,
+) {
 	m := a.newMaintenance(ctx, clock)
 
 	for {
@@ -145,6 +180,10 @@ func (a *App) maintenanceLoop(ctx context.Context, sweeps <-chan SweepSchedule, 
 		case s := <-sweeps:
 			stop()
 			m.reschedule(ctx, s)
+
+		case v := <-vacuums:
+			stop()
+			m.rescheduleVacuum(ctx, v)
 
 		case <-fire:
 			m.runDue(ctx)
@@ -170,6 +209,14 @@ type maintenance struct {
 	// scheduled is set once a sweep schedule has been put in force, so the
 	// first one always is, whatever it says.
 	scheduled bool
+
+	// vacuumStore is nil when the store has nothing to vacuum — it is not
+	// SQLite — and then no vacuum is ever scheduled, whatever the
+	// configuration says.
+	vacuumStore     vacuumer
+	vacuum          VacuumSchedule
+	nextVacuum      time.Time
+	vacuumScheduled bool
 }
 
 func (a *App) newMaintenance(ctx context.Context, clock maintenanceClock) *maintenance {
@@ -189,7 +236,29 @@ func (a *App) newMaintenance(ctx context.Context, clock maintenanceClock) *maint
 
 	m.reschedule(ctx, SweepScheduleFor(a.Config))
 
+	vacuum := VacuumScheduleFor(a.Config)
+
+	if v, ok := a.Store.(vacuumer); ok && v.SupportsVacuum() {
+		m.vacuumStore = v
+	} else if vacuum.Enabled {
+		// Said once, at startup, rather than on every reload: it is a fact
+		// about the store, which a reload cannot change (Story 4.13, AC2).
+		a.Logger.Info("scheduled vacuuming does not apply to this store; only a SQLite file is vacuumed by wsaw",
+			"driver", storeDriver(a.Store))
+	}
+
+	m.rescheduleVacuum(ctx, vacuum)
+
 	return m
+}
+
+// storeDriver names the store's driver for a log line, or says there is none.
+func storeDriver(s store.Store) string {
+	if s == nil {
+		return "none"
+	}
+
+	return s.Driver()
 }
 
 // arm waits for whichever run is due first. With nothing scheduled at all it
@@ -202,8 +271,10 @@ func (m *maintenance) arm() (<-chan time.Time, func()) {
 		next = m.nextPrune
 	}
 
-	if !m.nextSweep.IsZero() && (next.IsZero() || m.nextSweep.Before(next)) {
-		next = m.nextSweep
+	for _, due := range []time.Time{m.nextSweep, m.nextVacuum} {
+		if !due.IsZero() && (next.IsZero() || due.Before(next)) {
+			next = due
+		}
 	}
 
 	if next.IsZero() {
@@ -233,6 +304,16 @@ func (m *maintenance) runDue(ctx context.Context) {
 		m.app.sweepOnce(ctx, now)
 		m.nextSweep = m.clock.now().Add(m.sweep.Interval)
 	}
+
+	// Nor is it a reason to start rewriting the database.
+	if ctx.Err() != nil {
+		return
+	}
+
+	if now := m.clock.now(); !m.nextVacuum.IsZero() && !now.Before(m.nextVacuum) {
+		m.app.vacuumOnce(ctx, m.vacuumStore, now, m.vacuum)
+		m.nextVacuum = m.clock.now().Add(m.vacuum.Interval)
+	}
 }
 
 // reschedule puts a sweep schedule in force and decides when the next sweep
@@ -259,7 +340,7 @@ func (m *maintenance) reschedule(ctx context.Context, s SweepSchedule) {
 	now := m.clock.now()
 	soonest := now.Add(sweepStartupDelay + m.clock.jitter(sweepStartupJitter))
 
-	last, found := m.lastSweep(ctx)
+	last, found := m.lastRun(ctx, store.MaintenanceKindSweep)
 	m.nextSweep = sweepDue(last, found, soonest, s.Interval)
 
 	m.app.Logger.Info("scheduled the next sweep of the artifact bucket",
@@ -267,23 +348,62 @@ func (m *maintenance) reschedule(ctx context.Context, s SweepSchedule) {
 		"interval", s.Interval.String())
 }
 
-// lastSweep reads when the last recorded sweep finished, whichever process ran
-// it.
+// rescheduleVacuum puts a vacuum schedule in force and decides when the next
+// vacuum is due under it, the way reschedule does for the sweep: one interval
+// after the last recorded vacuum — a skip included, since a skip is a vacuum
+// that looked and found no need — and never sooner than the startup delay
+// (Story 4.13, AC7). A store upgraded through Story 8.4 has no receipt, so it
+// gets its space back shortly after its first start.
+func (m *maintenance) rescheduleVacuum(ctx context.Context, v VacuumSchedule) {
+	if m.vacuumScheduled && v == m.vacuum {
+		return
+	}
+
+	m.vacuum, m.vacuumScheduled = v, true
+
+	if m.vacuumStore == nil {
+		m.nextVacuum = time.Time{}
+
+		return
+	}
+
+	if !v.Enabled {
+		m.nextVacuum = time.Time{}
+
+		m.app.Logger.Info("scheduled vacuuming is off (store.vacuum: false); the database file is vacuumed only by \"wsaw store vacuum\"")
+
+		return
+	}
+
+	soonest := m.clock.now().Add(sweepStartupDelay + m.clock.jitter(sweepStartupJitter))
+
+	last, found := m.lastRun(ctx, store.MaintenanceKindVacuum)
+	m.nextVacuum = sweepDue(last, found, soonest, v.Interval)
+
+	m.app.Logger.Info("scheduled the next vacuum of the database file",
+		"next", m.nextVacuum.Format(time.RFC3339),
+		"interval", v.Interval.String(),
+		"min_free_ratio", v.MinFreeRatio)
+}
+
+// lastRun reads when the last recorded run of kind finished, whichever
+// process ran it.
 //
 // A store that cannot say, or a read that fails, is treated as a store that
-// has never swept. That is the answer that sweeps soonest, and it is safe to be
-// wrong in that direction: the startup delay still applies, and a sweep that
-// was not needed yet costs one listing.
-func (m *maintenance) lastSweep(ctx context.Context) (time.Time, bool) {
+// has never run one. That is the answer that runs soonest, and it is safe to
+// be wrong in that direction: the startup delay still applies, a sweep that
+// was not needed yet costs one listing, and a vacuum that was not needed yet
+// is skipped by its threshold.
+func (m *maintenance) lastRun(ctx context.Context, kind string) (time.Time, bool) {
 	reader, ok := m.app.Store.(lastRunReader)
 	if !ok {
 		return time.Time{}, false
 	}
 
-	run, found, err := reader.LastMaintenanceRun(ctx, store.MaintenanceKindSweep)
+	run, found, err := reader.LastMaintenanceRun(ctx, kind)
 	if err != nil {
-		m.app.Logger.Warn("the last sweep could not be read from the maintenance log, so the next is scheduled as though none had run",
-			"error", err)
+		m.app.Logger.Warn("the last run could not be read from the maintenance log, so the next is scheduled as though none had run",
+			"kind", kind, "error", err)
 
 		return time.Time{}, false
 	}
@@ -296,7 +416,8 @@ func (m *maintenance) lastSweep(ctx context.Context) (time.Time, bool) {
 }
 
 // sweepDue is when the next sweep falls due: one interval after the last
-// recorded one, and never sooner than soonest (AC3).
+// recorded one, and never sooner than soonest (AC3). The vacuum's schedule is
+// kept the same way.
 //
 // It is measured from the receipt, not from when this process started,
 // because a daemon restarted every night — by a deploy, or by a host that
@@ -385,5 +506,65 @@ func sweepStatsAttrs(stats store.SweepStats) []any {
 		"artifacts_failed", stats.ArtifactsFailed,
 		"foreign_objects", stats.ForeignObjects,
 		"unknown_references", stats.UnknownReferences,
+	}
+}
+
+// vacuumOnce runs one scheduled vacuum and reports it where a sweep's report
+// goes (Story 4.13, AC8 and AC9): the log, the metrics, and — written by
+// Vacuum itself — the receipt log. Whatever the outcome, the next is one
+// interval later; a refusal for want of disk is not retried sooner, since the
+// disk will not have grown.
+func (a *App) vacuumOnce(ctx context.Context, v vacuumer, now time.Time, s VacuumSchedule) {
+	stats, err := v.Vacuum(ctx, store.TriggerSchedule, store.VacuumOptions{MinFreeRatio: s.MinFreeRatio})
+
+	a.Metrics.VacuumRun(stats.Outcome, stats.ReclaimedBytes())
+
+	attrs := vacuumStatsAttrs(stats)
+	failed := append([]any{"error", err}, attrs...)
+
+	switch {
+	case err == nil:
+		a.Metrics.VacuumSucceeded(now)
+
+		if stats.Outcome == store.VacuumSkipped {
+			a.Logger.Info("the database file has too few free pages to be worth rewriting; the vacuum was skipped", attrs...)
+
+			return
+		}
+
+		if stats.CheckpointIncomplete {
+			a.Logger.Warn("vacuumed the database file, but the WAL could not be truncated while another connection "+
+				"was reading; its space comes back at the next checkpoint", attrs...)
+
+			return
+		}
+
+		a.Logger.Info("vacuumed the database file", attrs...)
+
+	case errors.Is(err, store.ErrVacuumNoSpace):
+		a.Logger.Warn("the vacuum was refused because the disk cannot hold the copy it builds; free some space, "+
+			"or run \"wsaw store vacuum\" once there is room", failed...)
+
+	case ctx.Err() != nil:
+		// A shutdown, not a failure: VACUUM is a transaction, so the file is
+		// exactly as it was.
+		a.Logger.Info("the vacuum was interrupted by shutdown; the database file is unchanged", failed...)
+
+	default:
+		a.Logger.Error("vacuuming the database file failed", failed...)
+	}
+}
+
+func vacuumStatsAttrs(stats store.VacuumStats) []any {
+	return []any{
+		"outcome", stats.Outcome,
+		"file_bytes_before", stats.FileBytesBefore,
+		"file_bytes_after", stats.FileBytesAfter,
+		"wal_bytes_before", stats.WALBytesBefore,
+		"wal_bytes_after", stats.WALBytesAfter,
+		"bytes_reclaimed", stats.ReclaimedBytes(),
+		"free_ratio", stats.FreeRatio,
+		"min_free_ratio", stats.MinFreeRatio,
+		"duration", stats.Duration.String(),
 	}
 }

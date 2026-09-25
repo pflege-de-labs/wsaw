@@ -319,6 +319,21 @@ type Store struct {
 	// full listing of the bucket.
 	SweepInterval Duration `yaml:"sweepInterval,omitempty"`
 
+	// Vacuum is whether the daemon gives a SQLite file back the space the
+	// store no longer uses (Story 4.13). On unless set to false, for the
+	// reason Sweep is: a file that only ever grows is a cost nobody chose.
+	// It does nothing for PostgreSQL or MySQL, which reclaim space on their
+	// own.
+	Vacuum *bool `yaml:"vacuum,omitempty"`
+	// VacuumInterval is how long after the last recorded vacuum the next one
+	// is due. Empty takes DefaultVacuumInterval; anything under
+	// MinVacuumInterval is refused.
+	VacuumInterval Duration `yaml:"vacuumInterval,omitempty"`
+	// VacuumMinFreeRatio is the share of the file that must be free pages
+	// before a vacuum rewrites it, in (0, 1]. Empty takes
+	// store.DefaultVacuumMinFreeRatio.
+	VacuumMinFreeRatio float64 `yaml:"vacuumMinFreeRatio,omitempty"`
+
 	// WriteJSONL mirrors results to newline-delimited JSON files.
 	WriteJSONL bool `yaml:"writeJsonl,omitempty"`
 	// WriteHAR emits a HAR file per scan. Off by default because of size.
@@ -446,6 +461,38 @@ func (s Store) SweepEnabled() bool {
 // SweepEvery returns how often the daemon sweeps, or the default.
 func (s Store) SweepEvery() time.Duration {
 	return s.SweepInterval.Or(DefaultSweepInterval)
+}
+
+// Scheduled vacuum bounds (Story 4.13).
+//
+// A week is the default because a vacuum rewrites the whole file and holds
+// the write lock while it does, and what it reclaims accumulates slowly:
+// retention deletes a few rows an hour. The hour floor is the sweep's, for a
+// similar reason — a vacuum more often than that finds nothing to reclaim, and
+// the threshold would skip it anyway.
+const (
+	DefaultVacuumInterval = 7 * 24 * time.Hour
+	MinVacuumInterval     = time.Hour
+)
+
+// VacuumEnabled reports whether the daemon vacuums on a schedule, which it
+// does unless the configuration explicitly says vacuum: false.
+func (s Store) VacuumEnabled() bool {
+	return s.Vacuum == nil || *s.Vacuum
+}
+
+// VacuumEvery returns how often the daemon vacuums, or the default.
+func (s Store) VacuumEvery() time.Duration {
+	return s.VacuumInterval.Or(DefaultVacuumInterval)
+}
+
+// VacuumFreeRatio returns the free-page share a vacuum needs, or the default.
+func (s Store) VacuumFreeRatio() float64 {
+	if s.VacuumMinFreeRatio > 0 {
+		return s.VacuumMinFreeRatio
+	}
+
+	return store.DefaultVacuumMinFreeRatio
 }
 
 // Keep is a retention policy in the terms restic's forget command uses: keep

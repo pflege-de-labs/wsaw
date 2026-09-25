@@ -9,6 +9,25 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- The daemon vacuums a SQLite database file, once a week by default, so the
+  file shrinks when the data in it does (Story 4.13). SQLite never returns
+  freed pages on its own, so a store that went through the 0.2.0 upgrade,
+  which moved every result document into the bucket, kept its old size. The
+  first scheduled vacuum runs 10–20 minutes after the daemon starts. It is
+  skipped while less than `store.vacuumMinFreeRatio` (0.2) of the file is
+  free, and refused when the disk cannot hold the copy it builds.
+  `store.vacuum: false` turns it off, and `store.vacuumInterval` sets how
+  often it runs.
+- `wsaw store vacuum` runs one now. `--dry-run` shows what it would reclaim
+  and how much free disk it needs, and `--force` ignores the threshold. It
+  refuses a PostgreSQL or MySQL store by name.
+- Metrics: `wsaw_vacuum_runs_total{outcome}`,
+  `wsaw_vacuum_bytes_reclaimed_total` and
+  `wsaw_last_successful_vacuum_timestamp_seconds`. Each vacuum also leaves a
+  receipt in the maintenance log, with kind `vacuum`.
+
 ## [0.2.1] - 2026-09-24
 
 A certificate the server could not load is caught when the configuration is
