@@ -87,6 +87,9 @@ func run(ctx context.Context, args []string) int {
 	case "ui":
 		err = cmdUI(ctx, rest)
 
+	case "mcp":
+		err = cmdMCP(ctx, rest)
+
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
 
@@ -140,6 +143,7 @@ Commands:
   share          Mint an expiring link to one scan result
   store          Maintain the result store: "wsaw store migrate"
   ui             Open the web interface in a browser, already signed in
+  mcp            Serve stored results to an LLM client over MCP (stdio), read-only
   version        Print build information
 
 Exit codes for "scan":

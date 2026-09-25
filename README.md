@@ -139,6 +139,7 @@ The ordering matters: an operational failure outranks findings. wsaw will never 
 | `wsaw prune` | Apply retention once; `--dry-run` shows what it would delete |
 | `wsaw share` | Mint an expiring link to one scan result |
 | `wsaw ui` | Open the web interface in a browser, already signed in |
+| `wsaw mcp` | Serve the stored results to an LLM client over MCP (stdio), read-only |
 | `wsaw version` | Build information |
 
 `SIGHUP` reloads the target list. An invalid new configuration is rejected and the running one stays active — a watcher must not stop watching because of a bad edit.
@@ -664,6 +665,64 @@ list or the audit log, write anything at all, or fetch any stored artifact
 other than the ones its own result names. The token is signed HS256 with a
 pinned algorithm — the signature is checked before any claim is read — and it
 is kept out of wsaw's logs, results and error messages.
+
+## Asking an LLM about the results
+
+`wsaw mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio. An MCP client — Claude Code, Claude Desktop, an IDE
+agent — starts it as a subprocess, and its model can then read the store: which
+targets are watched, the scans of each, one scan's consent outcome and
+requests, what changed against the baseline or the previous scan, and a stored
+body or screenshot.
+
+```sh
+claude mcp add wsaw -- wsaw mcp --config /etc/wsaw/wsaw.yaml
+```
+
+Or, for a client configured with JSON:
+
+```json
+{
+  "mcpServers": {
+    "wsaw": { "command": "wsaw", "args": ["mcp", "--config", "/etc/wsaw/wsaw.yaml"] }
+  }
+}
+```
+
+| Tool | Answers |
+|---|---|
+| `list_series` | Every stored target and consent mode, and whether it has an approved baseline |
+| `list_scans` | The scans of one series, newest first, as summaries |
+| `get_scan` | One scan without its request list, with the request count and third-party domains before and after consent |
+| `list_requests` | One scan's requests, paged, filtered by party, phase or registrable domain |
+| `diff_scans` | One scan compared with the baseline, the previous scan, or another scan, with a severity per change |
+| `get_artifact` | A stored body as text (capped, and saying so), or a screenshot as an image |
+
+A scan is named by its ID, by `latest`, or by `baseline` — the copy the
+baseline keeps, which retention does not prune.
+
+**It is read-only by construction.** The server is given a view of the store
+that has no write methods, and opens the store without applying migrations:
+a store whose schema is behind is refused with the command that upgrades it.
+A database or artifact directory that does not exist is refused, not created.
+It runs beside a daemon on the same store, and it never starts a scan.
+
+Two things to know before handing it to a model:
+
+- **Everything a page wrote is untrusted.** Bodies, URLs, cookie values and
+  headers come from the scanned site, which can put text in them that is
+  written to steer a model. Every tool that returns page content says so, and
+  the server's instructions tell the model not to follow it. Keep your client's
+  confirmation prompts on for tools from other servers in the same session.
+- **An empty answer is never a quiet failure.** A failed scan is marked
+  `"ok": false` with a warning that its request list is incomplete, a paged
+  list states its total and whether there is more, a body cut at the cap says
+  how much of how much it returned, and a scan or artifact that retention
+  pruned is an error naming it.
+
+`diff_scans` uses the default severity rules, as the web interface does, not
+a target's configured allow and deny lists. Only stdio is offered; there is no
+network listener to secure.
 
 ## Notifications
 
