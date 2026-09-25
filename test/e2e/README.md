@@ -2,7 +2,8 @@
 
 Two things live here. `fixture/` is the Klaro website the scanning end-to-end
 tests use (Story 7.1), described below. `objectstore/` is the suite that runs
-wsaw against a real S3-compatible object store — MinIO in a container — because
+wsaw against a real S3-compatible object store — MinIO in a container, from
+the [PGSTY Silo](https://github.com/pgsty/silo) fork's image — because
 everything else in the store's test suite runs against a directory, a bucket in
 memory, or a fake, and all three are models of object storage written by the
 same people who wrote the code under test (Story 8.9, AC2).

@@ -70,9 +70,14 @@ const (
 	// provider-behaviour suite is precisely where a silent upgrade would be
 	// mistaken for a regression in wsaw (Story 7.6, AC4).
 	//
-	// RELEASE.2025-09-07T16-13-09Z.
-	minioImage = "quay.io/minio/minio@sha256:" +
-		"14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+	// The image is PGSTY Silo, a maintained fork of the MinIO server, because
+	// MinIO, Inc. stopped distributing community images and quay.io/minio/minio
+	// no longer allows an anonymous pull. It speaks MinIO's protocol and reads
+	// MinIO's variables; only the binary is renamed, to silo.
+	//
+	// RELEASE.2026-09-16T00-00-00Z.
+	minioImage = "docker.io/pgsty/silo@sha256:" +
+		"635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46"
 
 	// minioContainer is what the container is called, so a leftover from an
 	// interrupted run is found and removed rather than colliding.
@@ -192,7 +197,7 @@ func startMinIO(ctx context.Context) (func(), error) {
 		"-e", "MINIO_ROOT_PASSWORD=" + secretKey,
 		"--entrypoint", "/bin/sh",
 		minioImage,
-		"-c", "mkdir -p /data/" + bucketName + " && exec minio server /data --address :9000",
+		"-c", "mkdir -p /data/" + bucketName + " && exec silo server /data --address :9000",
 	}
 
 	if out, err := run(ctx, rt.Path, start...); err != nil {
