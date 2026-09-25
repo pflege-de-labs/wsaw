@@ -132,6 +132,11 @@ browser:
     # behaviour between scans and a diff would report it as the site's change.
     # wsaw never pulls during a scan — fetch it once with:
     #   podman pull docker.io/chromedp/headless-shell@sha256:...
+    # The default image runs Chrome with --no-sandbox. The one deploy/browser
+    # builds, published as ghcr.io/pflege-de-labs/wsaw-browser, keeps Chrome's
+    # sandbox on; under Docker it also needs
+    #   extraArgs: ["--security-opt", "seccomp=deploy/chromium-seccomp.json"]
+    # while rootless Podman needs nothing extra.
     image: ""
     memory: 1g
     pidsLimit: 512

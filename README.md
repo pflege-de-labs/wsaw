@@ -44,7 +44,24 @@ wsaw scan --url https://example.com/ --browser-runtime local
 - Every result records `browserRuntime`, `browserImage` and `browserSandbox`, because a result is only comparable with another if you can see what rendered it.
 - One container per scan, removed on every exit path, and orphans from an unclean shutdown are reaped at startup.
 - **A containerised browser cannot reach this machine's `localhost`** — it has its own network namespace. Scanning a local service fails with that explanation; use `--browser-runtime local` for it.
-- Inside the container, Chrome's own sandbox is off. Nesting it would require privileges that weaken the container boundary that replaced it, so the container is the boundary and the result says so.
+- **Chrome's own sandbox depends on the image.** The default, `chromedp/headless-shell`, forces `--no-sandbox`, so the container is the only boundary. The image in [`deploy/browser`](deploy/browser/Dockerfile) keeps the sandbox, so a hostile page has two boundaries to cross. Every result's `browserSandbox` says which it was.
+
+### Keeping Chrome's sandbox inside the container
+
+`deploy/browser` builds Alpine's `chromium-headless-shell`, the same Chromium the wsaw image bundles, with its namespace sandbox on and running as an unprivileged user. It is published with each release as `ghcr.io/pflege-de-labs/wsaw-browser`, or built locally with `make docker-browser`. Pin it by digest like any browser image:
+
+```yaml
+browser:
+  container:
+    image: "ghcr.io/pflege-de-labs/wsaw-browser@sha256:..."
+    # Docker only: its default seccomp profile refuses the sandbox. Rootless
+    # Podman's default allows it and needs nothing here.
+    extraArgs: ["--security-opt", "seccomp=/path/to/deploy/chromium-seccomp.json"]
+```
+
+- Where the sandbox cannot be built, Chromium **refuses to start** rather than running without it, so a scan fails with a reason instead of silently losing a boundary.
+- The image declares the sandbox with the label `de.pflege.wsaw.browser.sandbox=enabled`, which is how wsaw knows to record `browserSandbox: true`. A `--no-sandbox` (or another sandbox-weakening switch) in `browser.container.browserArgs` makes the scan unsandboxed for the record, whatever the label says.
+- Switching images changes the browser that renders a target, so expect differences in the first scans after the switch that come from the browser rather than from the site.
 
 ## Install
 

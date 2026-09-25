@@ -400,6 +400,96 @@ jobs:
             exit 1
           fi
 
+  # The per-scan browser image (deploy/browser, Story 1.8 AC5): it must keep
+  # Chromium's sandbox, speak the contract internal/container expects, and
+  # carry the same Alpine and Chromium as the wsaw image. Checked on Docker
+  # for the same reason as container-sandbox above.
+  browser-image:
+    name: browser image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # One browser for both images: a containerised scan and a scan inside
+      # the wsaw image should be rendered by the same Chromium, and
+      # chromium.yaml bumps both files together only if they start equal.
+      - name: The browser image moves with the wsaw image
+        run: |
+          for pattern in '^FROM alpine:' '^ARG CHROMIUM_VERSION='; do
+            top=$(grep -E "$pattern" Dockerfile)
+            browser=$(grep -E "$pattern" deploy/browser/Dockerfile)
+            if [ "$top" != "$browser" ]; then
+              echo "::error::Dockerfile has '$top' but deploy/browser/Dockerfile has '$browser'"
+              exit 1
+            fi
+          done
+      - name: Build the image
+        run: docker build -t wsaw-browser:probe deploy/browser
+      - name: The image declares that it keeps the sandbox
+        run: |
+          label=$(docker image inspect --format '{{ index .Config.Labels "de.pflege.wsaw.browser.sandbox" }}' wsaw-browser:probe)
+          if [ "$label" != "enabled" ]; then
+            echo "::error::de.pflege.wsaw.browser.sandbox is '$label', want 'enabled'"
+            exit 1
+          fi
+      # internal/container reads the last line of `<image> --version`.
+      - name: --version reports the pinned Chromium
+        run: |
+          want=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' deploy/browser/Dockerfile)
+          got=$(docker run --rm wsaw-browser:probe --version | tail -n 1)
+          case "$got" in
+            "Chromium ${want%-r*}"*) echo "$got" ;;
+            *) echo "::error::--version reports '$got', want Chromium ${want%-r*}"; exit 1 ;;
+          esac
+      # The same probe, and the same pair of runs, as container-sandbox.
+      - name: The sandbox starts under deploy/chromium-seccomp.json
+        run: |
+          docker run --rm \
+            --security-opt seccomp=deploy/chromium-seccomp.json \
+            -e WSAW_CHROME_PATH=/usr/bin/chromium-headless-shell \
+            -v "$PWD/test/sandbox/probe.sh:/probe.sh:ro" \
+            --entrypoint sh wsaw-browser:probe /probe.sh
+      - name: The sandbox does not start under Docker's default profile
+        run: |
+          set +e
+          docker run --rm \
+            -e WSAW_CHROME_PATH=/usr/bin/chromium-headless-shell \
+            -v "$PWD/test/sandbox/probe.sh:/probe.sh:ro" \
+            --entrypoint sh wsaw-browser:probe /probe.sh
+          status=$?
+          set -e
+          if [ "$status" -ne 1 ]; then
+            echo "expected the probe to report an unsandboxed browser (1), got $status"
+            exit 1
+          fi
+      # Started the way internal/container starts it — CDP published on
+      # loopback only — and with the sandbox on, so the entrypoint's own
+      # command line is what is being checked, not the probe's.
+      - name: CDP answers on the published port with the sandbox on
+        run: |
+          id=$(docker run --detach --rm \
+            --security-opt seccomp=deploy/chromium-seccomp.json \
+            --shm-size 1g \
+            --publish 127.0.0.1::9222 \
+            wsaw-browser:probe)
+          trap 'docker rm -f "$id" >/dev/null' EXIT
+          port=$(docker port "$id" 9222/tcp | head -n 1 | sed 's/.*://')
+          for _ in $(seq 1 60); do
+            if out=$(curl -fsS "http://127.0.0.1:$port/json/version"); then
+              echo "$out"
+              break
+            fi
+            sleep 0.5
+          done
+          echo "$out" | jq -e '.Browser | startswith("HeadlessChrome/") or startswith("Chrome/")' >/dev/null || {
+            echo "::error::no CDP answer on the published port"
+            docker logs "$id"
+            exit 1
+          }
+          if docker exec "$id" sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\0" " "' | grep -q -- '--no-sandbox'; then
+            echo "::error::a process in the container runs with --no-sandbox"
+            exit 1
+          fi
+
   soak:
     name: soak
     if: github.event_name == 'schedule'

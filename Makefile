@@ -999,6 +999,16 @@ docker:
 		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
 		-t $(IMAGE_NAME):$(VERSION) .
 
+# The per-scan browser image (deploy/browser, Story 1.8 AC5): Chromium that
+# keeps its own sandbox inside the container wsaw starts it in. It is not a
+# build of wsaw, so it takes no build tags, and it is tagged with the wsaw
+# version it was built alongside, as image.yaml tags the published one.
+.PHONY: docker-browser
+docker-browser:
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		-t wsaw-browser:$(VERSION) deploy/browser
+
 # The seccomp profile that lets Chromium keep its own sandbox inside the image
 # (Story 6.3, AC2 and AC3).
 #

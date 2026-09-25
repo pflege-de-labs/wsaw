@@ -1,0 +1,143 @@
+# Daily check for a new Chromium in the image's Alpine branch.
+#
+# The Dockerfile pins Chromium by exact apk version (Story 6.3, AC1), and
+# Alpine keeps only the newest build of a package in a stable branch. So when
+# Chrome ships a release and Alpine packages it, the pinned version disappears
+# from the mirrors and the image build — and ci.yaml's container-sandbox job
+# with it — starts failing with apk's "unable to select packages". Waiting for
+# that failure means finding out about a Chromium security release from a red
+# build instead of the day it lands.
+#
+# This workflow reads the version straight out of the branch's APKINDEX for
+# both architectures the image is built for, and opens a pull request bumping
+# CHROMIUM_VERSION when it has moved — in the Dockerfile and in
+# deploy/browser/Dockerfile together, since the per-scan browser image pins
+# the same Chromium (ci.yaml's browser-image job refuses the two drifting).
+# Alpine builds chromium and chromium-headless-shell from one source package,
+# so the version read for chromium is the one both install. It reads the index rather than running
+# `apk policy` in a container because the arm64 answer would otherwise need
+# QEMU, and the two architectures are built separately by Alpine's builders:
+# for a few hours after a release one can carry the new version while the
+# other still has the old one. A bump is only proposed once both agree, since
+# an image pinned to a version one architecture lacks cannot be built at all.
+#
+# The pull request goes through ci.yaml like any other change; nothing here
+# builds or publishes an image. A pull request opened with the default
+# GITHUB_TOKEN does not trigger other workflows, so set the
+# CHROMIUM_BUMP_TOKEN secret (a fine-grained token or GitHub App token with
+# contents and pull-requests write) for CI to run on it without a manual push.
+
+name: Chromium
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chromium-bump
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check for a new Chromium
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+
+      # The Alpine branch comes from the Dockerfile's runtime FROM line, so a
+      # move to a new Alpine release is picked up here without editing this
+      # file.
+      - name: Read the pinned version and the Alpine branch
+        run: |
+          pinned=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' Dockerfile)
+          branch=$(sed -n 's/^FROM alpine:\([0-9]*\.[0-9]*\)[@ ].*/\1/p' Dockerfile)
+          if [ -z "$pinned" ] || [ -z "$branch" ]; then
+            echo "::error::could not read CHROMIUM_VERSION or the alpine FROM line from the Dockerfile"
+            exit 1
+          fi
+          echo "PINNED=$pinned" >> "$GITHUB_ENV"
+          echo "BRANCH=v$branch" >> "$GITHUB_ENV"
+          echo "pinned chromium=$pinned on alpine v$branch"
+
+      - name: Read the current version for each architecture
+        run: |
+          for arch in x86_64 aarch64; do
+            v=$(curl -fsSL --retry 3 \
+                "https://dl-cdn.alpinelinux.org/alpine/$BRANCH/community/$arch/APKINDEX.tar.gz" \
+              | tar -xzO APKINDEX \
+              | awk -v RS= '/(^|\n)P:chromium\n/' \
+              | sed -n 's/^V://p')
+            if [ -z "$v" ]; then
+              echo "::error::no chromium package in alpine $BRANCH community/$arch"
+              exit 1
+            fi
+            echo "$arch: chromium=$v"
+            printf -v "V_$arch" '%s' "$v"
+          done
+          if [ "$V_x86_64" != "$V_aarch64" ]; then
+            echo "::notice::x86_64 has $V_x86_64 and aarch64 has $V_aarch64; waiting for both to carry the same build"
+            exit 0
+          fi
+          echo "LATEST=$V_x86_64" >> "$GITHUB_ENV"
+
+      - name: Open a pull request for the new version
+        if: env.LATEST != '' && env.LATEST != env.PINNED
+        env:
+          GH_TOKEN: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+        run: |
+          head="deps/chromium-$LATEST"
+          if git ls-remote --exit-code --heads origin "$head" >/dev/null; then
+            echo "::notice::$head already exists; not opening a second pull request"
+            exit 0
+          fi
+
+          sed -i "s/^ARG CHROMIUM_VERSION=.*/ARG CHROMIUM_VERSION=$LATEST/" Dockerfile deploy/browser/Dockerfile
+          for f in Dockerfile deploy/browser/Dockerfile; do
+            git diff --exit-code --quiet "$f" && {
+              echo "::error::$f did not change"
+              exit 1
+            }
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$head"
+          git commit -am "build(deps): bump Chromium to $LATEST"
+          git push origin "$head"
+
+          major="${LATEST%%.*}"
+          gh pr create --base main --head "$head" \
+            --title "build(deps): bump Chromium to $LATEST" \
+            --body "$(cat <<EOF
+          Alpine $BRANCH now carries \`chromium=$LATEST\` for both x86_64 and aarch64; the image pins \`$PINNED\`, which the branch no longer serves, so the image build stops resolving it.
+
+          This changes \`CHROMIUM_VERSION\` in the Dockerfile and in deploy/browser/Dockerfile, and nothing else. Before merging:
+
+          - CI's container-sandbox and browser-image jobs must pass: they build both images with this version and check the sandbox still starts under \`deploy/chromium-seccomp.json\`.
+          - Read the release notes for anything that changes what a scan sees, and record the bump in CHANGELOG.md — results across this change are rendered by a different browser.
+
+          Chrome releases: https://chromereleases.googleblog.com/search?q=$major
+          Alpine package: https://pkgs.alpinelinux.org/packages?name=chromium&branch=$BRANCH
+          EOF
+          )"
+
+      - name: Record the result
+        if: always()
+        run: |
+          {
+            echo "### Chromium"
+            echo
+            echo "- Alpine branch: \`${BRANCH:-?}\`"
+            echo "- Pinned: \`${PINNED:-?}\`"
+            echo "- Available on both architectures: \`${LATEST:-not in agreement}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
