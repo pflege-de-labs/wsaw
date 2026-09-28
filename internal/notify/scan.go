@@ -28,8 +28,10 @@ type ScanEvent struct {
 
 	Termination model.TerminationReason `json:"termination"`
 	// Trustworthy is false when the scan failed, was skipped, or was cut
-	// short. A truncated scan with few findings must never be presented as a
-	// clean one (Tenet 5, Story 5.14 AC7).
+	// short, or when the consent state during it is not the one reported. A
+	// truncated scan with few findings must never be presented as a clean one
+	// (Tenet 5, Story 5.14 AC7). A verified necessary-only outcome in reject
+	// mode is trustworthy (Story 2.10).
 	Trustworthy bool `json:"trustworthy"`
 	// Caveat explains an untrustworthy scan in one sentence.
 	Caveat string `json:"caveat,omitempty"`
@@ -114,9 +116,15 @@ func trustworthiness(res *model.Result) (bool, string) {
 	case res.Consent.Outcome == model.OutcomeBannerVisible:
 		return false, "the CMP recorded the requested choice, but the banner was still displayed to a visitor"
 
-	case res.Consent.Outcome == model.OutcomeNecessaryOnly:
-		return false, "this banner has no reject control, so wsaw limited consent to strictly necessary categories " +
-			"instead of a verified rejection"
+	// A verified necessary-only outcome is trusted in reject mode: it is the
+	// closest state to a rejection that a banner with no reject control
+	// allows, and it was observed, not assumed. The missing control is a fact
+	// about the site, which the outcome itself carries into every view
+	// (Story 2.10). Only a reject can produce it, so under any other mode it
+	// means something upstream went wrong.
+	case res.Consent.Outcome == model.OutcomeNecessaryOnly && res.ConsentMode != model.ConsentReject:
+		return false, "the consent outcome necessary-only was recorded in " + string(res.ConsentMode) +
+			" mode, which only a reject can produce"
 
 	default:
 		return true, ""

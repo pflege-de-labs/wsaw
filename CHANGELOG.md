@@ -52,6 +52,15 @@ criteria, and any that are still open, are written down.
 
 ### Changed
 
+- A `reject` scan whose consent outcome is `necessary-only` is now
+  trustworthy (Story 2.10). The banner had no reject control, and wsaw
+  verified that only strictly necessary categories were left active, which
+  is the closest to a rejection the site allows. Such a scan no longer posts
+  "Result not trustworthy" to Teams on every run. It posts only when it has
+  changes at the notifier's threshold, and the card still states the outcome.
+  The `trustworthy` field of a scan event changes meaning for this outcome
+  only. A site gaining or losing its reject control is still reported, as a
+  `consent-changed` finding.
 - `browserSandbox` in a result, and the startup log, now report Chrome's
   sandbox as active in a container when the image declares it with the
   label `de.pflege.wsaw.browser.sandbox=enabled` and no sandbox-weakening

@@ -739,7 +739,7 @@ notify:
     baseUrl: https://wsaw.example.com        # so the card can link back
 ```
 
-The card leads with the target, the consent mode, the highest severity present and the consent outcome, then lists the changes; severity is stated as text as well as colour. A scan that failed, was skipped, or was cut short is reported as untrustworthy rather than as a clean scan with few findings. A clean scan with nothing to report posts nothing at all — a channel that reports every scan gets muted, and then it reports nothing.
+The card leads with the target, the consent mode, the highest severity present and the consent outcome, then lists the changes; severity is stated as text as well as colour. A scan that failed, was skipped, or was cut short is reported as untrustworthy rather than as a clean scan with few findings, and so is one whose consent interaction failed, could not be verified, or left the banner displayed. A `reject` scan of a banner that has no reject control at all, where wsaw verified that only strictly necessary categories were left active (`necessary-only`), is trustworthy: that is the closest to a rejection the site allows, and the card states the outcome in its consent fact rather than as a warning. A site gaining or losing its reject control shows up as a `consent-changed` finding. A clean scan with nothing to report posts nothing at all — a channel that reports every scan gets muted, and then it reports nothing.
 
 The retired `MessageCard` format is available as `format: messagecard` for a tenant still running an Office 365 connector webhook. Microsoft retired those on 30 April 2026; wsaw warns at startup when it is used.
 

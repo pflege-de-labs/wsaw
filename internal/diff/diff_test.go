@@ -300,6 +300,66 @@ func TestAllowListDoesNotHideConsentRegressions(t *testing.T) {
 	find(t, rep, diff.ConsentChanged, string(model.OutcomeFailed))
 }
 
+// TestNecessaryOnlyTransitionIsAFinding covers Story 2.10, AC5. A verified
+// necessary-only scan is trustworthy, so its notification no longer fires on
+// every run; a site gaining or losing its reject control must therefore
+// still surface, here, as a consent change in both directions.
+func TestNecessaryOnlyTransitionIsAFinding(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		was, now model.ConsentOutcome
+		want     diff.Severity
+	}{
+		"reject control removed": {
+			was: model.OutcomeApplied, now: model.OutcomeNecessaryOnly, want: diff.SeverityHigh,
+		},
+		"reject control added": {
+			was: model.OutcomeNecessaryOnly, now: model.OutcomeApplied, want: diff.SeverityMedium,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			a := result(model.ConsentReject)
+			a.Consent = model.Consent{Outcome: tc.was, CMP: "Cookiebot"}
+
+			b := result(model.ConsentReject)
+			b.Consent = model.Consent{Outcome: tc.now, CMP: "Cookiebot"}
+
+			rep := diff.Compare(a, b, diff.Options{})
+
+			c := find(t, rep, diff.ConsentChanged, string(tc.now))
+
+			if c.Severity != tc.want {
+				t.Errorf("severity = %s, want %s", c.Severity, tc.want)
+			}
+
+			if c.Before != string(tc.was) || c.After != string(tc.now) {
+				t.Errorf("before/after = %q/%q, want %q/%q", c.Before, c.After, tc.was, tc.now)
+			}
+		})
+	}
+}
+
+// TestUnchangedNecessaryOnlyIsNoChange: a site that has never offered a
+// reject control is not re-reported on every scan (Story 2.10, AC4).
+func TestUnchangedNecessaryOnlyIsNoChange(t *testing.T) {
+	t.Parallel()
+
+	a := result(model.ConsentReject)
+	a.Consent = model.Consent{Outcome: model.OutcomeNecessaryOnly, CMP: "Cookiebot"}
+
+	b := result(model.ConsentReject)
+	b.Consent = model.Consent{Outcome: model.OutcomeNecessaryOnly, CMP: "Cookiebot"}
+
+	if rep := diff.Compare(a, b, diff.Options{}); len(rep.Changes) != 0 {
+		t.Errorf("got %d changes between two identical necessary-only scans: %+v", len(rep.Changes), rep.Changes)
+	}
+}
+
 // TestDenyListFiresRegardlessOfBaseline: a known tracker is a finding every
 // time, not only the first time.
 func TestDenyListFiresRegardlessOfBaseline(t *testing.T) {
