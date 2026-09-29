@@ -9,6 +9,19 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
+The browser wsaw runs by default is now its own published image, with
+Chromium 152 and Chrome's own sandbox kept on inside the container, in place of
+`chromedp/headless-shell`, which had stopped at Chromium 151 and ran without
+it.
+
+Upgrading: pull the new image first, since wsaw never pulls one itself. Under
+Podman nothing else changes. **Under Docker, add the seccomp profile to
+`browser.container.extraArgs` before upgrading, or the browser will not
+start** — see Changed. A configuration that names its own image is
+unaffected.
+
 ### Changed
 
 - The default browser image is now `ghcr.io/pflege-de-labs/wsaw-browser`,
@@ -528,7 +541,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.3.0
 [0.2.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.1
 [0.2.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.0
