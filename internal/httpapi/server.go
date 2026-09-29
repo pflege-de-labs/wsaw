@@ -518,7 +518,14 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		if s.wantsHTML(r) {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			if crossSiteNavigation(r) {
+				s.retrySameSite(w, r)
+
+				return
+			}
+
+			// #nosec G710 -- loginURL passes the destination through safeLocal.
+			http.Redirect(w, r, loginURL(r.URL.EscapedPath(), ""), http.StatusSeeOther)
 
 			return
 		}

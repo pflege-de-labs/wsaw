@@ -174,6 +174,8 @@ func TestSafeLocalKeepsARedirectOnThisOrigin(t *testing.T) {
 		{"an absolute URL is refused", "https://evil.test/", "/"},
 		{"a protocol-relative host is refused", "//evil.test/", "/"},
 		{"a relative path is refused", "targets/site", "/"},
+		// Browsers read `\` as `/`, so `/\host` is protocol-relative too.
+		{"a backslash host is refused", `/\evil.test/`, "/"},
 		// A control character could split the redirect header.
 		{"a newline is refused", "/targets\r\nSet-Cookie: a=b", "/"},
 		{"a delete character is refused", "/targets\x7f", "/"},

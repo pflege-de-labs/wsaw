@@ -6,6 +6,7 @@
 <form method="post" action="/login" class="login">
   <label for="token">API token</label>
   <input type="password" id="token" name="token" autocomplete="current-password" required>
+  <input type="hidden" name="next" value="{{.Data.Next}}">
   <button type="submit">Sign in</button>
 </form>
 

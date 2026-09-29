@@ -74,6 +74,20 @@ criteria, and any that are still open, are written down.
   RELEASE.2026-09-16T00-00-00Z. MinIO's own image on quay.io no longer allows
   an anonymous pull, which failed every CI run.
 
+### Fixed
+
+- Following a link to a result from outside the web interface — the
+  "Open in wsaw" button on a Teams card, say — no longer shows the login
+  form to a reviewer who is already signed in, and a reviewer who does have
+  to sign in lands on that result rather than the dashboard. The browser
+  withholds the `SameSite=Strict` session cookie from a navigation another
+  site started, so such a request is now answered with a page that reloads
+  the same path from wsaw's own origin, where the cookie is sent; the cookie
+  itself stays `Strict`. The login form carries the requested path through
+  sign-in, including a failed attempt, and accepts only a path on this
+  origin. Redirect destinations containing a backslash, which a browser
+  reads as a slash, are now refused as well.
+
 ## [0.2.1] - 2026-09-24
 
 A certificate the server could not load is caught when the configuration is

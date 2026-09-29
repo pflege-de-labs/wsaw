@@ -1202,7 +1202,35 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.render(w, r, "login.html", "Sign in", nil)
+	s.render(w, r, "login.html", "Sign in", loginView{Next: safeLocal(r.URL.Query().Get("next"))})
+}
+
+// loginView is what the sign-in form needs: where to go once it succeeds.
+type loginView struct {
+	Next string
+}
+
+// loginURL is the sign-in page, remembering where the reader was going so a
+// link followed from a notification lands on that result and not on the
+// dashboard. The destination is reduced to a local path both here and when
+// it is used, since it round-trips through the browser. errMsg, when set, is
+// the flash the form shows.
+func loginURL(next, errMsg string) string {
+	q := url.Values{}
+
+	if next = safeLocal(next); next != "/" {
+		q.Set("next", next)
+	}
+
+	if errMsg != "" {
+		q.Set("err", errMsg)
+	}
+
+	if len(q) == 0 {
+		return "/login"
+	}
+
+	return "/login?" + q.Encode()
 }
 
 func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -1218,15 +1246,19 @@ func (s *Server) handleUILoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	next := safeLocal(r.FormValue("next"))
+
 	if r.FormValue("token") != s.opts.Token.Reveal() {
 		// No detail about why: a login form should not help enumerate.
-		s.uiRedirectError(w, r, "/login", "invalid token")
+		// #nosec G710 -- loginURL passes the destination through safeLocal.
+		http.Redirect(w, r, loginURL(next, "invalid token"), http.StatusSeeOther)
 
 		return
 	}
 
 	s.setSessionCookie(w)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// #nosec G710 -- safeLocal keeps the destination on this origin.
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 // sessionCookieTTL is how long a browser session lasts once signed in,
@@ -1346,6 +1378,11 @@ func safeLocal(dest string) string {
 
 	// A scheme, or a protocol-relative "//host", would leave this origin.
 	if strings.Contains(dest, "://") || strings.HasPrefix(dest, "//") {
+		return fallback
+	}
+
+	// Browsers read `\` as `/`, so `/\host` is protocol-relative as well.
+	if strings.Contains(dest, `\`) {
 		return fallback
 	}
 
