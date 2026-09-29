@@ -25,12 +25,15 @@ type failingScanner struct {
 	termination model.TerminationReason
 	errText     string
 
+	// hold, when non-nil, keeps the first call in flight until it is closed,
+	// so a test can change the configuration underneath a running scan.
+	hold chan struct{}
+
 	calls []scanner.Outcome
 }
 
-func (f *failingScanner) Scan(_ context.Context, target config.Resolved, mode model.ConsentMode) (scanner.Outcome, error) {
+func (f *failingScanner) Scan(ctx context.Context, target config.Resolved, mode model.ConsentMode) (scanner.Outcome, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 
 	res := &model.Result{
 		Target:      target.Name,
@@ -44,7 +47,18 @@ func (f *failingScanner) Scan(_ context.Context, target config.Resolved, mode mo
 	}
 
 	out := scanner.Outcome{Result: res}
+	first := len(f.calls) == 0
 	f.calls = append(f.calls, out)
+	hold := f.hold
+	f.mu.Unlock()
+
+	if first && hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return scanner.Outcome{}, ctx.Err()
+		}
+	}
 
 	return out, nil
 }
@@ -54,6 +68,21 @@ func (f *failingScanner) count() int {
 	defer f.mu.Unlock()
 
 	return len(f.calls)
+}
+
+func (f *failingScanner) countFor(target string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	n := 0
+
+	for _, out := range f.calls {
+		if out.Result.Target == target {
+			n++
+		}
+	}
+
+	return n
 }
 
 // collectingSink records what the daemon published, which is the observable
@@ -326,5 +355,132 @@ func TestARetryIsNotHeldBackByTheMinimumInterval(t *testing.T) {
 
 	if !waitFor(t, 5*time.Second, func() bool { return fake.count() >= 2 }) {
 		t.Errorf("the retry was held back by minInterval: %d attempts", fake.count())
+	}
+}
+
+// publishedIdle reports whether a successful scan of the target was published.
+func (s *collectingSink) publishedIdle(target string) bool {
+	for _, res := range s.results() {
+		if res.Target == target && res.Termination == model.TermIdle {
+			return true
+		}
+	}
+
+	return false
+}
+
+// otherTarget is a second target whose only purpose is to make a reload
+// visible in Jobs(), so a test can tell the reload has been applied.
+func otherTarget() config.Resolved {
+	tgt := retryTarget("other", retry.Policy{Attempts: 1})
+	tgt.URL = "https://other.example/"
+
+	return tgt
+}
+
+// A reload must not drop a retry that is waiting to run. The failed attempt
+// is held back from notification because a retry is coming (AC7); if the
+// reload then discards the retry, the failure is never published and the
+// target goes unobserved until its next scheduled run — the gap Story 3.8
+// exists to close.
+func TestAPendingRetrySurvivesAReload(t *testing.T) {
+	t.Parallel()
+
+	fake := &failingScanner{failFor: 1, termination: model.TermError, errText: "net::ERR_NAME_NOT_RESOLVED"}
+	sink := &collectingSink{}
+	retried := make(chan struct{}, 1)
+
+	tgt := retryTarget("site", retry.Policy{
+		Attempts: 2, Backoff: 500 * time.Millisecond, MaxBackoff: time.Second,
+	})
+	// Without a pending retry the reloaded job would be held back by this
+	// floor, so a second scan can only come from the retry.
+	tgt.MinInterval = time.Hour
+
+	d, err := daemon.New(fake, sink, []config.Resolved{tgt},
+		daemon.Options{
+			Concurrency: 2, PerOriginConcurrency: 2, CatchUp: true, Tick: 2 * time.Millisecond,
+			OnRetry: func(string, model.ConsentMode, int) {
+				select {
+				case retried <- struct{}{}:
+				default:
+				}
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, d)
+
+	select {
+	case <-retried:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failed scan was never scheduled for a retry")
+	}
+
+	d.Reload([]config.Resolved{tgt, otherTarget()})
+
+	if !waitFor(t, 5*time.Second, func() bool { return len(d.Jobs()) == 2 }) {
+		t.Fatal("the reload was never applied")
+	}
+
+	if got := fake.countFor("site"); got != 1 {
+		t.Fatalf("site was scanned %d times before the reload landed; the test cannot tell whether the retry survived", got)
+	}
+
+	if !waitFor(t, 5*time.Second, func() bool { return fake.countFor("site") >= 2 }) {
+		t.Fatal("the pending retry was dropped by the reload")
+	}
+
+	if !waitFor(t, 5*time.Second, func() bool { return sink.publishedIdle("site") }) {
+		t.Error("the successful retry was never published")
+	}
+}
+
+// A scan that is in flight when a reload lands must still be retried if it
+// fails. The retry has to be scheduled on the job the scheduler now runs, not
+// on the one the reload replaced, or it is lost along with the failure's
+// notification.
+func TestAFailureDuringAReloadIsStillRetried(t *testing.T) {
+	t.Parallel()
+
+	fake := &failingScanner{
+		failFor: 1, termination: model.TermError, errText: "net::ERR_NAME_NOT_RESOLVED",
+		hold: make(chan struct{}),
+	}
+	sink := &collectingSink{}
+
+	tgt := retryTarget("site", retry.Policy{
+		Attempts: 2, Backoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond,
+	})
+	tgt.MinInterval = time.Hour
+
+	d, err := daemon.New(fake, sink, []config.Resolved{tgt},
+		daemon.Options{Concurrency: 2, PerOriginConcurrency: 2, CatchUp: true, Tick: 2 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, d)
+
+	if !waitFor(t, 5*time.Second, func() bool { return fake.countFor("site") == 1 }) {
+		t.Fatal("the first scan never started")
+	}
+
+	d.Reload([]config.Resolved{tgt, otherTarget()})
+
+	if !waitFor(t, 5*time.Second, func() bool { return len(d.Jobs()) == 2 }) {
+		t.Fatal("the reload was never applied")
+	}
+
+	close(fake.hold)
+
+	if !waitFor(t, 5*time.Second, func() bool { return fake.countFor("site") >= 2 }) {
+		t.Fatal("a scan that failed across a reload was never retried")
+	}
+
+	if !waitFor(t, 5*time.Second, func() bool { return sink.publishedIdle("site") }) {
+		t.Error("the successful retry was never published")
 	}
 }
