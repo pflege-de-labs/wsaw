@@ -71,6 +71,8 @@ make build-cloudblob  # ./dist/wsaw_cloudblob, with the S3, GCS and Azure driver
 make release          # both variants, all four platforms, with checksums and sizes
 ```
 
+`wsaw version` names the build: the Makefile stamps version, commit and date from `git`. A plain `go build` or `go install` from a checkout falls back to what the go command records itself, a pseudo-version such as `v0.2.2-0.20260929072415-c8615d676076` (with `+dirty` for uncommitted changes) and its commit. `go run` records nothing and reports `dev`.
+
 Two binaries, because the three cloud SDKs weigh more than the rest of wsaw: take the default one unless you intend to keep evidence in object storage, in which case see [the artifact bucket](#the-artifact-bucket).
 
 Tagged releases publish the same artifacts on the repository's GitHub Releases page, with `SHA256SUMS` and a CycloneDX SBOM per variant. [CHANGELOG.md](CHANGELOG.md) says what each release changed and what it still lacks.

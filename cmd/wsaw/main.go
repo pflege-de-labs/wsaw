@@ -15,10 +15,12 @@ import (
 )
 
 // Build information, set by the linker (Story 6.1).
+// A build without linker flags falls back to the version control information
+// the go command embeds (see withVCSFallback).
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	version = unstampedVersion
+	commit  = unstampedValue
+	date    = unstampedValue
 )
 
 // cmdNameDebug is the one-scan diagnostic command. Named because the same
@@ -39,6 +41,8 @@ func main() {
 	// behind (Story 3.5).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	applyVCSFallback()
 
 	code := run(ctx, os.Args[1:])
 

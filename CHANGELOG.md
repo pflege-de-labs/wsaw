@@ -52,6 +52,11 @@ criteria, and any that are still open, are written down.
 
 ### Changed
 
+- A binary built with plain `go build` or `go install` from a checkout now
+  names its code (Story 6.1, AC2). Without the Makefile's linker flags,
+  `wsaw version` — and the version results record — used to say `dev`; it
+  now falls back to the pseudo-version and commit the go command embeds,
+  with `+dirty` for uncommitted changes. `go run` still reports `dev`.
 - A `reject` scan whose consent outcome is `necessary-only` is now
   trustworthy (Story 2.10). The banner had no reject control, and wsaw
   verified that only strictly necessary categories were left active, which
