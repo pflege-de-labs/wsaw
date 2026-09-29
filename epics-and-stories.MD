@@ -1280,6 +1280,19 @@ Kubernetes also removes the mechanism Story 1.8 relies on. There is no container
 - AC14: A `CronJob` shape is documented for `wsaw scan --once` as a gate, with `concurrencyPolicy: Forbid`, since two jobs sharing one volume would contend for the same lock.
 - AC15: The manifests are validated in CI against a schema, so a broken example cannot ship. Applying them to a real cluster is not required to run the test suite.
 
+### Story 6.11 — Say when a newer browser image is published
+
+*As an Operator, I want the daemon to tell me when the browser image I pinned has been superseded, so that a Chromium security release reaches my scans the week it ships rather than when I happen to look.*
+
+The browser image is pinned by digest and never pulled implicitly (Story 1.8, AC6), which is what keeps a result comparable with the one before it. The cost is that nothing moves it: a daemon started months ago still renders with the Chromium it was pinned to, and the only way to find out is to go and compare digests by hand. The repository watches Alpine for its own image (`.github/workflows/chromium.yaml`); an operator running a released binary has nothing equivalent. This was raised in a session rather than written up first and is recorded here per AGENTS.md §1.
+
+- AC1: Once per daemon start, when the browser runs in a container and the configured image is pinned by digest, wsaw asks that image's registry which digest its `latest` tag names, and compares it with the pinned one. An image pinned by a platform manifest that the latest index lists counts as current.
+- AC2: It pulls nothing and changes nothing. The check reads one manifest anonymously, following the registry's bearer-token challenge only to an `https` realm, and sends no credential of any kind. What renders a scan changes only when the operator changes `browser.container.image` (Story 1.8, AC6).
+- AC3: It runs beside the scheduler, bounded by a timeout, and is cancelled by shutdown. An unreachable registry delays no scan and fails nothing.
+- AC4: A newer image is a warning naming the digest to pin and the `podman pull`/`docker pull` command that fetches it. A current image is an info line. A check that could not be made is a warning saying so, never reported as current (Tenet 5). A floating tag is not checked, since it already follows the registry.
+- AC5: On by default, off with `browser.container.checkForUpdates: false`, which stops wsaw contacting the registry at all. Documented in `README.md` and `wsaw.example.yaml`.
+- AC6: Regression coverage against a local TLS fixture registry, never a live one: the token challenge; current, platform-manifest-current and superseded pins; a plain-`http` realm refused; a missing tag; a floating tag, a local browser and the switch turned off each making no request; and a registry error logged as a failed check.
+
 ---
 
 # Epic 7 — Containerised End-to-End Testing

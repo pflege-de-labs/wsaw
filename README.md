@@ -41,6 +41,7 @@ wsaw scan --url https://example.com/ --browser-runtime local
 ```
 
 - The image is **pinned by digest** and never pulled during a scan. A moving tag would change capture behaviour between scans, and the diff would report it as the site's change.
+- **The daemon says when a newer image is out.** Once at startup, `wsaw run` asks the image's registry which digest its `latest` tag points at, and when that is not the pinned one it logs a warning with the `podman pull` (or `docker pull`) command and the digest to pin. It reads one manifest anonymously, pulls nothing and changes nothing: the browser only changes when you change `browser.container.image`. A registry it cannot reach is logged as a check that failed, not as an image that is current. `browser.container.checkForUpdates: false` stops wsaw contacting the registry at all.
 - Every result records `browserRuntime`, `browserImage` and `browserSandbox`, because a result is only comparable with another if you can see what rendered it.
 - One container per scan, removed on every exit path, and orphans from an unclean shutdown are reaped at startup.
 - **A containerised browser cannot reach this machine's `localhost`** — it has its own network namespace. Scanning a local service fails with that explanation; use `--browser-runtime local` for it.

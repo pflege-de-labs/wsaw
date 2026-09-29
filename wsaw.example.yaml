@@ -138,6 +138,11 @@ browser:
     #   extraArgs: ["--security-opt", "seccomp=deploy/chromium-seccomp.json"]
     # while rootless Podman needs nothing extra.
     image: ""
+    # Once at startup the daemon asks the image's registry whether its latest
+    # tag has moved past the pinned digest, and warns with the digest to pin
+    # if it has. One anonymous manifest read; nothing is pulled. false stops
+    # wsaw contacting the registry.
+    checkForUpdates: true
     memory: 1g
     pidsLimit: 512
     startupTimeout: 90s

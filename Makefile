@@ -201,8 +201,9 @@ release-notes:
 	@echo "build the \`+epic8\` column below. The cloud build — the same source with the"
 	@echo "S3, GCS and Azure drivers linked in, published as the \`cloudblob\` artifacts —"
 	@echo "costs the \`+cloud\` column on top of that. The default build links no cloud"
-	@echo "SDK, resolves no credential chain and makes no network call at startup, and"
-	@echo "\`make verify-variants\` checks that on every release rather than asserting it."
+	@echo "SDK, resolves no credential chain and makes no call to a cloud provider at"
+	@echo "startup, and \`make verify-variants\` checks that on every release rather than"
+	@echo "asserting it."
 	@echo
 	@echo '```'
 	@$(MAKE) --no-print-directory sizes

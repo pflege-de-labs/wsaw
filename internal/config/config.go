@@ -203,6 +203,13 @@ type ContainerBrowser struct {
 	// the site's.
 	Image string `yaml:"image,omitempty"`
 
+	// CheckForUpdates has the daemon ask the image's registry, once at
+	// startup, whether its latest tag has moved past the pinned digest, and
+	// warn with the digest to pin if it has. It reads one manifest
+	// anonymously and pulls nothing. Nil means on; false keeps wsaw from
+	// contacting the registry at all.
+	CheckForUpdates *bool `yaml:"checkForUpdates,omitempty"`
+
 	Memory    string `yaml:"memory,omitempty"`
 	PidsLimit int    `yaml:"pidsLimit,omitempty"`
 
