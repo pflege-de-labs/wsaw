@@ -87,6 +87,35 @@ criteria, and any that are still open, are written down.
   sign-in, including a failed attempt, and accepts only a path on this
   origin. Redirect destinations containing a backslash, which a browser
   reads as a slash, are now refused as well.
+- A scan on a reused browser no longer reports cookies another scan set
+  (Story 1.5, AC1). Every scan now runs in a browser context of its own,
+  with its own cookie jar, cache and storage, and that context is disposed
+  of when the scan ends. Before this, scans on one browser shared a cookie
+  jar that wsaw cleared when each scan started. The response to a closing
+  page's unload beacon could arrive after that clear, so its cookie showed
+  up in the next scan with no request in that scan to explain it. A
+  pflege.de `reject` scan reported Bing's `MUID` and `MR` as new critical
+  cookies this way, set by the `accept` scan that had just run on the same
+  browser. With a context per scan there is nothing to clear, so the code
+  that cleared cookies, cache and storage between scans is gone.
+- At startup wsaw checks whether Chrome can create browser contexts; a
+  managed install can forbid them with its `IncognitoModeAvailability`
+  policy. If Chrome refuses, or the check cannot run, wsaw uses one browser
+  per scan and overrides `browser.maxScansPerBrowser` to 1 if it was set to
+  anything else, including 0. It logs a warning that states the configured
+  and effective values, with an `instruction` field that says how to fix
+  it. Set `browser.silenceContextFallbackWarning: true` to log it at info
+  level instead. That setting does not apply to a `browser.remoteUrl`
+  browser: every scan shares that browser, so one browser per scan
+  isolates nothing there. A reload compares the file with the value wsaw
+  actually runs with, so an unchanged file is not refused after the
+  override.
+- Downloads are now blocked in the scan's own browser context. Chrome
+  applies a download policy with no context named to its default context
+  only.
+- `warmCache: true` no longer carries a cache from one scan to the next on
+  a reused browser, because each scan starts with an empty cache. Within
+  one scan it behaves as before.
 
 ## [0.2.1] - 2026-09-24
 

@@ -154,12 +154,19 @@ browser:
   # Leave empty to auto-discover Chrome or Chromium for the local runtime.
   path: ""
   poolSize: 2
-  # 1 is the default and the only value that guarantees per-scan isolation by
-  # construction: one browser, one profile, one cookie jar. Raise it for
-  # throughput, but a browser that serves many scans has more time to
-  # accumulate the resource pressure that ends in dropped requests, so keep
-  # it low enough that a leak is recycled rather than diffed.
+  # 1 is the default. Every scan runs in a browser context of its own — its
+  # own cookie jar, cache and storage, thrown away when the scan ends — so
+  # raising it saves browser launches without sharing state between scans.
+  # A browser that serves many scans has more time to accumulate the resource
+  # pressure that ends in dropped requests, so keep it low enough that a leak
+  # is recycled rather than diffed.
+  #
+  # Where Chrome refuses to create browser contexts (a managed install can),
+  # wsaw finds out at startup, warns, and runs with 1 whatever this says.
   maxScansPerBrowser: 10
+  # Log that fallback at info level instead of as a warning, once you have
+  # accepted one browser per scan. Never silences it for a remote browser.
+  silenceContextFallbackWarning: false
   # The sandbox is the boundary between a hostile page and this host. Only set
   # this where the runtime forbids user namespaces, and expect a warning.
   noSandbox: false

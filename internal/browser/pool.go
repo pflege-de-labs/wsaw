@@ -16,6 +16,8 @@ type PoolOptions struct {
 
 	// MaxScansPerBrowser recycles a browser after this many scans, to bound
 	// the effect of slow leaks inside Chrome itself. Zero means no recycling.
+	// It is 1 whenever Launch.NoBrowserContexts is set, because a browser
+	// whose scans share one cookie jar must not serve a second.
 	MaxScansPerBrowser int64
 
 	// Launch configures each launched browser.
@@ -50,6 +52,10 @@ type Pool struct {
 func NewPool(opts PoolOptions) *Pool {
 	if opts.Size < 1 {
 		opts.Size = 1
+	}
+
+	if opts.Launch.NoBrowserContexts {
+		opts.MaxScansPerBrowser = 1
 	}
 
 	p := &Pool{
@@ -94,6 +100,19 @@ func (l *Lease) Discard(reason string) {
 	l.released = true
 	l.Browser.MarkDead()
 	l.pool.restarted(reason)
+	l.pool.put(l.Browser)
+}
+
+// retire closes the leased browser without counting it as a restart. It is for
+// a browser that did nothing wrong but was launched with options the pool no
+// longer uses.
+func (l *Lease) retire() {
+	if l == nil || l.released {
+		return
+	}
+
+	l.released = true
+	l.Browser.MarkDead()
 	l.pool.put(l.Browser)
 }
 
@@ -152,8 +171,10 @@ func (p *Pool) take(ctx context.Context) (*Browser, error) {
 }
 
 func (p *Pool) shouldRecycle(ctx context.Context, b *Browser) (string, bool) {
+	limit := p.MaxScansPerBrowser()
+
 	switch {
-	case p.opts.MaxScansPerBrowser > 0 && b.Scans() >= p.opts.MaxScansPerBrowser:
+	case limit > 0 && b.Scans() >= limit:
 		return "scan limit reached", true
 	case !b.Alive(ctx):
 		return "browser stopped responding", true
@@ -163,7 +184,7 @@ func (p *Pool) shouldRecycle(ctx context.Context, b *Browser) (string, bool) {
 }
 
 func (p *Pool) launch(ctx context.Context) (*Browser, error) {
-	b, err := Launch(ctx, p.opts.Launch)
+	b, err := Launch(ctx, p.launchOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +257,71 @@ func (p *Pool) restarted(reason string) {
 
 func (p *Pool) logger() *slog.Logger {
 	return p.opts.Launch.logger()
+}
+
+// ProbeBrowserContexts learns whether the pool's browsers can give every scan
+// a browser context of its own, using a browser the pool launches for the
+// purpose and keeps for the first scan when the answer is yes.
+//
+// When the browser refuses, or the question cannot be asked at all, the pool
+// falls back to process isolation — scans in the default context, one scan
+// per browser — because an isolation nobody verified is not one wsaw may
+// claim (Tenet 2). The error says which it was: a refusal wraps
+// ErrBrowserContextsUnavailable.
+func (p *Pool) ProbeBrowserContexts(ctx context.Context) error {
+	if !p.UsesBrowserContexts() {
+		return nil
+	}
+
+	lease, err := p.Acquire(ctx)
+	if err != nil {
+		p.useProcessIsolation()
+
+		return fmt.Errorf("launching a browser to probe for browser contexts: %w", err)
+	}
+
+	if err := lease.Browser.ProbeBrowserContexts(ctx); err != nil {
+		p.useProcessIsolation()
+
+		// Launched to open scans in browser contexts, which it now must not.
+		lease.retire()
+
+		return err
+	}
+
+	lease.Release()
+
+	return nil
+}
+
+func (p *Pool) useProcessIsolation() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.opts.Launch.NoBrowserContexts = true
+	p.opts.MaxScansPerBrowser = 1
+}
+
+func (p *Pool) launchOptions() Options {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.opts.Launch
+}
+
+// UsesBrowserContexts reports whether each scan runs in a browser context of
+// its own.
+func (p *Pool) UsesBrowserContexts() bool {
+	return !p.launchOptions().NoBrowserContexts
+}
+
+// MaxScansPerBrowser reports how many scans a browser serves before it is
+// replaced, after any fallback the pool applied. Zero means no limit.
+func (p *Pool) MaxScansPerBrowser() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.opts.MaxScansPerBrowser
 }
 
 // Live reports how many browser processes the pool currently holds.

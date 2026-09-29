@@ -213,8 +213,8 @@ func TestResolveBrowserFailsWhenChromeIsNotWhereConfigured(t *testing.T) {
 // TestNewWithARealLocalBrowserBuildsAPoolAndScanner is the one Phase 2 test
 // that needs a real Chrome: it is the only way to reach buildScanner's
 // success path (scanner.New with a non-nil pool), which every other test in
-// this package deliberately avoids. It launches nothing — NewPool defers
-// that to the first scan — so it stays fast.
+// this package deliberately avoids. It launches one browser, for the startup
+// probe for browser contexts, which the pool keeps for the first scan.
 func TestNewWithARealLocalBrowserBuildsAPoolAndScanner(t *testing.T) {
 	requireChrome(t)
 

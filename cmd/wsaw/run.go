@@ -293,6 +293,11 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 	// reloaded" would leave the operator believing the rest had applied too
 	// (Tenet 5). Refusing names what moved and keeps the running
 	// configuration.
+	//
+	// What startup overrode is applied first, so a setting the daemon
+	// already runs differently from the file is not reported as a change.
+	a.ApplyOverrides(cfg)
+
 	if changed := config.NonReloadableChanges(a.Config, cfg); len(changed) > 0 {
 		return reloaded{}, fmt.Errorf(
 			"%s cannot change without a restart; the running configuration is unchanged. "+

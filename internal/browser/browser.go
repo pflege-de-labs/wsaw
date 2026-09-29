@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -55,6 +57,13 @@ type Options struct {
 
 	// LaunchTimeout bounds browser startup.
 	LaunchTimeout time.Duration
+
+	// NoBrowserContexts opens each scan in a tab of the browser's default
+	// context instead of in a browser context of its own. It is the fallback
+	// for a Chrome that refuses Target.createBrowserContext; every tab then
+	// shares one cookie jar, so a pool built with it serves one scan per
+	// browser whatever it is configured to do.
+	NoBrowserContexts bool
 
 	// Logger receives browser lifecycle events.
 	Logger *slog.Logger
@@ -281,23 +290,40 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 		return nil, nil, errors.New("browser is no longer usable")
 	}
 
-	// A new tab, deliberately, rather than a new CDP browser context.
+	// Each scan gets a browser context of its own: a cookie jar, cache and
+	// quota storage that exist only for this scan and are disposed of with
+	// it. Clearing a shared jar between scans was never enough — a response
+	// to the previous tab's unload beacon arrives after the clear and writes
+	// its cookie into whatever scan is running by then.
 	//
-	// A separate browser context would be the tidier boundary, but Chrome can
-	// refuse to create one — a managed install answers
-	// Target.createBrowserContext with "Not allowed" — and isolation is a
-	// correctness requirement, not something that may quietly degrade on
-	// someone's laptop (Tenet 2). The boundary is therefore the browser
-	// process itself: a browser serves one scan by default, and its profile
-	// directory is its own.
-	//
-	// This matters because a tab created here inherits the browser's cookie
-	// jar. When browsers were reused across scans, an accept-mode scan
-	// granted consent and the reject scan that followed inherited it, saw no
-	// banner, and recorded the site's entire tracking stack as firing before
-	// any consent decision — the product's headline finding, manufactured by
-	// wsaw itself.
-	scanCtx, cancelScan := chromedp.NewContext(b.browserCtx)
+	// Chrome can refuse to create one — a managed install answers
+	// Target.createBrowserContext with "Not allowed" — and then the scan
+	// opens in a tab of the default context, where the only boundary is the
+	// browser process. The pool serves one scan per browser in that case, so
+	// isolation never rests on a tab.
+	var (
+		opts      []chromedp.ContextOption
+		contextID cdp.BrowserContextID
+	)
+
+	if !b.opts.NoBrowserContexts {
+		id, tab, err := b.openBrowserContext(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("opening a browser context for the scan: %w", err)
+		}
+
+		contextID = id
+		opts = append(opts, chromedp.WithTargetID(tab))
+	}
+
+	scanCtx, cancelScan := chromedp.NewContext(b.browserCtx, opts...)
+
+	// chromedp records the browser context only for tabs it created itself.
+	// Recorded here, so what reads it — the cookie jar, the download policy —
+	// addresses this scan's context and not the browser's default one.
+	if contextID != "" {
+		chromedp.FromContext(scanCtx).BrowserContextID = contextID
+	}
 
 	// The scan's own deadline and cancellation come from ctx, but the browser
 	// context must be torn down even if ctx is already done.
@@ -309,6 +335,10 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 		stop()
 		cancelLinked()
 		cancelScan()
+
+		if contextID != "" {
+			b.disposeBrowserContext(contextID)
+		}
 	}
 
 	// The session must be established here, on the long-lived context, and
@@ -345,6 +375,130 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 	b.scans.Add(1)
 
 	return linked, cancel, nil
+}
+
+// ErrBrowserContextsUnavailable reports that the browser refused to create a
+// browser context, so scans on it can only be isolated by the process
+// boundary.
+var ErrBrowserContextsUnavailable = errors.New("the browser refuses to create browser contexts")
+
+// ProbeBrowserContexts opens a browser context with a tab in it, exactly as a
+// scan would, and disposes of it again, to learn whether this browser can
+// give every scan a context of its own. A refusal wraps
+// ErrBrowserContextsUnavailable; any other error means the question could not
+// be asked.
+func (b *Browser) ProbeBrowserContexts(ctx context.Context) error {
+	if b.dead.Load() {
+		return errors.New("browser is no longer usable")
+	}
+
+	id, _, err := b.openBrowserContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	b.disposeBrowserContext(id)
+
+	return nil
+}
+
+// browserTimeout bounds one browser-level CDP exchange: creating or disposing
+// of a browser context and its tab.
+const browserTimeout = 10 * time.Second
+
+// onBrowser runs fn against the browser target rather than a tab, bounded by
+// browserTimeout and by ctx.
+func (b *Browser) onBrowser(ctx context.Context, fn func(exec context.Context) error) error {
+	// Derived from the browser's own context, which carries the CDP
+	// connection; the caller's cancellation still applies.
+	runCtx, cancel := context.WithTimeout(b.browserCtx, browserTimeout)
+	defer cancel()
+
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+
+	return chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		c := chromedp.FromContext(ctx)
+		if c == nil || c.Browser == nil {
+			return errors.New("no browser connection")
+		}
+
+		return fn(cdp.WithExecutor(ctx, c.Browser))
+	}))
+}
+
+// openBrowserContext creates a browser context and a blank tab in it.
+//
+// The tab is created with newWindow set. Headless Chrome answers a plain
+// Target.createTarget in a fresh context with "Failed to open new tab - no
+// browser is open", because the context has no window to open a tab in —
+// which is also why chromedp's own WithNewBrowserContext cannot be used.
+//
+// Either refusal wraps ErrBrowserContextsUnavailable: a context that cannot
+// hold a tab is as unusable to a scan as one that cannot be created.
+func (b *Browser) openBrowserContext(ctx context.Context) (cdp.BrowserContextID, target.ID, error) {
+	var (
+		id  cdp.BrowserContextID
+		tab target.ID
+	)
+
+	err := b.onBrowser(ctx, func(exec context.Context) error {
+		var err error
+
+		id, err = target.CreateBrowserContext().WithDisposeOnDetach(true).Do(exec)
+		if err != nil {
+			return refusal(exec, "creating a browser context", err)
+		}
+
+		tab, err = target.CreateTarget("about:blank").
+			WithBrowserContextID(id).
+			WithNewWindow(true).
+			Do(exec)
+		if err != nil {
+			return refusal(exec, "opening a tab in a browser context", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		// A context created without its tab is disposed of here, since the
+		// caller never learns its ID.
+		if id != "" {
+			b.disposeBrowserContext(id)
+		}
+
+		return "", "", err
+	}
+
+	return id, tab, nil
+}
+
+// refusal classifies a failed browser-context call: the browser saying no is
+// ErrBrowserContextsUnavailable, a deadline or cancellation is not.
+func refusal(ctx context.Context, what string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+
+	return fmt.Errorf("%w: %s: %w", ErrBrowserContextsUnavailable, what, err)
+}
+
+// disposeBrowserContext discards a scan's browser context and everything in
+// it: its tabs, cookie jar, cache and storage. It runs on its own deadline
+// because it is called on the way out, when the scan's context is already
+// done.
+//
+// A context that cannot be disposed of costs memory inside this browser, not
+// isolation — the next scan gets a new one regardless — so a failure is
+// logged rather than returned.
+func (b *Browser) disposeBrowserContext(id cdp.BrowserContextID) {
+	err := b.onBrowser(context.Background(), func(exec context.Context) error {
+		return target.DisposeBrowserContext(id).Do(exec)
+	})
+	if err != nil && !b.dead.Load() {
+		b.opts.logger().Warn("could not dispose of a scan's browser context",
+			"browser_context", string(id), "error", err)
+	}
 }
 
 // Scans reports how many scan contexts this browser has served, which drives
