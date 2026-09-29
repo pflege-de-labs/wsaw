@@ -36,7 +36,8 @@
     <dt>Termination</dt><dd><span class="term term-{{$res.Termination}}">{{$res.Termination}}</span></dd>
     <dt>Chrome</dt><dd>{{$res.Environment.ChromeVersion}}</dd>
     <dt>Viewport</dt><dd>{{$res.Environment.ViewportWidth}}×{{$res.Environment.ViewportHeight}}{{if $res.Environment.Mobile}} mobile{{end}}</dd>
-    <dt>User agent</dt><dd>{{if $res.Environment.UserAgent}}{{$res.Environment.UserAgent}}{{else}}<span class="muted">browser default</span>{{end}}</dd>  </dl>
+    <dt>User agent</dt><dd>{{if $res.Environment.UserAgent}}{{$res.Environment.UserAgent}}{{else}}<span class="muted">browser default</span>{{end}}</dd>
+  </dl>
 
   <p class="downloads">
     Download:

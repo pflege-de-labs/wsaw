@@ -263,9 +263,17 @@ func refreshTarget(r *http.Request) string {
 	q.Del("ok")
 	q.Del("err")
 
-	u := url.URL{Path: r.URL.Path, RawQuery: q.Encode()}
+	// The script hands this to location.replace, so it gets the same
+	// treatment as any redirect: a path such as "//host" would otherwise
+	// render as a protocol-relative URL. The router cleans those today, but
+	// that is the router's promise, not this function's.
+	path := safeLocal((&url.URL{Path: r.URL.Path}).EscapedPath())
 
-	return u.String()
+	if len(q) == 0 {
+		return path
+	}
+
+	return path + "?" + q.Encode()
 }
 
 // humaniseInterval renders a duration the way the page says it.
