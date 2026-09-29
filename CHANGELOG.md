@@ -30,6 +30,11 @@ criteria, and any that are still open, are written down.
   store, opens it without applying migrations, and refuses a store that does
   not exist instead of creating one. Page content is marked as untrusted in
   every answer that carries it. Standard library only; no new dependency.
+- A daily workflow, `.github/workflows/chromium.yaml`, reads Alpine's
+  package index for both architectures and opens a pull request that bumps
+  the pinned Chromium version once both have a newer build. Alpine drops the
+  old build as soon as a new one lands, so before this the image build broke
+  before anyone knew a Chromium release was out.
 - The Chromium bump workflow updates the browser image together with the
   wsaw image, and CI refuses a change that lets their Alpine base or
   Chromium version drift apart.
@@ -134,6 +139,14 @@ criteria, and any that are still open, are written down.
 - Downloads are now blocked in the scan's own browser context. Chrome
   applies a download policy with no context named to its default context
   only.
+- A `SIGHUP` reload no longer loses a scan retry (Story 3.8). Before, a
+  retry waiting to run was dropped, and a scan that failed while the reload
+  landed scheduled its retry on the job the reload had just replaced, which
+  never ran again. The failed attempt had been held back from notification
+  because a retry was coming, so the failure was never published and the
+  target went unobserved until its next scheduled run. The new job now takes
+  over the pending retry and applies the reloaded retry policy. A target the
+  reload removed has its outcome published as final.
 
 ## [0.2.1] - 2026-09-24
 

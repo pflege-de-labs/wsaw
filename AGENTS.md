@@ -151,6 +151,7 @@ The JSON result schema is the product's real interface (Tenet 16).
 
 - **Do not commit unless the human asks.** Do not push. Do not open a PR. Do not create branches speculatively. Do not `git add -A` sweeping up files you did not touch.
 - Never commit directly to the default branch.
+- **Every change gets a `CHANGELOG.md` entry**, in the same commit, under `## [Unreleased]` in the matching Keep a Changelog section (`Added`, `Changed`, `Fixed`, …). Write it for an operator: what changed for them and why, with the story number where one applies. Do not leave it for release time — entries reconstructed later from `git log` get missed.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, `perf:`, `build:`, `ci:`. Reference the story where one applies (`feat(capture): record initiator chains (Story 1.2)`).
 - Commit messages are written in normal prose. Explain *why*, not *what* — the diff shows what.
 - Never rewrite published history, never force-push, never `git checkout --`/`git restore` over uncommitted work you did not create.
@@ -183,6 +184,7 @@ A change is done when all of the following are true:
 - [ ] New logic has tests; a bug fix has a regression test.
 - [ ] No `TODO`/`FIXME` left behind (`godox` will fail anyway).
 - [ ] No new dependency, unless explicitly approved.
+- [ ] `CHANGELOG.md` has an entry for the change under `## [Unreleased]`.
 - [ ] Docs updated when behaviour changed: README, config reference, JSON Schema, and the story document if scope shifted.
 - [ ] Every resource acquired is released on every path, cancellation and panic included.
 - [ ] The report to the human states plainly what was done, what was verified, and what was left out.
