@@ -11,6 +11,15 @@ criteria, and any that are still open, are written down.
 
 ### Added
 
+- `wsaw run` checks once at startup whether a newer browser image is
+  published (Story 6.11). It asks the configured image's registry which
+  digest the `latest` tag names and, when that is not the pinned one, warns
+  with the digest to pin and the pull command. It reads one manifest
+  anonymously and pulls nothing; the browser changes only when
+  `browser.container.image` does. A registry it cannot reach is logged as a
+  failed check, never as a current image. On by default;
+  `browser.container.checkForUpdates: false` stops wsaw contacting the
+  registry.
 - A per-scan browser image that keeps Chrome's own sandbox inside the
   container (Story 1.8, AC5). `deploy/browser` builds Alpine's
   `chromium-headless-shell` — the same Alpine digest and Chromium version as

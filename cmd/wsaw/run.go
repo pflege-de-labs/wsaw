@@ -176,6 +176,16 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		a.MaintenanceLoop(runCtx, sweeps, vacuums)
 	}()
 
+	// Beside the scheduler rather than ahead of it: an unreachable registry
+	// must not delay the first scan (Story 6.11).
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		a.CheckBrowserImage(runCtx)
+	}()
+
 	// Where the certificate is read from, which a reload may move.
 	certPaths := tlsPaths{cert: a.Config.API.TLSCert, key: a.Config.API.TLSKey}
 
