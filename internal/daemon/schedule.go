@@ -269,6 +269,27 @@ func (j *job) scheduleRetry(now time.Time, delay time.Duration, because string) 
 	j.next = now.Add(delay)
 }
 
+// carryOver takes over what a reload must not reset from the job it
+// replaces.
+//
+// The last run is kept so a reload cannot be used — accidentally or
+// otherwise — to bypass the minimum scan interval. The retry state is kept
+// because a failed attempt waiting for its retry has not been notified yet
+// (Story 3.8, AC7): dropping the retry would drop the notification too, and
+// leave the target unobserved until its next scheduled run. The pending
+// retry runs when it was due; the policy that decides what follows it is the
+// reloaded one.
+func (j *job) carryOver(prev *job) {
+	j.lastRun = prev.lastRun
+	j.attempt = prev.attempt
+	j.prevError = prev.prevError
+
+	if prev.retrying {
+		j.retrying = true
+		j.next = prev.next
+	}
+}
+
 // resetRetries returns the job to its ordinary schedule.
 func (j *job) resetRetries() {
 	j.attempt = 1

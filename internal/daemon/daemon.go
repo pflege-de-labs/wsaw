@@ -237,16 +237,14 @@ func (d *Daemon) applyReload(targets []config.Resolved) {
 
 	d.mu.Lock()
 
-	// Preserve last-run times across a reload, so a reload cannot be used —
-	// accidentally or otherwise — to bypass the minimum scan interval.
-	previous := make(map[string]time.Time, len(d.jobs))
+	previous := make(map[string]*job, len(d.jobs))
 	for _, j := range d.jobs {
-		previous[j.key()] = j.lastRun
+		previous[j.key()] = j
 	}
 
 	for _, j := range jobs {
-		if last, ok := previous[j.key()]; ok {
-			j.lastRun = last
+		if prev, ok := previous[j.key()]; ok {
+			j.carryOver(prev)
 		}
 	}
 
@@ -335,9 +333,7 @@ func (d *Daemon) markStarted(j *job, now time.Time) (attempt int, previous strin
 }
 
 func (d *Daemon) runJob(ctx context.Context, j *job, attempt int, previous string) {
-	policy := j.target.Retry
-
-	scanCtx := scanner.WithAttempt(ctx, attempt, policy.MaxAttempts(), previous)
+	scanCtx := scanner.WithAttempt(ctx, attempt, j.target.Retry.MaxAttempts(), previous)
 
 	out, err := d.scanner.Scan(scanCtx, j.target, j.mode)
 	if err != nil {
@@ -349,7 +345,7 @@ func (d *Daemon) runJob(ctx context.Context, j *job, attempt int, previous strin
 	// result is not published: a failure a retry fixes must not page anyone
 	// (Story 3.8, AC7). It is still stored — the scanner did that already —
 	// so the failure remains in the history either way (Tenet 5).
-	if d.considerRetry(ctx, j, out, err, attempt, policy) {
+	if d.considerRetry(ctx, j, out, err, attempt) {
 		return
 	}
 
@@ -362,14 +358,25 @@ func (d *Daemon) runJob(ctx context.Context, j *job, attempt int, previous strin
 
 // considerRetry requeues the job when another attempt is warranted, and
 // reports whether it did.
+//
+// A reload may have replaced j while its scan ran, and the replaced job is
+// never dispatched again, so everything decided here — the policy, and the
+// retry itself — goes through the job the scheduler runs now. A retry
+// scheduled on the replaced job would be lost, and with it the notification
+// the failed attempt was held back for (AC7). A target the reload removed
+// has nothing left to retry it, so its outcome is final.
 func (d *Daemon) considerRetry(
 	ctx context.Context,
 	j *job,
 	out scanner.Outcome,
 	scanErr error,
 	attempt int,
-	policy retry.Policy,
 ) bool {
+	policy, ok := d.retryPolicy(j.key())
+	if !ok {
+		return false
+	}
+
 	if !policy.Retryable(out.Result) {
 		d.finishRetries(j)
 
@@ -404,9 +411,9 @@ func (d *Daemon) considerRetry(
 	next := attempt + 1
 	delay := policy.Delay(next, j.key())
 
-	d.mu.Lock()
-	j.scheduleRetry(time.Now(), delay, retryReason(out, scanErr))
-	d.mu.Unlock()
+	if !d.scheduleRetry(j.key(), delay, retryReason(out, scanErr)) {
+		return false
+	}
 
 	d.opts.Logger.Info("scan produced no usable observation, retrying",
 		"target", j.target.Name,
@@ -424,11 +431,55 @@ func (d *Daemon) considerRetry(
 	return true
 }
 
+// retryPolicy is the retry policy of the job the scheduler currently runs
+// under key, and false when a reload has removed it.
+func (d *Daemon) retryPolicy(key string) (retry.Policy, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	j := d.jobLocked(key)
+	if j == nil {
+		return retry.Policy{}, false
+	}
+
+	return j.target.Retry, true
+}
+
+// scheduleRetry requeues the current job under key, and reports false when a
+// reload has removed it. The lookup and the requeue share one lock, so a
+// reload cannot replace the job in between.
+func (d *Daemon) scheduleRetry(key string, delay time.Duration, because string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	j := d.jobLocked(key)
+	if j == nil {
+		return false
+	}
+
+	j.scheduleRetry(time.Now(), delay, because)
+
+	return true
+}
+
 func (d *Daemon) finishRetries(j *job) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	j.resetRetries()
+	if cur := d.jobLocked(j.key()); cur != nil {
+		cur.resetRetries()
+	}
+}
+
+// jobLocked finds the scheduled job for key. The caller holds d.mu.
+func (d *Daemon) jobLocked(key string) *job {
+	for _, j := range d.jobs {
+		if j.key() == key {
+			return j
+		}
+	}
+
+	return nil
 }
 
 // retryReason describes why an attempt did not produce an observation, for
