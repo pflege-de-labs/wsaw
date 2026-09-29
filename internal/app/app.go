@@ -66,6 +66,10 @@ type App struct {
 
 	Version string
 
+	// fallback is set when startup found that scans cannot run in browser
+	// contexts of their own and overrode configuration to compensate.
+	fallback *isolationFallback
+
 	closers []func() error
 }
 
@@ -465,6 +469,11 @@ func (a *App) startBrowser(ctx context.Context) error {
 	})
 
 	a.closers = append(a.closers, a.Pool.Close)
+
+	// Decided before the first scan rather than discovered by it: a scan that
+	// found out mid-flight could only fail, and the settings it would need
+	// changed belong to the whole pool.
+	a.checkBrowserContexts(ctx)
 
 	return nil
 }

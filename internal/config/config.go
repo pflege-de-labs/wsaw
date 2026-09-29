@@ -180,19 +180,23 @@ type Browser struct {
 	PoolSize int `yaml:"poolSize,omitempty"`
 
 	// MaxScansPerBrowser is how many scans one browser process may serve
-	// before it is replaced. The default is 1, which is what makes per-scan
-	// isolation hold by construction: a browser has its own profile
-	// directory, so one scan per browser means one cookie jar per scan.
+	// before it is replaced. The default is 1.
 	//
-	// Raising it trades that guarantee for fewer browser launches. wsaw still
-	// clears the cookie jar, the cache, and quota storage — localStorage,
-	// IndexedDB, service workers, cache storage — for every origin a scan
-	// touched, and records that the browser was reused in every affected
-	// result, but a site can persist state in ways a clear does not reach.
-	// Raise it only where throughput matters more than the consent
-	// comparison.
+	// Every scan runs in a browser context of its own — its own cookie jar,
+	// cache and quota storage, disposed of when the scan ends — so raising it
+	// costs no isolation and saves browser launches. Where Chrome refuses to
+	// create browser contexts (a managed install can), wsaw finds out at
+	// startup, warns, and runs with 1 whatever is configured here, because
+	// scans in one browser would then share a cookie jar.
 	MaxScansPerBrowser int64    `yaml:"maxScansPerBrowser,omitempty"`
 	LaunchTimeout      Duration `yaml:"launchTimeout,omitempty"`
+
+	// SilenceContextFallbackWarning logs the startup fallback to one browser
+	// per scan at info level instead of as a warning, for a deployment whose
+	// Chrome will never allow browser contexts and that has accepted the
+	// cost. It does not silence the warning for a remote browser, where the
+	// fallback does not restore isolation.
+	SilenceContextFallbackWarning bool `yaml:"silenceContextFallbackWarning,omitempty"`
 }
 
 // ContainerBrowser configures the containerised browser.

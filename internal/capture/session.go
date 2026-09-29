@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -372,7 +373,7 @@ func (s *session) prepare() error {
 		runtime.Enable(),
 
 		// A scanned page must never be able to write a file to disk.
-		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny),
+		s.denyDownloads(),
 
 		emulation.SetDeviceMetricsOverride(
 			int64(s.opts.ViewportWidth), int64(s.opts.ViewportHeight),
@@ -380,33 +381,14 @@ func (s *session) prepare() error {
 		),
 	}
 
-	// Cookies are cleared for every scan, warm cache or not. A stored consent
-	// decision is precisely what must not carry over: a scan that inherits one
-	// sees no banner and records the site's whole tracking stack as
-	// pre-consent traffic. The browser process is the real isolation boundary
-	// (one scan per browser by default); this is the belt to that braces, and
-	// it is what keeps a deliberately reused browser honest.
-	actions = append(actions, network.ClearBrowserCookies())
-
-	// The cookie jar is only half of where a decision is kept. CCM19 records
-	// its answer in localStorage and leaves no cookie at all, so a reused
-	// browser that had already answered once rendered no banner on the next
-	// scan and the site's entire tracking stack was recorded as pre-consent
-	// traffic — the finding this product exists to make, manufactured by wsaw
-	// itself (Story 1.5, AC1).
-	//
-	// Quota storage is named one origin at a time; Chrome has no call that
-	// wipes it wholesale. The origin about to be scanned is the one that can
-	// be named up front, and clearStorage wipes every origin the scan actually
-	// reached once it ends.
-	if origin := originOf(s.opts.URL); origin != "" {
-		actions = append(actions, storage.ClearDataForOrigin(origin, string(storage.TypeAll)))
-	}
+	// Nothing is cleared here. A scan starts from an empty cookie jar, cache
+	// and quota storage because its browser context, or failing that its
+	// browser process, has never served another scan (Story 1.5, AC1).
 
 	if !s.opts.WarmCache {
 		// Cold cache is the default: it is what makes two scans comparable
 		// and what an unprimed visitor actually experiences.
-		actions = append(actions, network.SetCacheDisabled(true), network.ClearBrowserCache())
+		actions = append(actions, network.SetCacheDisabled(true))
 	}
 
 	if s.opts.UserAgent != "" || s.opts.AcceptLanguage != "" {
@@ -441,6 +423,27 @@ func (s *session) prepare() error {
 	}
 
 	return nil
+}
+
+// denyDownloads forbids downloads in this scan's browser context. Named
+// explicitly, because Browser.setDownloadBehavior without a context applies
+// to the browser's default context only, and a scan in a context of its own
+// would otherwise keep downloads allowed.
+//
+// Like the cookie read, a call that names a context goes to the browser
+// target rather than the tab.
+func (s *session) denyDownloads() chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		deny := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny)
+		exec := ctx
+
+		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" && c.Browser != nil {
+			deny = deny.WithBrowserContextID(c.BrowserContextID)
+			exec = cdp.WithExecutor(ctx, c.Browser)
+		}
+
+		return deny.Do(exec)
+	})
 }
 
 // headers builds the extra header map, revealing secrets only here and never
@@ -878,13 +881,8 @@ func (s *session) finish(runErr error) {
 	s.mu.Unlock()
 
 	s.collectCookies()
-	origins := s.collectStorage()
+	s.collectStorage()
 	s.collectFinalURL()
-
-	// Only once every collector has read what the page left behind: the wipe
-	// is for the next scan on this browser, never at the expense of this
-	// scan's evidence.
-	s.clearStorage(origins)
 
 	s.res.FinishedAt = time.Now()
 	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)
@@ -945,16 +943,20 @@ func (s *session) collectCookies() {
 
 	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		get := storage.GetCookies()
+		exec := ctx
 
 		// Scoped to this scan's browser context. Unscoped, Storage.getCookies
 		// answers for the browser's default context, which is not where an
 		// isolated scan's cookies live — it would report another scan's jar,
-		// or none at all.
-		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" {
+		// or none at all. A context is named to the browser target, not the
+		// tab: sent over the tab's session the call answers with an empty
+		// jar, and a scan that set cookies would report none.
+		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" && c.Browser != nil {
 			get = get.WithBrowserContextID(c.BrowserContextID)
+			exec = cdp.WithExecutor(ctx, c.Browser)
 		}
 
-		res, err := get.Do(ctx)
+		res, err := get.Do(exec)
 		if err != nil {
 			return err
 		}
