@@ -29,6 +29,18 @@ criteria, and any that are still open, are written down.
     differences in the first ones that come from the browser rather than
     from the site.
 
+### Fixed
+
+- The browser image update check no longer reports a rebuild of the same
+  browser as a newer image (Story 6.11). Every release republishes
+  `wsaw-browser` with its own version labels, so its digest moves even when
+  Chromium does not, and a built-in default can only pin the previous
+  release's image: every start would have warned. When the latest image
+  declares its Chromium in `de.pflege.wsaw.chromium.version`, that is now
+  compared with the running browser's version, and a match is logged as
+  current. A newer Chromium is still a warning, which now names both
+  versions. Images without the label are compared by digest as before.
+
 ## [0.3.0] - 2026-09-29
 
 Every scan now runs in a browser context of its own, so a reused browser can

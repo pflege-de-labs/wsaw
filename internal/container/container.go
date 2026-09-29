@@ -51,6 +51,12 @@ const LabelSandbox = "de.pflege.wsaw.browser.sandbox"
 // sandbox. Any other value, or none, means it does not.
 const SandboxEnabled = "enabled"
 
+// LabelChromiumVersion is the image label with which deploy/browser declares
+// the Chromium package it installs, e.g. 152.0.7977.82-r0. The update check
+// reads it so that a rebuild of the same browser, whose digest moves with
+// every release, is not reported as a newer one (Story 6.11).
+const LabelChromiumVersion = "de.pflege.wsaw.chromium.version"
+
 // cdpPort is the port the browser image listens on inside the container.
 const cdpPort = "9222"
 

@@ -3,107 +3,105 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/container"
 )
 
-var latestManifest = []byte(`{"schemaVersion":2,"manifests":[]}`)
+const pinnedImage = "ghcr.io/org/browser@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-func latestDigest() string {
-	sum := sha256.Sum256(latestManifest)
-
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// imageRegistry serves latestManifest as org/browser:latest, or fails with
-// status when it is set, and counts the requests it receives.
-func imageRegistry(t *testing.T, status int) (*httptest.Server, *atomic.Int32) {
-	t.Helper()
-
-	var hits atomic.Int32
-
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-
-		if status != 0 {
-			w.WriteHeader(status)
-
-			return
-		}
-
-		if r.URL.Path != "/v2/org/browser/manifests/latest" {
-			http.NotFound(w, r)
-
-			return
-		}
-
-		_, _ = w.Write(latestManifest)
-	}))
-	t.Cleanup(srv.Close)
-
-	return srv, &hits
+var newerImage = container.ImageUpdate{
+	Checked: "ghcr.io/org/browser:latest",
+	Latest:  "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 }
 
 func TestCheckBrowserImage(t *testing.T) {
 	t.Parallel()
 
 	off := false
-	older := "sha256:" + strings.Repeat("0", 64)
 
 	tests := []struct {
 		name     string
-		status   int
-		pinned   string // digest appended to the image; empty for a floating tag
+		update   container.ImageUpdate
+		err      error
+		chromium string // the running browser's version, as the image reports it
 		local    bool
 		checkOff *bool
-		want     string // expected in the log; empty expects no request at all
+		want     string // expected in the log; empty expects no check at all
 	}{
-		{name: "newer image published", pinned: older, want: `level=WARN msg="a newer browser image is published`},
-		{name: "pinned image is latest", pinned: latestDigest(), want: `level=INFO msg="browser image is the latest published"`},
-		{name: "registry fails", pinned: older, status: http.StatusInternalServerError, want: `level=WARN msg="could not check for a newer browser image"`},
-		{name: "check turned off", pinned: older, checkOff: &off},
-		{name: "local browser", pinned: older, local: true},
-		{name: "floating tag", pinned: ""},
+		{
+			name: "newer image published", update: newerImage, chromium: "Chromium 152.0.7977.82",
+			want: `level=WARN msg="a newer browser image is published`,
+		},
+		{
+			name:     "newer image with a newer Chromium",
+			update:   withChromium(newerImage, "153.0.8000.10-r0"),
+			chromium: "Chromium 152.0.7977.82",
+			want:     `latest_chromium=153.0.8000.10-r0`,
+		},
+		{
+			// Every release rebuilds the image, so its digest moves even when
+			// the browser does not. That is not a newer browser.
+			name:     "a rebuild of the same Chromium",
+			update:   withChromium(newerImage, "152.0.7977.82-r0"),
+			chromium: "Chromium 152.0.7977.82",
+			want:     `level=INFO msg="browser image runs the latest published Chromium"`,
+		},
+		{
+			name:   "pinned image is latest",
+			update: container.ImageUpdate{Checked: newerImage.Checked, Latest: newerImage.Latest, Current: true},
+			want:   `level=INFO msg="browser image is the latest published"`,
+		},
+		{
+			name: "registry fails", err: errors.New("registry answered 500"),
+			want: `level=WARN msg="could not check for a newer browser image"`,
+		},
+		{
+			name: "floating tag", err: container.ErrNotPinned,
+			want: `level=DEBUG msg="browser image is not pinned by digest`,
+		},
+		{name: "check turned off", update: newerImage, checkOff: &off},
+		{name: "local browser", update: newerImage, local: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			srv, hits := imageRegistry(t, tt.status)
-
-			image := srv.Listener.Addr().String() + "/org/browser:0.3"
-			if tt.pinned != "" {
-				image += "@" + tt.pinned
-			}
-
-			var logged bytes.Buffer
+			var (
+				logged bytes.Buffer
+				calls  int
+			)
 
 			a := &App{
 				Config:       &config.Config{Browser: config.Browser{Container: config.ContainerBrowser{CheckForUpdates: tt.checkOff}}},
 				Logger:       slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
 				Runtime:      &container.Runtime{Kind: container.KindPodman},
-				BrowserImage: image,
-				Version:      "test",
+				BrowserImage: pinnedImage,
 			}
+			a.Chrome.Version = tt.chromium
+
 			if tt.local {
 				a.Runtime, a.BrowserImage = nil, ""
 			}
 
-			a.checkBrowserImage(context.Background(), srv.Client())
+			a.checkBrowserImage(context.Background(), func(_ context.Context, image string) (container.ImageUpdate, error) {
+				calls++
+
+				if image != pinnedImage {
+					t.Errorf("checked %s, want %s", image, pinnedImage)
+				}
+
+				return tt.update, tt.err
+			})
 
 			if tt.want == "" {
-				if n := hits.Load(); n != 0 {
-					t.Fatalf("registry received %d requests, want none; log:\n%s", n, logged.String())
+				if calls != 0 {
+					t.Fatalf("checked the registry %d times, want none; log:\n%s", calls, logged.String())
 				}
 
 				return
@@ -121,22 +119,50 @@ func TestCheckBrowserImage(t *testing.T) {
 func TestCheckBrowserImageNamesPull(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := imageRegistry(t, 0)
-	repo := srv.Listener.Addr().String() + "/org/browser"
-
 	var logged bytes.Buffer
 
 	a := &App{
 		Config:       &config.Config{},
 		Logger:       slog.New(slog.NewTextHandler(&logged, nil)),
 		Runtime:      &container.Runtime{Kind: container.KindDocker},
-		BrowserImage: repo + "@sha256:" + strings.Repeat("0", 64),
+		BrowserImage: pinnedImage,
 	}
 
-	a.checkBrowserImage(context.Background(), srv.Client())
+	a.checkBrowserImage(context.Background(), func(context.Context, string) (container.ImageUpdate, error) {
+		return newerImage, nil
+	})
 
-	want := `pull="docker pull ` + repo + ":latest@" + latestDigest() + `"`
+	want := `pull="docker pull ghcr.io/org/browser:latest@` + newerImage.Latest + `"`
 	if !strings.Contains(logged.String(), want) {
 		t.Fatalf("log does not contain %s:\n%s", want, logged.String())
 	}
+}
+
+func TestSameChromium(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		running, label string
+		want           bool
+	}{
+		{running: "Chromium 152.0.7977.82", label: "152.0.7977.82-r0", want: true},
+		{running: "Chromium 152.0.7977.82", label: "152.0.7977.82-r3", want: true},
+		{running: "Chromium 152.0.7977.82", label: "153.0.8000.10-r0", want: false},
+		{running: "Chromium 152.0.7977.82", label: "152.0.7977.8-r0", want: false},
+		{running: "Chromium 152.0.7977.82", label: "", want: false},
+		{running: "", label: "152.0.7977.82-r0", want: false},
+		{running: "HeadlessChrome", label: "unknown", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := sameChromium(tt.running, tt.label); got != tt.want {
+			t.Errorf("sameChromium(%q, %q) = %v, want %v", tt.running, tt.label, got, tt.want)
+		}
+	}
+}
+
+func withChromium(u container.ImageUpdate, version string) container.ImageUpdate {
+	u.LatestChromium = version
+
+	return u
 }
