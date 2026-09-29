@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1362,6 +1363,15 @@ func (s *Server) uiRedirectError(w http.ResponseWriter, r *http.Request, dest, m
 	http.Redirect(w, r, safeLocal(dest)+"?err="+urlQueryEscape(msg), http.StatusSeeOther)
 }
 
+// localPath is the only shape a redirect destination may take: an absolute
+// path of RFC 3986 path characters (pchar), with no empty segment. Admitting
+// what a local path is, rather than refusing the tricks known to leave the
+// origin, means a trick nobody has thought of yet falls back instead of
+// getting through. No empty segment rules out `//host`; the character set
+// rules out `\`, whitespace, control characters and anything non-ASCII.
+var localPath = regexp.MustCompile(
+	`\A(?:/|(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})+)+/?)\z`)
+
 // safeLocal reduces a redirect destination to a path on this origin.
 //
 // Destinations are assembled from path values — a target name, a consent mode
@@ -1369,36 +1379,18 @@ func (s *Server) uiRedirectError(w http.ResponseWriter, r *http.Request, dest, m
 // current callers cannot in fact produce an off-site URL, but relying on that
 // means every future caller has to be audited for it. Enforcing it here makes
 // an off-site redirect impossible to introduce (Tenet 9).
+//
+// The destination is expected in its escaped form, as EscapedPath gives it;
+// a raw space or non-ASCII character falls back rather than being guessed at.
 func safeLocal(dest string) string {
-	const fallback = "/"
-
-	if dest == "" {
-		return fallback
-	}
-
-	// A scheme, or a protocol-relative "//host", would leave this origin.
-	if strings.Contains(dest, "://") || strings.HasPrefix(dest, "//") {
-		return fallback
-	}
-
-	// Browsers read `\` as `/`, so `/\host` is protocol-relative as well.
-	if strings.Contains(dest, `\`) {
-		return fallback
-	}
-
-	if !strings.HasPrefix(dest, "/") {
-		return fallback
-	}
-
-	// A control character could split the header.
-	if strings.ContainsFunc(dest, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		return fallback
-	}
-
 	// Any query or fragment the caller appended is replaced by the flash
 	// parameter, so it must not be smuggled in through dest.
 	if i := strings.IndexAny(dest, "?#"); i >= 0 {
 		dest = dest[:i]
+	}
+
+	if !localPath.MatchString(dest) {
+		return "/"
 	}
 
 	return dest

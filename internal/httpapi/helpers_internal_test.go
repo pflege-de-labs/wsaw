@@ -13,6 +13,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -183,9 +184,53 @@ func TestSafeLocalKeepsARedirectOnThisOrigin(t *testing.T) {
 		// destination carried is dropped rather than smuggled through.
 		{"a query is stripped", "/targets/site?ok=already", "/targets/site"},
 		{"a fragment is stripped", "/targets/site#here", "/targets/site"},
+		// The rest are the allowlist: only an absolute path of RFC 3986 path
+		// characters survives, so what nobody listed falls back too.
+		{"the root is kept", "/", "/"},
+		{"a trailing slash is kept", "/targets/", "/targets/"},
+		{"a scan result is kept", "/results/site/reject/scan-0a1b2c", "/results/site/reject/scan-0a1b2c"},
+		{"an escape is kept", "/targets/a%20b/reject", "/targets/a%20b/reject"},
+		{"sub-delimiters are kept", "/login/otp/a-b_c~d:e@f=g", "/login/otp/a-b_c~d:e@f=g"},
+		{"an empty inner segment is refused", "/targets//evil.test", "/"},
+		{"a triple slash is refused", "///evil.test/", "/"},
+		{"a tab is refused", "/\t/evil.test/", "/"},
+		{"a space is refused", "/targets/a b", "/"},
+		{"a non-ASCII character is refused", "/targets/caf\u00e9", "/"},
+		{"a bare percent is refused", "/targets/100%", "/"},
+		{"a malformed escape is refused", "/targets/%zz", "/"},
+		{"a quote is refused", `/targets/"onload`, "/"},
+		{"an angle bracket is refused", "/targets/<script>", "/"},
+		{"a scheme without slashes is refused", "javascript:alert(1)", "/"},
 	} {
 		if got := safeLocal(tc.in); got != tc.want {
 			t.Errorf("%s: safeLocal(%q) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// The refresh URL is handed to location.replace, so it must stay on this
+// origin however the request path was spelled. The router cleans "//host"
+// before a handler sees it; this holds without relying on that.
+func TestRefreshTargetStaysOnThisOrigin(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		path  string
+		query string
+		want  string
+	}{
+		{"a page keeps its path", "/targets/site/reject", "", "/targets/site/reject"},
+		{"the flash parameters are dropped", "/targets/site/reject", "ok=done&refresh=30", "/targets/site/reject?refresh=30"},
+		{"a protocol-relative path falls back", "//evil.test/x", "", "/"},
+		// Escaped, a backslash is an ordinary character of a local path.
+		{"a backslash path is escaped", `/\evil.test/x`, "", "/%5Cevil.test/x"},
+		{"the query survives a fallback", "//evil.test/x", "refresh=30", "/?refresh=30"},
+	} {
+		r := &http.Request{URL: &url.URL{Path: tc.path, RawQuery: tc.query}}
+
+		if got := refreshTarget(r); got != tc.want {
+			t.Errorf("%s: refreshTarget(%q?%s) = %q, want %q", tc.name, tc.path, tc.query, got, tc.want)
 		}
 	}
 }
