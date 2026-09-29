@@ -113,9 +113,6 @@ type Target struct {
 
 	Proxy string `yaml:"proxy,omitempty"`
 
-	// WarmCache opts out of the cold-cache default.
-	WarmCache *bool `yaml:"warmCache,omitempty"`
-
 	// Evidence.
 	Screenshots *bool `yaml:"screenshots,omitempty"`
 	StoreBodies *bool `yaml:"storeBodies,omitempty"`

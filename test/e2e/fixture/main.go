@@ -351,9 +351,9 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, "ok\n")
 }
 
-// noStore keeps the browser from serving a previous scan's copy. wsaw scans
-// cold by default, but a warm-cache run must still see the current variant
-// rather than the one that was current when the cache was filled.
+// noStore keeps any cache between wsaw and the fixture — the browser's, a
+// proxy's — from serving a previous variant. wsaw scans with the browser
+// cache disabled; this makes the fixture not depend on it.
 func noStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

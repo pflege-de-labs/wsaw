@@ -385,11 +385,11 @@ func (s *session) prepare() error {
 	// and quota storage because its browser context, or failing that its
 	// browser process, has never served another scan (Story 1.5, AC1).
 
-	if !s.opts.WarmCache {
-		// Cold cache is the default: it is what makes two scans comparable
-		// and what an unprimed visitor actually experiences.
-		actions = append(actions, network.SetCacheDisabled(true))
-	}
+	// Always a cold cache: it is what makes two scans comparable and what an
+	// unprimed visitor actually experiences. Disabled rather than merely
+	// empty, so a resource the page requests twice is fetched twice and both
+	// requests are recorded as the network saw them.
+	actions = append(actions, network.SetCacheDisabled(true))
 
 	if s.opts.UserAgent != "" || s.opts.AcceptLanguage != "" {
 		ua := emulation.SetUserAgentOverride(s.opts.UserAgent)
@@ -1036,7 +1036,6 @@ func (o *Options) environment() model.Environment {
 		Longitude:      o.Longitude,
 		BasicAuth:      o.BasicAuthUser.IsSet(),
 		Proxy:          secret.RedactURL(o.Proxy),
-		WarmCache:      o.WarmCache,
 		BrowserReused:  o.BrowserReused,
 		BrowserRuntime: o.BrowserRuntime,
 		BrowserImage:   o.BrowserImage,

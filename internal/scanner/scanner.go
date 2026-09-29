@@ -407,7 +407,6 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		BasicAuthUser:     target.BasicAuthUser,
 		BasicAuthPassword: target.BasicAuthPassword,
 		Proxy:             target.Proxy,
-		WarmCache:         target.WarmCache,
 	}
 }
 

@@ -78,7 +78,6 @@ type Resolved struct {
 
 	Proxy string
 
-	WarmCache   bool
 	Screenshots bool
 	StoreBodies bool
 
@@ -193,7 +192,6 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 		AcceptLanguage: firstString(t.AcceptLanguage, d.AcceptLanguage),
 		Timezone:       firstString(t.Timezone, d.Timezone),
 		Proxy:          firstString(t.Proxy, d.Proxy),
-		WarmCache:      firstBool(t.WarmCache, d.WarmCache, false),
 		Screenshots:    firstBool(t.Screenshots, d.Screenshots, false),
 		StoreBodies:    firstBool(t.StoreBodies, d.StoreBodies, false),
 		Robots:         firstRobots(t.Robots, d.Robots),

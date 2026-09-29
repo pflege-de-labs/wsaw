@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "1.0"
+const SchemaVersion = "2.0"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -207,8 +207,6 @@ type Environment struct {
 	BasicAuth bool `json:"basicAuth"`
 	// Proxy is the proxy host, with any credentials stripped.
 	Proxy string `json:"proxy,omitempty"`
-
-	WarmCache bool `json:"warmCache"`
 
 	// BrowserRuntime is "local" when the browser ran as a host process, or
 	// the container runtime that ran it. A result is only comparable with

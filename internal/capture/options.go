@@ -134,10 +134,6 @@ type Options struct {
 	// with it at launch, not here.
 	Proxy string
 
-	// WarmCache opts out of the cold-cache default. Flagged in the result
-	// because it changes what the numbers mean.
-	WarmCache bool
-
 	// BrowserReused records that this scan is not the first on its browser.
 	BrowserReused bool
 
