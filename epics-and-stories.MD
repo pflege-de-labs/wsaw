@@ -110,7 +110,7 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 - AC2: The user agent defaults to the one shipped by the launched Chrome build; overrides are explicit and recorded.
 - AC3: All applied overrides are echoed into the scan result for reproducibility.
 
-### Story 1.8 — Run Chrome in a container (partly implemented: AC5 is met by the browser image deploy/browser builds, published as ghcr.io/pflege-de-labs/wsaw-browser, which keeps Chrome's sandbox — under Docker with deploy/chromium-seccomp.json passed through browser.container.extraArgs — and declares it so results record browserSandbox truthfully; the default image is still chromedp/headless-shell, which runs with --no-sandbox, and wsaw does not yet apply the seccomp profile itself)
+### Story 1.8 — Run Chrome in a container (partly implemented: AC5 is met by the browser image deploy/browser builds, published as ghcr.io/pflege-de-labs/wsaw-browser, which keeps Chrome's sandbox — under Docker with deploy/chromium-seccomp.json passed through browser.container.extraArgs — and declares it so results record browserSandbox truthfully; and is now the default image, replacing chromedp/headless-shell, which ran with --no-sandbox; wsaw does not yet apply the seccomp profile itself, and warns at startup when it runs that image under Docker without one)
 
 *As an Operator, I want wsaw to run headless Chrome inside a container when a container runtime is available, so that hostile pages are rendered behind a boundary the operating system enforces rather than one the browser enforces on itself.*
 

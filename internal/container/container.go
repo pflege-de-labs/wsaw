@@ -27,16 +27,24 @@ import (
 	"time"
 )
 
-// DefaultImage is the browser image, pinned by digest.
+// DefaultImage is the browser image, pinned by digest: the one deploy/browser
+// builds, as published with release 0.3.0 (Chromium 152.0.7977.82).
 //
 // Pinned rather than floating because the browser is part of what a result
 // means: a tag that moves would change capture behaviour silently between
-// scans, and a diff would report the change as the site's (Tenet 6).
-const DefaultImage = "docker.io/chromedp/headless-shell@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04"
+// scans, and a diff would report the change as the site's (Tenet 6). The
+// daemon says when a newer one is published (Story 6.11); moving this is a
+// release decision, not something wsaw does on its own.
+//
+// It keeps Chrome's own sandbox on (Story 1.8, AC5), which rootless Podman's
+// default seccomp profile allows and Docker's refuses: under Docker it needs
+// deploy/chromium-seccomp.json passed through Spec.ExtraArgs.
+const DefaultImage = "ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b"
 
 // LabelSandbox is the image label with which a browser image declares that
 // its entrypoint keeps Chrome's own sandbox on (deploy/browser, Story 1.8
-// AC5). DefaultImage does not carry it: its entrypoint forces --no-sandbox.
+// AC5). DefaultImage carries it; chromedp/headless-shell, the previous
+// default, does not, since its entrypoint forces --no-sandbox.
 const LabelSandbox = "de.pflege.wsaw.browser.sandbox"
 
 // SandboxEnabled is the value of LabelSandbox on an image that keeps the

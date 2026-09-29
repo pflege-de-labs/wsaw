@@ -111,7 +111,7 @@ variable "wsaw_artifact_s3_uri" {
 variable "browser_image" {
   description = "Container image wsaw launches per scan, pinned by digest so capture behaviour doesn't drift under a moving tag (see wsaw.example.yaml)."
   type        = string
-  default     = "docker.io/chromedp/headless-shell@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04"
+  default     = "ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b"
 }
 
 variable "wsaw_config_yaml" {

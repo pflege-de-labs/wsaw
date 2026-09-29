@@ -4,9 +4,10 @@ Runs wsaw natively on one `t4g.nano` or `t4g.micro` instance via the systemd
 unit in `templates/wsaw.service.tftpl` (the same shape as `deploy/wsaw.service`,
 adjusted for a rootless-Podman host). wsaw itself is not containerized: per
 `browser.runtime: podman` in its config, wsaw launches the browser
-(`docker.io/chromedp/headless-shell`, pinned by digest) in a rootless Podman
-container per scan and removes it on exit — this is wsaw's own documented
-container story (see the repo's top-level README, "Where the browser runs"),
+(`ghcr.io/pflege-de-labs/wsaw-browser`, pinned by digest, with Chrome's own
+sandbox on — rootless Podman's default seccomp profile allows it) in a
+rootless Podman container per scan and removes it on exit — this is wsaw's
+own documented container story (see the repo's top-level README, "Where the browser runs"),
 not something this stack builds on top of it.
 
 ## What this creates

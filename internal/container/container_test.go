@@ -162,9 +162,11 @@ func TestBrowserVersionReportsTheImagesBrowser(t *testing.T) {
 }
 
 // TestImageKeepsSandbox is AC7's half that depends on the image: the result
-// must say whether Chrome's own sandbox ran, and DefaultImage forces it off.
-// The image deploy/browser builds keeps it on; CI builds that image and names
-// it in WSAW_TEST_BROWSER_IMAGE, and without it that half is skipped.
+// must say whether Chrome's own sandbox ran, and DefaultImage — the published
+// deploy/browser image — keeps it on. A locally built deploy/browser image
+// named in WSAW_TEST_BROWSER_IMAGE is checked too; without it that half is
+// skipped. An image without the label reading as unsandboxed is keepsSandbox's
+// unit test, which needs no runtime.
 func TestImageKeepsSandbox(t *testing.T) {
 	rt := requireRuntime(t)
 
@@ -176,8 +178,8 @@ func TestImageKeepsSandbox(t *testing.T) {
 		t.Fatalf("ImageKeepsSandbox(DefaultImage): %v", err)
 	}
 
-	if keeps {
-		t.Error("DefaultImage forces --no-sandbox but was reported as keeping the sandbox")
+	if !keeps {
+		t.Errorf("DefaultImage does not declare %s=%s", container.LabelSandbox, container.SandboxEnabled)
 	}
 
 	image := os.Getenv("WSAW_TEST_BROWSER_IMAGE")

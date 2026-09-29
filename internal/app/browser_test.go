@@ -107,6 +107,37 @@ func TestDisablesSandbox(t *testing.T) {
 	}
 }
 
+func TestMissingSeccompProfile(t *testing.T) {
+	t.Parallel()
+
+	profile := []string{"--security-opt", "seccomp=/etc/wsaw/chromium-seccomp.json"}
+
+	cases := []struct {
+		name  string
+		kind  container.Kind
+		keeps bool
+		args  []string
+		want  bool
+	}{
+		{name: "docker, sandboxed image, no profile", kind: container.KindDocker, keeps: true, want: true},
+		{name: "docker, sandboxed image, unrelated args", kind: container.KindDocker, keeps: true, args: []string{"--dns", "1.1.1.1"}, want: true},
+		{name: "docker, sandboxed image, profile as a pair", kind: container.KindDocker, keeps: true, args: profile, want: false},
+		{name: "docker, sandboxed image, profile in one arg", kind: container.KindDocker, keeps: true, args: []string{"--security-opt=seccomp=/p.json"}, want: false},
+		{name: "docker, unsandboxed image", kind: container.KindDocker, keeps: false, want: false},
+		{name: "podman, sandboxed image", kind: container.KindPodman, keeps: true, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := missingSeccompProfile(tc.kind, tc.keeps, tc.args); got != tc.want {
+				t.Errorf("missingSeccompProfile(%s, %v, %q) = %v, want %v", tc.kind, tc.keeps, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveBrowserPrefersAnExplicitRemoteURL(t *testing.T) {
 	t.Parallel()
 

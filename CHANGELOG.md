@@ -9,6 +9,26 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- The default browser image is now `ghcr.io/pflege-de-labs/wsaw-browser`,
+  pinned to the digest published with 0.3.0 (Chromium 152.0.7977.82, Story
+  1.8, AC5). It replaces `chromedp/headless-shell`, which had not published a
+  build since Chromium 151 and ran Chrome with `--no-sandbox`; the new image
+  keeps Chrome's own sandbox on, so scans record `browserSandbox: true`.
+  - Fetch it before upgrading, since wsaw never pulls it:
+    `podman pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b`.
+  - **Under Docker, the browser does not start without the seccomp
+    profile.** Add `browser.container.extraArgs: ["--security-opt",
+    "seccomp=/path/to/deploy/chromium-seccomp.json"]`. wsaw now warns at
+    startup when it runs a sandboxed image under Docker with no seccomp
+    option. Rootless Podman needs nothing.
+  - A configuration that names an image in `browser.container.image` is
+    unaffected.
+  - Scans after the switch are rendered by a different Chromium, so expect
+    differences in the first ones that come from the browser rather than
+    from the site.
+
 ## [0.3.0] - 2026-09-29
 
 Every scan now runs in a browser context of its own, so a reused browser can
