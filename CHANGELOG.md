@@ -9,6 +9,22 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
+Every scan now runs in a browser context of its own, so a reused browser can
+no longer hand one scan's cookies to the next, and the warm-cache mode that
+depended on sharing them is gone. The release also brings the first published
+browser image that keeps Chrome's own sandbox inside the container, a daemon
+that says when a newer browser image is out, a read-only MCP server over the
+stored results, and a scheduled SQLite vacuum.
+
+Upgrading: remove `warmCache` from any target before starting 0.3.0 — a
+configuration that still sets it is refused — and expect result documents at
+`schemaVersion` 2.0, against which stored 1.x documents no longer validate
+(see Removed). The first scans after the upgrade may differ from the ones
+before in cookies that no longer carry over between scans; that change is the
+browser's, not the site's.
+
 ### Added
 
 - `wsaw run` checks once at startup whether a newer browser image is
@@ -480,7 +496,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.3.0
 [0.2.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.1
 [0.2.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.0
 [0.1.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.1.1
