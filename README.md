@@ -35,21 +35,22 @@ wsaw renders pages it does not control. Left on the host, the only thing between
 **Podman is preferred over Docker**: daemonless and rootless by default, so wsaw needs no privileged socket and an escape lands as an unprivileged user.
 
 ```sh
-podman pull docker.io/chromedp/headless-shell@sha256:2d349b544a1ea6b5b5fd7c0fe99215ff662339c57407ee2e8c0a11af93516b04
+podman pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b
 wsaw scan --url https://example.com/          # uses the container automatically
 wsaw scan --url https://example.com/ --browser-runtime local
 ```
 
 - The image is **pinned by digest** and never pulled during a scan. A moving tag would change capture behaviour between scans, and the diff would report it as the site's change.
-- **The daemon says when a newer image is out.** Once at startup, `wsaw run` asks the image's registry which digest its `latest` tag points at, and when that is not the pinned one it logs a warning with the `podman pull` (or `docker pull`) command and the digest to pin. It reads one manifest anonymously, pulls nothing and changes nothing: the browser only changes when you change `browser.container.image`. A registry it cannot reach is logged as a check that failed, not as an image that is current. `browser.container.checkForUpdates: false` stops wsaw contacting the registry at all.
+- **The daemon says when a newer image is out.** Once at startup, `wsaw run` asks the image's registry which digest its `latest` tag points at, and when that is not the pinned one — and, for an image that declares its Chromium version as wsaw's does, not merely a rebuild of the same Chromium — it logs a warning with the `podman pull` (or `docker pull`) command and the digest to pin. It reads manifests and image configuration anonymously, never a layer, and changes nothing: the browser only changes when you change `browser.container.image`. A registry it cannot reach is logged as a check that failed, not as an image that is current. `browser.container.checkForUpdates: false` stops wsaw contacting the registry at all.
 - Every result records `browserRuntime`, `browserImage` and `browserSandbox`, because a result is only comparable with another if you can see what rendered it.
 - One container per scan, removed on every exit path, and orphans from an unclean shutdown are reaped at startup.
 - **A containerised browser cannot reach this machine's `localhost`** — it has its own network namespace. Scanning a local service fails with that explanation; use `--browser-runtime local` for it.
-- **Chrome's own sandbox depends on the image.** The default, `chromedp/headless-shell`, forces `--no-sandbox`, so the container is the only boundary. The image in [`deploy/browser`](deploy/browser/Dockerfile) keeps the sandbox, so a hostile page has two boundaries to cross. Every result's `browserSandbox` says which it was.
+- **Chrome's own sandbox depends on the image.** The default, `ghcr.io/pflege-de-labs/wsaw-browser` (built from [`deploy/browser`](deploy/browser/Dockerfile)), keeps the sandbox, so a hostile page has two boundaries to cross. An image that forces `--no-sandbox`, such as `chromedp/headless-shell` — the previous default — leaves the container as the only boundary. Every result's `browserSandbox` says which it was.
+- **Under Docker, pass the seccomp profile.** Docker's default profile refuses the calls Chrome's sandbox is built from, and Chrome refuses to start without it, so the default image needs `browser.container.extraArgs: ["--security-opt", "seccomp=/path/to/deploy/chromium-seccomp.json"]` there (see below). wsaw warns at startup when it runs under Docker with a sandboxed image and no seccomp option. Rootless Podman needs nothing.
 
 ### Keeping Chrome's sandbox inside the container
 
-`deploy/browser` builds Alpine's `chromium-headless-shell`, the same Chromium the wsaw image bundles, with its namespace sandbox on and running as an unprivileged user. It is published with each release as `ghcr.io/pflege-de-labs/wsaw-browser`, or built locally with `make docker-browser`. Pin it by digest like any browser image:
+`deploy/browser` builds Alpine's `chromium-headless-shell`, the same Chromium the wsaw image bundles, with its namespace sandbox on and running as an unprivileged user. It is published with each release as `ghcr.io/pflege-de-labs/wsaw-browser`, and is the default image; build it locally with `make docker-browser`. To pin a different release than the one built in, name it by digest:
 
 ```yaml
 browser:

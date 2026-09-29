@@ -99,6 +99,10 @@ type ImageUpdate struct {
 	// platform manifests Latest lists — an image pinned by the digest of its
 	// own architecture rather than by the index.
 	Current bool
+	// LatestChromium is the latest image's LabelChromiumVersion when it is not
+	// Current and declares one, and empty otherwise — including when the
+	// label could not be read, which leaves the digests to decide.
+	LatestChromium string
 }
 
 // PullReference is what to pass to podman pull or docker pull to fetch the
@@ -108,8 +112,10 @@ func (u ImageUpdate) PullReference() string {
 }
 
 // CheckImage asks image's registry which digest it serves for tag and
-// compares it with the digest image is pinned by. It pulls nothing: it reads
-// one manifest, anonymously, and sends no credentials of any kind.
+// compares it with the digest image is pinned by. When they differ it also
+// reads the latest image's configuration for LabelChromiumVersion. It pulls
+// nothing — no layer is fetched — reads anonymously, and sends no credentials
+// of any kind.
 func CheckImage(ctx context.Context, client *http.Client, userAgent, image, tag string) (ImageUpdate, error) {
 	ref, err := ParseReference(image)
 	if err != nil {
@@ -120,9 +126,9 @@ func CheckImage(ctx context.Context, client *http.Client, userAgent, image, tag 
 		return ImageUpdate{}, fmt.Errorf("%s: %w", image, ErrNotPinned)
 	}
 
-	r := registryClient{http: client, userAgent: userAgent}
+	r := &registryClient{http: client, userAgent: userAgent, ref: ref}
 
-	body, err := r.manifest(ctx, ref, tag)
+	body, err := r.fetch(ctx, "manifests/"+tag, manifestAccept)
 	if err != nil {
 		return ImageUpdate{}, fmt.Errorf("reading %s:%s from %s: %w", ref.Repository, tag, ref.Registry, err)
 	}
@@ -130,19 +136,115 @@ func CheckImage(ctx context.Context, client *http.Client, userAgent, image, tag 
 	// The digest is taken from the bytes rather than from the
 	// Docker-Content-Digest header, which not every registry sends and which
 	// would otherwise be trusted without being verified.
-	sum := sha256.Sum256(body)
-	latest := "sha256:" + hex.EncodeToString(sum[:])
+	latest := digestOf(body)
 
 	name, _, _ := strings.Cut(image, "@")
 	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
 		name = name[:i]
 	}
 
-	return ImageUpdate{
+	update := ImageUpdate{
 		Checked: name + ":" + tag,
 		Latest:  latest,
 		Current: latest == ref.Digest || listsManifest(body, ref.Digest),
-	}, nil
+	}
+
+	if !update.Current {
+		// Unreadable labels are not an error: the digests have already
+		// answered, and the label only lets a rebuild of the same browser
+		// read as current.
+		update.LatestChromium, _ = r.chromiumLabel(ctx, body, true)
+	}
+
+	return update, nil
+}
+
+func digestOf(b []byte) string {
+	sum := sha256.Sum256(b)
+
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// chromiumLabel reads LabelChromiumVersion from the configuration of the
+// image a manifest describes. For an index it reads the first Linux platform
+// manifest's: every platform is built from one Dockerfile with one pinned
+// Chromium, and the registry refuses a push where they would not agree.
+func (r *registryClient) chromiumLabel(ctx context.Context, manifest []byte, allowIndex bool) (string, error) {
+	var m struct {
+		Config    descriptor   `json:"config"`
+		Manifests []descriptor `json:"manifests"`
+	}
+
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		return "", fmt.Errorf("decoding manifest: %w", err)
+	}
+
+	if m.Config.Digest == "" {
+		if !allowIndex {
+			return "", errors.New("platform manifest names no configuration")
+		}
+
+		for _, p := range m.Manifests {
+			if p.Platform.OS != "linux" {
+				continue
+			}
+
+			platform, err := r.fetchVerified(ctx, "manifests/", p.Digest, manifestAccept)
+			if err != nil {
+				return "", err
+			}
+
+			// A platform manifest names a configuration; one that is another
+			// index instead is refused rather than followed.
+			return r.chromiumLabel(ctx, platform, false)
+		}
+
+		return "", errors.New("image lists no linux platform")
+	}
+
+	blob, err := r.fetchVerified(ctx, "blobs/", m.Config.Digest, "application/json")
+	if err != nil {
+		return "", err
+	}
+
+	var cfg struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"config"`
+	}
+
+	if err := json.Unmarshal(blob, &cfg); err != nil {
+		return "", fmt.Errorf("decoding image configuration: %w", err)
+	}
+
+	return cfg.Config.Labels[LabelChromiumVersion], nil
+}
+
+// descriptor is the part of an OCI content descriptor the check reads.
+type descriptor struct {
+	Digest   string `json:"digest"`
+	Platform struct {
+		OS string `json:"os"`
+	} `json:"platform"`
+}
+
+// fetchVerified fetches content by digest and refuses it unless it hashes to
+// that digest, so a registry cannot answer for one object with another.
+func (r *registryClient) fetchVerified(ctx context.Context, kind, digest, accept string) ([]byte, error) {
+	if !strings.HasPrefix(digest, "sha256:") || strings.ContainsAny(digest, "/?#") {
+		return nil, fmt.Errorf("unsupported digest %q", digest)
+	}
+
+	body, err := r.fetch(ctx, kind+digest, accept)
+	if err != nil {
+		return nil, err
+	}
+
+	if got := digestOf(body); got != digest {
+		return nil, fmt.Errorf("registry served %s for %s", got, digest)
+	}
+
+	return body, nil
 }
 
 // listsManifest reports whether an image index names digest among its
@@ -167,37 +269,40 @@ func listsManifest(body []byte, digest string) bool {
 	return false
 }
 
+// registryClient reads from one repository of one registry.
 type registryClient struct {
 	http      *http.Client
 	userAgent string
+	ref       Reference
+	// token is the anonymous pull token, once a challenge has asked for one.
+	token string
 }
 
-// manifest fetches the manifest for tag, answering the registry's challenge
+// fetch reads /v2/<repository>/<path>, answering the registry's challenge
 // for an anonymous pull token when it sends one. Public images on ghcr.io and
-// Docker Hub both require that token even to be read.
-func (r registryClient) manifest(ctx context.Context, ref Reference, tag string) ([]byte, error) {
+// Docker Hub both require that token even to be read. A blob may be served
+// by a redirect to another host; net/http does not carry the token there.
+func (r *registryClient) fetch(ctx context.Context, path, accept string) ([]byte, error) {
 	u := (&url.URL{
 		Scheme: "https",
-		Host:   ref.Registry,
-		Path:   "/v2/" + ref.Repository + "/manifests/" + tag,
+		Host:   r.ref.Registry,
+		Path:   "/v2/" + r.ref.Repository + "/" + path,
 	}).String()
 
-	resp, err := r.get(ctx, u, manifestAccept, "")
+	resp, err := r.get(ctx, u, accept, r.token)
 	if err != nil {
 		return nil, err
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized {
+	if resp.StatusCode == http.StatusUnauthorized && r.token == "" {
 		challenge := resp.Header.Get("WWW-Authenticate")
 		drain(resp)
 
-		token, err := r.token(ctx, challenge)
-		if err != nil {
+		if r.token, err = r.fetchToken(ctx, challenge); err != nil {
 			return nil, err
 		}
 
-		resp, err = r.get(ctx, u, manifestAccept, token)
-		if err != nil {
+		if resp, err = r.get(ctx, u, accept, r.token); err != nil {
 			return nil, err
 		}
 	}
@@ -210,20 +315,20 @@ func (r registryClient) manifest(ctx context.Context, ref Reference, tag string)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading manifest: %w", err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	if len(body) > maxManifestBytes {
-		return nil, fmt.Errorf("manifest larger than %d bytes", maxManifestBytes)
+		return nil, fmt.Errorf("%s larger than %d bytes", path, maxManifestBytes)
 	}
 
 	return body, nil
 }
 
-// token fetches an anonymous bearer token from the realm a challenge names.
+// fetchToken fetches an anonymous bearer token from the realm a challenge names.
 // The realm is the registry's to choose, so it is held to https: a plain-http
 // realm would be a downgrade the registry's own TLS did not agree to.
-func (r registryClient) token(ctx context.Context, challenge string) (string, error) {
+func (r *registryClient) fetchToken(ctx context.Context, challenge string) (string, error) {
 	params, ok := parseBearerChallenge(challenge)
 	if !ok {
 		return "", fmt.Errorf("registry requires authentication this check does not offer: %q", challenge)
@@ -274,7 +379,7 @@ func (r registryClient) token(ctx context.Context, challenge string) (string, er
 	return "", errors.New("registry token endpoint returned no token")
 }
 
-func (r registryClient) get(ctx context.Context, u, accept, token string) (*http.Response, error) {
+func (r *registryClient) get(ctx context.Context, u, accept, token string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)

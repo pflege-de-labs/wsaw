@@ -131,12 +131,11 @@ browser:
     # Pinned by digest on purpose: a moving tag would change capture
     # behaviour between scans and a diff would report it as the site's change.
     # wsaw never pulls during a scan — fetch it once with:
-    #   podman pull docker.io/chromedp/headless-shell@sha256:...
-    # The default image runs Chrome with --no-sandbox. The one deploy/browser
-    # builds, published as ghcr.io/pflege-de-labs/wsaw-browser, keeps Chrome's
-    # sandbox on; under Docker it also needs
+    #   podman pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:...
+    # The default image, built from deploy/browser, keeps Chrome's own sandbox
+    # on. Rootless Podman needs nothing extra; under Docker it also needs
     #   extraArgs: ["--security-opt", "seccomp=deploy/chromium-seccomp.json"]
-    # while rootless Podman needs nothing extra.
+    # and wsaw warns at startup when that is missing.
     image: ""
     # Once at startup the daemon asks the image's registry whether its latest
     # tag has moved past the pinned digest, and warns with the digest to pin

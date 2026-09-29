@@ -537,6 +537,17 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 			"image", image, "error", err)
 	}
 
+	// Chrome refuses to start rather than drop a sandbox it cannot build, and
+	// Docker's default seccomp profile refuses the calls it is built from. Said
+	// here, because otherwise the first sign is the browser-context probe
+	// failing for a reason that reads like something else entirely.
+	if missingSeccompProfile(runtime.Kind, keeps, a.Config.Browser.Container.ExtraArgs) {
+		a.Logger.Warn("Docker's default seccomp profile refuses Chrome's sandbox, which this image keeps; browsers will not start",
+			"image", image,
+			"instruction", `pass the profile wsaw ships: browser.container.extraArgs: `+
+				`["--security-opt", "seccomp=/path/to/deploy/chromium-seccomp.json"], or run under rootless Podman`)
+	}
+
 	a.Runtime = runtime
 	a.BrowserImage = image
 	a.ContainerSandbox = keeps && !disablesSandbox(a.Config.Browser.Container.BrowserArgs)
@@ -627,10 +638,11 @@ func (a *App) BrowserRuntimeName() string {
 
 // BrowserSandboxed reports whether Chrome's own sandbox is active.
 //
-// In a container it depends on the image. container.DefaultImage
-// (chromedp/headless-shell) forces --no-sandbox, leaving the container as the
-// only boundary; the image built from deploy/browser keeps the sandbox and
-// says so with container.LabelSandbox (Story 1.8, AC5 and AC7).
+// In a container it depends on the image. container.DefaultImage, built from
+// deploy/browser, keeps the sandbox and says so with container.LabelSandbox;
+// an image without the label, such as chromedp/headless-shell, which forces
+// --no-sandbox, leaves the container as the only boundary (Story 1.8, AC5 and
+// AC7).
 func (a *App) BrowserSandboxed() bool {
 	if a.Runtime != nil {
 		return a.ContainerSandbox
@@ -662,6 +674,20 @@ func disablesSandbox(args []string) bool {
 	}
 
 	return false
+}
+
+// missingSeccompProfile reports whether a browser that keeps its sandbox is
+// about to run under Docker with no seccomp profile of the operator's own.
+// Any seccomp option counts, whether it names wsaw's profile or another: the
+// operator has chosen one, and only Chrome can say whether it suffices.
+func missingSeccompProfile(kind container.Kind, keepsSandbox bool, extraArgs []string) bool {
+	if kind != container.KindDocker || !keepsSandbox {
+		return false
+	}
+
+	return !slices.ContainsFunc(extraArgs, func(arg string) bool {
+		return strings.Contains(arg, "seccomp=")
+	})
 }
 
 func (a *App) buildScanner() error {

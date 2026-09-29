@@ -9,6 +9,51 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
+The browser wsaw runs by default is now its own published image, with
+Chromium 152 and Chrome's own sandbox kept on inside the container, in place of
+`chromedp/headless-shell`, which had stopped at Chromium 151 and ran without
+it.
+
+Upgrading: pull the new image first, since wsaw never pulls one itself. Under
+Podman nothing else changes. **Under Docker, add the seccomp profile to
+`browser.container.extraArgs` before upgrading, or the browser will not
+start** — see Changed. A configuration that names its own image is
+unaffected.
+
+### Changed
+
+- The default browser image is now `ghcr.io/pflege-de-labs/wsaw-browser`,
+  pinned to the digest published with 0.3.0 (Chromium 152.0.7977.82, Story
+  1.8, AC5). It replaces `chromedp/headless-shell`, which had not published a
+  build since Chromium 151 and ran Chrome with `--no-sandbox`; the new image
+  keeps Chrome's own sandbox on, so scans record `browserSandbox: true`.
+  - Fetch it before upgrading, since wsaw never pulls it:
+    `podman pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b`.
+  - **Under Docker, the browser does not start without the seccomp
+    profile.** Add `browser.container.extraArgs: ["--security-opt",
+    "seccomp=/path/to/deploy/chromium-seccomp.json"]`. wsaw now warns at
+    startup when it runs a sandboxed image under Docker with no seccomp
+    option. Rootless Podman needs nothing.
+  - A configuration that names an image in `browser.container.image` is
+    unaffected.
+  - Scans after the switch are rendered by a different Chromium, so expect
+    differences in the first ones that come from the browser rather than
+    from the site.
+
+### Fixed
+
+- The browser image update check no longer reports a rebuild of the same
+  browser as a newer image (Story 6.11). Every release republishes
+  `wsaw-browser` with its own version labels, so its digest moves even when
+  Chromium does not, and a built-in default can only pin the previous
+  release's image: every start would have warned. When the latest image
+  declares its Chromium in `de.pflege.wsaw.chromium.version`, that is now
+  compared with the running browser's version, and a match is logged as
+  current. A newer Chromium is still a warning, which now names both
+  versions. Images without the label are compared by digest as before.
+
 ## [0.3.0] - 2026-09-29
 
 Every scan now runs in a browser context of its own, so a reused browser can
@@ -496,7 +541,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.3.0
 [0.2.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.1
 [0.2.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.0
