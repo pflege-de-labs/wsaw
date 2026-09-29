@@ -21,3 +21,4 @@ coverage.*
 /results/
 *.har
 .env
+.envrc
