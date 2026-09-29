@@ -74,6 +74,22 @@ criteria, and any that are still open, are written down.
   RELEASE.2026-09-16T00-00-00Z. MinIO's own image on quay.io no longer allows
   an anonymous pull, which failed every CI run.
 
+### Removed
+
+- **Breaking:** the `warmCache` target setting and the
+  `environment.warmCache` result field (Story 1.5, AC3 dropped). Every scan
+  now runs with the browser cache disabled. Each scan has its own browser
+  context, so a cache could no longer carry over from an earlier scan. A
+  warm scan also cannot be compared with the scans around it, so the
+  option only added a way to get results that don't compare.
+  - A configuration file that still sets `warmCache`, even to `false`, is
+    refused at startup as an unknown field. Delete the line.
+  - The result schema is now `schemaVersion` 2.0. A 2.0 document has no
+    `warmCache`. The schema's `environment` object allows no other
+    properties, so stored 1.x documents, which always carry the field, no
+    longer validate against `docs/result.schema.json`. wsaw itself still
+    reads and shows them: the field is ignored.
+
 ### Fixed
 
 - Following a link to a result from outside the web interface — the
@@ -113,9 +129,6 @@ criteria, and any that are still open, are written down.
 - Downloads are now blocked in the scan's own browser context. Chrome
   applies a download policy with no context named to its default context
   only.
-- `warmCache: true` no longer carries a cache from one scan to the next on
-  a reused browser, because each scan starts with an empty cache. Within
-  one scan it behaves as before.
 
 ## [0.2.1] - 2026-09-24
 

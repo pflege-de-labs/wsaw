@@ -92,7 +92,7 @@ Load a URL in headless Chrome and produce a complete, deterministic record of ev
 
 - AC1: Each scan runs in a fresh, ephemeral user-data-dir or an incognito browser context; storage, cookies, cache, and service workers do not persist between scans.
 - AC2: Isolation is verifiable: scanning a consent-setting site twice in `none` mode yields the banner both times.
-- AC3: Optional opt-in warm-cache mode for performance testing, off by default and flagged in the result.
+- AC3: *Dropped.* The opt-in warm-cache mode was removed in result schema 2.0. With a browser context per scan (AC1) there is no cache to carry from one scan to the next, and a scan that is not comparable with the others is not one this product should offer. Every scan runs with the cache disabled.
 
 ### Story 1.6 — Capture script content fingerprints
 

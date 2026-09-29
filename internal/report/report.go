@@ -472,10 +472,6 @@ func writeEnvironment(b *strings.Builder, res *model.Result) {
 		fmt.Fprintf(b, "- Proxy: `%s`\n", e.Proxy)
 	}
 
-	if e.WarmCache {
-		b.WriteString("- **Warm cache**: counts are not comparable with cold-cache scans\n")
-	}
-
 	b.WriteString("\n")
 }
 

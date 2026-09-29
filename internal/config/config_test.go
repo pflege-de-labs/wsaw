@@ -927,3 +927,23 @@ api:
 		t.Errorf("default maximum = %s, want %s", got, config.DefaultShareMaxValidity)
 	}
 }
+
+// warmCache was removed with result schema 2.0. A file that still sets it is
+// refused by name rather than silently scanned cold, so the operator learns
+// the setting no longer does anything.
+func TestRemovedWarmCacheSettingIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"defaults": "defaults:\n  warmCache: true\ntargets:\n  - name: t\n    url: https://example.com/\n",
+		"target":   "targets:\n  - name: t\n    url: https://example.com/\n    warmCache: false\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := parseErr(t, body); !strings.Contains(err.Error(), "warmCache") {
+				t.Errorf("error %q does not name the removed setting", err)
+			}
+		})
+	}
+}

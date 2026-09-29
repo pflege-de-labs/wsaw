@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "description": "Schema version, currently 1.0."
+      "description": "Schema version, currently 2.0. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
     },
     "scanId": {
       "type": "string"
@@ -295,10 +295,6 @@
         "proxy": {
           "type": "string",
           "description": "Proxy host with credentials stripped."
-        },
-        "warmCache": {
-          "type": "boolean",
-          "description": "True means counts are not comparable with cold-cache scans."
         },
         "browserRuntime": {
           "type": "string",

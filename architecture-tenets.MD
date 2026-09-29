@@ -20,7 +20,7 @@ Chrome is treated as untrusted, failure-prone, and replaceable. wsaw never assum
 
 Consent state, cookies, cache, and storage leaking between scans would silently invalidate the product's core claim ("this is what the site loads in this consent state"). Isolation is therefore non-negotiable and must be *tested*, not assumed.
 
-*Trade-off:* no warm cache by default, so scans are slower and measure cold-load behavior. That is also the more honest measurement.
+*Trade-off:* no warm cache, so scans are slower and measure cold-load behavior. That is also the more honest measurement.
 
 ## 3. Capture and interpretation are separate layers
 
