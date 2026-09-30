@@ -1163,7 +1163,7 @@ The web interface and the API answer a person. An assistant such as Claude Code,
 - AC8: Tested without Chrome and without a network: the protocol handshake, version negotiation, unknown methods, malformed input, each tool against a fake store, paging and truncation notices, a failed scan marked as such, a missing scan reported as an error, a panicking tool answered as an error, and the command refusing a missing store without creating it.
 - AC9: Out of scope: HTTP transport (it would need the API's authentication and TLS story), MCP resources and prompts, triggering scans or approving baselines (both write), and per-target severity rules in `diff_scans`.
 
-### Story 5.35 — Every scan states how far its asset list can be trusted (not implemented)
+### Story 5.35 — Every scan states how far its asset list can be trusted
 
 *As an Operator or Compliance Officer reading a scan, I want each scan to carry a confidence score that drops when the scan stopped early, failed to fetch some of what the page asked for, or ran far shorter or longer than this series normally does — and to see that score, with its reasons, on the scan tile and on the scan page — so that a thin asset list from a broken observation cannot pass for a quiet site.*
 

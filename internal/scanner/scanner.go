@@ -20,6 +20,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/browser"
 	"github.com/pflege-de-labs/wsaw/internal/capture"
+	"github.com/pflege-de-labs/wsaw/internal/confidence"
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/consent"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
@@ -50,6 +51,9 @@ type ResultStore interface {
 	PutResult(res *model.Result) error
 	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
 	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	// RecentCleanDurations is what a scan's duration is judged against
+	// (Story 5.35, AC5): a number per earlier scan, never a document.
+	RecentCleanDurations(target string, mode model.ConsentMode, before time.Time, limit int) ([]time.Duration, error)
 }
 
 // Deps are the collaborators a Scanner needs. They are interfaces at the
@@ -251,6 +255,8 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		"third_party_domains", len(res.ThirdPartyDomains("")),
 		"consent_outcome", string(res.Consent.Outcome),
 		"duration", res.Duration.String(),
+		"confidence", res.Confidence.Score,
+		"confidence_band", string(res.Confidence.Band),
 	)
 
 	return out, err
@@ -444,6 +450,12 @@ func (s *Scanner) persist(ctx context.Context, log *slog.Logger, res *model.Resu
 	res.Attempts = attempt.attempts
 	res.PreviousError = attempt.previous
 
+	// Scored here for the same reason, and before the store check: a scan
+	// with nowhere to be stored still reports how far it can be trusted, and
+	// a stored one is written with its score rather than amended later
+	// (Story 5.35, AC7).
+	res.Confidence = s.confidence(res, log)
+
 	if s.deps.Store == nil {
 		return
 	}
@@ -457,6 +469,42 @@ func (s *Scanner) persist(ctx context.Context, log *slog.Logger, res *model.Resu
 	if err := s.deps.Store.PutResult(res); err != nil {
 		log.Error("storing result failed", "error", err)
 	}
+}
+
+// confidence scores a result against the series' earlier clean scans.
+func (s *Scanner) confidence(res *model.Result, log *slog.Logger) *model.Confidence {
+	ratio := s.opts.DegradedFailureRatio
+	if ratio <= 0 {
+		ratio = diff.DefaultDegradedFailureRatio
+	}
+
+	c := confidence.Score(res, s.history(res, log), confidence.Options{DegradedFailureRatio: ratio})
+
+	return &c
+}
+
+// history reads the durations the scan's own is compared against. A failure
+// to read them is not a failure of the scan: the duration signal is recorded
+// as not assessed, with the reason, and every other signal still counts.
+func (s *Scanner) history(res *model.Result, log *slog.Logger) confidence.History {
+	if !res.OK() {
+		// A failed scan scores none whatever its history says.
+		return confidence.History{}
+	}
+
+	if s.deps.Store == nil {
+		return confidence.History{Unavailable: "no store holds this series' earlier scans"}
+	}
+
+	durations, err := s.deps.Store.RecentCleanDurations(
+		res.Target, res.ConsentMode, res.StartedAt, confidence.HistoryWanted)
+	if err != nil {
+		log.Warn("reading earlier scan durations failed", "error", err)
+
+		return confidence.History{Unavailable: "this series' earlier scans could not be read"}
+	}
+
+	return confidence.History{Durations: durations}
 }
 
 // compare diffs the result against its baseline. A comparison failure is not

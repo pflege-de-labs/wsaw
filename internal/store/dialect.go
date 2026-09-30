@@ -301,7 +301,17 @@ var (
 	// (Story 8.5, AC2).
 	resultReferenced = []string{refsIndexedColumn}
 
-	resultUpdate = append(append(append([]string{}, resultScanned...), resultDerived...), resultReferenced...)
+	// resultConfidence is the scan's confidence, copied out of the document
+	// like resultDerived (Story 5.35, AC10). It is a list of its own because
+	// the document migration writes exactly resultDerived, and it runs at
+	// version 3, before version 9 creates these columns: a store upgrading
+	// from before version 3 would otherwise fail on a column that does not
+	// exist yet. A migrated row keeps the not-computed default, which is what
+	// its pre-2.1 document says anyway.
+	resultConfidence = []string{"confidence_score", "confidence_band"}
+
+	resultUpdate = append(append(append(append([]string{},
+		resultScanned...), resultDerived...), resultConfidence...), resultReferenced...)
 
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{scanIDColumn, "approved_at", "document"}

@@ -627,6 +627,12 @@ components:
                   field says high; this field is the machine-readable one and
                   does not follow the board.
               comparedTo: {$ref: "#/components/schemas/Comparison"}
+              confidence:
+                $ref: "./result.schema.json#/$defs/confidence"
+                description: >
+                  The last scan's confidence with its reasons, as stored in
+                  its result document (Story 5.35). Absent where the document
+                  predates schema 2.1 or could not be read.
 
     Comparison:
       type: object
@@ -678,6 +684,14 @@ components:
         requests: {type: integer}
         thirdPartyDomains: {type: integer}
         preConsentDomains: {type: integer}
+        confidenceScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: How far the scan's asset list can be trusted (Story 5.35), copied from the result document. Absent for a result written before schema 2.1, which means not computed, never 0 or 100. The reasons are in the result document's confidence object.
+        confidenceBand:
+          enum: [high, medium, low, none]
+          description: The score in words. none is a scan that failed or was skipped. Absent exactly when confidenceScore is.
 
     DiffReport:
       type: object

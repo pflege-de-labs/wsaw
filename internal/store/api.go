@@ -55,6 +55,7 @@ type Store interface {
 	GetResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
 	LatestResult(target string, mode model.ConsentMode) (*model.Result, error)
 	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	RecentCleanDurations(target string, mode model.ConsentMode, before time.Time, limit int) ([]time.Duration, error)
 	Series() ([]Series, error)
 
 	GetBaseline(target string, mode model.ConsentMode) (*Baseline, error)

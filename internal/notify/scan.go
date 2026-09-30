@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/confidence"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
@@ -107,26 +108,14 @@ func trustworthiness(res *model.Result) (bool, string) {
 		return false, "this scan was cut short (" + string(res.Termination) +
 			"), so assets the page would have loaded later are missing"
 
-	case res.Consent.Outcome == model.OutcomeFailed:
-		return false, "the consent interaction failed, so the consent state during this scan is not the one requested"
-
-	case res.Consent.Outcome == model.OutcomeUnverified:
-		return false, "the consent interaction could not be verified, so the consent state during this scan is unconfirmed"
-
-	case res.Consent.Outcome == model.OutcomeBannerVisible:
-		return false, "the CMP recorded the requested choice, but the banner was still displayed to a visitor"
-
-	// A verified necessary-only outcome is trusted in reject mode: it is the
-	// closest state to a rejection that a banner with no reject control
-	// allows, and it was observed, not assumed. The missing control is a fact
-	// about the site, which the outcome itself carries into every view
-	// (Story 2.10). Only a reject can produce it, so under any other mode it
-	// means something upstream went wrong.
-	case res.Consent.Outcome == model.OutcomeNecessaryOnly && res.ConsentMode != model.ConsentReject:
-		return false, "the consent outcome necessary-only was recorded in " + string(res.ConsentMode) +
-			" mode, which only a reject can produce"
-
 	default:
+		// The consent rules are shared with the confidence score, so a scan
+		// this warns about can never read as high confidence on the board
+		// (Story 5.35, AC6).
+		if caveat := confidence.ConsentCaveat(res); caveat != "" {
+			return false, caveat
+		}
+
 		return true, ""
 	}
 }

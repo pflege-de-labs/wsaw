@@ -268,6 +268,16 @@ func (mysqlDialect) migrations() [][]string {
 		// empty version keeps every dialect's migrations the same length
 		// (Story 4.7, AC4) and records the same version number.
 		{},
+
+		// Version 9 (Story 5.35): the scan's confidence. The sqlite dialect
+		// carries the reasoning. One ALTER TABLE for both columns, as
+		// version 2 does, so it adds both or neither; a replay after a lost
+		// version record is errDupFieldName, which alreadyApplied absorbs.
+		{
+			`alter table results
+				add column confidence_score int         not null default -1,
+				add column confidence_band  varchar(16) not null default ''`,
+		},
 	}
 }
 

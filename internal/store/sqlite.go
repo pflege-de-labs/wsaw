@@ -328,6 +328,20 @@ func (sqliteDialect) migrations() [][]string {
 			`alter table ` + maintenanceRunsTable + ` rename column ` +
 				maintenanceRunsOldTriggerColumn + ` to triggered_by`,
 		},
+
+		// Version 9 (Story 5.35): the scan's confidence, copied out of the
+		// document so the watchboard can draw it without fetching one.
+		//
+		// A row written before this version defaults to confidenceNotComputed,
+		// which every reader shows as "not computed" rather than as a score.
+		// That is also true of its document, which predates schema 2.1 and
+		// carries no score, so a rebuild of the index leaves it the same.
+		// A replay after a lost version record meets "duplicate column name",
+		// which alreadyApplied absorbs as it does for version 7.
+		{
+			`alter table results add column confidence_score integer not null default -1`,
+			`alter table results add column confidence_band  text    not null default ''`,
+		},
 	}
 }
 
