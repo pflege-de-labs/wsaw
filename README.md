@@ -228,7 +228,7 @@ Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Th
 
 ### How far a scan can be trusted
 
-Every scan carries a **`confidence`** object: a score from 0 to 100, a band — `high` (90 and above), `medium` (60–89), `low` — and one reason per signal saying what it cost. A scan that failed or was skipped is `none`, meaning no observation, never a low number. The watchboard tile shows the band and score, with the reasons on hover. The scan page shows the reasons as a table.
+Every scan carries a **`confidence`** object: a score from 0 to 100, a band — `high` (90 and above), `medium` (60–89), `low` — and one reason per signal saying what it cost. A scan that failed or was skipped is `none`, meaning no observation, never a low number. The watchboard tile shows the score as a compact mark: `C72`. A scan stored before scoring existed reads `C?`, and a failed or skipped scan reads `CXX`. Hovering the mark gives the band in words and the reasons. The scan page shows the reasons as a table.
 
 | Signal | What costs points |
 |---|---|

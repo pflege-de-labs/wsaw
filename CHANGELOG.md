@@ -13,8 +13,9 @@ criteria, and any that are still open, are written down.
 
 - Every scan now carries a confidence score from 0 to 100 and a band
   (`high`, `medium`, `low`, or `none` for a scan that failed or was skipped),
-  shown on the watchboard tile and explained signal by signal on the scan
-  page (Story 5.35). Points come off for a scan that stopped early, for
+  shown on the watchboard tile as a compact mark (`C72`; `C?` where no score
+  was computed, `CXX` for a failed scan, the band in words on hover) and
+  explained signal by signal on the scan page (Story 5.35). Points come off for a scan that stopped early, for
   requests wsaw could not observe, for a duration far from the series'
   usual, and for a consent state that could not be verified. Until now a scan
   that lost 4% of its requests, or finished in a fifth of its usual time,

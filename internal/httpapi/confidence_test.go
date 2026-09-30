@@ -44,8 +44,8 @@ func TestTheScanTileStatesItsConfidenceAndWhy(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, ">confidence medium · 62<") {
-		t.Fatalf("the tile does not print the band and score")
+	if !strings.Contains(html, ">C62<") {
+		t.Fatalf("the tile does not print its score as C62")
 	}
 
 	if !strings.Contains(html, `class="watch-conf conf-medium"`) {
@@ -57,6 +57,12 @@ func TestTheScanTileStatesItsConfidenceAndWhy(t *testing.T) {
 
 	if title != aria {
 		t.Errorf("hover and screen reader are told different things:\n%q\n%q", title, aria)
+	}
+
+	// The mark is compact; the band it stands for is spelled out where it
+	// is read aloud or hovered.
+	if !strings.HasPrefix(title, "confidence medium · 62 of 100: ") {
+		t.Errorf("the title does not spell out the band and score: %q", title)
 	}
 
 	termination := strings.Index(title, "−30 termination")
@@ -84,12 +90,13 @@ func TestHighConfidenceIsQuietOnTheTile(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, `class="watch-conf conf-high"`) || !strings.Contains(html, ">confidence high · 100<") {
-		t.Error("a high-confidence tile does not print its band and score")
+	if !strings.Contains(html, `class="watch-conf conf-high"`) || !strings.Contains(html, ">C100<") {
+		t.Error("a high-confidence tile does not print C100")
 	}
 
-	if title := findAttr(t, html, `class="watch-conf conf-high"`, "title"); !strings.Contains(title, "every signal assessed") {
-		t.Errorf("a clean scan's title = %q, want it to say every signal was assessed", title)
+	title := findAttr(t, html, `class="watch-conf conf-high"`, "title")
+	if !strings.Contains(title, "confidence high · 100 of 100") || !strings.Contains(title, "every signal assessed") {
+		t.Errorf("a clean scan's title = %q, want the band spelled out and every signal assessed", title)
 	}
 }
 
@@ -111,15 +118,24 @@ func TestAFailedOrUnscoredScanIsNotANumber(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, ">no observation<") {
-		t.Error("a failed scan's tile does not read no observation")
+	if !strings.Contains(html, ">CXX<") {
+		t.Error("a failed scan's tile does not read CXX")
 	}
 
-	if !strings.Contains(html, ">confidence not computed<") {
-		t.Error("a pre-2.1 scan's tile does not read confidence not computed")
+	if title := findAttr(t, html, `class="watch-conf conf-none"`, "title"); !strings.HasPrefix(title, "no observation: ") ||
+		!strings.Contains(title, "navigation failed") {
+		t.Errorf("a failed scan's title = %q, want no observation and its error", title)
 	}
 
-	if strings.Contains(html, "confidence none") || strings.Contains(html, "· 0<") {
+	if !strings.Contains(html, ">C?<") {
+		t.Error("a pre-2.1 scan's tile does not read C?")
+	}
+
+	if title := findAttr(t, html, `class="watch-conf muted"`, "title"); title != "confidence not computed" {
+		t.Errorf("a pre-2.1 scan's title = %q, want confidence not computed", title)
+	}
+
+	if strings.Contains(html, ">C0<") || strings.Contains(html, "confidence none") {
 		t.Error("a failed scan is shown as a score")
 	}
 }

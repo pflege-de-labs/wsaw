@@ -10,14 +10,40 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
-// confidenceNotComputed is what a tile says for a scan stored before schema
-// 2.1. It is never a number: a missing score read as 100 would be a claim
-// the scan never made (Story 5.35, AC10).
+// confidenceNotComputed is what a tile says, in full, for a scan stored before
+// schema 2.1. It is never a number: a missing score read as 100 would be a
+// claim the scan never made (Story 5.35, AC10).
 const confidenceNotComputed = "confidence not computed"
 
-// ConfidenceLabel is the tile's confidence line: the band in words and the
-// score, so the colour behind it is never the only carrier (Story 5.35, AC8).
+// noObservation is a failed or skipped scan, spelled out in the title and the
+// accessible name behind its CXX mark (Story 5.35, AC3).
+const noObservation = "no observation"
+
+// ConfidenceLabel is the tile's compact confidence mark (Story 5.35, AC8): C
+// and the score, as in C62; C? where no score was computed; and CXX for a
+// failed or skipped scan. Neither of the last two is a number, because even
+// C0 would read as a poor observation rather than as none. The band is in the
+// title and the accessible name, and the mark itself carries what the colour
+// does, so colour is never the only carrier.
 func (r modeRow) ConfidenceLabel() string {
+	last := r.Series.LastScan
+	if last == nil {
+		return ""
+	}
+
+	switch {
+	case last.ConfidenceScore == nil:
+		return "C?"
+	case last.ConfidenceBand == model.ConfidenceNone:
+		return "CXX"
+	default:
+		return "C" + strconv.Itoa(*last.ConfidenceScore)
+	}
+}
+
+// confidenceSentence is the mark spelled out, for the title and the
+// accessible name, where "C62" alone says nothing to a screen reader.
+func (r modeRow) confidenceSentence() string {
 	last := r.Series.LastScan
 	if last == nil {
 		return ""
@@ -27,9 +53,9 @@ func (r modeRow) ConfidenceLabel() string {
 	case last.ConfidenceScore == nil:
 		return confidenceNotComputed
 	case last.ConfidenceBand == model.ConfidenceNone:
-		return "no observation"
+		return noObservation
 	default:
-		return "confidence " + string(last.ConfidenceBand) + " · " + strconv.Itoa(*last.ConfidenceScore)
+		return "confidence " + string(last.ConfidenceBand) + " · " + strconv.Itoa(*last.ConfidenceScore) + " of 100"
 	}
 }
 
@@ -49,7 +75,7 @@ func (r modeRow) ConfidenceClass() string {
 // not be assessed. Falls back to the label where the document could not be
 // read, since the index holds the score and not its reasons.
 func (r modeRow) ConfidenceTitle() string {
-	label := r.ConfidenceLabel()
+	label := r.confidenceSentence()
 
 	c := r.Series.Confidence
 	if c == nil {
