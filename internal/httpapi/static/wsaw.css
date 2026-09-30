@@ -907,6 +907,14 @@ button:hover { border-color: var(--accent); }
 
 .watch-tile-status .term { border: none; padding: 0; margin-left: auto; }
 
+/* Confidence (Story 5.35): quiet when high, the warning colour otherwise.
+   The band is always printed, so colour never carries it alone. */
+.watch-conf { font-weight: 400; white-space: nowrap; }
+.watch-conf.conf-high { color: var(--muted); }
+.conf-medium, .conf-low, .conf-none { color: var(--warn); }
+.confidence-score { font-size: 1.1em; }
+.confidence-reasons td:last-child { text-align: right; white-space: nowrap; }
+
 /* The time line, directly above the bar it describes: age left, next scan
    right, so the two ends of the interval sit at the two ends of the track. */
 .watch-tile-time {

@@ -189,6 +189,14 @@ func (postgresDialect) migrations() [][]string {
 			end
 			$$`,
 		},
+
+		// Version 9 (Story 5.35): the scan's confidence. The sqlite dialect
+		// carries the reasoning.
+		{
+			`alter table results
+				add column if not exists confidence_score integer not null default -1,
+				add column if not exists confidence_band  text    not null default ''`,
+		},
 	}
 }
 

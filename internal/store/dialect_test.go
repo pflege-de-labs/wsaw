@@ -118,9 +118,14 @@ func TestSchemaVersionsAreConsecutiveAndCurrent(t *testing.T) {
 			schemaMaintenanceRunsTriggeredBy, schemaMaintenanceRuns)
 	}
 
-	if got := len(sqliteDialect{}.migrations()); got != schemaMaintenanceRunsTriggeredBy {
-		t.Errorf("the schema has %d migrations; the triggered_by rename is version %d and the latest",
-			got, schemaMaintenanceRunsTriggeredBy)
+	if schemaConfidence != schemaMaintenanceRunsTriggeredBy+1 {
+		t.Errorf("the confidence columns are version %d and the triggered_by rename is version %d; they are consecutive",
+			schemaConfidence, schemaMaintenanceRunsTriggeredBy)
+	}
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaConfidence {
+		t.Errorf("the schema has %d migrations; the confidence columns are version %d and the latest",
+			got, schemaConfidence)
 	}
 }
 

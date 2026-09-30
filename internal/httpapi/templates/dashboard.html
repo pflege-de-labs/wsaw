@@ -124,6 +124,10 @@
               {{with .Series.LastScan}}
                 <span class="outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
                 <span class="term term-{{.Termination}}">{{.Termination}}</span>
+                {{/* How far the figures above can be trusted, with why in
+                     the title and the accessible name (Story 5.35). */}}
+                <span class="{{$row.ConfidenceClass}}" title="{{$row.ConfidenceTitle}}"
+                      aria-label="{{$row.ConfidenceTitle}}">{{$row.ConfidenceLabel}}</span>
               {{else}}
                 <span class="muted">never scanned</span>
               {{end}}

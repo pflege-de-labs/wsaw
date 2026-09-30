@@ -193,6 +193,12 @@ type SeriesView struct {
 	// Additive, and derived from documents targetViews already loads: an
 	// API client subtracting two numbers still gets both (Tenet 16).
 	ComparedTo *ComparisonView `json:"comparedTo,omitempty"`
+
+	// Confidence is the last scan's own confidence, reasons included, read
+	// from the document lastScanSeverity already loads (Story 5.35). The
+	// score and band are on LastScan too; this carries why. Nil where the
+	// document predates schema 2.1 or could not be read.
+	Confidence *model.Confidence `json:"confidence,omitempty"`
 }
 
 // ComparisonBase is which scan a series' Severity was computed against. The
@@ -316,7 +322,8 @@ func (s *Server) targetViews(ranking severityView) []TargetView {
 			}
 
 			if sv.LastScan != nil {
-				sv.Severity, sv.ComparedTo = s.lastScanSeverity(t.Name, mode, sv.LastScan.ScanID, baseline, ranking)
+				sv.Severity, sv.ComparedTo, sv.Confidence = s.lastScanSeverity(
+					t.Name, mode, sv.LastScan.ScanID, baseline, ranking)
 			}
 
 			sv.Running = runningFor(live, t.Name, mode)
@@ -385,17 +392,19 @@ func (f *storeReadFailures) log(logger *slog.Logger) {
 // It also returns what it compared against, summarized. The base document is
 // in hand here and nowhere else, so describing it costs nothing, where asking
 // for it again from the watchboard would cost a second load per series
-// (Story 5.28, AC6).
+// (Story 5.28, AC6). The shown scan's confidence comes back for the same
+// reason: its reasons are in this document and in no index column (Story
+// 5.35).
 func (s *Server) lastScanSeverity(
 	target string,
 	mode model.ConsentMode,
 	scanID string,
 	baseline *store.Baseline,
 	view severityView,
-) (diff.Severity, *ComparisonView) {
+) (diff.Severity, *ComparisonView, *model.Confidence) {
 	res, err := s.deps.Store.GetResult(target, mode, scanID)
 	if err != nil {
-		return "", nil
+		return "", nil, nil
 	}
 
 	var (
@@ -426,10 +435,10 @@ func (s *Server) lastScanSeverity(
 	}
 
 	if !rep.Comparable {
-		return "", cmp
+		return "", cmp, res.Confidence
 	}
 
-	return seriesSeverity(rep, mode, view), cmp
+	return seriesSeverity(rep, mode, view), cmp, res.Confidence
 }
 
 // staleness decides whether a series should be flagged. Never-scanned and

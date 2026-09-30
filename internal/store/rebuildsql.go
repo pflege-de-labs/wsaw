@@ -54,7 +54,8 @@ func (s *SQL) beginRebuild(ctx context.Context, run *rebuildRun) (func(), error)
 // would not.
 const rebuiltRowColumns = `started_at, duration_ns, termination, scan_error,
 	consent_outcome, consent_cmp, requests, third_party_domains,
-	pre_consent_domains, artifact_ref, document_size, document_digest, ` + refsIndexedColumn
+	pre_consent_domains, artifact_ref, document_size, document_digest,
+	confidence_score, confidence_band, ` + refsIndexedColumn
 
 // rebuiltRow is what a results row says about one scan, as the merge needs it.
 type rebuiltRow struct {
@@ -90,13 +91,15 @@ func (s *SQL) indexedRow(
 		var (
 			startedAt, durationNS int64
 			termination, outcome  string
+			score                 int
+			band                  string
 		)
 
 		err := s.db.QueryRowContext(ctx, s.q(q), target, string(mode), scanID).Scan(
 			&startedAt, &durationNS, &termination, &row.summary.Error,
 			&outcome, &row.summary.ConsentCMP, &row.summary.Requests,
 			&row.summary.ThirdPartyDomains, &row.summary.PreConsentDomains,
-			&row.ref.ref, &row.ref.size, &row.ref.digest, &row.refsIndexed,
+			&row.ref.ref, &row.ref.size, &row.ref.digest, &score, &band, &row.refsIndexed,
 		)
 
 		switch {
@@ -116,6 +119,7 @@ func (s *SQL) indexedRow(
 		row.summary.Duration = time.Duration(durationNS)
 		row.summary.Termination = model.TerminationReason(termination)
 		row.summary.ConsentOutcome = model.ConsentOutcome(outcome)
+		readConfidence(&row.summary, score, band)
 
 		found = true
 

@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "description": "Schema version, currently 2.0. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
+      "description": "Schema version, currently 2.1. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
     },
     "scanId": {
       "type": "string"
@@ -133,9 +133,100 @@
         "$ref": "#/$defs/storageEntry"
       },
       "description": "Web Storage present when the scan finished. A cookie list describes only half of what a site keeps on a visitor's machine."
+    },
+    "confidence": {
+      "$ref": "#/$defs/confidence",
+      "description": "How far this scan's asset list can be trusted, derived from the rest of this document and from the durations of earlier scans in the same series (Story 5.35). Added in 2.1; absent from a document written before it, which means not computed, never a perfect score."
     }
   },
   "$defs": {
+    "confidence": {
+      "type": "object",
+      "required": [
+        "score",
+        "band",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "100 less every reason's points, clamped at 0, and at most 59 when the differ calls the scan degraded. 100 means every signal was assessed and none fired."
+        },
+        "band": {
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "none"
+          ],
+          "description": "high is 90-100, medium 60-89, low 1-59. none is a scan that failed or was skipped: no observation, rather than a poor one."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/confidenceReason"
+          },
+          "description": "One entry per signal, in a fixed order, including signals that cost nothing and signals that could not be assessed."
+        },
+        "durationReference": {
+          "type": "object",
+          "required": [
+            "medianNs",
+            "scans"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "medianNs": {
+              "type": "integer",
+              "description": "Median duration of the earlier clean scans the duration was compared against."
+            },
+            "scans": {
+              "type": "integer",
+              "description": "How many earlier scans the median was taken over."
+            }
+          },
+          "description": "What the scan's duration was compared against, kept so the score can be checked after those scans are pruned. Absent when there was not enough history; the duration reason then says why."
+        }
+      }
+    },
+    "confidenceReason": {
+      "type": "object",
+      "required": [
+        "signal",
+        "points"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "enum": [
+            "termination",
+            "fetches",
+            "duration",
+            "consent"
+          ]
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How much this signal took off the score."
+        },
+        "observed": {
+          "type": "string",
+          "description": "What the scan showed."
+        },
+        "reference": {
+          "type": "string",
+          "description": "What the observation was compared against, where there is one."
+        },
+        "notAssessed": {
+          "type": "string",
+          "description": "Why the signal could not be checked. Its points are then 0."
+        }
+      }
+    },
     "consent": {
       "type": "object",
       "required": [

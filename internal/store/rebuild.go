@@ -1244,7 +1244,24 @@ func summariesAgree(a, b Summary) bool {
 
 	a.StartedAt, b.StartedAt = time.Time{}, time.Time{}
 
+	// The score is a pointer so that "not computed" can be absent from the
+	// JSON; two summaries agree on it when they hold the same value, not the
+	// same address.
+	if !sameScore(a.ConfidenceScore, b.ConfidenceScore) {
+		return false
+	}
+
+	a.ConfidenceScore, b.ConfidenceScore = nil, nil
+
 	return a == b
+}
+
+func sameScore(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return *a == *b
 }
 
 // rebuildMarkerTTL is how long a marker keeps a sweep off a bucket before it is

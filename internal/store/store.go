@@ -820,6 +820,7 @@ func resultUpdateArgs(sum Summary, ref resultRef) []any {
 		[]any{sum.StartedAt.UnixNano(), string(sum.Termination)},
 		resultDerivedArgs(sum, ref)...,
 	)
+	args = append(args, confidenceArgs(sum)...)
 
 	// resultReferenced, bound here rather than in resultDerivedArgs: a row
 	// this store writes has its artifact references recorded in the same
@@ -929,6 +930,13 @@ type Summary struct {
 	// evidence files" and "size unknown" are different statements (AC9), and
 	// only this flag, not a bare zero, tells them apart.
 	ArtifactBytesRecorded bool `json:"artifactBytesRecorded"`
+
+	// ConfidenceScore and ConfidenceBand are the scan's confidence (Story
+	// 5.35), copied from its document. Both are absent for a result whose
+	// document carries none — written before schema 2.1 — rather than
+	// reported as 0 or 100, either of which would be a claim nobody made.
+	ConfidenceScore *int                 `json:"confidenceScore,omitempty"`
+	ConfidenceBand  model.ConfidenceBand `json:"confidenceBand,omitempty"`
 }
 
 // Summarize derives a Summary from a result in memory, without going near
@@ -941,7 +949,7 @@ func Summarize(res *model.Result) Summary {
 }
 
 func summarize(res *model.Result) Summary {
-	return Summary{
+	sum := Summary{
 		ScanID:            res.ScanID,
 		Target:            res.Target,
 		ConsentMode:       res.ConsentMode,
@@ -955,6 +963,14 @@ func summarize(res *model.Result) Summary {
 		ThirdPartyDomains: len(res.ThirdPartyDomains("")),
 		PreConsentDomains: len(res.ThirdPartyDomains(model.PhasePre)),
 	}
+
+	if res.Confidence != nil {
+		score := res.Confidence.Score
+		sum.ConfidenceScore = &score
+		sum.ConfidenceBand = res.Confidence.Band
+	}
+
+	return sum
 }
 
 // summaryColumns are the row's own columns scanSummary reads, in order.
@@ -968,6 +984,7 @@ var summaryColumns = []string{
 	scanIDColumn, "started_at", "duration_ns", "termination", "scan_error",
 	"consent_outcome", "consent_cmp", "requests", "third_party_domains",
 	"pre_consent_domains", artifactRefColumn, "document_size",
+	"confidence_score", "confidence_band",
 }
 
 // underivedSummary explains a row that names no document. Reporting it beats
@@ -1077,16 +1094,19 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 		sm                    Summary
 		startedAt, durationNS int64
 		termination, outcome  string
-		ref                   string
+		ref, band             string
+		score                 int
 		artifactRefs          int64
 	)
 
 	if err := rows.Scan(&sm.ScanID, &startedAt, &durationNS, &termination, &sm.Error,
 		&outcome, &sm.ConsentCMP, &sm.Requests, &sm.ThirdPartyDomains,
-		&sm.PreConsentDomains, &ref, &sm.DocumentBytes,
+		&sm.PreConsentDomains, &ref, &sm.DocumentBytes, &score, &band,
 		&artifactRefs, &sm.ArtifactBytes); err != nil {
 		return Summary{}, err
 	}
+
+	readConfidence(&sm, score, band)
 
 	sm.Target = target
 	sm.ConsentMode = mode

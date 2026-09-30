@@ -9,6 +9,30 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- Every scan now carries a confidence score from 0 to 100 and a band
+  (`high`, `medium`, `low`, or `none` for a scan that failed or was skipped),
+  shown on the watchboard tile as a compact mark (`C72`; `C?` where no score
+  was computed, `CXX` for a failed scan, the band in words on hover) and
+  explained signal by signal on the scan page (Story 5.35). Points come off for a scan that stopped early, for
+  requests wsaw could not observe, for a duration far from the series'
+  usual, and for a consent state that could not be verified. Until now a scan
+  that lost 4% of its requests, or finished in a fifth of its usual time,
+  looked exactly like a clean one on the board.
+  - The score, its reasons and the duration median it was compared against
+    are stored in the result document, so a scan's score can be checked
+    against the document alone after retention prunes the scans behind the
+    median. The result schema is now 2.1, an additive change: 2.0 documents
+    still validate and still read.
+  - `GET /api/v1/targets` reports `confidenceScore` and `confidenceBand` on
+    each `lastScan`, and the reasons as `confidence` on each series. The
+    `scan finished` log line gains `confidence` and `confidence_band`.
+  - Scans stored before this release have no score and read "confidence not
+    computed", never 100. Their documents are not rewritten.
+  - The store migrates to schema version 9 on first start, adding two
+    columns to `results`. There is nothing to do.
+
 ## [0.4.0] - 2026-09-29
 
 The browser wsaw runs by default is now its own published image, with

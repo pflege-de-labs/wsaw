@@ -28,6 +28,33 @@
 </div>
 {{end}}
 
+{{/* Why the numbers below can or cannot be believed, one row per signal,
+     read from the document rather than recomputed from a history retention
+     may since have pruned (Story 5.35). */}}
+<section id="confidence" class="confidence">
+  <h2>Confidence</h2>
+  {{with $res.Confidence}}
+  <p class="confidence-score conf-{{.Band}}">
+    {{if eq .Band "none"}}<strong>no observation</strong> — this scan produced no asset list to trust.{{else}}<strong>{{.Band}}</strong> · {{.Score}} of 100{{end}}
+  </p>
+  <table class="confidence-reasons">
+    <thead><tr><th>Signal</th><th>Observed</th><th>Compared against</th><th>Points</th></tr></thead>
+    <tbody>
+    {{range .Reasons}}
+      <tr>
+        <td>{{.Signal}}{{if eq .Signal "fetches"}}{{if .Points}} <a href="#requests">requests</a>{{end}}{{end}}</td>
+        <td>{{.Observed}}</td>
+        <td>{{if .NotAssessed}}<span class="muted">not assessed: {{.NotAssessed}}</span>{{else if .Reference}}{{.Reference}}{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{if .Points}}<span class="warn">−{{.Points}}</span>{{else}}<span class="muted">0</span>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted">Confidence not computed: this scan was stored before wsaw scored scans.</p>
+  {{end}}
+</section>
+
 <section class="meta">
   <dl>
     <dt>Scan</dt><dd><code>{{$res.ScanID}}</code></dd>
@@ -188,7 +215,7 @@
   </table>
 </section>
 
-<section>
+<section id="requests">
   <h2>Requests</h2>
 
   <form method="get" class="filters">

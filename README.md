@@ -226,6 +226,19 @@ Every request carries a **`phase`**: `pre-interaction` or `post-interaction`. Th
 
 **"Zero third parties" is a narrower claim than it looks.** Analytics reverse-proxied onto the site's own domain — a collector on `hog.example.com`, a server-side tag container on `t.example.com` — is first-party by registrable domain and never appears in a third-party count. The report names the first-party hosts contacted before the consent interaction for exactly that reason; read them before reading a clean third-party count as "nothing happened".
 
+### How far a scan can be trusted
+
+Every scan carries a **`confidence`** object: a score from 0 to 100, a band — `high` (90 and above), `medium` (60–89), `low` — and one reason per signal saying what it cost. A scan that failed or was skipped is `none`, meaning no observation, never a low number. The watchboard tile shows the score as a compact mark: `C72`. A scan stored before scoring existed reads `C?`, and a failed or skipped scan reads `CXX`. Hovering the mark gives the band in words and the reasons. The scan page shows the reasons as a table.
+
+| Signal | What costs points |
+|---|---|
+| `termination` | `timeout` 30; `request-cap` or `byte-cap` 25 |
+| `fetches` | requests wsaw could not observe (the ones behind `scan-degraded`), 4 points per percent up to 60. A scan at `detection.degradedFailureRatio` or above is `low` whatever its score. Blocked requests and HTTP errors are observations and cost nothing |
+| `duration` | under half or over twice the median of the series' last 10 clean scans, 15; under a quarter or over four times, 30. Not assessed with fewer than 5 earlier clean scans |
+| `consent` | `failed`, `unverified` or `banner-visible` 40; `necessary-only` outside `reject` 20; heuristic label matching 10 |
+
+A signal that could not be checked is listed as not assessed, so 100 means every signal was checked and none fired. The median a scan was compared against is stored with it, under `durationReference`, so the score can still be checked after retention has pruned those earlier scans. Scans stored before wsaw scored scans have no score and read "confidence not computed".
+
 ### Cookies are half the picture
 
 Consent state and analytics identifiers live in `localStorage` on a large class of sites: one that writes `localStorage["cookie-accepted"]` sets no cookie at all. Each scan records Web Storage per origin — key names, value digests and lengths, never values — and the diff reports keys appearing and disappearing the way it reports cookies. A third-party key written in `reject` mode is ranked with a third-party cookie, not below it.

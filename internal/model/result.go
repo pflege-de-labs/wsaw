@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "2.0"
+const SchemaVersion = "2.1"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -181,6 +181,11 @@ type Result struct {
 	// Warnings records non-fatal problems that a reader must see, such as
 	// bodies that could not be captured.
 	Warnings []string `json:"warnings,omitempty"`
+
+	// Confidence is how far this scan's asset list can be trusted (Story
+	// 5.35). Nil on a document written before schema 2.1, which is read as
+	// "not computed" and never as a perfect score.
+	Confidence *Confidence `json:"confidence,omitempty"`
 }
 
 // Environment records everything needed to reproduce a scan, including the
