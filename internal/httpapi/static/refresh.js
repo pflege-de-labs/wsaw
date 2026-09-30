@@ -21,6 +21,22 @@
 (function () {
   'use strict';
 
+  // The same allowlist the server applies to every redirect (safeLocal): an
+  // absolute path of RFC 3986 path characters with no empty segment, then an
+  // optional query. The server already sends nothing else, but the value is
+  // read back out of the page and handed to location.replace, so the script
+  // does not take the page's word for it. Anything else — "//host", "/\host",
+  // "javascript:" — refreshes the page it is on instead.
+  var LOCAL_PATH = /^(?:\/|(?:\/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})+)+\/?)(?:\?(?:[A-Za-z0-9._~!$&'()*+,;=:@\/?-]|%[0-9A-Fa-f]{2})*)?$/;
+
+  function localPath(candidate) {
+    if (candidate && LOCAL_PATH.test(candidate)) {
+      return candidate;
+    }
+
+    return window.location.pathname;
+  }
+
   var el = document.getElementById('freshness');
   if (!el) {
     return;
@@ -28,7 +44,7 @@
 
   var renderedAt = new Date(el.getAttribute('data-rendered-at'));
   var seconds = parseInt(el.getAttribute('data-refresh-seconds'), 10) || 0;
-  var url = el.getAttribute('data-refresh-url') || window.location.pathname;
+  var url = localPath(el.getAttribute('data-refresh-url'));
 
   var ageEl = document.getElementById('freshness-age');
 
