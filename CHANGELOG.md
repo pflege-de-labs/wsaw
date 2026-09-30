@@ -9,6 +9,18 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-30
+
+Every scan now says how far it can be trusted. A confidence score from 0 to
+100, with its band, sits on each watchboard tile and is explained signal by
+signal on the scan page, so a scan that lost requests or stopped early no
+longer looks exactly like a clean one.
+
+Upgrading: nothing to do by hand. The store migrates to schema version 9 on
+first start, and result documents move to `schemaVersion` 2.1, an additive
+change against which 2.0 documents still validate. Scans stored before this
+release read "confidence not computed" rather than a score.
+
 ### Added
 
 - Every scan now carries a confidence score from 0 to 100 and a band
@@ -575,7 +587,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.5.0
 [0.4.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.3.0
 [0.2.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.2.1
