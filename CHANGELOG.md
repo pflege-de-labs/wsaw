@@ -33,6 +33,16 @@ criteria, and any that are still open, are written down.
   - The store migrates to schema version 9 on first start, adding two
     columns to `results`. There is nothing to do.
 
+### Fixed
+
+- The web interface's auto-refresh now checks the address it reloads before
+  following it, and reloads the current page if that address is not a plain
+  path on wsaw itself. The server already produced nothing else — every
+  redirect destination has been held to the same allowlist of well-formed
+  local paths since #96 — but the script read the address back out of the
+  page, and a page is not something to take on trust. There is nothing to
+  change in a deployment.
+
 ## [0.4.0] - 2026-09-29
 
 The browser wsaw runs by default is now its own published image, with
