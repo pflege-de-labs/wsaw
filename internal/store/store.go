@@ -101,6 +101,11 @@ type SQL struct {
 	// Nil when this open applied no such migration.
 	documents *DocumentMigration
 
+	// schemaVersion is the schema version the store was at once opening
+	// finished — after any migration this open applied — so the start-up log
+	// can say which schema it is running against without a second query.
+	schemaVersion int
+
 	// freeSpaceFn replaces the free-space check a vacuum makes, so a test
 	// can refuse one without filling a disk (Story 4.13, AC13). Nil in every
 	// store that is not a test's.
@@ -356,6 +361,8 @@ func (s *SQL) requireCurrentSchema(ctx context.Context) error {
 		)
 	}
 
+	s.schemaVersion = current
+
 	return nil
 }
 
@@ -477,6 +484,10 @@ func (s *SQL) closeAfterFailedOpen() {
 // tests that must run against every dialect.
 func (s *SQL) Driver() string { return s.d.name() }
 
+// SchemaVersion reports the schema version the store was at once it opened,
+// after any migration the open applied.
+func (s *SQL) SchemaVersion() int { return s.schemaVersion }
+
 // retry runs one database operation under this store's policy, and is also
 // what the artifact bucket borrows, so evidence and rows are retried by the
 // same rules (Story 8.1, AC8). The policy itself is in shared.go: it is not a
@@ -511,16 +522,8 @@ func (s *SQL) migrate(ctx context.Context) error {
 		)
 	}
 
-	for v := current; v < len(migrations); v++ {
-		version := v + 1
-
-		if err := s.prepareMigration(ctx, version); err != nil {
-			return err
-		}
-
-		if err := s.applyMigration(ctx, migrations[v], version); err != nil {
-			return err
-		}
+	if err := s.migrateFrom(ctx, current, migrations); err != nil {
+		return err
 	}
 
 	// The one piece of schema work that is not a statement and does not belong
@@ -531,6 +534,64 @@ func (s *SQL) migrate(ctx context.Context) error {
 	// store retention cannot safely reclaim anything from. It reports its own
 	// per-row failures rather than returning them.
 	return s.indexArtifactReferences(ctx)
+}
+
+// The messages migrateFrom logs, named so the tests that read them and the
+// code that writes them cannot drift apart.
+const (
+	msgSchemaCurrent        = "store schema is current; no migration was needed"
+	msgSchemaMigrating      = "migrating the store schema"
+	msgSchemaVersionApplied = "applied store schema migration"
+	msgSchemaMigrated       = "store schema migrated"
+)
+
+// migrateFrom applies every migration after current and logs what it did.
+//
+// Every start logs the schema version, whether or not anything ran: an
+// operator reading a start-up has to be able to tell a store that was already
+// current from one this restart changed, and a version that only appears in
+// the log when it moves cannot answer "which version is this store at" from
+// the most recent start alone. Each version is logged as it lands, with how
+// long it took, because version 3 moves every stored document and a log that
+// went quiet for minutes would look like a hang.
+func (s *SQL) migrateFrom(ctx context.Context, current int, migrations [][]string) error {
+	target := len(migrations)
+
+	if current == target {
+		s.schemaVersion = current
+		s.log.Info(msgSchemaCurrent,
+			"driver", s.d.name(), "schema_version", current, "migrations_applied", 0)
+
+		return nil
+	}
+
+	s.log.Info(msgSchemaMigrating,
+		"driver", s.d.name(), "from_version", current, "to_version", target)
+
+	began := time.Now()
+
+	for v := current; v < target; v++ {
+		version := v + 1
+		start := time.Now()
+
+		if err := s.prepareMigration(ctx, version); err != nil {
+			return err
+		}
+
+		if err := s.applyMigration(ctx, migrations[v], version); err != nil {
+			return err
+		}
+
+		s.log.Info(msgSchemaVersionApplied,
+			"driver", s.d.name(), "version", version, "duration", time.Since(start))
+	}
+
+	s.schemaVersion = target
+	s.log.Info(msgSchemaMigrated,
+		"driver", s.d.name(), "from_version", current, "schema_version", target,
+		"migrations_applied", target-current, "duration", time.Since(began))
+
+	return nil
 }
 
 // prepareMigration runs the part of a numbered migration that SQL cannot

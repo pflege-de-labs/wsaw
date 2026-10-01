@@ -17,6 +17,15 @@ additive change against which 2.1 documents still validate.
 
 ### Added
 
+- Every start now logs the store's schema version and whether this start
+  migrated it: `store schema is current; no migration was needed` with
+  `schema_version` when nothing ran, or `migrating the store schema`
+  (`from_version`, `to_version`), one `applied store schema migration` per
+  version with its `duration`, and a closing `store schema migrated` with
+  `migrations_applied`. The `store opened` line carries `schema_version` too,
+  so the one line operators already look for names the schema. A restart
+  that quietly upgraded a store is now told apart from one that found it
+  current, and a long migration no longer looks like a hung start.
 - Query-string handling can be scoped with `normalize.queryRules`: a rule
   names a URL pattern, a party, or both, and keeps, drops or strips the query
   of the requests it matches. Shipped rules for Google, Microsoft, Meta and

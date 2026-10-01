@@ -40,6 +40,9 @@ type Store interface {
 	// Driver reports which kind of store this is, for logs and for the tests
 	// that run the same suite against every one of them.
 	Driver() string
+	// SchemaVersion reports the schema version the store was at once it
+	// opened, so the start-up log can say which schema wsaw is running against.
+	SchemaVersion() int
 	// Ping reports whether both halves of the store — its index and its
 	// artifact bucket — are reachable, which is what readiness asks.
 	Ping(ctx context.Context) error

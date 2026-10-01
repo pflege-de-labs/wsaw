@@ -201,6 +201,7 @@ func (a *App) openStore(ctx context.Context) error {
 	a.Logger.Info(
 		"store opened",
 		"driver", st.Driver(),
+		"schema_version", st.SchemaVersion(),
 		// Both locations are redacted: a DSN carries a password, and a bucket
 		// URL can carry credentials in its userinfo. The endpoint is useful in
 		// a log; what authenticates to it never is.
