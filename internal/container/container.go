@@ -25,21 +25,34 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/pflege-de-labs/wsaw/deploy/browser"
 )
 
-// DefaultImage is the browser image, pinned by digest: the one deploy/browser
-// builds, as published with release 0.3.0 (Chromium 152.0.7977.82).
+// ImageName is the repository name of the browser image `wsaw browser build`
+// makes (Story 6.12). The localhost registry is one no runtime will pull
+// from, so the image exists only once an operator has built it: wsaw never
+// distributes Chromium, and never fetches it unasked.
+const ImageName = "localhost/wsaw-browser"
+
+// DefaultImage is the browser image wsaw runs unless configured otherwise:
+// the one deploy/browser builds, tagged with the Chromium package it installs.
 //
-// Pinned rather than floating because the browser is part of what a result
-// means: a tag that moves would change capture behaviour silently between
-// scans, and a diff would report the change as the site's (Tenet 6). The
-// daemon says when a newer one is published (Story 6.11); moving this is a
-// release decision, not something wsaw does on its own.
+// The tag names the browser rather than floating because the browser is part
+// of what a result means (Tenet 6): only the operator moves it, by building
+// another version and naming it in browser.container.image, and the version
+// Chrome reports is recorded in every result (Story 1.8, AC7).
 //
 // It keeps Chrome's own sandbox on (Story 1.8, AC5), which rootless Podman's
 // default seccomp profile allows and Docker's refuses: under Docker it needs
 // deploy/chromium-seccomp.json passed through Spec.ExtraArgs.
-const DefaultImage = "ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b"
+var DefaultImage = ImageTag(browser.ChromiumVersion(browser.BaseAlpine))
+
+// ImageTag is the name `wsaw browser build` gives the image holding the
+// given chromium-headless-shell package version.
+func ImageTag(chromiumVersion string) string {
+	return ImageName + ":" + chromiumVersion
+}
 
 // LabelSandbox is the image label with which a browser image declares that
 // its entrypoint keeps Chrome's own sandbox on (deploy/browser, Story 1.8
@@ -355,8 +368,8 @@ func (r *Runtime) Start(ctx context.Context, spec Spec) (*Instance, error) {
 	if err != nil {
 		if isImageMissing(err.Error() + out) {
 			return nil, fmt.Errorf(
-				"browser image %s is not present locally and wsaw does not pull during a scan; fetch it with: %s pull %s",
-				spec.image(), r.Kind, spec.image())
+				"browser image %s is not present locally and wsaw does not pull during a scan; %s",
+				spec.image(), r.FetchHint(spec.image()))
 		}
 
 		return nil, fmt.Errorf("starting browser container: %w", err)
@@ -519,8 +532,8 @@ func (r *Runtime) BrowserVersion(ctx context.Context, image string) (string, err
 	out, err := run(versionCtx, r.Path, "run", "--rm", "--pull=never", image, "--version")
 	if err != nil {
 		if isImageMissing(err.Error() + out) {
-			return "", fmt.Errorf("%w: %s; fetch it with: %s pull %s",
-				ErrImageMissing, image, r.Kind, image)
+			return "", fmt.Errorf("%w: %s; %s",
+				ErrImageMissing, image, r.FetchHint(image))
 		}
 
 		return "", fmt.Errorf("reading the browser version from %s: %w", image, err)

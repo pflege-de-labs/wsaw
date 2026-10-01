@@ -6,14 +6,11 @@
 #   ghcr.io/pflege-de-labs/wsaw            the default build
 #   ghcr.io/pflege-de-labs/wsaw-cloudblob  with the S3, GCS and Azure drivers
 #
-# and, alongside them, the per-scan browser image deploy/browser builds
-# (Story 1.8, AC5) — Chromium with its own sandbox, for a wsaw that runs on the
-# host and starts the browser in a container:
-#
-#   ghcr.io/pflege-de-labs/wsaw-browser
-#
-# It is versioned with the release it was built from, like the other two, so
-# a pinned wsaw and a pinned browser can be read as a pair.
+# The per-scan browser image deploy/browser builds (Story 1.8, AC5) is not
+# published. Releases up to 0.5.0 pushed it as ghcr.io/pflege-de-labs/wsaw-browser;
+# from then on an operator builds it with `wsaw browser build`, so the project
+# does not redistribute Chromium (Story 6.12). The images already pushed stay,
+# since installations pin them by digest.
 #
 # The names follow `make docker`: the variant is in the image name, not only in
 # a tag, because an image is pulled by name and two that differ by some 28 MB of
@@ -83,12 +80,6 @@ jobs:
             build_tags: cloudblob
             description: wsaw, the website asset watcher (cloudblob build)
             chrome_path: /usr/bin/chromium-browser
-          - variant: browser
-            name: wsaw-browser
-            context: deploy/browser
-            build_tags: ""
-            description: Headless Chromium with its own sandbox, for wsaw's per-scan browser containers
-            chrome_path: /usr/bin/chromium-headless-shell
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -213,7 +204,6 @@ jobs:
           done
 
       - name: The pushed image runs and reports the release
-        if: matrix.variant != 'browser'
         run: |
           for arch in amd64 arm64; do
             var="DIGEST_${arch^^}"
@@ -225,22 +215,6 @@ jobs:
             esac
           done
 
-      # The browser image has no wsaw in it; what it has to report is the
-      # Chromium it was built with, on each architecture, as the last line of
-      # --version — which is what internal/container reads.
-      - name: The pushed browser image runs and reports its Chromium
-        if: matrix.variant == 'browser'
-        run: |
-          want=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' deploy/browser/Dockerfile)
-          for arch in amd64 arm64; do
-            var="DIGEST_${arch^^}"
-            out=$(docker run --rm --platform "linux/$arch" "$IMAGE@${!var}" --version | tail -n 1)
-            echo "linux/$arch: $out"
-            case "$out" in
-              "Chromium ${want%-r*}"*) ;;
-              *) echo "::error::linux/$arch reports '$out', want Chromium ${want%-r*}"; exit 1 ;;
-            esac
-          done
       - name: The pushed image keeps Chromium's sandbox
         run: |
           docker run --rm --platform linux/amd64 \

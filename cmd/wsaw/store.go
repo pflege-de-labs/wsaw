@@ -47,7 +47,7 @@ func cmdStore(ctx context.Context, args []string) error {
 	case "rebuild-index":
 		return cmdStoreRebuildIndex(ctx, rest)
 
-	case "help", "-h", "--help":
+	case cmdNameHelp, "-h", argHelp:
 		storeUsage(os.Stdout)
 
 		return nil

@@ -143,19 +143,25 @@ browser:
   runtime: auto
 
   container:
-    # Pinned by digest on purpose: a moving tag would change capture
-    # behaviour between scans and a diff would report it as the site's change.
-    # wsaw never pulls during a scan — fetch it once with:
-    #   podman pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:...
+    # Empty means localhost/wsaw-browser:<the Chromium this release pins>,
+    # which wsaw does not distribute: build it once on this machine with
+    #   wsaw browser build
+    # A different Chromium is a different image, built with
+    #   wsaw browser build --base debian      (newer, from a Debian snapshot)
+    #   wsaw browser build --chromium-version <package version>
+    # and named here. A moving tag would change capture behaviour between
+    # scans and a diff would report it as the site's change, so name an image
+    # from a registry by digest. wsaw never pulls during a scan.
     # The default image, built from deploy/browser, keeps Chrome's own sandbox
     # on. Rootless Podman needs nothing extra; under Docker it also needs
     #   extraArgs: ["--security-opt", "seccomp=deploy/chromium-seccomp.json"]
     # and wsaw warns at startup when that is missing.
     image: ""
-    # Once at startup the daemon asks the image's registry whether its latest
-    # tag has moved past the pinned digest, and warns with the digest to pin
-    # if it has. One anonymous manifest read; nothing is pulled. false stops
-    # wsaw contacting the registry.
+    # For an image pinned by digest, the daemon asks its registry once at
+    # startup whether its latest tag has moved past the pinned digest, and
+    # warns with the digest to pin if it has. One anonymous manifest read;
+    # nothing is pulled. The locally built default is never checked. false
+    # stops wsaw contacting the registry.
     checkForUpdates: true
     memory: 1g
     pidsLimit: 512

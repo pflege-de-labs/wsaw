@@ -65,6 +65,15 @@ additive change against which 2.1 documents still validate.
   A daily workflow opens a pull request when Debian ships a newer Chromium
   for both architectures, because the pinned snapshot never stops building
   and so would otherwise never show that it is out of date (Story 1.8).
+- `wsaw browser build` builds the per-scan browser image on this machine,
+  with Podman or Docker, from the build files embedded in the binary, so wsaw
+  no longer distributes Chromium: the base image and Chromium are downloaded
+  when you run it, never with a release and never during a scan. It tags the
+  image `localhost/wsaw-browser:<chromium version>`, checks that it runs and
+  keeps Chrome's sandbox, and fails if not. `--base debian` builds the newer
+  Chromium from `deploy/browser/Containerfile`, and `--chromium-version`
+  another package version; for those it prints the `browser.container.image`
+  line that selects them (Story 6.12).
 
 ### Changed
 
@@ -76,6 +85,17 @@ additive change against which 2.1 documents still validate.
   record `browserRuntime: local`. The image is still never pulled. A runtime
   named explicitly with `--browser-runtime podman` or `docker` still fails
   startup when it lacks the image (Story 1.8, AC6).
+- **Action needed for containerised scans:** the default browser image is
+  now `localhost/wsaw-browser:152.0.7977.82-r0`, built locally, instead of
+  `ghcr.io/pflege-de-labs/wsaw-browser` by digest, and releases no longer
+  publish `wsaw-browser`. Run `wsaw browser build` once before upgrading the
+  daemon; until then, under `auto`, it falls back to Chrome on the host with a
+  warning naming that command, and with an explicitly named runtime it
+  refuses to start. It holds the
+  same Chromium, 152.0.7977.82, as the previous default, so results stay
+  comparable. An installation that sets `browser.container.image` to a
+  published digest is unaffected, those images stay on the registry, and the
+  update check now skips the locally built default (Story 6.12).
 - Comparisons now key both scans again from their stored raw URLs under the
   current normalization rules, in the scan's own diff, the web interface and
   API, and `wsaw mcp`. Changing a rule applies to history and no longer makes

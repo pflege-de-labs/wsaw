@@ -162,8 +162,8 @@ func TestBrowserVersionReportsTheImagesBrowser(t *testing.T) {
 }
 
 // TestImageKeepsSandbox is AC7's half that depends on the image: the result
-// must say whether Chrome's own sandbox ran, and DefaultImage — the published
-// deploy/browser image — keeps it on. A locally built deploy/browser image
+// must say whether Chrome's own sandbox ran, and DefaultImage — the
+// deploy/browser image `wsaw browser build` makes — keeps it on. A locally built deploy/browser image
 // named in WSAW_TEST_BROWSER_IMAGE is checked too; without it that half is
 // skipped. An image without the label reading as unsandboxed is keepsSandbox's
 // unit test, which needs no runtime.
@@ -217,6 +217,17 @@ func TestMissingImageFailsWithThePullCommand(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "pull") {
 		t.Errorf("error does not tell the operator how to fetch the image: %v", err)
+	}
+
+	// An image of the name `wsaw browser build` gives is not served by any
+	// registry, so the way to fetch it is to build it (Story 6.12, AC5).
+	_, err = rt.BrowserVersion(ctx, container.ImageTag("0.0.1-r0"))
+	if err == nil {
+		t.Fatal("a missing built image was accepted")
+	}
+
+	if !strings.Contains(err.Error(), "wsaw browser build --runtime "+string(rt.Kind)+" --chromium-version 0.0.1-r0") {
+		t.Errorf("error does not tell the operator how to build the image: %v", err)
 	}
 }
 

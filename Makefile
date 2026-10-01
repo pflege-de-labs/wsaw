@@ -1008,7 +1008,9 @@ docker:
 # The per-scan browser image (deploy/browser, Story 1.8 AC5): Chromium that
 # keeps its own sandbox inside the container wsaw starts it in. It is not a
 # build of wsaw, so it takes no build tags, and it is tagged with the wsaw
-# version it was built alongside, as image.yaml tags the published one.
+# version it was built alongside. This is the multi-arch build for working on
+# the image; an operator gets it from `wsaw browser build`, since it is no
+# longer published (Story 6.12).
 .PHONY: docker-browser
 docker-browser:
 	docker buildx build \
