@@ -211,6 +211,10 @@ func TestMissingImageFailsWithThePullCommand(t *testing.T) {
 		t.Fatal("a missing image was accepted")
 	}
 
+	if !errors.Is(err, container.ErrImageMissing) {
+		t.Errorf("err = %v, want ErrImageMissing, which auto detection falls back on", err)
+	}
+
 	if !strings.Contains(err.Error(), "pull") {
 		t.Errorf("error does not tell the operator how to fetch the image: %v", err)
 	}
