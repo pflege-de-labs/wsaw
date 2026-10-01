@@ -551,7 +551,7 @@ func (a *App) resolveAutoBrowser(ctx context.Context, launch *browser.Options, i
 			a.Logger.Warn("the browser image is not present in this container runtime; trying the next way to run the browser",
 				"runtime", string(kind),
 				"image", image,
-				"instruction", string(kind)+" pull "+image)
+				"instruction", runtime.FetchHint(image))
 
 			missing = append(missing, err)
 
@@ -647,7 +647,7 @@ func (a *App) useContainer(ctx context.Context, launch *browser.Options, runtime
 // resolveLocalBrowser uses a browser on this host. missing holds, for each
 // runtime auto detection passed over, why it lacked the image: the fallback is
 // then a degraded outcome and said at Warn, and a host without Chrome either
-// fails with an error that still carries every pull command.
+// fails with an error that still carries every command that would fetch it.
 func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, kind container.Kind,
 	missing []error,
 ) error {
@@ -676,7 +676,7 @@ func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, 
 		a.Logger.Warn("falling back to the browser on this host: no container runtime has the browser image, "+
 			"so pages render without the container's boundary",
 			"path", info.Path, "version", info.Version,
-			"hint", "pull the image named above and restart to render pages in a container")
+			"hint", "build or pull the image as named above and restart to render pages in a container")
 	default:
 		a.Logger.Info("browser runs on this host; no container runtime was found",
 			"path", info.Path, "version", info.Version,

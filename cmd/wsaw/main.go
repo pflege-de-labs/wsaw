@@ -27,6 +27,13 @@ var (
 // word is also a log level, and the two must not be confused.
 const cmdNameDebug = "debug"
 
+// cmdNameHelp and argHelp ask for usage, at the top level and of a command
+// group alike.
+const (
+	cmdNameHelp = "help"
+	argHelp     = "--help"
+)
+
 // Exit codes are a documented interface, so they are named rather than
 // scattered as literals.
 const (
@@ -94,12 +101,15 @@ func run(ctx context.Context, args []string) int {
 	case "mcp":
 		err = cmdMCP(ctx, rest)
 
+	case "browser":
+		err = cmdBrowser(ctx, rest)
+
 	case "version":
 		fmt.Printf("wsaw %s (commit %s, built %s)\n", version, commit, date)
 
 		return exitOK
 
-	case "help", "-h", "--help":
+	case cmdNameHelp, "-h", argHelp:
 		usage(os.Stdout)
 
 		return exitOK
@@ -148,6 +158,7 @@ Commands:
   store          Maintain the result store: "wsaw store migrate"
   ui             Open the web interface in a browser, already signed in
   mcp            Serve stored results to an LLM client over MCP (stdio), read-only
+  browser        Build the browser image on this machine: browser build
   version        Print build information
 
 Exit codes for "scan":
