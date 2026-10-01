@@ -28,6 +28,9 @@
 # https://snapshot.debian.org/archive/debian/<SNAPSHOT>/dists/forky/ carries
 # it for both architectures, and CHROMIUM_VERSION to that version; a version
 # the snapshot lacks fails the build rather than installing something else.
+# .github/workflows/chromium-debian.yaml checks daily and opens a pull
+# request making that change, since a snapshot pin never breaks and so
+# never says it is stale.
 FROM debian:forky-slim@sha256:2f3607b1ec79933241f58759eb9de9a691a393520820477dd81df5097a8b7da7
 
 ARG SNAPSHOT=20260930T000000Z

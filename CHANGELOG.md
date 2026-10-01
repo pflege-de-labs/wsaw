@@ -30,8 +30,10 @@ criteria, and any that are still open, are written down.
   152. The image keeps the same contract and sandbox as the published one, so
   point `browser.container.image` at a local build to use it:
   `podman build -f deploy/browser/Containerfile -t wsaw-browser:154 deploy/browser`.
-  Under Docker it needs the seccomp profile as the published image does
-  (Story 1.8).
+  Under Docker it needs the seccomp profile as the published image does.
+  A daily workflow opens a pull request when Debian ships a newer Chromium
+  for both architectures, because the pinned snapshot never stops building
+  and so would otherwise never show that it is out of date (Story 1.8).
 
 ### Changed
 
