@@ -14,6 +14,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -177,13 +178,13 @@ func seriesSchema(extra map[string]property) inputSchema {
 	return objectSchema([]string{argTarget, argMode}, props)
 }
 
-func newTools(st Store) []tool {
+func newTools(st Store, n *normalize.Normalizer) []tool {
 	return []tool{
 		listSeriesTool(st),
 		listScansTool(st),
 		getScanTool(st),
 		listRequestsTool(st),
-		diffScansTool(st),
+		diffScansTool(st, n),
 		getArtifactTool(st),
 	}
 }
@@ -570,7 +571,7 @@ func pageRequests(res *model.Result, f requestFilter, offset, limit int) request
 
 // --- diff_scans ---
 
-func diffScansTool(st Store) tool {
+func diffScansTool(st Store, n *normalize.Normalizer) tool {
 	return tool{
 		def: toolDef{
 			Name:  "diff_scans",
@@ -613,7 +614,7 @@ func diffScansTool(st Store) tool {
 				"against":   basis,
 				"rules":     "default",
 				"untrusted": untrustedNote,
-				"report":    diff.Compare(base, cur, diff.Options{}),
+				"report":    diff.Compare(base, cur, diff.Options{Normalizer: n}),
 			})
 		},
 	}

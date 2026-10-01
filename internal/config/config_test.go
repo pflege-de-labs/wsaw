@@ -7,6 +7,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
@@ -943,6 +944,101 @@ func TestRemovedWarmCacheSettingIsRefused(t *testing.T) {
 
 			if err := parseErr(t, body); !strings.Contains(err.Error(), "warmCache") {
 				t.Errorf("error %q does not name the removed setting", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeRulesPutConfiguredQueryRulesBeforeShippedOnes(t *testing.T) {
+	t.Parallel()
+
+	cfg := parse(t, `
+normalize:
+  queryRules:
+    - urlPattern: 'px\.example/hit'
+      party: third
+      keepQueryParams: [id]
+`)
+
+	rules, err := cfg.NormalizeRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := len(rules.QueryRules), 1+len(normalize.DefaultQueryRules); got != want {
+		t.Fatalf("%d query rules, want the configured one plus %d shipped", got, len(normalize.DefaultQueryRules))
+	}
+
+	// First match wins, so the operator's rule must come first to be able to
+	// override a shipped one for the same endpoint.
+	first := rules.QueryRules[0]
+	if first.URLPattern != `px\.example/hit` || first.Party != model.ThirdParty || len(first.KeepQueryParams) != 1 {
+		t.Errorf("first rule = %+v, want the configured one", first)
+	}
+}
+
+func TestNormalizeRulesCanOptOutOfShippedQueryRules(t *testing.T) {
+	t.Parallel()
+
+	cfg := parse(t, `
+normalize:
+  useDefaultQueryRules: false
+`)
+
+	rules, err := cfg.NormalizeRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rules.QueryRules) != 0 {
+		t.Errorf("QueryRules = %+v, want none after opting out", rules.QueryRules)
+	}
+}
+
+func TestInvalidQueryRulesAreRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, body, mention string
+	}{
+		{"no scope", `
+normalize:
+  queryRules:
+    - dropAllQuery: true
+`, "neither urlPattern nor party"},
+		{"no action", `
+normalize:
+  queryRules:
+    - urlPattern: 'x'
+`, "exactly one"},
+		{"two actions", `
+normalize:
+  queryRules:
+    - urlPattern: 'x'
+      dropAllQuery: true
+      keepQueryParams: [id]
+`, "exactly one"},
+		{"bad pattern", `
+normalize:
+  queryRules:
+    - urlPattern: '([unclosed'
+      dropAllQuery: true
+`, "not a valid regular expression"},
+		{"unknown party", `
+normalize:
+  queryRules:
+    - party: second
+      dropAllQuery: true
+`, "not a party"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := parseErr(t, tc.body)
+			if !strings.Contains(err.Error(), "normalize.queryRules[0]") || !strings.Contains(err.Error(), tc.mention) {
+				t.Errorf("error does not locate the rule or say %q: %v", tc.mention, err)
 			}
 		})
 	}

@@ -537,6 +537,7 @@ func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.L
 		Deny:                 target.Deny,
 		Severity:             target.Severity,
 		DegradedFailureRatio: s.opts.DegradedFailureRatio,
+		Normalizer:           s.opts.Normalizer,
 	})
 
 	if gone && rep != nil {

@@ -431,6 +431,32 @@ normalize:
     - pattern: '/delivery/customdata/[A-Za-z0-9+/=_-]{16,}\.js$'
       with: '/delivery/customdata/{cmpsettings}.js'
 
+  # Treat the query string of some requests differently from the rest.
+  #
+  # Tracking pixels and conversion beacons call the same endpoint with a new
+  # query string on every visit: consent flags, user-agent hints, page titles,
+  # timestamps. Keyed by full URL, each visit is a new asset, and that churn
+  # buries the change that mattered. A rule names a scope — urlPattern (a
+  # regular expression on the raw URL), party (first or third), or both — and
+  # exactly one of keepQueryParams, dropQueryParams or dropAllQuery. For the
+  # requests it matches it replaces the global settings above; the first
+  # matching rule wins.
+  #
+  # Keep the parameters that name an account or container (id, tid), so a
+  # site switching its measurement ID is still reported.
+  #
+  # Comparisons key both scans again from their raw URLs under the current
+  # rules, so changing a rule applies to history and does not make the next
+  # scan report every re-keyed asset as removed and added.
+  #
+  # queryRules:
+  #   - urlPattern: '^https://px\.example\.com/hit'
+  #     party: third
+  #     keepQueryParams: [pid]
+  # Shipped rules for Google, Microsoft, Meta and Pinterest tracking endpoints
+  # are added after the ones above unless this is set to false.
+  useDefaultQueryRules: true
+
   # Compare a script by the version it publishes about itself, rather than by
   # the digest of its bytes.
   #
@@ -448,6 +474,17 @@ normalize:
     - urlPattern: 'googletagmanager\.com/gtm\.js'
       extract: '"version":"(\d+)"'
       label: 'GTM container version'
+    # The gtag.js loader is built the same way and states its own version in
+    # the same place.
+    - urlPattern: 'googletagmanager\.com/gtag/js'
+      extract: '"version":"(\d+)"'
+      label: 'gtag version'
+    # consentmanager's cmp.php folds per-visit state into its body. intVersion
+    # is the published settings version, the number the sv= parameter of the
+    # sibling /delivery/info call and the customdata filename also carry.
+    - urlPattern: 'consentmanager\.net/delivery/cmp\.php'
+      extract: '"intVersion":(\d+)'
+      label: 'consentmanager settings version'
 
 detection:
   # "previous" compares each scan with the one before it; "approved" compares

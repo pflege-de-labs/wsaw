@@ -304,6 +304,24 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		})
 	}
 
+	for _, q := range c.Normalize.QueryRules {
+		r.QueryRules = append(r.QueryRules, normalize.QueryRule{
+			URLPattern:      q.URLPattern,
+			Party:           q.Party,
+			KeepQueryParams: q.KeepQueryParams,
+			DropQueryParams: q.DropQueryParams,
+			DropAllQuery:    q.DropAllQuery,
+		})
+	}
+
+	// Configured rules come first, so an operator can override a shipped
+	// rule for one endpoint without opting out of all of them. Opt-out for
+	// the same reason as the drop list: without them, every tracking pixel a
+	// site fires reports as a new asset on every scan.
+	if c.Normalize.UseDefaultQueryRules == nil || *c.Normalize.UseDefaultQueryRules {
+		r.QueryRules = append(r.QueryRules, normalize.DefaultQueryRules...)
+	}
+
 	for _, id := range c.Normalize.BodyIdentities {
 		r.BodyIdentities = append(r.BodyIdentities, normalize.BodyIdentity{
 			URLPattern: id.URLPattern,

@@ -320,7 +320,7 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 		req: model.Request{
 			RequestID:     string(ev.RequestID),
 			URL:           requestURL,
-			NormalizedURL: r.normalizer.Key(ev.Request.URL),
+			NormalizedURL: r.normalizer.Key(ev.Request.URL, host.Party),
 			Method:        ev.Request.Method,
 			ResourceType:  resourceType(ev.Type),
 			Host:          host.Host,
@@ -518,7 +518,7 @@ func (r *recorder) webSocketCreated(ev *network.EventWebSocketCreated) {
 		req: model.Request{
 			RequestID:     string(ev.RequestID),
 			URL:           ev.URL,
-			NormalizedURL: r.normalizer.Key(ev.URL),
+			NormalizedURL: r.normalizer.Key(ev.URL, host.Party),
 			Method:        "GET",
 			ResourceType:  "websocket",
 			Host:          host.Host,

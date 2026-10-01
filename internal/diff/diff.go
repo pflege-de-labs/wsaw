@@ -13,6 +13,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/classify"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
 // ChangeType names what changed.
@@ -224,6 +225,8 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 		unobserved:       unobservedDomains(current),
 	}
 
+	d.before, d.after = assets(baseline, rules.Normalizer), assets(current, rules.Normalizer)
+
 	d.compareHosts()
 	d.compareAssets()
 	d.compareScripts()
@@ -296,6 +299,10 @@ type differ struct {
 	// observe. It is consulted per change, not per scan, so a removal can be
 	// withheld for a precise reason even when the scan as a whole is healthy.
 	unobserved map[string]struct{}
+
+	// before and after are each side's assets by comparison key, built once
+	// because three comparisons walk them.
+	before, after map[string]assetInfo
 }
 
 func (d *differ) add(c Change) {
@@ -421,7 +428,11 @@ type assetInfo struct {
 	initiators []string
 }
 
-func assets(r *model.Result) map[string]assetInfo {
+// assets indexes r's requests by comparison key. With a normalizer, the key
+// is derived again from the raw URL under the current rules, so both sides
+// of a comparison are keyed alike however old either result is; without
+// one, the key stored at capture is used.
+func assets(r *model.Result, n *normalize.Normalizer) map[string]assetInfo {
 	out := make(map[string]assetInfo)
 
 	for i := range r.Requests {
@@ -430,13 +441,18 @@ func assets(r *model.Result) map[string]assetInfo {
 			continue
 		}
 
+		key := req.NormalizedURL
+		if n != nil {
+			key = n.Rekey(req)
+		}
+
 		// The first observation wins, so a repeated asset does not flip
 		// between phases between scans.
-		if _, seen := out[req.NormalizedURL]; seen {
+		if _, seen := out[key]; seen {
 			continue
 		}
 
-		out[req.NormalizedURL] = assetInfo{
+		out[key] = assetInfo{
 			url:    req.URL,
 			party:  req.Party,
 			domain: req.Domain,
@@ -456,7 +472,7 @@ func assets(r *model.Result) map[string]assetInfo {
 }
 
 func (d *differ) compareAssets() {
-	before, after := assets(d.baseline), assets(d.current)
+	before, after := d.before, d.after
 
 	for key, info := range after {
 		if _, existed := before[key]; existed {
@@ -499,7 +515,7 @@ func (d *differ) compareAssets() {
 // compareScripts is the supply-chain check: a third-party script whose
 // content changed while its URL stayed the same.
 func (d *differ) compareScripts() {
-	before, after := assets(d.baseline), assets(d.current)
+	before, after := d.before, d.after
 
 	for key, now := range after {
 		was, existed := before[key]
@@ -665,7 +681,7 @@ func (d *differ) compareStorage() {
 }
 
 func (d *differ) compareStatuses() {
-	before, after := assets(d.baseline), assets(d.current)
+	before, after := d.before, d.after
 
 	for key, now := range after {
 		was, existed := before[key]

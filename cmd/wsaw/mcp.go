@@ -12,6 +12,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/app"
 	"github.com/pflege-de-labs/wsaw/internal/logging"
 	"github.com/pflege-de-labs/wsaw/internal/mcp"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
@@ -77,7 +78,19 @@ func serveMCP(ctx context.Context, args []string, in io.Reader, out, errOut io.W
 
 	logger.Info("mcp server ready", "store", opts.Location())
 
-	return mcp.New(st, version, logger).Serve(ctx, in, out)
+	// Diffs key assets under the configured rules, so a comparison read here
+	// matches the one the scan reported.
+	rules, err := cfg.NormalizeRules()
+	if err != nil {
+		return err
+	}
+
+	normalizer, err := normalize.New(rules)
+	if err != nil {
+		return fmt.Errorf("compiling normalization rules: %w", err)
+	}
+
+	return mcp.New(st, normalizer, version, logger).Serve(ctx, in, out)
 }
 
 // requireExistingStore refuses a local store that is not there. Opening one

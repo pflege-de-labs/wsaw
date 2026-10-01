@@ -418,7 +418,7 @@ func (s *Server) lastScanSeverity(
 		baseRes, base = prev, BasePrevious
 	}
 
-	rep := diff.Compare(baseRes, res, diff.Options{})
+	rep := diff.Compare(baseRes, res, diff.Options{Normalizer: s.deps.Normalizer})
 
 	var cmp *ComparisonView
 
@@ -650,7 +650,7 @@ func (s *Server) diffFor(res *model.Result) *diff.Report {
 		}
 	}
 
-	rep := diff.Compare(baseline, res, diff.Options{})
+	rep := diff.Compare(baseline, res, diff.Options{Normalizer: s.deps.Normalizer})
 
 	if gone {
 		rep.Reason = diff.ReasonEvidenceGone

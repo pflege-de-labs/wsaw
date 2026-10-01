@@ -169,8 +169,8 @@ func TestCustomDataPathCollapsesToOneKey(t *testing.T) {
 
 	const host = "https://cdn.consentmanager.net"
 
-	v94 := n.Key(host + "/delivery/customdata/bV8xLndfNDc3MC5yX0dEUFIubF9lbi54dF85NA.js")
-	v97 := n.Key(host + "/delivery/customdata/bV8xLndfNDc3MC5yX0dEUFIubF9lbi54dF85Nw.js")
+	v94 := n.Key(host+"/delivery/customdata/bV8xLndfNDc3MC5yX0dEUFIubF9lbi54dF85NA.js", "")
+	v97 := n.Key(host+"/delivery/customdata/bV8xLndfNDc3MC5yX0dEUFIubF9lbi54dF85Nw.js", "")
 
 	if v94 != v97 {
 		t.Errorf("two settings versions produced different keys:\n  %s\n  %s", v94, v97)
@@ -181,7 +181,7 @@ func TestCustomDataPathCollapsesToOneKey(t *testing.T) {
 	}
 
 	// Siblings on the same host must be left alone.
-	if got := n.Key(host + "/delivery/js/cmp_en.min.js"); strings.Contains(got, "{cmpsettings}") {
+	if got := n.Key(host+"/delivery/js/cmp_en.min.js", ""); strings.Contains(got, "{cmpsettings}") {
 		t.Errorf("the rule collapsed an unrelated script: %s", got)
 	}
 }

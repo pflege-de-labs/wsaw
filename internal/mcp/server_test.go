@@ -15,6 +15,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/mcp"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -125,9 +126,16 @@ type rpcResponse struct {
 func exchange(t *testing.T, st mcp.Store, lines ...string) []rpcResponse {
 	t.Helper()
 
+	return exchangeWith(t, st, nil, lines...)
+}
+
+// exchangeWith is exchange with the server's normalizer chosen.
+func exchangeWith(t *testing.T, st mcp.Store, n *normalize.Normalizer, lines ...string) []rpcResponse {
+	t.Helper()
+
 	var out bytes.Buffer
 
-	srv := mcp.New(st, "test", slog.New(slog.DiscardHandler))
+	srv := mcp.New(st, n, "test", slog.New(slog.DiscardHandler))
 	if err := srv.Serve(t.Context(), strings.NewReader(strings.Join(lines, "\n")+"\n"), &out); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -637,7 +645,7 @@ func TestServeStopsWhenTheContextIsCancelled(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- mcp.New(f.st, "test", slog.New(slog.DiscardHandler)).Serve(ctx, in, io.Discard)
+		done <- mcp.New(f.st, nil, "test", slog.New(slog.DiscardHandler)).Serve(ctx, in, io.Discard)
 	}()
 
 	cancel()

@@ -425,7 +425,45 @@ func (c *Config) validateNormalize(add addFunc) {
 		add(0, "normalize", "keepQueryParams and dropQueryParams are both set; keepQueryParams takes precedence and dropQueryParams will be ignored")
 	}
 
+	c.validateQueryRules(add)
 	c.validateBodyIdentities(add)
+}
+
+// validateQueryRules rejects a rule without a scope, which would silently
+// replace the global query settings for every request, and a rule that says
+// both how and how else to treat the query.
+func (c *Config) validateQueryRules(add addFunc) {
+	for i, q := range c.Normalize.QueryRules {
+		field := fmt.Sprintf("normalize.queryRules[%d]", i)
+
+		if q.URLPattern == "" && q.Party == "" {
+			add(0, field, "names neither urlPattern nor party; a rule without a scope would apply to every request")
+		}
+
+		if q.URLPattern != "" {
+			if _, err := regexp.Compile(q.URLPattern); err != nil {
+				add(0, field+".urlPattern", "%q is not a valid regular expression: %v", q.URLPattern, err)
+			}
+		}
+
+		switch q.Party {
+		case "", model.FirstParty, model.ThirdParty:
+		default:
+			add(0, field+".party", "%q is not a party; use %q or %q", q.Party, model.FirstParty, model.ThirdParty)
+		}
+
+		actions := 0
+
+		for _, set := range []bool{len(q.KeepQueryParams) > 0, len(q.DropQueryParams) > 0, q.DropAllQuery} {
+			if set {
+				actions++
+			}
+		}
+
+		if actions != 1 {
+			add(0, field, "sets %d of keepQueryParams, dropQueryParams and dropAllQuery; exactly one is required", actions)
+		}
+	}
 }
 
 // validateBodyIdentities rejects a rule that can never produce a value. Such

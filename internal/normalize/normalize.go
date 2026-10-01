@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // Rules configures normalization. The zero value performs only the
@@ -26,6 +28,11 @@ type Rules struct {
 	// KeepQueryParams, when non-empty, keeps only these parameters and drops
 	// everything else. Takes precedence over DropQueryParams.
 	KeepQueryParams []string
+
+	// QueryRules replace the query handling above for the requests they
+	// match. The first matching rule wins; a request no rule matches is
+	// handled by the global settings.
+	QueryRules []QueryRule
 
 	// PathReplacements collapse volatile path segments, e.g. build hashes.
 	PathReplacements []Replacement
@@ -47,6 +54,97 @@ type Replacement struct {
 	With string
 
 	re *regexp.Regexp
+}
+
+// QueryRule scopes query-string handling to some requests.
+//
+// It exists for tracking pixels and conversion beacons: the same endpoint,
+// on the same host and path, called with a different query string on every
+// visit. A global rule broad enough to quiet them would also strip the query
+// from first-party URLs where it carries meaning, so the rule is scoped to
+// the requests that need it, and keeps the parameters that name an account
+// or container so a switch of those is still a change.
+type QueryRule struct {
+	// URLPattern selects requests by their raw URL. Empty matches any URL.
+	URLPattern string
+	// Party selects requests by party. Empty matches either.
+	Party model.Party
+
+	// Exactly one of the three below is set; validation enforces it.
+	KeepQueryParams []string
+	DropQueryParams []string
+	DropAllQuery    bool
+
+	urlRe *regexp.Regexp
+	query queryPolicy
+}
+
+// queryPolicy is a compiled set of query-string instructions, shared by the
+// global settings and by each QueryRule.
+type queryPolicy struct {
+	dropAll bool
+	drop    map[string]struct{}
+	keep    map[string]struct{}
+}
+
+func newQueryPolicy(dropAll bool, drop, keep []string) queryPolicy {
+	return queryPolicy{dropAll: dropAll, drop: lowerSet(drop), keep: lowerSet(keep)}
+}
+
+// lowerSet returns nil for an empty list, which queryPolicy reads as "not
+// configured" rather than as "keep nothing".
+func lowerSet(names []string) map[string]struct{} {
+	if len(names) == 0 {
+		return nil
+	}
+
+	out := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		out[strings.ToLower(n)] = struct{}{}
+	}
+
+	return out
+}
+
+func (r *QueryRule) matches(raw string, party model.Party) bool {
+	if r.Party != "" && r.Party != party {
+		return false
+	}
+
+	return r.urlRe == nil || r.urlRe.MatchString(raw)
+}
+
+// DefaultQueryRules are tracking and conversion endpoints whose query string
+// is per-visit state: consent flags, user-agent hints, timestamps, page
+// titles. Each keeps only the parameters that identify the account or
+// container the hit is for, so a new tag ID is still reported. Offered as a
+// starting point; operators can opt out or put their own rules first.
+var DefaultQueryRules = []QueryRule{
+	// The gtag loader's cx and gtm parameters change with Google's rollout
+	// state; id names the tag.
+	{URLPattern: `^https?://www\.googletagmanager\.com/gtag/(js|destination)(\?|$)`, KeepQueryParams: []string{"id"}},
+
+	// GA4 and Universal Analytics hits, on Google's hosts or a server-side
+	// tagging host of the site's own; tid names the property.
+	{URLPattern: `^https?://[^/?#]+/[gj]/collect(\?|$)`, KeepQueryParams: []string{"tid"}},
+
+	// Google Ads, Floodlight and consent-mode pings. The conversion or
+	// audience ID is in the path, so nothing in the query is identity.
+	{
+		URLPattern: `^https?://([a-z0-9-]+\.)*(google\.[a-z.]+|doubleclick\.net|googlesyndication\.com|googleadservices\.com)` +
+			`/(ccm(/s)?/collect|rmkt/collect|pagead/(viewthroughconversion|1p-user-list|1p-conversion|conversion)/|ads/ga-audiences)`,
+		DropAllQuery: true,
+	},
+
+	// Microsoft UET and its cookie-sync pixels; ti names the UET tag.
+	{URLPattern: `^https?://bat\.bing\.com/actionp?/`, KeepQueryParams: []string{"ti"}},
+	{URLPattern: `^https?://c\.(bing\.com|clarity\.ms)/c\.gif(\?|$)`, DropAllQuery: true},
+
+	// Meta pixel; id names the pixel.
+	{URLPattern: `^https?://www\.facebook\.com/tr/?(\?|$)`, KeepQueryParams: []string{"id"}},
+
+	// Pinterest tag; tid names the tag.
+	{URLPattern: `^https?://ct\.pinterest\.com/v3/?(\?|$)`, KeepQueryParams: []string{"tid"}},
 }
 
 // BodyIdentity extracts a stable identifier from a response body.
@@ -79,9 +177,8 @@ var DefaultDropQueryParams = []string{
 
 // Normalizer applies a compiled rule set. It is safe for concurrent use.
 type Normalizer struct {
-	dropAllQuery bool
-	dropParams   map[string]struct{}
-	keepParams   map[string]struct{}
+	query        queryPolicy
+	queryRules   []QueryRule
 	pathReplace  []Replacement
 	dropTrailing bool
 	bodyIdents   []BodyIdentity
@@ -91,22 +188,22 @@ type Normalizer struct {
 // configuration error and are reported at load time rather than at scan time.
 func New(r Rules) (*Normalizer, error) {
 	n := &Normalizer{
-		dropAllQuery: r.DropAllQuery,
+		query:        newQueryPolicy(r.DropAllQuery, r.DropQueryParams, r.KeepQueryParams),
 		dropTrailing: r.DropTrailingSlash,
 	}
 
-	if len(r.DropQueryParams) > 0 {
-		n.dropParams = make(map[string]struct{}, len(r.DropQueryParams))
-		for _, p := range r.DropQueryParams {
-			n.dropParams[strings.ToLower(p)] = struct{}{}
-		}
-	}
+	for i, qr := range r.QueryRules {
+		if qr.URLPattern != "" {
+			re, err := regexp.Compile(qr.URLPattern)
+			if err != nil {
+				return nil, fmt.Errorf("query rule %d: compiling urlPattern %q: %w", i, qr.URLPattern, err)
+			}
 
-	if len(r.KeepQueryParams) > 0 {
-		n.keepParams = make(map[string]struct{}, len(r.KeepQueryParams))
-		for _, p := range r.KeepQueryParams {
-			n.keepParams[strings.ToLower(p)] = struct{}{}
+			qr.urlRe = re
 		}
+
+		qr.query = newQueryPolicy(qr.DropAllQuery, qr.DropQueryParams, qr.KeepQueryParams)
+		n.queryRules = append(n.queryRules, qr)
 	}
 
 	for i, rep := range r.PathReplacements {
@@ -174,11 +271,12 @@ func (n *Normalizer) BodyIdentity(rawURL, body string) (label, value string) {
 // caller can skip the work of holding on to a body when none is.
 func (n *Normalizer) HasBodyIdentities() bool { return len(n.bodyIdents) > 0 }
 
-// Key returns the comparison key for raw. Inputs that are not hierarchical
-// URLs — data:, blob:, javascript: — are returned with their opaque payload
-// removed, so a diff does not churn on inline content while still recording
-// that such a resource existed.
-func (n *Normalizer) Key(raw string) string {
+// Key returns the comparison key for raw, a request of the given party. An
+// empty party matches only query rules that name none. Inputs that are not
+// hierarchical URLs — data:, blob:, javascript: — are returned with their
+// opaque payload removed, so a diff does not churn on inline content while
+// still recording that such a resource existed.
+func (n *Normalizer) Key(raw string, party model.Party) string {
 	if raw == "" {
 		return ""
 	}
@@ -196,7 +294,7 @@ func (n *Normalizer) Key(raw string) string {
 
 	host := normalizeHost(u.Scheme, u.Host)
 	path := n.normalizePath(u.Path)
-	query := n.normalizeQuery(u)
+	query := n.policyFor(raw, party).apply(u)
 
 	// The key is assembled by hand rather than via url.String(), which
 	// percent-encodes the braces in placeholders like "{hash}" and would make
@@ -241,9 +339,38 @@ func (n *Normalizer) normalizePath(path string) string {
 	return path
 }
 
-// normalizeQuery returns the normalized query string, without a leading "?".
-func (n *Normalizer) normalizeQuery(u *url.URL) string {
-	if n.dropAllQuery || u.RawQuery == "" {
+// Rekey derives req's comparison key again under the current rules, from
+// the raw URL stored beside the old key (Tenet 4). It is what lets a rule
+// change apply to history, and what keeps the first scan after one from
+// reporting every re-keyed asset as removed and added again.
+//
+// An opaque URL keeps its stored key: a data: URL is stored truncated, and
+// its key was derived from the full one at capture.
+func (n *Normalizer) Rekey(req *model.Request) string {
+	if req.URL == "" {
+		return req.NormalizedURL
+	}
+
+	if _, _, opaque := opaqueScheme(req.URL); opaque {
+		return req.NormalizedURL
+	}
+
+	return n.Key(req.URL, req.Party)
+}
+
+func (n *Normalizer) policyFor(raw string, party model.Party) *queryPolicy {
+	for i := range n.queryRules {
+		if n.queryRules[i].matches(raw, party) {
+			return &n.queryRules[i].query
+		}
+	}
+
+	return &n.query
+}
+
+// apply returns the normalized query string, without a leading "?".
+func (p *queryPolicy) apply(u *url.URL) string {
+	if p.dropAll || u.RawQuery == "" {
 		return ""
 	}
 
@@ -253,12 +380,12 @@ func (n *Normalizer) normalizeQuery(u *url.URL) string {
 		lower := strings.ToLower(name)
 
 		switch {
-		case n.keepParams != nil:
-			if _, keep := n.keepParams[lower]; !keep {
+		case p.keep != nil:
+			if _, keep := p.keep[lower]; !keep {
 				delete(values, name)
 			}
-		case n.dropParams != nil:
-			if _, drop := n.dropParams[lower]; drop {
+		case p.drop != nil:
+			if _, drop := p.drop[lower]; drop {
 				delete(values, name)
 			}
 		}
