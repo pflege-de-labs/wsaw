@@ -304,12 +304,41 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		})
 	}
 
+	for _, q := range c.Normalize.QueryRules {
+		r.QueryRules = append(r.QueryRules, normalize.QueryRule{
+			URLPattern:      q.URLPattern,
+			Party:           q.Party,
+			KeepQueryParams: q.KeepQueryParams,
+			DropQueryParams: q.DropQueryParams,
+			DropAllQuery:    q.DropAllQuery,
+		})
+	}
+
+	// Configured rules come first, so an operator can override a shipped
+	// rule for one endpoint without opting out of all of them. Opt-out for
+	// the same reason as the drop list: without them, every tracking pixel a
+	// site fires reports as a new asset on every scan.
+	if c.Normalize.UseDefaultQueryRules == nil || *c.Normalize.UseDefaultQueryRules {
+		r.QueryRules = append(r.QueryRules, normalize.DefaultQueryRules...)
+	}
+
 	for _, id := range c.Normalize.BodyIdentities {
 		r.BodyIdentities = append(r.BodyIdentities, normalize.BodyIdentity{
 			URLPattern: id.URLPattern,
 			Extract:    id.Extract,
 			Label:      id.Label,
 		})
+	}
+
+	for _, v := range c.Normalize.VolatileBodies {
+		r.VolatileBodies = append(r.VolatileBodies, normalize.VolatileBody{URLPattern: v.URLPattern})
+	}
+
+	// Opt-out, because the shipped query rules are what make these responses
+	// meet: without this list, turning those rules on trades an added and a
+	// removed asset per visit for a changed script per visit.
+	if c.Normalize.UseDefaultVolatileBodies == nil || *c.Normalize.UseDefaultVolatileBodies {
+		r.VolatileBodies = append(r.VolatileBodies, normalize.DefaultVolatileBodies...)
 	}
 
 	return r, nil

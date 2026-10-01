@@ -5,6 +5,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/classify"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
 // Options configures a comparison.
@@ -24,6 +25,13 @@ type Options struct {
 	// reached and so disables the check, for an operator who would rather see
 	// the raw comparison.
 	DegradedFailureRatio float64
+
+	// Normalizer, when set, re-derives every asset's comparison key from its
+	// raw URL under the current rules instead of using the key stored at
+	// capture (Tenet 4). A rule change then applies to history, and the
+	// first scan after one is not a wall of assets removed and re-added under
+	// new keys. Nil keeps the stored keys.
+	Normalizer *normalize.Normalizer
 }
 
 // DefaultDegradedFailureRatio is the share of lost requests above which a

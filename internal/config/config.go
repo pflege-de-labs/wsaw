@@ -626,12 +626,46 @@ type Normalize struct {
 	DropTrailingSlash bool          `yaml:"dropTrailingSlash,omitempty"`
 	PathReplacements  []Replacement `yaml:"pathReplacements,omitempty"`
 
+	// QueryRules scope query-string handling to the requests they match,
+	// replacing the settings above for those requests. The first match wins.
+	QueryRules []QueryRule `yaml:"queryRules,omitempty"`
+
+	// UseDefaultQueryRules adds the shipped rules for tracking and conversion
+	// endpoints, after any configured ones.
+	UseDefaultQueryRules *bool `yaml:"useDefaultQueryRules,omitempty"`
+
 	// BodyIdentities compare a script by a version it publishes about itself
 	// instead of by the digest of its bytes.
 	BodyIdentities []BodyIdentity `yaml:"bodyIdentity,omitempty"`
 
+	// VolatileBodies name responses whose body is per-visit, so their digest
+	// is not compared.
+	VolatileBodies []VolatileBody `yaml:"volatileBodies,omitempty"`
+
+	// UseDefaultVolatileBodies adds the shipped list of per-visit responses,
+	// after any configured ones.
+	UseDefaultVolatileBodies *bool `yaml:"useDefaultVolatileBodies,omitempty"`
+
 	// UseDefaultDropParams adds the shipped list of noise parameters.
 	UseDefaultDropParams *bool `yaml:"useDefaultDropParams,omitempty"`
+}
+
+// VolatileBody names responses whose content differs on every fetch.
+type VolatileBody struct {
+	URLPattern string `yaml:"urlPattern"`
+}
+
+// QueryRule handles the query string of the requests it matches.
+//
+// It names a scope — a URL pattern, a party, or both, and both must then
+// match — and exactly one way to treat the query: keep only the listed
+// parameters, drop the listed ones, or drop it all.
+type QueryRule struct {
+	URLPattern      string      `yaml:"urlPattern,omitempty"`
+	Party           model.Party `yaml:"party,omitempty"`
+	KeepQueryParams []string    `yaml:"keepQueryParams,omitempty"`
+	DropQueryParams []string    `yaml:"dropQueryParams,omitempty"`
+	DropAllQuery    bool        `yaml:"dropAllQuery,omitempty"`
 }
 
 // Capture configures the scan budget's shared parts.

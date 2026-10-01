@@ -27,6 +27,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/daemon"
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/share"
@@ -158,6 +159,9 @@ type Deps struct {
 	// Options.AllowURLScan unset, and the page does not exist.
 	URLScanner URLScanner
 	Rules      *consent.RuleSet
+	// Normalizer keys assets for the comparisons the interface shows, under
+	// the same rules a scan's own diff used. Nil compares stored keys.
+	Normalizer *normalize.Normalizer
 	Logger     *slog.Logger
 
 	// Targets returns the current target list. It is a function so a config

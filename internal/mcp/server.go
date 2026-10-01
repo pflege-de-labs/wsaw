@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+
+	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
 // supportedVersions are the protocol revisions this server speaks, newest
@@ -79,11 +81,13 @@ type Server struct {
 	log     *slog.Logger
 }
 
-// New creates a server that answers from st. version is wsaw's own build
-// version, reported to the client as the server's.
-func New(st Store, version string, log *slog.Logger) *Server {
+// New creates a server that answers from st. n keys assets for comparison
+// under the configured normalization rules, as a scan does; nil compares the
+// keys stored at capture. version is wsaw's own build version, reported to
+// the client as the server's.
+func New(st Store, n *normalize.Normalizer, version string, log *slog.Logger) *Server {
 	s := &Server{version: version, log: log}
-	s.tools = newTools(st)
+	s.tools = newTools(st, n)
 	s.byName = make(map[string]tool, len(s.tools))
 
 	for _, t := range s.tools {

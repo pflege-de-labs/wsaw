@@ -9,6 +9,38 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- Query-string handling can be scoped with `normalize.queryRules`: a rule
+  names a URL pattern, a party, or both, and keeps, drops or strips the query
+  of the requests it matches. Shipped rules for Google, Microsoft, Meta and
+  Pinterest tracking endpoints keep only the parameter that names the tag, so
+  a beacon called with new per-visit parameters is one asset instead of an
+  `asset-added` and an `asset-removed` on every scan, while a new measurement
+  ID is still reported. On 30 days of one deployment's history this removed
+  55% of asset additions and removals and no host change. Opt out with
+  `normalize.useDefaultQueryRules: false` (Story 4.14).
+- The example configuration compares the gtag loader and consentmanager's
+  `cmp.php` by the version each declares (`bodyIdentity`), because both
+  rewrite their bytes on nearly every fetch: 68 and 66 `script-changed`
+  events in the same 30 days, with the declared version unchanged throughout.
+
+### Changed
+
+- Comparisons now key both scans again from their stored raw URLs under the
+  current normalization rules, in the scan's own diff, the web interface and
+  API, and `wsaw mcp`. Changing a rule applies to history and no longer makes
+  the next scan report every re-keyed asset as removed and added. The stored
+  `normalizedUrl` and the result schema are unchanged (Story 4.14).
+- A script that rewrites itself on every fetch and is now keyed as one asset
+  reports `script-changed` where it used to report an added and a removed
+  asset. Add a `bodyIdentity` rule where the script declares a version.
+  Responses with no version to read can be listed under
+  `normalize.volatileBodies`: their digest is not compared, their URL still
+  is. Google Ads' `viewthroughconversion`, whose script is built for each
+  visit, is shipped there; opt out with `normalize.useDefaultVolatileBodies:
+  false` (Story 4.14, AC6).
+
 ## [0.5.0] - 2026-09-30
 
 Every scan now says how far it can be trusted. A confidence score from 0 to

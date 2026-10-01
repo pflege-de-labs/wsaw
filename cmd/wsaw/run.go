@@ -547,6 +547,11 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 
 	adHoc := a.Config.API.AdHocURLs
 
+	normalizer, err := a.Normalizer()
+	if err != nil {
+		return nil, fmt.Errorf("compiling normalization rules: %w", err)
+	}
+
 	return httpapi.New(httpapi.Options{
 		Listen:  a.Config.API.Listen,
 		Token:   token,
@@ -582,6 +587,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Trigger:          a,
 		URLScanner:       a,
 		Rules:            a.Rules,
+		Normalizer:       normalizer,
 		Logger:           a.Logger,
 		Targets:          targets,
 		Retention:        a.Retention,

@@ -41,7 +41,7 @@ func TestStructuralNormalizationAlwaysApplies(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := n.Key(tc.in); got != tc.want {
+			if got := n.Key(tc.in, ""); got != tc.want {
 				t.Errorf("Key(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
@@ -62,7 +62,7 @@ func TestDropQueryParams(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := n.Key(tc.in); got != tc.want {
+		if got := n.Key(tc.in, ""); got != tc.want {
 			t.Errorf("Key(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -76,7 +76,7 @@ func TestKeepQueryParamsTakesPrecedence(t *testing.T) {
 		DropQueryParams: []string{"id"}, // ignored while KeepQueryParams is set
 	})
 
-	got := n.Key("https://example.com/a?id=7&cb=1&other=2")
+	got := n.Key("https://example.com/a?id=7&cb=1&other=2", "")
 	if want := "https://example.com/a?id=7"; got != want {
 		t.Errorf("Key = %q, want %q", got, want)
 	}
@@ -87,7 +87,7 @@ func TestDropAllQuery(t *testing.T) {
 
 	n := mustNew(t, normalize.Rules{DropAllQuery: true})
 
-	got := n.Key("https://example.com/a.js?sig=abc&exp=123")
+	got := n.Key("https://example.com/a.js?sig=abc&exp=123", "")
 	if want := "https://example.com/a.js"; got != want {
 		t.Errorf("Key = %q, want %q", got, want)
 	}
@@ -119,7 +119,7 @@ func TestPathReplacements(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := n.Key(tc.in); got != tc.want {
+		if got := n.Key(tc.in, ""); got != tc.want {
 			t.Errorf("Key(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -136,8 +136,8 @@ func TestPathReplacementCollapsesBuildChurn(t *testing.T) {
 		},
 	})
 
-	before := n.Key("https://example.com/app.aaaaaaaa11.js")
-	after := n.Key("https://example.com/app.bbbbbbbb22.js")
+	before := n.Key("https://example.com/app.aaaaaaaa11.js", "")
+	after := n.Key("https://example.com/app.bbbbbbbb22.js", "")
 
 	if before != after {
 		t.Errorf("build hashes not collapsed: %q != %q", before, after)
@@ -156,7 +156,7 @@ func TestDropTrailingSlash(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := n.Key(tc.in); got != tc.want {
+		if got := n.Key(tc.in, ""); got != tc.want {
 			t.Errorf("Key(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -174,7 +174,7 @@ func TestOpaqueSchemesLoseTheirPayload(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := n.Key(tc.in); got != tc.want {
+		if got := n.Key(tc.in, ""); got != tc.want {
 			t.Errorf("Key(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
@@ -187,8 +187,8 @@ func TestOpaqueDataURLsCollapse(t *testing.T) {
 
 	n := mustNew(t, normalize.Rules{})
 
-	a := n.Key("data:image/png;base64,AAAA")
-	b := n.Key("data:image/png;base64,BBBB")
+	a := n.Key("data:image/png;base64,AAAA", "")
+	b := n.Key("data:image/png;base64,BBBB", "")
 
 	if a != b {
 		t.Errorf("data URL payloads not collapsed: %q != %q", a, b)
@@ -214,8 +214,8 @@ func TestKeyIsIdempotent(t *testing.T) {
 	}
 
 	for _, in := range inputs {
-		once := n.Key(in)
-		if twice := n.Key(once); twice != once {
+		once := n.Key(in, "")
+		if twice := n.Key(once, ""); twice != once {
 			t.Errorf("Key not idempotent for %q: %q then %q", in, once, twice)
 		}
 	}
@@ -227,7 +227,7 @@ func TestUnparseableURLIsPreservedNotDiscarded(t *testing.T) {
 	n := mustNew(t, normalize.Rules{})
 
 	const in = "http://[::1]:namedport/x"
-	if got := n.Key(in); got != in {
+	if got := n.Key(in, ""); got != in {
 		t.Errorf("Key(%q) = %q, want the input preserved verbatim", in, got)
 	}
 }
@@ -235,7 +235,7 @@ func TestUnparseableURLIsPreservedNotDiscarded(t *testing.T) {
 func TestEmptyInput(t *testing.T) {
 	t.Parallel()
 
-	if got := mustNew(t, normalize.Rules{}).Key(""); got != "" {
+	if got := mustNew(t, normalize.Rules{}).Key("", ""); got != "" {
 		t.Errorf("Key(\"\") = %q, want empty", got)
 	}
 }

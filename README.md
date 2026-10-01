@@ -309,6 +309,36 @@ note in the HAR — because a short body and a truncated one are different
 facts. Bodies can contain personal data, so `storeBodies` is off by default
 and retention applies to them as it does to everything else.
 
+#### Tracking pixels that change their query on every visit
+
+A conversion or analytics beacon is the same endpoint on every visit, called
+with a query string that is not: consent flags, user-agent hints, the page
+title, a timestamp. Keyed by its full URL, each visit is a new asset. A
+global `dropAllQuery` would quiet it and would also hide a site switching its
+measurement ID, so query handling can be scoped instead:
+
+```yaml
+normalize:
+  queryRules:
+    - urlPattern: '^https://px\.example\.com/hit'
+      party: third
+      keepQueryParams: [pid]
+```
+
+A rule names `urlPattern` (matched against the raw URL), `party` (`first` or
+`third`), or both, and exactly one of `keepQueryParams`, `dropQueryParams` or
+`dropAllQuery`. For the requests it matches it replaces the global query
+settings; the first matching rule wins. wsaw ships rules for Google, Microsoft,
+Meta and Pinterest tracking endpoints, tried after yours, that keep only the
+parameter naming the tag (`id`, `tid`, `ti`); `useDefaultQueryRules: false`
+turns them off.
+
+Every comparison keys both scans again from their raw URLs under the current
+rules, so a rule change applies to history and the next scan does not report
+every re-keyed asset as removed and added. Once two visits share a key their
+bodies are compared, so a script that rewrites itself on every fetch shows up
+as `script-changed` instead — which is what the next section is for.
+
 #### Scripts that rewrite themselves
 
 A digest answers "did these bytes change", which is the right question for
@@ -338,6 +368,14 @@ hashed. If a rule matches the URL but the body does not carry the identity,
 the script counts as **not comparable** rather than unchanged — the same
 treatment as a missing digest, because a false "unchanged" is the worse answer
 for a supply-chain check.
+
+A few responses have no version to read: Google Ads' `viewthroughconversion`
+answers with a script built for the one visit. List those under
+`normalize.volatileBodies` (a `urlPattern` each) and their digest is not
+compared at all, while the URL still is, so a new conversion ID is still a new
+asset. `viewthroughconversion` is shipped; `useDefaultVolatileBodies: false`
+turns it off. A script on this list is outside the supply-chain check, so keep
+it short.
 
 The result schema is published at [`docs/result.schema.json`](docs/result.schema.json) and the HTTP API at [`docs/openapi.yaml`](docs/openapi.yaml).
 
