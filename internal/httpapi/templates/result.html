@@ -145,10 +145,17 @@
 {{if .Diff}}
 <section id="changes">
   <h2>Changes</h2>
+  {{/* A baseline is not compared with itself, which would say "no changes"
+       and mean nothing; it is compared with the scan before it, and the
+       section says which scan that is (Story 5.36, AC5). */}}
+  {{if and .OwnBaseline .ComparedLink}}
+    <p class="muted" id="compared-against">This scan is the baseline. Changes are shown against the previous scan,
+      <a href="{{.ComparedLink}}"><code>{{.Diff.BaselineScanID}}</code></a>.</p>
+  {{end}}
   {{if not .Diff.Comparable}}
     <p class="empty">No comparison was possible: {{.Diff.Reason}}</p>
   {{else if not .Diff.Changes}}
-    <p class="empty">No changes against the baseline.
+    <p class="empty">No changes against {{if .OwnBaseline}}the previous scan{{else}}the baseline{{end}}.
       {{if .Diff.Suppressed}}{{.Diff.Suppressed}} change(s) were suppressed by the allow list.{{end}}</p>
   {{else}}
     {{$c := .Changes}}
@@ -192,6 +199,42 @@
     </table>
     {{if .Diff.Suppressed}}<p class="muted">{{.Diff.Suppressed}} further change(s) suppressed by the allow list.</p>{{end}}
   {{end}}
+</section>
+{{end}}
+
+{{/* Approving is a judgement about this scan, so it is offered beside the
+     changes being judged, by the same rule the history row uses
+     (Story 5.36, AC1-AC3). A read-only deployment sees only the statement
+     that this scan is the baseline, never the control. */}}
+{{if .Approval.Current}}
+<section id="baseline">
+  <h2>Baseline</h2>
+  <p><span class="badge badge-baseline">baseline</span>
+    This scan is the current baseline for this target and consent mode: every later scan is measured against it.
+    Approved {{time .Baseline.ApprovedAt}}{{if .Baseline.ApprovedBy}} by {{.Baseline.ApprovedBy}}{{end}}.</p>
+  {{if .Baseline.Note}}<p class="note">{{.Baseline.Note}}</p>{{end}}
+</section>
+{{else if .Approval.Refused}}
+<section id="baseline">
+  <h2>Baseline</h2>
+  <p class="muted">This scan did not produce a trustworthy asset list, so it cannot be approved as the baseline.</p>
+</section>
+{{else if .Approval.Offered}}
+<section id="baseline">
+  <h2>Baseline</h2>
+  <p>Approving this scan makes it what every later scan of this target and consent mode is compared against.</p>
+  {{if $res.Truncated}}
+  <p class="warn" id="approve-truncated">This scan stopped early (<code>{{$res.Termination}}</code>), so its asset list may be incomplete.
+    Approving it makes that partial list the expected state.</p>
+  {{end}}
+  <form method="post" action="/approve/{{$res.Target}}/{{$res.ConsentMode}}" class="inline">
+    <input type="hidden" name="csrf" value="{{$page.CSRF}}">
+    <input type="hidden" name="scanId" value="{{$res.ScanID}}">
+    <input type="hidden" name="from" value="result">
+    <input type="text" name="actor" placeholder="your name" size="10">
+    <input type="text" name="note" placeholder="note (optional)" size="24">
+    <button type="submit">Approve as baseline</button>
+  </form>
 </section>
 {{end}}
 

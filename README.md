@@ -506,6 +506,22 @@ honest anchor for a tab left open an hour, and it says why it holds still
 rather than reading as though refreshing were broken. Reloading it yourself
 works as it always did.
 
+A scan can be **approved as the baseline from its own page**, beside the
+changes you are judging, as well as from its row in the target's history. Both
+pages offer approval for exactly the same scans. A scan that failed or was
+skipped says it cannot be a baseline instead. A scan that stopped early can
+still be approved, and the page warns you that its asset list may be
+incomplete. After approving, you land back on the scan, which now says it is
+the current baseline and who approved it. A read-only deployment shows which
+scan is the baseline and offers no approval. A shared link shows neither.
+
+**The baseline's own page is compared with the scan before it, not with
+itself.** Comparing a baseline with itself always reports "no changes", which
+reads like a scan that changed nothing. Its Changes section instead names and
+links the previous scan it was compared with, or says that no earlier scan is
+stored. `GET /api/v1/diff/{target}/{mode}/{scan}` gives the same answer for
+the baseline's scan ID. Every other scan is still compared with the baseline.
+
 The board marks a tile for the one question a board can answer at a glance:
 **did a third party appear in a scan where the visitor had agreed to
 nothing.** A third-party host the site did not contact before is critical in

@@ -578,6 +578,10 @@ type seriesRow struct {
 	// row it is has to match hex digits by eye against the panel above
 	// (Story 5.20, AC2).
 	IsBaseline bool
+
+	// Approval is what the row may offer, by the rule the scan's own page
+	// also uses (Story 5.36, AC1).
+	Approval approvalState
 }
 
 func (s *Server) handleUISeries(w http.ResponseWriter, r *http.Request) {
@@ -645,14 +649,19 @@ func (s *Server) seriesSize(target string, results []seriesRow) seriesSize {
 	return sz
 }
 
-// seriesRows marks the history row that is the baseline.
+// seriesRows marks the history row that is the baseline, and decides what each
+// row may offer for approval.
 func (s *Server) seriesRows(results []store.Summary, baseline *store.Baseline) []seriesRow {
 	out := make([]seriesRow, 0, len(results))
+	writable, _ := s.writeAllowed()
 
 	for _, r := range results {
+		isBaseline := baseline != nil && r.ScanID == baseline.ScanID
+
 		out = append(out, seriesRow{
 			Summary:    r,
-			IsBaseline: baseline != nil && r.ScanID == baseline.ScanID,
+			IsBaseline: isBaseline,
+			Approval:   approvalFor(summaryOK(r), isBaseline, writable),
 		})
 	}
 
@@ -721,6 +730,17 @@ type resultData struct {
 	// (Story 5.29). It is display state derived from Diff, never a second
 	// source of truth about what changed.
 	Changes changesView
+
+	// Approval is what the page may offer for making this scan the baseline,
+	// decided by the same rule as the history row (Story 5.36, AC1).
+	Approval approvalState
+	// Baseline is the series' approved baseline, named on the page when it
+	// is this scan (AC3).
+	Baseline *store.Baseline
+	// OwnBaseline says this scan is the baseline, so Diff is against the
+	// previous scan, and ComparedLink opens that scan (AC5).
+	OwnBaseline  bool
+	ComparedLink string
 
 	// Screenshots are the scan's evidence images, before and after the
 	// consent interaction (Story 5.17).
@@ -925,10 +945,16 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cmp := s.comparisonFor(res)
+	writable, _ := s.writeAllowed()
+
 	data := resultData{
 		Result:      res,
 		Screenshots: s.screenshotViews(r.Context(), res),
-		Diff:        s.diffFor(res),
+		Diff:        cmp.Report,
+		Approval:    approvalFor(res.OK(), cmp.OwnBaseline, writable),
+		Baseline:    cmp.Baseline,
+		OwnBaseline: cmp.OwnBaseline,
 		Hosts:       res.HostSummaries(),
 		Counts:      res.CountsByResourceType(),
 		FilterHost:  r.URL.Query().Get("host"),
@@ -942,6 +968,10 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 	// (Story 5.29).
 	if data.Diff != nil {
 		data.Changes = newChangesView(data.Diff, r.URL.Query())
+	}
+
+	if cmp.OwnBaseline && cmp.Report.BaselineScanID != "" {
+		data.ComparedLink = resultPath(res.Target, res.ConsentMode, cmp.Report.BaselineScanID)
 	}
 
 	for i := range res.Requests {
@@ -1090,12 +1120,6 @@ func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if allowed, reason := s.writeAllowed(); !allowed {
-		s.uiRedirectError(w, r, "/", reason)
-
-		return
-	}
-
 	target, mode, ok := uiTargetMode(w, r)
 	if !ok {
 		return
@@ -1104,8 +1128,18 @@ func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
 	scanID := r.FormValue("scanId")
 	actor := r.FormValue("actor")
 
+	// Back to the page the form was on: an approval made while reading a
+	// scan returns to that scan, refusals included (Story 5.36, AC4).
+	dest := approveReturn(r.FormValue("from"), target, mode, scanID)
+
+	if allowed, reason := s.writeAllowed(); !allowed {
+		s.uiRedirectError(w, r, dest, reason)
+
+		return
+	}
+
 	if _, err := s.deps.Store.SetBaseline(target, mode, scanID, actor, r.FormValue("note")); err != nil {
-		s.uiRedirectError(w, r, "/targets/"+target+"/"+string(mode), err.Error())
+		s.uiRedirectError(w, r, dest, err.Error())
 
 		return
 	}
@@ -1113,7 +1147,7 @@ func (s *Server) handleUIApprove(w http.ResponseWriter, r *http.Request) {
 	s.deps.Logger.Info("baseline approved via web interface",
 		"target", target, "consent_mode", string(mode), "scan_id", scanID, "actor", actor)
 
-	s.uiRedirectOK(w, r, "/targets/"+target+"/"+string(mode),
+	s.uiRedirectOK(w, r, dest,
 		// "store" and not "database": what an approval is recorded in is the
 		// store, and where the store keeps it is not this message's business.
 		"Baseline approved. It is recorded in wsaw's store and in the audit log.")
