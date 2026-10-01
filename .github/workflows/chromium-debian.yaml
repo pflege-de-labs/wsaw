@@ -1,0 +1,157 @@
+# Daily check for a new Chromium in Debian testing, for the browser image
+# deploy/browser/Containerfile builds.
+#
+# That image is chromium.yaml's counterpart for the Chromium Alpine has not
+# packaged yet, and is pinned differently: by a dated snapshot of the Debian
+# archive and an exact package version, not by whatever the branch serves.
+# A snapshot is never taken down, so unlike the Alpine pin this one never
+# stops resolving, and nothing turns red when Chrome ships a security
+# release. That is the reason for this workflow: without it the image would
+# keep building the same Chromium indefinitely and nobody would be told.
+#
+# It reads the version out of today's snapshot (midnight UTC, which
+# snapshot.debian.org resolves to the newest snapshot taken before it) for
+# both architectures the image is built for, and opens a pull request moving
+# SNAPSHOT and CHROMIUM_VERSION together when the version has moved. Reading
+# both from the same snapshot is what makes the pair buildable: the version
+# is, by construction, one that snapshot carries. Debian's buildds build each
+# architecture separately, so for a while after an upload one can carry the
+# new version while the other does not; a bump is only proposed once both
+# agree, since the build installs the same version on both.
+#
+# chromium-headless-shell and chromium-common are built from one source
+# package, so the version read for the first is the one the build pins for
+# both.
+#
+# The pull request goes through ci.yaml like any other change, but ci.yaml
+# does not build this image, so the pull request asks for it to be built and
+# checked by hand. A pull request opened with the default GITHUB_TOKEN does
+# not trigger other workflows; set CHROMIUM_BUMP_TOKEN, as for chromium.yaml,
+# for CI to run on it without a manual push.
+
+name: Chromium (Debian)
+
+on:
+  schedule:
+    - cron: "53 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chromium-debian-bump
+  cancel-in-progress: false
+
+env:
+  CONTAINERFILE: deploy/browser/Containerfile
+
+jobs:
+  check:
+    name: check for a new Chromium in Debian
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+
+      # The suite comes from the Containerfile's sources stanza, so a move to
+      # another Debian suite is picked up here without editing this file.
+      - name: Read the pinned snapshot, version and suite
+        run: |
+          pinned=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' "$CONTAINERFILE")
+          pinned_snapshot=$(sed -n 's/^ARG SNAPSHOT=//p' "$CONTAINERFILE")
+          suite=$(sed -n "s/^ *'Suites: \([a-z]*\)'.*/\1/p" "$CONTAINERFILE")
+          if [ -z "$pinned" ] || [ -z "$pinned_snapshot" ] || [ -z "$suite" ]; then
+            echo "::error::could not read CHROMIUM_VERSION, SNAPSHOT or the Suites line from $CONTAINERFILE"
+            exit 1
+          fi
+          {
+            echo "PINNED=$pinned"
+            echo "PINNED_SNAPSHOT=$pinned_snapshot"
+            echo "SUITE=$suite"
+            echo "SNAPSHOT=$(date -u +%Y%m%dT000000Z)"
+          } >> "$GITHUB_ENV"
+          echo "pinned chromium-headless-shell=$pinned from $suite at $pinned_snapshot"
+
+      - name: Read the version in today's snapshot for each architecture
+        run: |
+          for arch in amd64 arm64; do
+            v=$(curl -fsSL --retry 5 --retry-delay 30 \
+                "https://snapshot.debian.org/archive/debian/$SNAPSHOT/dists/$SUITE/main/binary-$arch/Packages.xz" \
+              | xz -dc \
+              | awk -v RS= '/(^|\n)Package: chromium-headless-shell\n/' \
+              | sed -n 's/^Version: //p')
+            if [ -z "$v" ]; then
+              echo "::error::no chromium-headless-shell in $SUITE main/$arch at snapshot $SNAPSHOT"
+              exit 1
+            fi
+            echo "$arch: chromium-headless-shell=$v"
+            printf -v "V_$arch" '%s' "$v"
+          done
+          if [ "$V_amd64" != "$V_arm64" ]; then
+            echo "::notice::amd64 has $V_amd64 and arm64 has $V_arm64; waiting for both to carry the same build"
+            exit 0
+          fi
+          echo "LATEST=$V_amd64" >> "$GITHUB_ENV"
+
+      - name: Open a pull request for the new version
+        if: env.LATEST != '' && env.LATEST != env.PINNED
+        env:
+          GH_TOKEN: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+        run: |
+          head="deps/chromium-debian-$LATEST"
+          if git ls-remote --exit-code --heads origin "$head" >/dev/null; then
+            echo "::notice::$head already exists; not opening a second pull request"
+            exit 0
+          fi
+
+          sed -i \
+            -e "s/^ARG CHROMIUM_VERSION=.*/ARG CHROMIUM_VERSION=$LATEST/" \
+            -e "s/^ARG SNAPSHOT=.*/ARG SNAPSHOT=$SNAPSHOT/" \
+            "$CONTAINERFILE"
+          for want in "ARG CHROMIUM_VERSION=$LATEST" "ARG SNAPSHOT=$SNAPSHOT"; do
+            grep -qxF "$want" "$CONTAINERFILE" || {
+              echo "::error::$CONTAINERFILE does not have '$want' after the edit"
+              exit 1
+            }
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$head"
+          git commit -am "build(deps): bump Debian Chromium to $LATEST"
+          git push origin "$head"
+
+          upstream="${LATEST%-*}"
+          major="${LATEST%%.*}"
+          gh pr create --base main --head "$head" \
+            --title "build(deps): bump Debian Chromium to $LATEST" \
+            --body "$(cat <<EOF
+          Debian $SUITE carries \`chromium-headless-shell=$LATEST\` for both amd64 and arm64 in snapshot \`$SNAPSHOT\`; $CONTAINERFILE pins \`$PINNED\` from snapshot \`$PINNED_SNAPSHOT\`. The old pin still builds, but it builds a browser Debian has since replaced, usually for a security fix.
+
+          This changes \`SNAPSHOT\` and \`CHROMIUM_VERSION\` in $CONTAINERFILE, and nothing else. ci.yaml does not build this image, so before merging:
+
+          - Build it and check the version: \`podman build -f $CONTAINERFILE -t wsaw-browser:$major deploy/browser && podman run --rm wsaw-browser:$major --version\` must print \`Chromium $upstream\`.
+          - Read the release notes for anything that changes what a scan sees, and record the bump in CHANGELOG.md — results across this change are rendered by a different browser.
+
+          Chrome releases: https://chromereleases.googleblog.com/search?q=$major
+          Debian package: https://tracker.debian.org/pkg/chromium
+          EOF
+          )"
+
+      - name: Record the result
+        if: always()
+        run: |
+          {
+            echo "### Chromium (Debian)"
+            echo
+            echo "- Debian suite: \`${SUITE:-?}\`"
+            echo "- Pinned: \`${PINNED:-?}\` at snapshot \`${PINNED_SNAPSHOT:-?}\`"
+            echo "- Today's snapshot: \`${SNAPSHOT:-?}\`"
+            echo "- Available on both architectures: \`${LATEST:-not in agreement}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

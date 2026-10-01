@@ -46,6 +46,16 @@ additive change against which 2.1 documents still validate.
   a reason it has none. `maxBodyBytes` and `maxScanBytes` cap one body and one
   scan. New metrics: `wsaw_bodies_stored_total`, `wsaw_body_bytes_stored_total`
   and `wsaw_bodies_unavailable_total`.
+- `deploy/browser/Containerfile` builds the per-scan browser image on
+  Chromium 154 (154.0.8037.57) from Debian testing, for amd64 and arm64.
+  Alpine, which the published image is built from, still carries Chromium
+  152. The image keeps the same contract and sandbox as the published one, so
+  point `browser.container.image` at a local build to use it:
+  `podman build -f deploy/browser/Containerfile -t wsaw-browser:154 deploy/browser`.
+  Under Docker it needs the seccomp profile as the published image does.
+  A daily workflow opens a pull request when Debian ships a newer Chromium
+  for both architectures, because the pinned snapshot never stops building
+  and so would otherwise never show that it is out of date (Story 1.8).
 
 ### Changed
 
