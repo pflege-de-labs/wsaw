@@ -24,6 +24,14 @@ criteria, and any that are still open, are written down.
   `cmp.php` by the version each declares (`bodyIdentity`), because both
   rewrite their bytes on nearly every fetch: 68 and 66 `script-changed`
   events in the same 30 days, with the declared version unchanged throughout.
+- `deploy/browser/Containerfile` builds the per-scan browser image on
+  Chromium 154 (154.0.8037.57) from Debian testing, for amd64 and arm64.
+  Alpine, which the published image is built from, still carries Chromium
+  152. The image keeps the same contract and sandbox as the published one, so
+  point `browser.container.image` at a local build to use it:
+  `podman build -f deploy/browser/Containerfile -t wsaw-browser:154 deploy/browser`.
+  Under Docker it needs the seccomp profile as the published image does
+  (Story 1.8).
 
 ### Changed
 

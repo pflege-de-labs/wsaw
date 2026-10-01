@@ -1,0 +1,96 @@
+# The per-scan browser image (Story 1.8) on Chromium 154, built from Debian.
+#
+# deploy/browser/Dockerfile builds the same image from Alpine, and Alpine
+# packages Chromium late: on 2026-10-01 both v3.24 and edge still carry 152
+# while Chrome stable is 154. Debian testing (forky) ships 154 for amd64 and
+# arm64, so this file builds the image from there for as long as Alpine lags.
+# Chromium rather than Google Chrome, because Chromium is the one that may be
+# redistributed (NFR §9); compiling it here instead would take hours and over
+# 100 GB of disk per architecture, for the same source Debian has built.
+#
+# The contract with wsaw (internal/container) is unchanged, and the entrypoint
+# is the same file: CDP on port 9222, arguments after the image name appended
+# to Chromium's command line, `--version` printing the version as its last
+# line, and Chromium's own sandbox kept on (AC5). Under Docker the container
+# still needs
+#   --security-opt seccomp=deploy/chromium-seccomp.json
+# passed through browser.container.extraArgs; rootless Podman's default
+# profile already allows the sandbox's user namespaces.
+#
+# Build it with
+#   podman build -f deploy/browser/Containerfile -t wsaw-browser:154 deploy/browser
+#
+# Everything is pinned, for the reason the Alpine images pin theirs (Story
+# 6.3, AC1): the browser renders every result, so two builds of the same file
+# must install the same Chromium. The base image is pinned by digest, and apt
+# reads a dated snapshot of the archive rather than the moving forky branch.
+# To move to a newer Chromium, set SNAPSHOT to a timestamp at which
+# https://snapshot.debian.org/archive/debian/<SNAPSHOT>/dists/forky/ carries
+# it for both architectures, and CHROMIUM_VERSION to that version; a version
+# the snapshot lacks fails the build rather than installing something else.
+FROM debian:forky-slim@sha256:2f3607b1ec79933241f58759eb9de9a691a393520820477dd81df5097a8b7da7
+
+ARG SNAPSHOT=20260930T000000Z
+ARG CHROMIUM_VERSION=154.0.8037.57-1
+
+# A Release file is valid for a week after Debian signs it, and a snapshot
+# keeps serving it long after, which is why Check-Valid-Until is off; the
+# signatures are still checked against the keyring in the base image. Plain HTTP is enough for the same reason, and
+# avoids needing CA certificates before apt has installed them.
+#
+# chromium-headless-shell is the old headless mode as its own binary, the one
+# the Alpine image ships too. socat carries CDP from the published port to
+# Chromium, which binds its debugging port to loopback. The fonts match the
+# Alpine images' set: without them layout differs enough that the
+# element-visibility checks consent handling relies on behave differently
+# from a real browser.
+RUN rm -f /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list \
+    && printf '%s\n' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian/${SNAPSHOT}" \
+      'Suites: forky' \
+      'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Check-Valid-Until: no' \
+      > /etc/apt/sources.list.d/snapshot.sources \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      "chromium-headless-shell=${CHROMIUM_VERSION}" \
+      "chromium-common=${CHROMIUM_VERSION}" \
+      socat \
+      ca-certificates \
+      fonts-noto-core \
+      fonts-noto-color-emoji \
+      fonts-freefont-ttf \
+      tzdata \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+# Debian's /usr/bin/chromium-headless-shell is a shell script that runs the
+# binary without exec, so the shell would sit at PID 1 and never forward the
+# SIGTERM a container stop sends: every browser would linger until the
+# runtime killed it. The entrypoint execs this path, so it is pointed at the
+# binary itself, which finds its resources through /proc/self/exe.
+RUN ln -sf /usr/lib/chromium/chromium-headless-shell /usr/bin/chromium-headless-shell
+
+# Unprivileged inside the container too: a renderer that escapes its sandbox
+# lands as this user, and under rootless Podman that user is itself unmapped
+# on the host (NFR §4).
+RUN groupadd --gid 10001 chrome \
+    && useradd --uid 10001 --gid chrome --home-dir /home/chrome --create-home chrome
+
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/wsaw-browser
+
+# de.pflege.wsaw.browser.sandbox is how wsaw learns that this image keeps the
+# sandbox, so a result's browserSandbox reports it instead of assuming every
+# container disables it (AC7). It is a promise the entrypoint keeps: it never
+# passes --no-sandbox.
+LABEL de.pflege.wsaw.browser.sandbox="enabled" \
+      de.pflege.wsaw.chromium.version="${CHROMIUM_VERSION}"
+
+USER chrome
+
+WORKDIR /home/chrome
+
+EXPOSE 9222
+
+ENTRYPOINT ["/usr/local/bin/wsaw-browser"]
