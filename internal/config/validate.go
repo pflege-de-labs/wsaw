@@ -427,6 +427,18 @@ func (c *Config) validateNormalize(add addFunc) {
 
 	c.validateQueryRules(add)
 	c.validateBodyIdentities(add)
+
+	for i, v := range c.Normalize.VolatileBodies {
+		field := fmt.Sprintf("normalize.volatileBodies[%d].urlPattern", i)
+
+		// An empty pattern matches every URL and would switch off the
+		// supply-chain check for every script.
+		if v.URLPattern == "" {
+			add(0, field, "is empty")
+		} else if _, err := regexp.Compile(v.URLPattern); err != nil {
+			add(0, field, "%q is not a valid regular expression: %v", v.URLPattern, err)
+		}
+	}
 }
 
 // validateQueryRules rejects a rule without a scope, which would silently

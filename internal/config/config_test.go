@@ -1043,3 +1043,51 @@ normalize:
 		})
 	}
 }
+
+func TestNormalizeRulesIncludeShippedVolatileBodiesUnlessOptedOut(t *testing.T) {
+	t.Parallel()
+
+	rules, err := parse(t, `
+normalize:
+  volatileBodies:
+    - urlPattern: 'px\.example/script'
+`).NormalizeRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := len(rules.VolatileBodies), 1+len(normalize.DefaultVolatileBodies); got != want ||
+		rules.VolatileBodies[0].URLPattern != `px\.example/script` {
+		t.Errorf("VolatileBodies = %+v, want the configured one first, then the shipped ones", rules.VolatileBodies)
+	}
+
+	rules, err = parse(t, `
+normalize:
+  useDefaultVolatileBodies: false
+`).NormalizeRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rules.VolatileBodies) != 0 {
+		t.Errorf("VolatileBodies = %+v, want none after opting out", rules.VolatileBodies)
+	}
+}
+
+func TestInvalidVolatileBodiesAreRejected(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{`
+normalize:
+  volatileBodies:
+    - urlPattern: ''
+`, `
+normalize:
+  volatileBodies:
+    - urlPattern: '([unclosed'
+`} {
+		if err := parseErr(t, body); !strings.Contains(err.Error(), "normalize.volatileBodies[0].urlPattern") {
+			t.Errorf("error does not locate the rule: %v", err)
+		}
+	}
+}

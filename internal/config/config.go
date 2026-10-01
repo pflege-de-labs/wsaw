@@ -638,8 +638,21 @@ type Normalize struct {
 	// instead of by the digest of its bytes.
 	BodyIdentities []BodyIdentity `yaml:"bodyIdentity,omitempty"`
 
+	// VolatileBodies name responses whose body is per-visit, so their digest
+	// is not compared.
+	VolatileBodies []VolatileBody `yaml:"volatileBodies,omitempty"`
+
+	// UseDefaultVolatileBodies adds the shipped list of per-visit responses,
+	// after any configured ones.
+	UseDefaultVolatileBodies *bool `yaml:"useDefaultVolatileBodies,omitempty"`
+
 	// UseDefaultDropParams adds the shipped list of noise parameters.
 	UseDefaultDropParams *bool `yaml:"useDefaultDropParams,omitempty"`
+}
+
+// VolatileBody names responses whose content differs on every fetch.
+type VolatileBody struct {
+	URLPattern string `yaml:"urlPattern"`
 }
 
 // QueryRule handles the query string of the requests it matches.

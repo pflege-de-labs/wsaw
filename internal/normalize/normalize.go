@@ -43,6 +43,10 @@ type Rules struct {
 	// BodyIdentities lift a self-published version out of a response body,
 	// for scripts whose bytes change more often than their content does.
 	BodyIdentities []BodyIdentity
+
+	// VolatileBodies name responses whose body is different on every fetch
+	// by design, and declares no version a BodyIdentity could read.
+	VolatileBodies []VolatileBody
 }
 
 // Replacement rewrites part of a path with a fixed placeholder.
@@ -147,6 +151,30 @@ var DefaultQueryRules = []QueryRule{
 	{URLPattern: `^https?://ct\.pinterest\.com/v3/?(\?|$)`, KeepQueryParams: []string{"tid"}},
 }
 
+// VolatileBody marks responses whose content is per-visit, so comparing
+// their digests reports a change on every scan.
+//
+// It exists for beacons that answer with a script built for the one visit —
+// Google Ads' viewthroughconversion embeds the visit's own parameters in the
+// script it returns. Such a response is still an asset, compared by its key
+// like any other: a new conversion ID in the path is still reported. Only
+// its digest is not compared, and that is a rule an operator wrote or kept,
+// never something capture concluded on its own.
+type VolatileBody struct {
+	// URLPattern selects requests by their raw URL.
+	URLPattern string
+
+	re *regexp.Regexp
+}
+
+// DefaultVolatileBodies are the per-visit responses the shipped query rules
+// make comparable by key: once two visits share a key, their bodies meet,
+// and these differ on every visit. Offered as a starting point; operators
+// can opt out.
+var DefaultVolatileBodies = []VolatileBody{
+	{URLPattern: `^https?://([a-z0-9-]+\.)*(doubleclick\.net|google\.[a-z.]+|googleadservices\.com)/pagead/viewthroughconversion/`},
+}
+
 // BodyIdentity extracts a stable identifier from a response body.
 //
 // It exists for one shape of false positive: a script served from a stable
@@ -182,6 +210,7 @@ type Normalizer struct {
 	pathReplace  []Replacement
 	dropTrailing bool
 	bodyIdents   []BodyIdentity
+	volatile     []VolatileBody
 }
 
 // New compiles rules into a Normalizer. Invalid path patterns are a
@@ -241,7 +270,29 @@ func New(r Rules) (*Normalizer, error) {
 		n.bodyIdents = append(n.bodyIdents, id)
 	}
 
+	for i, v := range r.VolatileBodies {
+		re, err := regexp.Compile(v.URLPattern)
+		if err != nil {
+			return nil, fmt.Errorf("volatile body %d: compiling urlPattern %q: %w", i, v.URLPattern, err)
+		}
+
+		v.re = re
+		n.volatile = append(n.volatile, v)
+	}
+
 	return n, nil
+}
+
+// VolatileBody reports whether rawURL names a response whose body is
+// per-visit, and so must not be compared by digest.
+func (n *Normalizer) VolatileBody(rawURL string) bool {
+	for i := range n.volatile {
+		if n.volatile[i].re.MatchString(rawURL) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // BodyIdentity returns the label and value of the first matching identity

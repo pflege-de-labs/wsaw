@@ -369,6 +369,14 @@ the script counts as **not comparable** rather than unchanged — the same
 treatment as a missing digest, because a false "unchanged" is the worse answer
 for a supply-chain check.
 
+A few responses have no version to read: Google Ads' `viewthroughconversion`
+answers with a script built for the one visit. List those under
+`normalize.volatileBodies` (a `urlPattern` each) and their digest is not
+compared at all, while the URL still is, so a new conversion ID is still a new
+asset. `viewthroughconversion` is shipped; `useDefaultVolatileBodies: false`
+turns it off. A script on this list is outside the supply-chain check, so keep
+it short.
+
 The result schema is published at [`docs/result.schema.json`](docs/result.schema.json) and the HTTP API at [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Web interface and API

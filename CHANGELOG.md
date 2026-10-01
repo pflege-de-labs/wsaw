@@ -35,8 +35,11 @@ criteria, and any that are still open, are written down.
 - A script that rewrites itself on every fetch and is now keyed as one asset
   reports `script-changed` where it used to report an added and a removed
   asset. Add a `bodyIdentity` rule where the script declares a version.
-  Google Ads' `viewthroughconversion` declares none and stays noisy for now
-  (Story 4.14, AC6).
+  Responses with no version to read can be listed under
+  `normalize.volatileBodies`: their digest is not compared, their URL still
+  is. Google Ads' `viewthroughconversion`, whose script is built for each
+  visit, is shipped there; opt out with `normalize.useDefaultVolatileBodies:
+  false` (Story 4.14, AC6).
 
 ## [0.5.0] - 2026-09-30
 

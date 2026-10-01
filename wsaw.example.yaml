@@ -486,6 +486,19 @@ normalize:
       extract: '"intVersion":(\d+)'
       label: 'consentmanager settings version'
 
+  # Responses whose body is built for the one visit and declares no version,
+  # so their digest would differ on every scan. They are still compared by
+  # URL key, so a new endpoint is still reported; only the digest is not
+  # compared. Use this sparingly: a script listed here is outside the
+  # supply-chain check.
+  #
+  # volatileBodies:
+  #   - urlPattern: '^https://px\.example\.com/script'
+  #
+  # Google Ads' viewthroughconversion is shipped and added after the ones
+  # above unless this is set to false.
+  useDefaultVolatileBodies: true
+
 detection:
   # "previous" compares each scan with the one before it; "approved" compares
   # against a baseline someone signed off on.

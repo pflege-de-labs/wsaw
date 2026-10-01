@@ -109,3 +109,54 @@ func TestRekeyLeavesDataURLsOnTheirStoredKey(t *testing.T) {
 		t.Errorf("%d asset changes for one data: image, want none: %+v", len(got), got)
 	}
 }
+
+func volatileNormalizer(t *testing.T) *normalize.Normalizer {
+	t.Helper()
+
+	n, err := normalize.New(normalize.Rules{
+		QueryRules:     normalize.DefaultQueryRules,
+		VolatileBodies: normalize.DefaultVolatileBodies,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return n
+}
+
+func vtc(id, gtm, sha string) model.Request {
+	return req("https://googleads.g.doubleclick.net/pagead/viewthroughconversion/"+id+"/?gtm="+gtm,
+		"doubleclick.net", model.ThirdParty, digest(sha))
+}
+
+// The conversion beacon answers with a script built for the one visit. Its
+// digest differs every time, and once two visits share a key that must not
+// read as a third-party script changing on every scan.
+func TestVolatileBodyIsNotComparedByDigest(t *testing.T) {
+	t.Parallel()
+
+	a := result(model.ConsentAccept, vtc("825411646", "a", "sha-1"))
+	b := result(model.ConsentAccept, vtc("825411646", "b", "sha-2"))
+
+	if rep := diff.Compare(a, b, diff.Options{Normalizer: beaconNormalizer(t)}); len(rep.Changes) != 1 ||
+		rep.Changes[0].Type != diff.ScriptChanged {
+		t.Fatalf("without the volatile mark: %+v, want one script-changed (precondition)", rep.Changes)
+	}
+
+	if rep := diff.Compare(a, b, diff.Options{Normalizer: volatileNormalizer(t)}); len(rep.Changes) != 0 {
+		t.Errorf("with the volatile mark: %+v, want no change", rep.Changes)
+	}
+}
+
+// Only the digest is exempt: a new conversion ID is a new endpoint, and is
+// reported as one.
+func TestVolatileBodyStillReportsANewEndpoint(t *testing.T) {
+	t.Parallel()
+
+	a := result(model.ConsentAccept, vtc("825411646", "a", "sha-1"))
+	b := result(model.ConsentAccept, vtc("825411646", "b", "sha-2"), vtc("967278100", "b", "sha-3"))
+
+	rep := diff.Compare(a, b, diff.Options{Normalizer: volatileNormalizer(t)})
+
+	find(t, rep, diff.AssetAdded, "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/967278100/")
+}

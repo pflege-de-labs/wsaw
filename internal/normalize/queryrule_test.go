@@ -249,3 +249,34 @@ func TestRekeyKeepsTheStoredKeyWhereTheRawURLCannotRebuildIt(t *testing.T) {
 		})
 	}
 }
+
+func TestVolatileBodyMatchesOnlyItsURLs(t *testing.T) {
+	t.Parallel()
+
+	n := mustNew(t, normalize.Rules{VolatileBodies: normalize.DefaultVolatileBodies})
+
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://googleads.g.doubleclick.net/pagead/viewthroughconversion/825411646/?gtm=a", true},
+		{"https://www.google.de/pagead/viewthroughconversion/967278100/?x=1", true},
+		{"https://www.googletagmanager.com/gtag/js?id=G-1", false},
+		{"https://googleads.g.doubleclick.net/pagead/1p-user-list/825411646/", false},
+		{"https://evil.test/pagead/viewthroughconversion/1/", false},
+	}
+
+	for _, tc := range tests {
+		if got := n.VolatileBody(tc.url); got != tc.want {
+			t.Errorf("VolatileBody(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestInvalidVolatileBodyPatternFailsAtCompileTime(t *testing.T) {
+	t.Parallel()
+
+	if _, err := normalize.New(normalize.Rules{VolatileBodies: []normalize.VolatileBody{{URLPattern: "([unclosed"}}}); err == nil {
+		t.Fatal("New accepted an invalid pattern")
+	}
+}

@@ -523,6 +523,13 @@ func (d *differ) compareScripts() {
 			continue
 		}
 
+		// A body configured as per-visit differs on every fetch; comparing
+		// its digest would report a change on every scan. Its key is still
+		// compared above, so a new endpoint is still a new asset.
+		if d.rules.Normalizer != nil && d.rules.Normalizer.VolatileBody(now.url) {
+			continue
+		}
+
 		before, after, label, ok := scriptIdentity(was, now)
 		if !ok || before == after {
 			continue

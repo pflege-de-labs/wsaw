@@ -330,6 +330,17 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		})
 	}
 
+	for _, v := range c.Normalize.VolatileBodies {
+		r.VolatileBodies = append(r.VolatileBodies, normalize.VolatileBody{URLPattern: v.URLPattern})
+	}
+
+	// Opt-out, because the shipped query rules are what make these responses
+	// meet: without this list, turning those rules on trades an added and a
+	// removed asset per visit for a changed script per visit.
+	if c.Normalize.UseDefaultVolatileBodies == nil || *c.Normalize.UseDefaultVolatileBodies {
+		r.VolatileBodies = append(r.VolatileBodies, normalize.DefaultVolatileBodies...)
+	}
+
 	return r, nil
 }
 
