@@ -96,6 +96,16 @@ func (k Kind) Valid() bool {
 // ErrNoRuntime is returned when no container runtime is usable.
 var ErrNoRuntime = errors.New("no usable container runtime")
 
+// ErrImageMissing is returned when the browser image is not present in the
+// runtime's local store. wsaw never pulls one implicitly (Story 1.8, AC6), so
+// the error names the command that fetches it.
+var ErrImageMissing = errors.New("browser image is not present locally")
+
+// AutoOrder lists the runtimes auto detection tries, most preferred first.
+func AutoOrder() []Kind {
+	return []Kind{KindPodman, KindDocker}
+}
+
 // Runtime is a detected, working container runtime.
 type Runtime struct {
 	Kind Kind
@@ -136,7 +146,7 @@ func Detect(ctx context.Context, preference Kind) (*Runtime, error) {
 		return r, nil
 
 	default:
-		for _, kind := range []Kind{KindPodman, KindDocker} {
+		for _, kind := range AutoOrder() {
 			if r, err := probe(ctx, kind); err == nil {
 				return r, nil
 			}
@@ -509,9 +519,8 @@ func (r *Runtime) BrowserVersion(ctx context.Context, image string) (string, err
 	out, err := run(versionCtx, r.Path, "run", "--rm", "--pull=never", image, "--version")
 	if err != nil {
 		if isImageMissing(err.Error() + out) {
-			return "", fmt.Errorf(
-				"browser image %s is not present locally; fetch it with: %s pull %s",
-				image, r.Kind, image)
+			return "", fmt.Errorf("%w: %s; fetch it with: %s pull %s",
+				ErrImageMissing, image, r.Kind, image)
 		}
 
 		return "", fmt.Errorf("reading the browser version from %s: %w", image, err)

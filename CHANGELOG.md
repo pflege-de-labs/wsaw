@@ -37,6 +37,14 @@ criteria, and any that are still open, are written down.
 
 ### Changed
 
+- With `--browser-runtime auto` (the default), a missing browser image no
+  longer stops startup. wsaw checks each container runtime for the image at
+  startup, tries Docker when Podman lacks it, and when neither has it falls
+  back to Chrome on the host, warning with the `podman pull` / `docker pull`
+  command and that pages now render without the container's boundary; results
+  record `browserRuntime: local`. The image is still never pulled. A runtime
+  named explicitly with `--browser-runtime podman` or `docker` still fails
+  startup when it lacks the image (Story 1.8, AC6).
 - Comparisons now key both scans again from their stored raw URLs under the
   current normalization rules, in the scan's own diff, the web interface and
   API, and `wsaw mcp`. Changing a rule applies to history and no longer makes

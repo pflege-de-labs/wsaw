@@ -496,28 +496,82 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 
 	kind := container.Kind(strings.ToLower(strings.TrimSpace(a.Config.Browser.Runtime)))
 
+	image := a.Config.Browser.Container.Image
+	if image == "" {
+		image = container.DefaultImage
+	}
+
+	if kind == "" || kind == container.KindAuto {
+		return a.resolveAutoBrowser(ctx, launch, image)
+	}
+
 	runtime, err := container.Detect(ctx, kind)
 	if err != nil {
 		return err
 	}
 
 	if runtime == nil {
-		return a.resolveLocalBrowser(ctx, launch, kind)
+		return a.resolveLocalBrowser(ctx, launch, kind, nil)
 	}
 
-	image := a.Config.Browser.Container.Image
-	if image == "" {
-		image = container.DefaultImage
-	}
-
-	// Doubles as the check that the image is present, so a missing image
-	// fails at startup with the command to fetch it rather than on the first
-	// scan (AC6).
+	// A runtime the operator named gets that runtime's image or an error, as
+	// Detect does for the runtime itself: rendering somewhere else instead
+	// would hide that what was asked for is not there. The check runs at
+	// startup, so a missing image fails here with the command to fetch it
+	// rather than on the first scan (AC6).
 	version, err := runtime.BrowserVersion(ctx, image)
 	if err != nil {
 		return err
 	}
 
+	return a.useContainer(ctx, launch, runtime, image, version)
+}
+
+// resolveAutoBrowser tries each usable runtime in preference order and uses
+// the first whose local store holds the browser image. One that lacks it is
+// passed over with a warning naming the command that fetches it, never by
+// pulling (AC6): a pull would put a network fetch of a browser on the
+// startup path. With no runtime holding the image the browser on this host is
+// used, and the log says so, because pages then render without the
+// container's boundary.
+func (a *App) resolveAutoBrowser(ctx context.Context, launch *browser.Options, image string) error {
+	var missing []error
+
+	for _, kind := range container.AutoOrder() {
+		runtime, err := container.Detect(ctx, kind)
+		if err != nil {
+			a.Logger.Debug("container runtime is not usable", "runtime", string(kind), "error", err)
+
+			continue
+		}
+
+		version, err := runtime.BrowserVersion(ctx, image)
+		if errors.Is(err, container.ErrImageMissing) {
+			a.Logger.Warn("the browser image is not present in this container runtime; trying the next way to run the browser",
+				"runtime", string(kind),
+				"image", image,
+				"instruction", string(kind)+" pull "+image)
+
+			missing = append(missing, err)
+
+			continue
+		}
+
+		if err != nil {
+			return err
+		}
+
+		return a.useContainer(ctx, launch, runtime, image, version)
+	}
+
+	return a.resolveLocalBrowser(ctx, launch, container.KindAuto, missing)
+}
+
+// useContainer makes runtime, which holds the browser image, the place every
+// browser runs, and fills in the launch options for it.
+func (a *App) useContainer(ctx context.Context, launch *browser.Options, runtime *container.Runtime,
+	image, version string,
+) error {
 	// Orphans from an earlier run that did not shut down cleanly. Only
 	// containers whose owning process is gone are touched (AC4).
 	if removed, err := runtime.Reap(ctx, a.Logger); err != nil {
@@ -589,9 +643,19 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 	return nil
 }
 
-func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, kind container.Kind) error {
+// resolveLocalBrowser uses a browser on this host. missing holds, for each
+// runtime auto detection passed over, why it lacked the image: the fallback is
+// then a degraded outcome and said at Warn, and a host without Chrome either
+// fails with an error that still carries every pull command.
+func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, kind container.Kind,
+	missing []error,
+) error {
 	info, err := browser.Discover(ctx, a.Config.Browser.Path)
 	if err != nil {
+		if len(missing) > 0 {
+			return fmt.Errorf("no browser to run: %w", errors.Join(append(missing, err)...))
+		}
+
 		return err
 	}
 
@@ -604,9 +668,14 @@ func (a *App) resolveLocalBrowser(ctx context.Context, launch *browser.Options, 
 		a.Logger.Warn("the Chrome sandbox is disabled; this weakens isolation between scanned pages and this host")
 	}
 
-	switch kind {
-	case container.KindLocal:
+	switch {
+	case kind == container.KindLocal:
 		a.Logger.Info("browser runs on this host", "path", info.Path, "version", info.Version)
+	case len(missing) > 0:
+		a.Logger.Warn("falling back to the browser on this host: no container runtime has the browser image, "+
+			"so pages render without the container's boundary",
+			"path", info.Path, "version", info.Version,
+			"hint", "pull the image named above and restart to render pages in a container")
 	default:
 		a.Logger.Info("browser runs on this host; no container runtime was found",
 			"path", info.Path, "version", info.Version,
