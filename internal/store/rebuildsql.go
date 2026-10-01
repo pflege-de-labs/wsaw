@@ -283,6 +283,10 @@ func (s *SQL) writeRebuilt(ctx context.Context, doc rebuiltDocument, sum Summary
 		return fmt.Errorf("rebuilding the index entry for scan %s: %w", sum.ScanID, err)
 	}
 
+	if err := s.rebuildBodySample(ctx, doc.result); err != nil {
+		return fmt.Errorf("rebuilding the body sample of scan %s: %w", sum.ScanID, err)
+	}
+
 	return nil
 }
 

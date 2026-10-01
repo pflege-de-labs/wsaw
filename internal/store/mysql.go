@@ -85,6 +85,14 @@ func (mysqlDialect) rebind(query string) string { return query }
 // continue rather than trip over what already succeeded.
 func (mysqlDialect) ddlIsTransactional() bool { return false }
 
+// ledgerTxOptions asks for SERIALIZABLE, for the reason the postgres dialect
+// gives. InnoDB turns the window's read into a locking read, so a concurrent
+// decision for the same series deadlocks instead of double-counting, and 1213
+// is a transient error the store retries.
+func (mysqlDialect) ledgerTxOptions() *sql.TxOptions {
+	return &sql.TxOptions{Isolation: sql.LevelSerializable}
+}
+
 // upsert uses the row-alias form rather than the deprecated VALUES()
 // function, which sets the floor at MySQL 8.0.19.
 func (mysqlDialect) upsert(_, update []string) string {
@@ -277,6 +285,26 @@ func (mysqlDialect) migrations() [][]string {
 			`alter table results
 				add column confidence_score int         not null default -1,
 				add column confidence_band  varchar(16) not null default ''`,
+		},
+
+		// Version 10 (Story 1.11): the body sampling ledger. The sqlite
+		// dialect carries the reasoning; the column sizes and collation are
+		// the results table's, for the reasons it gives.
+		{
+			`create table if not exists ` + bodySamplesTable + ` (
+				id             bigint       not null auto_increment primary key,
+				target         varchar(191) not null,
+				consent_mode   varchar(32)  not null,
+				scan_id        varchar(64)  not null,
+				decided_at     bigint       not null,
+				sampled        tinyint      not null,
+				forced         tinyint      not null default 0,
+				outcome        varchar(16)  not null,
+				retry_scan_ids longtext     not null,
+				settled_at     bigint       not null default 0,
+				key body_samples_series (target, consent_mode, decided_at),
+				unique key body_samples_scan (scan_id)
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
 		},
 	}
 }

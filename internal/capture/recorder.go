@@ -71,12 +71,20 @@ type recorder struct {
 	// maxBodyBytes caps a data: URI payload considered for hashing/storage,
 	// exactly like a fetched body (Story 1.6).
 	maxBodyBytes int64
-	// storeBodies and bodySink mirror Options.StoreBodies/BodySink, needed
-	// here because a data: URI's payload is already fully in hand at
-	// requestWillBeSent — unlike a fetched body, there is nothing to wait for
-	// (Story 1.9).
-	storeBodies bool
-	bodySink    BodySink
+	// bodySink mirrors Options.BodySink, needed here because a data: URI's
+	// payload is already fully in hand at requestWillBeSent — unlike a
+	// fetched body, there is nothing to wait for (Story 1.9) — and so is a
+	// request payload Chrome put in the event (Story 1.11).
+	bodySink BodySink
+
+	// bodies is which bodies this scan stores (Story 1.11). It is set once,
+	// before any event arrives, by configureBodies.
+	bodies bodyStorage
+	// storedBodyBytes counts what bodies and payloads this scan has stored,
+	// against bodies.maxScanBytes, and budgetExhausted records that the
+	// budget ran out.
+	storedBodyBytes int64
+	budgetExhausted bool
 
 	// phase is flipped to post-interaction once the consent hook returns.
 	phase model.ConsentPhase
@@ -87,6 +95,9 @@ type recorder struct {
 
 	// bodyWanted receives request IDs whose body should be fingerprinted.
 	bodyWanted chan network.RequestID
+	// payloadWanted receives request IDs whose request payload Chrome did not
+	// include in the event, and has to be asked for (Story 1.11).
+	payloadWanted chan network.RequestID
 
 	warnings []string
 
@@ -113,8 +124,15 @@ type record struct {
 	req model.Request
 
 	finished bool
-	// wantBody marks a hop selected for body hashing.
+	// wantBody marks a hop whose body is read: for hashing, for storing, or
+	// both.
 	wantBody bool
+	// hashed marks a hop of a fingerprinted resource type. Only these carry
+	// a digest, so storing more bodies never changes what a comparison sees
+	// (Story 1.11, AC13).
+	hashed bool
+	// wantPayload marks a hop whose request payload is to be stored.
+	wantPayload bool
 
 	// observedAt is when wsaw saw the request begin, in wall-clock terms. It
 	// is used only to decide whether an unfinished request has stalled, which
@@ -139,12 +157,14 @@ func newRecorder(start time.Time, c *classify.Classifier, n *normalize.Normalize
 		stallAfter:   stallAfter,
 		beacons:      beacons,
 		maxBodyBytes: maxBodyBytes,
-		storeBodies:  storeBodies,
 		bodySink:     bodySink,
 		phase:        model.PhasePre,
 		idleSignal:   make(chan struct{}, 1),
-		bodyWanted:   make(chan network.RequestID, 256),
+		bodyWanted:   make(chan network.RequestID, bodyQueueSize),
 		mainDocIDs:   make(map[network.RequestID]struct{}),
+
+		payloadWanted: make(chan network.RequestID, bodyQueueSize),
+		bodies:        legacyBodyStorage(storeBodies),
 	}
 }
 
@@ -261,7 +281,7 @@ func (r *recorder) extractDataURI(rawURL string) dataURIBody {
 		decodedSize: int64(len(data)),
 	}
 
-	if r.storeBodies && r.bodySink != nil {
+	if r.bodies.stores() && r.bodySink != nil {
 		ref, err := r.bodySink("body", data)
 		if err != nil {
 			r.addWarning("storing a data: URI body failed: " + err.Error())
@@ -277,6 +297,9 @@ func (r *recorder) extractDataURI(rawURL string) dataURIBody {
 // response it first finalizes the previous hop for that ID.
 func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 	dataBody := r.extractDataURI(ev.Request.URL)
+	// Decoded and stored before the lock is taken, for the reason
+	// extractDataURI is: storing takes real time.
+	payload := r.inlinePayload(ev)
 
 	r.mu.Lock()
 
@@ -348,8 +371,10 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 		}
 	}
 
-	if _, ok := r.hashTypes[rec.req.ResourceType]; ok && !rec.req.NonNetwork {
-		rec.wantBody = true
+	r.planBodyLocked(rec)
+
+	if payload.wanted {
+		r.applyPayloadLocked(rec, payload)
 	}
 
 	rec.observedAt = time.Now()
@@ -363,7 +388,19 @@ func (r *recorder) requestWillBeSent(ev *network.EventRequestWillBeSent) {
 		r.inflight++
 	}
 
+	askForPayload := rec.wantPayload && payload.fetch
+
 	r.mu.Unlock()
+
+	if askForPayload {
+		// Chrome left the payload out of the event — it does above its
+		// event size limit — so it is asked for, outside the listener.
+		select {
+		case r.payloadWanted <- ev.RequestID:
+		default:
+			r.setPayload(ev.RequestID, payloadResult{unavailable: model.BodyReasonQueueFull})
+		}
+	}
 }
 
 func (r *recorder) responseReceived(ev *network.EventResponseReceived) {
@@ -379,9 +416,7 @@ func (r *recorder) responseReceived(ev *network.EventResponseReceived) {
 	if t := resourceType(ev.Type); t != "" {
 		rec.req.ResourceType = t
 
-		if _, want := r.hashTypes[t]; want && !rec.req.NonNetwork {
-			rec.wantBody = true
-		}
+		r.planBodyLocked(rec)
 	}
 
 	r.applyResponseLocked(rec, ev.Response)
@@ -443,6 +478,7 @@ func (r *recorder) loadingFinished(ev *network.EventLoadingFinished) {
 		case r.bodyWanted <- ev.RequestID:
 		default:
 			r.addWarning("body fingerprint queue full; some script digests were skipped")
+			r.setBodyDigest(ev.RequestID, "", 0, "", model.BodyReasonQueueFull)
 		}
 	}
 }
@@ -537,26 +573,13 @@ func (r *recorder) webSocketCreated(ev *network.EventWebSocketCreated) {
 // setBodyDigest attaches a fingerprint, or records why one is missing. A
 // missing digest is never silently ambiguous (Tenet 5).
 func (r *recorder) setBodyDigest(id network.RequestID, digest string, size int, ref string, unavailable string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	rec, ok := r.current[id]
-	if !ok {
-		return
-	}
-
 	if unavailable != "" {
-		rec.req.BodyUnavailable = unavailable
+		r.setBody(id, bodyResult{unavailable: unavailable})
 
 		return
 	}
 
-	rec.req.BodySHA256 = digest
-	rec.req.BodyRef = ref
-
-	if rec.req.DecodedSize == 0 {
-		rec.req.DecodedSize = int64(size)
-	}
+	r.setBody(id, bodyResult{digest: digest, size: int64(size), ref: ref})
 }
 
 // requestURL returns the raw URL of an in-flight request, so a body can be

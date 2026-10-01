@@ -24,6 +24,8 @@ const (
 	DefaultNavTimeout   = 30 * time.Second
 	DefaultBodyTimeout  = 5 * time.Second
 	DefaultMaxBodyBytes = 8 << 20 // 8 MiB
+	// DefaultMaxScanBodyBytes caps what one scan stores across all bodies.
+	DefaultMaxScanBodyBytes = 64 << 20 // 64 MiB
 
 	// DefaultStallAfter is how long a request may be in flight before it
 	// stops counting towards network idle. Cross-origin iframes are handed to
@@ -94,12 +96,19 @@ type Options struct {
 	// HashResourceTypes selects which response bodies are fingerprinted.
 	// Empty means HashResourceTypes.
 	HashResourceTypes []string
-	// MaxBodyBytes caps how much of a body is read for hashing.
+	// MaxBodyBytes caps how much of a body is read for hashing or storing.
 	MaxBodyBytes int64
-	// StoreBodies keeps raw bodies via BodySink. Off by default: bodies are
-	// large and may contain personal data (Tenet 19).
-	StoreBodies bool
-	// BodySink receives raw bodies when StoreBodies is set. It returns an
+	// Bodies selects which bodies are kept via BodySink: none, those of
+	// HashResourceTypes, or all (Story 1.11). None by default: bodies are
+	// large and may contain personal data (Tenet 19). Whether a scan is in
+	// the sample is decided before capture; an unsampled scan runs with none.
+	Bodies model.BodyStore
+	// RequestBodies also keeps the payload of every request that sent one.
+	RequestBodies bool
+	// MaxScanBodyBytes caps what one scan stores across all bodies and
+	// payloads. Zero means DefaultMaxScanBodyBytes.
+	MaxScanBodyBytes int64
+	// BodySink receives raw bodies when Bodies is not none. It returns an
 	// opaque reference stored in the result.
 	BodySink BodySink
 
@@ -180,6 +189,14 @@ func (o *Options) withDefaults() Options {
 
 	if out.MaxBodyBytes <= 0 {
 		out.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+
+	if out.MaxScanBodyBytes <= 0 {
+		out.MaxScanBodyBytes = DefaultMaxScanBodyBytes
+	}
+
+	if out.Bodies == "" {
+		out.Bodies = model.BodyStoreNone
 	}
 
 	if out.StallAfter <= 0 {

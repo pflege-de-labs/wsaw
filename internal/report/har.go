@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -59,14 +62,30 @@ type harEntry struct {
 }
 
 type harRequest struct {
-	Method      string     `json:"method"`
-	URL         string     `json:"url"`
-	HTTPVersion string     `json:"httpVersion"`
-	Cookies     []struct{} `json:"cookies"`
-	Headers     []struct{} `json:"headers"`
-	QueryString []struct{} `json:"queryString"`
-	HeadersSize int        `json:"headersSize"`
-	BodySize    int        `json:"bodySize"`
+	Method      string       `json:"method"`
+	URL         string       `json:"url"`
+	HTTPVersion string       `json:"httpVersion"`
+	Cookies     []struct{}   `json:"cookies"`
+	Headers     []struct{}   `json:"headers"`
+	QueryString []struct{}   `json:"queryString"`
+	HeadersSize int          `json:"headersSize"`
+	BodySize    int64        `json:"bodySize"`
+	PostData    *harPostData `json:"postData,omitempty"`
+}
+
+// harPostData is what the page sent (Story 1.11). HAR 1.2 has no encoding
+// field for it, so a payload that is not text travels base64-encoded and the
+// comment says so.
+type harPostData struct {
+	MimeType string     `json:"mimeType"`
+	Params   []harParam `json:"params,omitempty"`
+	Text     string     `json:"text"`
+	Comment  string     `json:"comment,omitempty"`
+}
+
+type harParam struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type harResponse struct {
@@ -102,26 +121,110 @@ type harTimings struct {
 // responses is never ambiguous between "the site served nothing" and "wsaw
 // did not keep it".
 func bodyNote(res *model.Result, load BodyLoader) string {
+	note := ""
+
 	switch {
 	case load == nil:
-		return "Response bodies are not included in this export."
+		note = "Response bodies are not included in this export."
 
 	case !anyStoredBody(res):
-		return "No response bodies were stored for this scan; enable storeBodies to keep them."
+		note = "No response bodies were stored for this scan; enable bodies (or storeBodies) to keep them."
 
 	default:
-		return "Response bodies are included where they were stored, base64-encoded when not text."
+		note = "Response bodies are included where they were stored, and so are request payloads, base64-encoded when not text."
+	}
+
+	if sample := sampleNote(res.BodyCapture); sample != "" {
+		note += " " + sample
+	}
+
+	return note
+}
+
+// sampleNote states the scan's sampling decision in words, so a HAR without
+// bodies reads as the configuration choice it is rather than as a broken
+// export (Story 1.11, AC14).
+func sampleNote(bc *model.BodyCapture) string {
+	if bc == nil {
+		return ""
+	}
+
+	window := ""
+	if bc.WindowScans > 0 {
+		window = fmt.Sprintf(" (%d of %d scans in the last %s sampled)", bc.WindowSampled, bc.WindowScans, bc.RatioWindow)
+	}
+
+	switch bc.Decision {
+	case model.BodyDecisionSampled:
+		return fmt.Sprintf("This scan was in the body sample (store %s, ratio %v)%s.", bc.Store, bc.Ratio, window)
+	case model.BodyDecisionForced:
+		return fmt.Sprintf("Bodies were stored for this scan on request (store %s), whatever the ratio.", bc.Store)
+	case model.BodyDecisionNotSampled:
+		return fmt.Sprintf("This scan was not in the body sample (ratio %v)%s; no bodies were stored, by configuration.",
+			bc.Ratio, window)
+	case model.BodyDecisionLedgerUnavailable:
+		return "The body sampling ledger could not be read, so no bodies were stored for this scan."
+	case model.BodyDecisionDisabledByReload:
+		return "Body storage was turned off by a reload before this retry ran, so no bodies were stored."
+	default:
+		return ""
 	}
 }
 
 func anyStoredBody(res *model.Result) bool {
 	for i := range res.Requests {
-		if res.Requests[i].BodyRef != "" {
+		if res.Requests[i].BodyRef != "" || res.Requests[i].RequestBodyRef != "" {
 			return true
 		}
 	}
 
 	return false
+}
+
+// postDataOf describes a request's stored payload, or nil when it has none.
+func postDataOf(req *model.Request) *harPostData {
+	if req.RequestBody == "" && req.RequestBodyRef == "" {
+		return nil
+	}
+
+	pd := &harPostData{
+		MimeType: orDefault(req.RequestBodyMimeType, "application/octet-stream"),
+		Text:     req.RequestBody,
+	}
+
+	if req.RequestBodyEncoding == "base64" {
+		pd.Comment = "text is base64-encoded: the payload is not text"
+	}
+
+	if req.RequestBodyRedacted {
+		pd.Comment = appendNote(pd.Comment, "a credential wsaw supplied was redacted")
+	}
+
+	if req.RequestBodyUnavailable != "" {
+		pd.Comment = appendNote(pd.Comment, "payload unavailable: "+req.RequestBodyUnavailable)
+	}
+
+	// A form body is also given as parameters, which is how HAR viewers
+	// show one. The text stays, because it is the evidence.
+	if req.RequestBodyEncoding == "" && strings.HasPrefix(pd.MimeType, "application/x-www-form-urlencoded") {
+		if values, err := url.ParseQuery(req.RequestBody); err == nil {
+			for name, vs := range values {
+				for _, v := range vs {
+					pd.Params = append(pd.Params, harParam{Name: name, Value: v})
+				}
+			}
+
+			sort.Slice(pd.Params, func(i, j int) bool {
+				if pd.Params[i].Name != pd.Params[j].Name {
+					return pd.Params[i].Name < pd.Params[j].Name
+				}
+
+				return pd.Params[i].Value < pd.Params[j].Value
+			})
+		}
+	}
+
+	return pd
 }
 
 func appendNote(existing, note string) string {
@@ -183,6 +286,7 @@ func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 				QueryString: []struct{}{},
 				HeadersSize: -1,
 				BodySize:    -1,
+				PostData:    postDataOf(req),
 			},
 			Response: harResponse{
 				Status:      req.Status,
@@ -211,6 +315,14 @@ func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 
 		if req.Failed {
 			entry.Comment += " failed=" + req.FailureReason
+		}
+
+		if req.RequestBodySize > 0 {
+			entry.Request.BodySize = req.RequestBodySize
+		}
+
+		if req.RequestBodyRef == "" && req.RequestBodyUnavailable != "" {
+			entry.Comment += " request-body-unavailable=" + req.RequestBodyUnavailable
 		}
 
 		if req.BodySHA256 != "" {

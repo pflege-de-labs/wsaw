@@ -97,7 +97,8 @@ func TestTheSchemaDeclaresEverythingAConfidenceWrites(t *testing.T) {
 		assertEnum(t, "signal", item.Properties["signal"], fields["signal"])
 	}
 
-	if model.SchemaVersion != "2.1" {
+	// String comparison is enough while the minor version stays one digit.
+	if model.SchemaVersion < "2.1" {
 		t.Errorf("SchemaVersion = %s; the confidence object is what 2.1 added", model.SchemaVersion)
 	}
 }

@@ -38,6 +38,9 @@ type job struct {
 	// (Story 3.8).
 	attempt   int
 	prevError string
+	// bodies is the body sampling decision the first attempt took, for its
+	// retries to inherit (Story 1.11, AC7). It resets with the attempt.
+	bodies *model.BodyCapture
 	// retrying marks a job whose next run is a retry rather than a scheduled
 	// scan, so the minimum interval does not hold it back.
 	retrying bool
@@ -260,11 +263,12 @@ func (j *job) dueAt(now time.Time) bool {
 // It is a requeue rather than a sleep so the worker is released immediately:
 // one flapping target must not hold a slot, or a handful of them would stall
 // every other target's schedule (Story 3.8, AC8).
-func (j *job) scheduleRetry(now time.Time, delay time.Duration, because string) {
+func (j *job) scheduleRetry(now time.Time, delay time.Duration, because string, bodies *model.BodyCapture) {
 	now = wall(now)
 
 	j.attempt++
 	j.prevError = because
+	j.bodies = bodies
 	j.retrying = true
 	j.next = now.Add(delay)
 }
@@ -283,6 +287,10 @@ func (j *job) carryOver(prev *job) {
 	j.lastRun = prev.lastRun
 	j.attempt = prev.attempt
 	j.prevError = prev.prevError
+	// The pending retry inherits its first attempt's sampling decision
+	// across the reload too; the scanner applies a reload that turned
+	// storage off to it, and nothing else (Story 1.11, AC7).
+	j.bodies = prev.bodies
 
 	if prev.retrying {
 		j.retrying = true
@@ -294,6 +302,7 @@ func (j *job) carryOver(prev *job) {
 func (j *job) resetRetries() {
 	j.attempt = 1
 	j.prevError = ""
+	j.bodies = nil
 	j.retrying = false
 }
 

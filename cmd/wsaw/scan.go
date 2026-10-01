@@ -32,8 +32,17 @@ func cmdScan(ctx context.Context, args []string) int {
 	format := fs.String("format", "markdown", "output format: json, jsonl, markdown or csv")
 	failOn := fs.String("fail-on", "high", "exit 1 when a finding reaches this severity: info, low, medium, high, critical")
 	target := fs.String("target", "", "scan only this target")
+	bodies := fs.String("bodies", "",
+		"store this run's bodies whatever the configured ratio says: hashed (fingerprinted types) or all")
 
 	if err := fs.Parse(args); err != nil {
+		return exitOperational
+	}
+
+	forced, err := parseForcedBodies(*bodies)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wsaw: --bodies: %v\n", err)
+
 		return exitOperational
 	}
 
@@ -77,7 +86,7 @@ func cmdScan(ctx context.Context, args []string) int {
 		targets = []config.Resolved{t}
 	}
 
-	outcomes, failures := runOnce(ctx, a, targets)
+	outcomes, failures := runOnce(scanner.WithForcedBodies(ctx, forced), a, targets)
 
 	if err := emit(a, outcomes, *format); err != nil {
 		fmt.Fprintf(os.Stderr, "wsaw: %v\n", err)
@@ -197,6 +206,9 @@ func scanWithRetries(
 		out      scanner.Outcome
 		err      error
 		previous string
+		// bodies is the first attempt's sampling decision, which every retry
+		// inherits (Story 1.11, AC7).
+		bodies *model.BodyCapture
 	)
 
 	for attempt := 1; attempt <= policy.MaxAttempts(); attempt++ {
@@ -223,10 +235,17 @@ func scanWithRetries(
 			timer.Stop()
 		}
 
-		out, err = a.Scanner.Scan(scanner.WithAttempt(ctx, attempt, policy.MaxAttempts(), previous), target, mode)
+		attemptCtx := scanner.WithAttempt(ctx, attempt, policy.MaxAttempts(), previous)
+		attemptCtx = scanner.WithInheritedBodies(attemptCtx, bodies)
+
+		out, err = a.Scanner.Scan(attemptCtx, target, mode)
 
 		if !policy.Retryable(out.Result) {
 			return out, err
+		}
+
+		if bodies == nil && out.Result != nil {
+			bodies = out.Result.BodyCapture
 		}
 
 		previous = retryReason(out, err)
@@ -245,6 +264,20 @@ func scanWithRetries(
 	}
 
 	return out, err
+}
+
+// parseForcedBodies reads --bodies (Story 1.11, AC8). An operator chasing a
+// finding gets the evidence on this run, rather than waiting for the ratio to
+// call for a sampled scan; the forced scan still counts towards the window.
+func parseForcedBodies(value string) (model.BodyStore, error) {
+	switch mode := model.BodyStore(value); mode {
+	case "":
+		return "", nil
+	case model.BodyStoreHashed, model.BodyStoreAll:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("%q is not a mode; use hashed or all", value)
+	}
 }
 
 // retryReason describes why an attempt did not produce an observation.

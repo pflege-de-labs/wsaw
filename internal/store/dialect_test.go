@@ -123,9 +123,14 @@ func TestSchemaVersionsAreConsecutiveAndCurrent(t *testing.T) {
 			schemaConfidence, schemaMaintenanceRunsTriggeredBy)
 	}
 
-	if got := len(sqliteDialect{}.migrations()); got != schemaConfidence {
-		t.Errorf("the schema has %d migrations; the confidence columns are version %d and the latest",
-			got, schemaConfidence)
+	if schemaBodySamples != schemaConfidence+1 {
+		t.Errorf("the body sampling ledger is version %d and the confidence columns are version %d; they are consecutive",
+			schemaBodySamples, schemaConfidence)
+	}
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaBodySamples {
+		t.Errorf("the schema has %d migrations; the body sampling ledger is version %d and the latest",
+			got, schemaBodySamples)
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "2.1"
+const SchemaVersion = "2.2"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -186,6 +186,11 @@ type Result struct {
 	// 5.35). Nil on a document written before schema 2.1, which is read as
 	// "not computed" and never as a perfect score.
 	Confidence *Confidence `json:"confidence,omitempty"`
+
+	// BodyCapture is the body storage this scan ran under and whether it was
+	// sampled (Story 1.11). Nil when the scan never reached capture, and on a
+	// document written before schema 2.2.
+	BodyCapture *BodyCapture `json:"bodyCapture,omitempty"`
 }
 
 // Environment records everything needed to reproduce a scan, including the
@@ -420,6 +425,27 @@ type Request struct {
 	// than DecodedSize when the size cap truncated the body. Stating both is
 	// the difference between a short body and a truncated one.
 	BodyStoredSize int64 `json:"bodyStoredSize,omitempty"`
+
+	// RequestBodyRef points at the stored request payload — what the page
+	// sent, which for a beacon is the data that left the visitor's browser
+	// (Story 1.11). RequestBodySHA256 and RequestBodySize describe it, and
+	// RequestBodyMimeType is the request's declared content type, the one
+	// request header wsaw keeps, because a HAR cannot describe a payload
+	// without it. RequestBodyUnavailable explains a payload that should have
+	// been stored and was not.
+	RequestBodyRef         string `json:"requestBodyRef,omitempty"`
+	RequestBodySHA256      string `json:"requestBodySha256,omitempty"`
+	RequestBodySize        int64  `json:"requestBodySize,omitempty"`
+	RequestBodyMimeType    string `json:"requestBodyMimeType,omitempty"`
+	RequestBodyUnavailable string `json:"requestBodyUnavailable,omitempty"`
+	// RequestBodyRedacted marks a payload in which a credential wsaw itself
+	// supplied was replaced before storing. Nothing the page chose is ever
+	// redacted.
+	RequestBodyRedacted bool `json:"requestBodyRedacted,omitempty"`
+	// RequestBody and RequestBodyEncoding carry the payload in an export
+	// only, exactly like Body and BodyEncoding.
+	RequestBody         string `json:"requestBody,omitempty"`
+	RequestBodyEncoding string `json:"requestBodyEncoding,omitempty"`
 
 	Timing Timing `json:"timing"`
 }

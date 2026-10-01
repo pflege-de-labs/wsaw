@@ -42,6 +42,15 @@ func (postgresDialect) rebind(query string) string { return rebindDollar(query) 
 
 func (postgresDialect) ddlIsTransactional() bool { return true }
 
+// ledgerTxOptions asks for SERIALIZABLE: two daemons sharing this database
+// can decide for one series at once, and under READ COMMITTED both would read
+// the same window and both claim its last sampled slot. Under SERIALIZABLE
+// the second commit fails with 40001, which isTransient retries against the
+// window the first one wrote.
+func (postgresDialect) ledgerTxOptions() *sql.TxOptions {
+	return &sql.TxOptions{Isolation: sql.LevelSerializable}
+}
+
 func (postgresDialect) upsert(conflict, update []string) string {
 	return upsertExcluded(conflict, update)
 }
@@ -196,6 +205,29 @@ func (postgresDialect) migrations() [][]string {
 			`alter table results
 				add column if not exists confidence_score integer not null default -1,
 				add column if not exists confidence_band  text    not null default ''`,
+		},
+
+		// Version 10 (Story 1.11): the body sampling ledger. The sqlite
+		// dialect carries the reasoning.
+		{
+			`create table if not exists ` + bodySamplesTable + ` (
+				id             bigserial primary key,
+				target         text     not null,
+				consent_mode   text     not null,
+				scan_id        text     not null,
+				decided_at     bigint   not null,
+				sampled        smallint not null,
+				forced         smallint not null default 0,
+				outcome        text     not null,
+				retry_scan_ids text     not null default '',
+				settled_at     bigint   not null default 0
+			)`,
+
+			`create index if not exists body_samples_series
+				on ` + bodySamplesTable + ` (target, consent_mode, decided_at)`,
+
+			`create unique index if not exists body_samples_scan
+				on ` + bodySamplesTable + ` (scan_id)`,
 		},
 	}
 }

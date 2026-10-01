@@ -76,6 +76,11 @@ func artifactRefsOf(res *model.Result, documentRef string) []artifactRefSize {
 
 	for i := range res.Requests {
 		add(res.Requests[i].BodyRef, res.Requests[i].BodyStoredSize)
+		// A stored request payload is evidence on the same terms as a
+		// response body, and retention must see it the same way (Story 1.11,
+		// AC15): referenced here, it is kept while a result names it and
+		// collected once none does.
+		add(res.Requests[i].RequestBodyRef, res.Requests[i].RequestBodySize)
 	}
 
 	refs := make([]artifactRefSize, 0, len(seen))

@@ -278,37 +278,111 @@ than shown as a broken image: expired evidence must not look like evidence
 that never existed. Screenshots can contain personal data, so they are off by
 default and retention applies to them like everything else.
 
-### Response bodies
+### Response bodies and request payloads
 
-Every script gets a SHA-256 digest by default. Set `storeBodies: true` on a target to keep the bodies themselves:
+Every script gets a SHA-256 digest by default. To keep bodies themselves, give
+a target — or `defaults`, for every target — a `bodies` block:
 
 ```yaml
+defaults:
+  bodies:
+    store: all            # none | hashed | all
+    ratio: 0.05           # share of scans that keep their bodies, 0 to 1
+    ratioWindow: 168h     # the timespan the ratio is honoured over
+    requestBodies: true   # also keep what the page sent
+    maxBodyBytes: 8388608 # per body (8 MiB); a larger one is not stored, and says so
+    maxScanBytes: 67108864 # all bodies of one scan together (64 MiB)
+
 targets:
-  - name: marketing-site
-    url: https://www.example.com/
-    storeBodies: true
+  - name: checkout
+    url: https://shop.example.com/checkout
+    bodies:
+      ratio: 1            # this one keeps everything, on every scan
 ```
+
+A target's fields override the defaults field by field. `store: hashed` keeps
+the bodies of the fingerprinted types (`detection.hashResourceTypes`, scripts
+by default); `store: all` keeps the body of every network request — documents,
+stylesheets, the JSON an XHR fetched, images. `requestBodies` keeps the payload
+of every request that sent one, which for a beacon is the data that left the
+visitor's browser. It is off unless you turn it on. `storeBodies: true` still
+works and still means what it always did: `bodies: {store: hashed, ratio: 1}`.
+Setting both `storeBodies` and `bodies` on one level is a configuration error.
+
+**The ratio is what lets this stay on.** Keeping every body of every scan is
+the largest cost in the store; keeping them for one scan in twenty of each
+target is a twentieth of that, and the next incident still comes with evidence
+from before anyone thought to look. The ratio is honoured over `ratioWindow`
+(a week by default) for each target and consent mode:
+
+- a scan is sampled when fewer than `ratio × scans` of the window's scans were,
+  rounded up — so sampled scans are spaced out rather than bunched, and an
+  hourly target at `0.05` keeps 9 of its 168 weekly scans;
+- **any ratio above zero keeps at least one scan per window**, so a low ratio
+  on a rarely scanned target still produces evidence (more often than
+  configured, which is the intended trade);
+- a `ratioWindow` shorter than the target's interval is refused at load: a
+  window that holds one scan cannot express a ratio.
+
+The decisions are kept in the database (the `body_samples` table), so a
+restart continues the window instead of starting it over, and a low ratio is
+honoured however often the daemon restarts. Daemons sharing a PostgreSQL or
+MySQL store cannot both claim the window's last sampled slot. Retention does
+not delete these rows — that would make every prune sample again at once — and
+the ledger trims itself to two windows. `wsaw store rebuild-index` refills it
+from the results. If the ledger cannot be read, a scan with a ratio between 0
+and 1 runs without bodies and records `ledger-unavailable` rather than looking
+like an ordinary unsampled scan.
+
+A **retry** is the same observation tried again, so it inherits its first
+attempt's decision: a sampled scan that failed is retried as a sampled one,
+and keeps its slot while the retry is due. If every attempt fails the slot is
+released and the next scheduled scan takes it. A reload that turns body
+storage off applies to a pending retry immediately.
+
+`wsaw scan --bodies=all` (or `--bodies=hashed`) samples that run whatever the
+ratio says, for when you are chasing a finding now. A forced scan counts
+towards the window like any other sampled one.
+
+Every result says what it ran under, in `bodyCapture`: the mode, the ratio and
+window, whether it was `sampled` and why (`decision`), the window counts the
+decision was taken from, and what it stored. In a sampled scan **every request
+has its body or a reason**: `bodyUnavailable` starts with one of a fixed set —
+`no body` (a redirect hop, a `HEAD`, a `204`/`304`, a failed request, a
+WebSocket), `body not retrievable` (Chrome had already evicted it),
+`body larger than the … byte cap`, `scan body budget exhausted`,
+`scan ended before the body was read`, `body queue full`,
+`storing the body failed`. Only the fingerprinted types carry `bodySha256`, so
+storing more bodies never changes what a comparison sees: a sampled and an
+unsampled scan of an unchanged site diff empty, and score the same confidence.
 
 Bodies are kept outside the result document, as content-addressed files, so a
 result stays small enough to read on every page of history. Every **export**
 resolves them, though, because a result that names a body nothing can reach is
 not evidence of anything:
 
-- the **HAR** carries each body in `response.content.text`, base64-encoded
-  when the bytes are not text — which is what lets DevTools and every HAR
-  viewer show it;
-- the **JSON** result carries it in `body`, alongside the `bodyRef` it was
-  stored under. Add `?bodies=false` when polling the API for metadata only;
+- the **HAR** carries each body in `response.content.text`, and each payload in
+  `request.postData` (with `params` for a form), base64-encoded when the bytes
+  are not text — which is what lets DevTools and every HAR viewer show them.
+  Its comment states the sampling decision, so a HAR without bodies reads as
+  "not in the sample" rather than as a broken export;
+- the **JSON** result carries them in `body` and `requestBody`, alongside the
+  `bodyRef` and `requestBodyRef` they were stored under. Add `?bodies=false`
+  when polling the API for metadata only;
 - **`GET /api/v1/artifacts/{ref}`** serves one directly, and the result page
   links it.
 
 A stored body is always served as an opaque attachment, never as something a
 browser will render: those bytes came from a scanned site, and rendering them
-on wsaw's own origin would hand a hostile page a same-origin context. A body
-the size cap truncated says so — `bodyStoredSize` next to `decodedSize`, and a
-note in the HAR — because a short body and a truncated one are different
-facts. Bodies can contain personal data, so `storeBodies` is off by default
-and retention applies to them as it does to everything else.
+on wsaw's own origin would hand a hostile page a same-origin context. A
+credential wsaw supplied itself (basic auth, an extra header) is redacted from
+a request payload before it is stored, and `requestBodyRedacted` says so;
+nothing the page chose is ever changed. Bodies can contain personal data, so
+storage is off by default, each target that keeps bodies is named in an `Info`
+line at startup, and retention applies to them as it does to everything else.
+`wsaw_bodies_stored_total` and `wsaw_body_bytes_stored_total` (by `kind`:
+`response`, `request`) and `wsaw_bodies_unavailable_total` (by `reason`) show
+what it costs.
 
 #### Tracking pixels that change their query on every visit
 
@@ -1232,7 +1306,7 @@ A restart also continues each target's schedule instead of starting it over. The
 Captured data can itself be personal data, so:
 
 - Cookie values are hashed, never stored. Header values are never serialized — only their names.
-- Response bodies and screenshots are off by default.
+- Response bodies, request payloads and screenshots are off by default. A credential wsaw itself supplied is redacted from a stored payload.
 - Credentials come from `${env:NAME}` or `${file:/path}` references, are redacted by type rather than by discipline, and are scrubbed from log output centrally.
 - Artifacts and the database are written `0600`.
 

@@ -65,6 +65,10 @@ func (sqliteDialect) rebind(query string) string { return query }
 
 func (sqliteDialect) ddlIsTransactional() bool { return true }
 
+// ledgerTxOptions needs nothing: the store holds one SQLite connection, so
+// every transaction it runs is already serialized.
+func (sqliteDialect) ledgerTxOptions() *sql.TxOptions { return nil }
+
 func (sqliteDialect) upsert(conflict, update []string) string {
 	return upsertExcluded(conflict, update)
 }
@@ -341,6 +345,40 @@ func (sqliteDialect) migrations() [][]string {
 		{
 			`alter table results add column confidence_score integer not null default -1`,
 			`alter table results add column confidence_band  text    not null default ''`,
+		},
+
+		// Version 10 (Story 1.11): the body sampling ledger.
+		//
+		// One row per observation of a series — not per attempt: a retry
+		// appends its scan ID to the row its first attempt wrote — recording
+		// whether that observation was sampled. A ratio is honoured over a
+		// trailing window counted from these rows, so the count has to
+		// survive a restart, and it has to survive retention too: rows here
+		// are not deleted with the results they describe, because a window
+		// whose history a prune removed would sample again at once. The
+		// ledger trims itself instead (trimBodySamplesTx).
+		//
+		// scan_id is unique so that settling an attempt can find its row, and
+		// so that two decisions can never be recorded for one observation.
+		{
+			`create table if not exists ` + bodySamplesTable + ` (
+				id             integer primary key autoincrement,
+				target         text    not null,
+				consent_mode   text    not null,
+				scan_id        text    not null,
+				decided_at     integer not null,
+				sampled        integer not null,
+				forced         integer not null default 0,
+				outcome        text    not null,
+				retry_scan_ids text    not null default '',
+				settled_at     integer not null default 0
+			) strict`,
+
+			`create index if not exists body_samples_series
+				on ` + bodySamplesTable + ` (target, consent_mode, decided_at)`,
+
+			`create unique index if not exists body_samples_scan
+				on ` + bodySamplesTable + ` (scan_id)`,
 		},
 	}
 }

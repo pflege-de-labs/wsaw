@@ -373,6 +373,7 @@ func TestResultNamesArtifact(t *testing.T) {
 		Requests: []model.Request{
 			{URL: "https://example.com/", BodyRef: "sha256/bbb"},
 			{URL: "https://example.com/none"},
+			{URL: "https://tracker.test/collect", RequestBodyRef: "sha256/ddd"},
 		},
 	}
 
@@ -383,6 +384,7 @@ func TestResultNamesArtifact(t *testing.T) {
 	}{
 		{"a screenshot it captured", "sha256/aaa", true},
 		{"a body it captured", "sha256/bbb", true},
+		{"a request payload it captured (Story 1.11)", "sha256/ddd", true},
 		{"somebody else's artifact", "sha256/ccc", false},
 		// An empty reference must not match the requests that have no body.
 		{"no reference at all", "", false},

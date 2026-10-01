@@ -55,7 +55,22 @@ defaults:
   # Evidence is off by default: screenshots and bodies are large, and bodies
   # can contain personal data (Tenet 19).
   screenshots: false
-  storeBodies: false
+
+  # Bodies (Story 1.11). Uncomment to keep the body of every request, and what
+  # every request sent, for one scan in twenty of each target. The ratio is
+  # honoured over ratioWindow and survives restarts, so it can stay on; any
+  # ratio above zero keeps at least one scan per window. A target can override
+  # any field, e.g. `bodies: {ratio: 1}` to keep everything for one site.
+  # `storeBodies: true` is shorthand for {store: hashed, ratio: 1} — scripts
+  # only, every scan — and cannot be set on the same level as bodies.
+  # `wsaw scan --bodies=all` keeps one run's bodies whatever the ratio says.
+  # bodies:
+  #   store: all             # none | hashed (fingerprinted types) | all
+  #   ratio: 0.05            # share of scans that store bodies, 0 to 1
+  #   ratioWindow: 168h      # timespan the ratio is honoured over
+  #   requestBodies: true    # also store request payloads (beacons, forms)
+  #   maxBodyBytes: 8388608  # 8 MiB per body; a larger one is not stored
+  #   maxScanBytes: 67108864 # 64 MiB across all bodies of one scan
 
 targets:
   - name: marketing-site

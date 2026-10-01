@@ -100,6 +100,14 @@ type Registry struct {
 
 	queueDepth int64
 
+	// bodiesStored and bodyBytesStored count what sampled scans kept, by kind
+	// ("response" or "request"), and bodiesUnavailable what they could not,
+	// by the fixed reason (Story 1.11, AC16). No target or URL label: those
+	// would grow without bound.
+	bodiesStored      map[string]int64
+	bodyBytesStored   map[string]int64
+	bodiesUnavailable map[string]int64
+
 	// ready reports whether the daemon can actually scan.
 	chromeUsable bool
 	configLoaded bool
@@ -132,6 +140,10 @@ func New(version string) *Registry {
 		sweepRuns:       make(map[string]int64),
 		vacuumRuns:      make(map[string]int64),
 		tlsReloads:      make(map[string]int64),
+
+		bodiesStored:      make(map[string]int64),
+		bodyBytesStored:   make(map[string]int64),
+		bodiesUnavailable: make(map[string]int64),
 	}
 }
 
@@ -169,6 +181,38 @@ func (r *Registry) ScanFinished(target string, mode model.ConsentMode, res *mode
 	r.histogramFor(r.requests, key, requestBuckets).observe(float64(len(res.Requests)))
 
 	r.consentOutcomes[labels{target: target, mode: mode, reason: string(res.Consent.Outcome)}]++
+
+	r.countBodiesLocked(res)
+}
+
+// Body kinds, the label values of the body counters.
+const (
+	bodyKindResponse = "response"
+	bodyKindRequest  = "request"
+)
+
+// countBodiesLocked adds what a scan stored to the body counters. Callers
+// hold r.mu.
+func (r *Registry) countBodiesLocked(res *model.Result) {
+	sampled := res.BodyCapture != nil && res.BodyCapture.Sampled
+
+	for i := range res.Requests {
+		req := &res.Requests[i]
+
+		if req.BodyRef != "" {
+			r.bodiesStored[bodyKindResponse]++
+			r.bodyBytesStored[bodyKindResponse] += req.BodyStoredSize
+		} else if sampled && req.BodyUnavailable != "" && model.BodyReasonCode(req.BodyUnavailable) != "no-body" {
+			r.bodiesUnavailable[model.BodyReasonCode(req.BodyUnavailable)]++
+		}
+
+		if req.RequestBodyRef != "" {
+			r.bodiesStored[bodyKindRequest]++
+			r.bodyBytesStored[bodyKindRequest] += req.RequestBodySize
+		} else if sampled && req.RequestBodyUnavailable != "" {
+			r.bodiesUnavailable[model.BodyReasonCode(req.RequestBodyUnavailable)]++
+		}
+	}
 }
 
 // ScanFailed records a failure with its reason, so alerting can distinguish a
@@ -508,6 +552,15 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_last_successful_prune_timestamp_seconds",
 		"Unix time of the last prune that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastPruneSuccess)))
+	writeLabelled(&b, "wsaw_bodies_stored_total",
+		"Response bodies and request payloads stored, by kind.", "kind",
+		[]string{bodyKindRequest, bodyKindResponse}, r.bodiesStored)
+	writeLabelled(&b, "wsaw_body_bytes_stored_total",
+		"Bytes of response bodies and request payloads stored, by kind.", "kind",
+		[]string{bodyKindRequest, bodyKindResponse}, r.bodyBytesStored)
+	writeLabelled(&b, "wsaw_bodies_unavailable_total",
+		"Bodies and payloads a sampled scan could not store, by reason.", "reason",
+		withoutNoBody(model.BodyReasonCodes()), r.bodiesUnavailable)
 	writeOutcomes(&b, "wsaw_sweep_runs_total", "Completed sweeps, by outcome.", r.sweepRuns)
 	writeGaugeValue(&b, "wsaw_last_successful_sweep_timestamp_seconds",
 		"Unix time of the last sweep that completed without error, 0 if none has in this process.",
@@ -585,6 +638,31 @@ func unixOrZero(t time.Time) int64 {
 	}
 
 	return t.Unix()
+}
+
+// writeLabelled renders a counter with one label whose values are known in
+// advance. Every value is written, zero included, so a dashboard can rate a
+// series from its first scrape rather than from the first time it moved.
+func writeLabelled(b *strings.Builder, name, help, label string, known []string, values map[string]int64) {
+	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+
+	for _, v := range known {
+		fmt.Fprintf(b, "%s{%s=%q} %d\n", name, label, v, values[v])
+	}
+}
+
+// withoutNoBody drops the reason that is not a failure: an exchange that had
+// no body to store is not a body the scan failed to keep.
+func withoutNoBody(codes []string) []string {
+	out := make([]string, 0, len(codes))
+
+	for _, c := range codes {
+		if c != "no-body" {
+			out = append(out, c)
+		}
+	}
+
+	return out
 }
 
 // writeOutcomes renders a counter labelled only by outcome, in a stable

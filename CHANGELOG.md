@@ -9,6 +9,12 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+Upgrading: nothing to do by hand. `storeBodies` keeps working and means what
+it did; setting it and `bodies` on the same level is now a configuration
+error. The store migrates to schema version 10 on first start, adding the
+`body_samples` table, and result documents move to `schemaVersion` 2.2, an
+additive change against which 2.1 documents still validate.
+
 ### Added
 
 - Query-string handling can be scoped with `normalize.queryRules`: a rule
@@ -24,6 +30,22 @@ criteria, and any that are still open, are written down.
   `cmp.php` by the version each declares (`bodyIdentity`), because both
   rewrite their bytes on nearly every fetch: 68 and 66 `script-changed`
   events in the same 30 days, with the declared version unchanged throughout.
+- Bodies can now be stored for every request a scan sees, not only for
+  scripts, and exported in the HAR: a `bodies` block under `defaults` or on a
+  target sets `store: all` (or `hashed`), and `requestBodies: true` also keeps
+  what the page sent — the payload of a beacon, a form, an XHR — as
+  `request.postData` in the HAR and `requestBodyRef` in the result (Story
+  1.11). A `ratio` keeps bodies for only that share of scans, honoured over
+  `ratioWindow` (a week by default) per target and consent mode, so storage can
+  stay on permanently at a fraction of the cost; any ratio above zero keeps at
+  least one scan per window. The decisions are kept in the database, so a
+  restart continues the window rather than starting it over, and a retry of a
+  sampled scan stays sampled. `wsaw scan --bodies=all` keeps one run's bodies
+  whatever the ratio says. Each result's new `bodyCapture` states whether it
+  was sampled and why, and in a sampled scan every request carries its body or
+  a reason it has none. `maxBodyBytes` and `maxScanBytes` cap one body and one
+  scan. New metrics: `wsaw_bodies_stored_total`, `wsaw_body_bytes_stored_total`
+  and `wsaw_bodies_unavailable_total`.
 - `deploy/browser/Containerfile` builds the per-scan browser image on
   Chromium 154 (154.0.8037.57) from Debian testing, for amd64 and arm64.
   Alpine, which the published image is built from, still carries Chromium
@@ -58,6 +80,12 @@ criteria, and any that are still open, are written down.
   is. Google Ads' `viewthroughconversion`, whose script is built for each
   visit, is shipped there; opt out with `normalize.useDefaultVolatileBodies:
   false` (Story 4.14, AC6).
+- `storeBodies: true` now records each stored body's size (`bodyStoredSize`),
+  so the history and storage pages count stored bodies at their real size
+  instead of as 0 bytes (Story 1.11).
+- A body that could not be fingerprinted because too many requests finished
+  at once now says so on the request (`body queue full`), where before only a
+  scan warning did (Story 1.11).
 
 ## [0.5.0] - 2026-09-30
 

@@ -79,7 +79,9 @@ type Resolved struct {
 	Proxy string
 
 	Screenshots bool
-	StoreBodies bool
+	// Bodies is which bodies a sampled scan stores, and how often a scan is
+	// sampled (Story 1.11).
+	Bodies BodyPolicy
 
 	Robots      RobotsPolicy
 	MinInterval time.Duration
@@ -193,7 +195,7 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 		Timezone:       firstString(t.Timezone, d.Timezone),
 		Proxy:          firstString(t.Proxy, d.Proxy),
 		Screenshots:    firstBool(t.Screenshots, d.Screenshots, false),
-		StoreBodies:    firstBool(t.StoreBodies, d.StoreBodies, false),
+		Bodies:         c.bodyPolicy(t),
 		Robots:         firstRobots(t.Robots, d.Robots),
 		MinInterval:    firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
 		Jitter:         firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
