@@ -115,7 +115,11 @@ type Target struct {
 
 	// Evidence.
 	Screenshots *bool `yaml:"screenshots,omitempty"`
+	// StoreBodies is shorthand for bodies: {store: hashed, ratio: 1}.
 	StoreBodies *bool `yaml:"storeBodies,omitempty"`
+	// Bodies selects which bodies are stored, for what share of scans
+	// (Story 1.11).
+	Bodies *Bodies `yaml:"bodies,omitempty"`
 
 	// Politeness.
 	Robots      RobotsPolicy `yaml:"robots,omitempty"`

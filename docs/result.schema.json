@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "description": "Schema version, currently 2.1. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
+      "description": "Schema version, currently 2.2. 2.2 added bodyCapture and the request payload fields (requestBodyRef and its siblings), additively: a 2.1 document still validates. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
     },
     "scanId": {
       "type": "string"
@@ -137,6 +137,10 @@
     "confidence": {
       "$ref": "#/$defs/confidence",
       "description": "How far this scan's asset list can be trusted, derived from the rest of this document and from the durations of earlier scans in the same series (Story 5.35). Added in 2.1; absent from a document written before it, which means not computed, never a perfect score."
+    },
+    "bodyCapture": {
+      "$ref": "#/$defs/bodyCapture",
+      "description": "The body storage this scan ran under, whether it was in the sample, and what it stored (Story 1.11). Added in 2.2; absent from a document written before it, and from a scan that never reached capture. A scan with sampled false stored no body by configuration, which is a different fact from a body that could not be read."
     }
   },
   "$defs": {
@@ -529,15 +533,16 @@
           "type": "string"
         },
         "bodySha256": {
-          "type": "string"
+          "type": "string",
+          "description": "SHA-256 of the response body, for the resource types in detection.hashResourceTypes only. A body stored for any other type has bodyRef and no digest, so storing more bodies never changes what a comparison sees."
         },
         "bodyUnavailable": {
           "type": "string",
-          "description": "Why no digest was taken. A missing digest is always explained rather than silently absent."
+          "description": "Why no digest was taken, or, in a scan that stores bodies, why the body was not stored. A missing digest is always explained rather than silently absent. It starts with a fixed reason — \"no body\", \"body not retrievable\", \"body larger than the … byte cap\", \"scan body budget exhausted\", \"scan ended before the body was read\", \"body queue full\" or \"storing the body failed\" — optionally followed by \": \" and detail."
         },
         "bodyRef": {
           "type": "string",
-          "description": "Reference to the stored response body, present when body storage is on. Bodies live outside this document as content-addressed files; fetch one with GET /api/v1/artifacts/{ref}."
+          "description": "Reference to the stored response body, present when the scan stored bodies. Bodies live outside this document as content-addressed files; fetch one with GET /api/v1/artifacts/{ref}."
         },
         "bodyIdentity": {
           "type": "string",
@@ -560,6 +565,40 @@
         "bodyStoredSize": {
           "type": "integer",
           "description": "How many bytes of the body were kept. Smaller than decodedSize when the size cap truncated it, which is the difference between a short body and a truncated one."
+        },
+        "requestBodyRef": {
+          "type": "string",
+          "description": "Reference to the stored request payload — what the page sent, which for a beacon is the data that left the visitor's browser. Present in a sampled scan with bodies.requestBodies on. Added in 2.2."
+        },
+        "requestBodySha256": {
+          "type": "string",
+          "description": "SHA-256 of the stored request payload."
+        },
+        "requestBodySize": {
+          "type": "integer",
+          "description": "Size of the request payload in bytes."
+        },
+        "requestBodyMimeType": {
+          "type": "string",
+          "description": "The request's declared content type, the one request header wsaw keeps, because a payload cannot be described without it."
+        },
+        "requestBodyUnavailable": {
+          "type": "string",
+          "description": "Why a payload that should have been stored was not. Starts with one of the fixed reasons listed for bodyUnavailable."
+        },
+        "requestBodyRedacted": {
+          "type": "boolean",
+          "description": "A credential wsaw itself supplied (basic auth, an extra header, proxy credentials) was replaced in the payload before it was stored. Nothing the page chose is ever redacted."
+        },
+        "requestBody": {
+          "type": "string",
+          "description": "The stored request payload itself, in an export only, exactly like body."
+        },
+        "requestBodyEncoding": {
+          "enum": [
+            "base64"
+          ],
+          "description": "Present when requestBody is base64-encoded because the bytes are not text."
         },
         "timing": {
           "type": "object",
@@ -684,6 +723,101 @@
         },
         "valueLength": {
           "type": "integer"
+        }
+      }
+    },
+    "bodyCapture": {
+      "type": "object",
+      "required": [
+        "store",
+        "ratio",
+        "sampled",
+        "decision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "store": {
+          "enum": [
+            "none",
+            "hashed",
+            "all"
+          ],
+          "description": "Which bodies a sampled scan keeps: none, those of detection.hashResourceTypes (hashed), or every network request's (all)."
+        },
+        "ratio": {
+          "type": "number",
+          "description": "Configured share of scans that store bodies, from 0 to 1."
+        },
+        "ratioWindowNs": {
+          "type": "integer",
+          "description": "Timespan the ratio is honoured over, in nanoseconds."
+        },
+        "requestBodies": {
+          "type": "boolean",
+          "description": "Whether request payloads are stored too."
+        },
+        "sampled": {
+          "type": "boolean",
+          "description": "Whether this scan stored bodies."
+        },
+        "forced": {
+          "type": "boolean",
+          "description": "The sample was forced for this scan (wsaw scan --bodies), regardless of the ratio."
+        },
+        "decision": {
+          "enum": [
+            "disabled",
+            "sampled",
+            "not-sampled",
+            "forced",
+            "ledger-unavailable",
+            "storage-disabled-by-reload"
+          ],
+          "description": "Why the scan was or was not sampled. ledger-unavailable means the sampling ledger could not be read, so the ratio could not be honoured and nothing was stored; storage-disabled-by-reload means a retry inherited a sampled decision after a reload turned storage off."
+        },
+        "decidedBy": {
+          "type": "string",
+          "description": "Scan ID of the attempt that took the decision. A retry inherits its first attempt's decision, so on a retry this names an earlier scan."
+        },
+        "windowScans": {
+          "type": "integer",
+          "description": "Scans of this series in the trailing window when the decision was taken, this one included."
+        },
+        "windowSampled": {
+          "type": "integer",
+          "description": "How many of windowScans were sampled, this one included if it was."
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "description": "Per-body cap the scan stored under."
+        },
+        "maxScanBytes": {
+          "type": "integer",
+          "description": "Cap on all bodies one scan may store."
+        },
+        "responseBodiesStored": {
+          "type": "integer",
+          "description": "Response bodies stored."
+        },
+        "responseBodyBytes": {
+          "type": "integer",
+          "description": "Bytes of response bodies stored."
+        },
+        "requestBodiesStored": {
+          "type": "integer",
+          "description": "Request payloads stored."
+        },
+        "requestBodyBytes": {
+          "type": "integer",
+          "description": "Bytes of request payloads stored."
+        },
+        "bodiesUnavailable": {
+          "type": "integer",
+          "description": "Requests whose body or payload a sampled scan could not store, each with its reason on the request."
+        },
+        "budgetExhausted": {
+          "type": "boolean",
+          "description": "The scan reached maxScanBytes; later bodies are recorded as unavailable for that reason."
         }
       }
     }

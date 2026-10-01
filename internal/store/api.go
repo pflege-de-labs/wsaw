@@ -65,6 +65,13 @@ type Store interface {
 	Audit(limit int) ([]AuditEntry, error)
 	RecordAudit(e AuditEntry) error
 
+	// DecideBodySample, SettleBodySample and BodySamples are the body
+	// sampling ledger (Story 1.11): a ratio is honoured over a window counted
+	// from rows that survive a restart.
+	DecideBodySample(ctx context.Context, req BodySampleRequest) (BodySampleDecision, error)
+	SettleBodySample(ctx context.Context, decidedBy, scanID, outcome string) error
+	BodySamples(ctx context.Context, target string, mode model.ConsentMode) ([]BodySample, error)
+
 	PutArtifact(kind string, data []byte) (string, error)
 	GetArtifact(ref string) ([]byte, error)
 	OpenArtifact(ctx context.Context, ref string) (*ArtifactReader, error)

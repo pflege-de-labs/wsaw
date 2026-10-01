@@ -721,9 +721,20 @@ func (a *App) buildScanner() error {
 		allowHeuristic = *a.Config.Consent.AllowHeuristic
 	}
 
+	// The store is the body sampling ledger. Assigned only when there is one:
+	// a nil store wrapped in the interface would pass the scanner's nil check
+	// and fail on the first decision.
+	var ledger scanner.BodyLedger
+	if a.Store != nil {
+		ledger = a.Store
+	}
+
+	a.logBodyStorage()
+
 	s, err := scanner.New(scanner.Deps{
 		Pool:    a.Pool,
 		Store:   a.Store,
+		Ledger:  ledger,
 		Robots:  checker,
 		Rules:   a.Rules,
 		Secrets: a.Secrets,
@@ -756,6 +767,25 @@ func (a *App) buildScanner() error {
 	a.Scanner = s
 
 	return nil
+}
+
+// logBodyStorage states, once per target that keeps bodies, what it keeps and
+// how often, so an operator can tell from the log alone which targets store
+// possibly personal data (Story 1.11, AC16).
+func (a *App) logBodyStorage() {
+	for _, t := range a.Targets {
+		if !t.Bodies.Enabled() {
+			continue
+		}
+
+		a.Logger.Info("body storage enabled",
+			"target", t.Name,
+			"store", string(t.Bodies.Store),
+			"ratio", t.Bodies.Ratio,
+			"ratio_window", t.Bodies.RatioWindow.String(),
+			"request_bodies", t.Bodies.RequestBodies,
+		)
+	}
 }
 
 // Normalizer rebuilds the normalizer, for commands that need one without a

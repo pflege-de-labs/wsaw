@@ -93,9 +93,17 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 
 	rec := newRecorder(start, cl, opts.Normalizer, opts.HashResourceTypes,
 		opts.MaxRequests, opts.MaxBytes, opts.StallAfter,
-		opts.MaxBodyBytes, opts.StoreBodies, opts.BodySink, beacons)
+		opts.MaxBodyBytes, false, opts.BodySink, beacons)
 
 	s := &session{opts: opts, rec: rec, res: res, runCtx: runCtx, cancelRun: cancelRun, start: start}
+
+	rec.configureBodies(bodyStorage{
+		mode:          opts.Bodies,
+		requestBodies: opts.RequestBodies,
+		maxScanBytes:  opts.MaxScanBodyBytes,
+		maxBodyBytes:  opts.MaxBodyBytes,
+		scrub:         s.scrub,
+	})
 
 	s.listen()
 
@@ -368,7 +376,7 @@ func (s *session) preConsentCtx(hooks Hooks) context.Context {
 // headers, and the network domain.
 func (s *session) prepare() error {
 	actions := []chromedp.Action{
-		network.Enable(),
+		s.enableNetwork(),
 		page.Enable(),
 		runtime.Enable(),
 
@@ -423,6 +431,34 @@ func (s *session) prepare() error {
 	}
 
 	return nil
+}
+
+// enableNetwork turns on the network domain, with buffers large enough for
+// the bodies this scan is to keep.
+//
+// Chrome keeps response bodies in a buffer of a few megabytes by default and
+// evicts the oldest as it fills, so on a busy page a body read even moments
+// after it finished can already be gone. A scan storing every body therefore
+// asks for a buffer as large as its own storage budget, which turns eviction
+// from the normal outcome into a rare, recorded one. A scan that stores
+// nothing beyond digests keeps the defaults, so it costs what it always did
+// (Story 1.11, AC9).
+func (s *session) enableNetwork() chromedp.Action {
+	enable := network.Enable()
+
+	if s.opts.Bodies == model.BodyStoreAll {
+		enable = enable.
+			WithMaxTotalBufferSize(s.opts.MaxScanBodyBytes).
+			WithMaxResourceBufferSize(s.opts.MaxBodyBytes)
+	}
+
+	if s.opts.RequestBodies && s.opts.Bodies != model.BodyStoreNone {
+		// Payloads up to the body cap travel in the event itself, which saves
+		// a round trip per beacon; larger ones are asked for.
+		enable = enable.WithMaxPostDataSize(s.opts.MaxBodyBytes)
+	}
+
+	return enable
 }
 
 // denyDownloads forbids downloads in this scan's browser context. Named
@@ -599,26 +635,43 @@ func (s *session) dwell() {
 	}
 }
 
-// startBodyWorker fingerprints response bodies while Chrome still holds them.
+// startBodyWorker reads response bodies, and request payloads Chrome did not
+// put in the event, while Chrome still holds them. A bounded pool of workers,
+// never a goroutine per request: a page that loads a thousand assets must not
+// become a thousand concurrent CDP calls (Story 1.11, AC9).
 func (s *session) startBodyWorker() <-chan struct{} {
 	s.bodyStop = make(chan struct{})
 	done := make(chan struct{})
 
-	go func() {
-		defer close(done)
+	var wg sync.WaitGroup
 
-		for {
-			select {
-			case <-s.bodyStop:
-				return
+	for range bodyWorkers {
+		wg.Add(1)
 
-			case <-s.runCtx.Done():
-				return
+		go func() {
+			defer wg.Done()
 
-			case id := <-s.rec.bodyWanted:
-				s.fingerprintBody(id)
+			for {
+				select {
+				case <-s.bodyStop:
+					return
+
+				case <-s.runCtx.Done():
+					return
+
+				case id := <-s.rec.bodyWanted:
+					s.fingerprintBody(id)
+
+				case id := <-s.rec.payloadWanted:
+					s.fetchPayload(id)
+				}
 			}
-		}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
 	}()
 
 	return done
@@ -627,11 +680,15 @@ func (s *session) startBodyWorker() <-chan struct{} {
 func (s *session) stopBodyWorker() {
 	s.bodyStopOnce.Do(func() {
 		// Drain what is already queued before stopping, so digests are not
-		// lost just because the page finished quickly.
+		// lost just because the page finished quickly. Once the scan's own
+		// context has ended, each of these fails fast and is recorded as a
+		// body the scan ended before reading.
 		for {
 			select {
 			case id := <-s.rec.bodyWanted:
 				s.fingerprintBody(id)
+			case id := <-s.rec.payloadWanted:
+				s.fetchPayload(id)
 			default:
 				close(s.bodyStop)
 
@@ -642,6 +699,8 @@ func (s *session) stopBodyWorker() {
 }
 
 func (s *session) fingerprintBody(id network.RequestID) {
+	hashed, store := s.rec.bodyPlan(id)
+
 	ctx, cancel := context.WithTimeout(s.runCtx, DefaultBodyTimeout)
 	defer cancel()
 
@@ -659,43 +718,105 @@ func (s *session) fingerprintBody(id network.RequestID) {
 	}))
 	if err != nil {
 		// Chrome evicts bodies from its cache aggressively. That is a fact
-		// about the observation, so it is recorded rather than ignored.
-		s.rec.setBodyDigest(id, "", 0, "", "body not retrievable: "+s.scrub(err.Error()))
+		// about the observation, so it is recorded rather than ignored. A
+		// read the end of the scan cut off is a different fact, and says so.
+		reason := model.BodyReasonNotRetrievable + ": " + s.scrub(err.Error())
+		if s.runCtx.Err() != nil {
+			reason = model.BodyReasonScanEnded
+		}
+
+		s.rec.setBodyDigest(id, "", 0, "", reason)
 
 		return
 	}
 
 	if int64(len(body)) > s.opts.MaxBodyBytes {
 		s.rec.setBodyDigest(id, "", 0, "",
-			fmt.Sprintf("body larger than the %d byte cap", s.opts.MaxBodyBytes))
+			fmt.Sprintf("%s %d byte cap", model.BodyReasonTooLarge, s.opts.MaxBodyBytes))
 
 		return
 	}
 
-	digest := sha256Hex(body)
-
-	var ref string
-
-	if s.opts.StoreBodies && s.opts.BodySink != nil {
-		r, err := s.opts.BodySink("body", body)
-		if err != nil {
-			s.rec.addWarning("storing a response body failed: " + s.scrub(err.Error()))
-		} else {
-			ref = r
-		}
+	// Only a fingerprinted type carries a digest. A body stored for any other
+	// type has a reference and no digest, so storing more bodies never
+	// changes what a comparison sees (Story 1.11, AC13).
+	result := bodyResult{size: int64(len(body))}
+	if hashed {
+		result.digest = sha256Hex(body)
 	}
 
-	s.rec.setBodyDigest(id, digest, len(body), ref, "")
+	if store {
+		s.storeBody(body, &result)
+	}
+
+	s.rec.setBody(id, result)
 
 	// The identity is extracted here, where the body is still in hand: the
 	// diff is pure and never reads a stored artifact (Tenet 3), so anything
 	// it needs to compare has to be recorded as an observation.
-	if s.opts.Normalizer != nil && s.opts.Normalizer.HasBodyIdentities() {
+	if hashed && s.opts.Normalizer != nil && s.opts.Normalizer.HasBodyIdentities() {
 		if u := s.rec.requestURL(id); u != "" {
 			label, value := s.opts.Normalizer.BodyIdentity(u, string(body))
 			s.rec.setBodyIdentity(id, label, value)
 		}
 	}
+}
+
+// storeBody keeps one response body, under the scan's budget.
+func (s *session) storeBody(body []byte, result *bodyResult) {
+	if s.opts.BodySink == nil {
+		result.unavailable = model.BodyReasonStoreFailed + ": no artifact store"
+
+		return
+	}
+
+	if !s.rec.reserveBodyBytes(int64(len(body))) {
+		result.unavailable = model.BodyReasonBudget
+
+		return
+	}
+
+	ref, err := s.opts.BodySink("body", body)
+	if err != nil {
+		s.rec.addWarning("storing a response body failed: " + s.scrub(err.Error()))
+		result.unavailable = model.BodyReasonStoreFailed + ": " + s.scrub(err.Error())
+
+		return
+	}
+
+	result.ref = ref
+	result.storedSize = int64(len(body))
+}
+
+// fetchPayload asks Chrome for a request payload the event left out.
+func (s *session) fetchPayload(id network.RequestID) {
+	ctx, cancel := context.WithTimeout(s.runCtx, DefaultBodyTimeout)
+	defer cancel()
+
+	var data []byte
+
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		b, err := network.GetRequestPostData(id).Do(ctx)
+		if err != nil {
+			return err
+		}
+
+		data = b
+
+		return nil
+	}))
+	if err != nil {
+		reason := model.BodyReasonNotRetrievable + ": " + s.scrub(err.Error())
+		if s.runCtx.Err() != nil {
+			reason = model.BodyReasonScanEnded
+		}
+
+		s.rec.setPayload(id, payloadResult{unavailable: reason})
+
+		return
+	}
+
+	s.rec.setPayload(id, s.rec.storePayload(data))
 }
 
 // recordScreenshotIdentity notes when the before- and after-interaction
@@ -863,7 +984,12 @@ func captureAction(buf *[]byte, fromSurface bool) chromedp.Action {
 // finish assembles the result, including the termination reason, which must
 // always explain why capture stopped.
 func (s *session) finish(runErr error) {
+	// Every request that should have yielded a body gets one or a reason
+	// before the requests are copied out (Story 1.11, AC11).
+	s.rec.finishBodies()
+
 	s.res.Requests = s.rec.requests()
+	s.res.BodyCapture = s.rec.bodyStats()
 	s.res.Warnings = append(s.res.Warnings, s.rec.capturedWarnings()...)
 
 	// Requests still in flight at the end are reported rather than left to be

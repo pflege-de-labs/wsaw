@@ -65,7 +65,11 @@ type Deps struct {
 	// does instead. A nil pointer wrapped in this interface is not the same
 	// thing: it passes those checks and panics on the first call, so a caller
 	// hands over a store that opened or nothing at all.
-	Store   ResultStore
+	Store ResultStore
+	// Ledger decides which scans store their bodies (Story 1.11). Nil means
+	// no ledger: a ratio of 1 still samples every scan and a ratio of 0 none,
+	// and anything between is recorded as unsampled for want of one.
+	Ledger  BodyLedger
 	Robots  *robots.Checker
 	Rules   *consent.RuleSet
 	Secrets *secret.Registry
@@ -189,6 +193,11 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		Source:      sourceOf(ctx),
 	})()
 
+	// bodies is the sampling decision, once taken. It is declared here so a
+	// panic still records it, and still settles it: a sampled observation
+	// whose attempt panicked must not hold its slot (Story 1.11).
+	var bodies *model.BodyCapture
+
 	// A panic in one scan must not take down the daemon. It is converted into
 	// a recorded failure so the target still shows a result.
 	defer func() {
@@ -196,9 +205,11 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 			log.Error("scan panicked", "panic", fmt.Sprint(r))
 
 			out.Result = s.failedResult(scanID, target, mode, fmt.Sprintf("internal error: %v", r))
+			out.Result.BodyCapture = bodies
 			err = fmt.Errorf("scan panicked: %v", r)
 
 			s.persist(ctx, log, out.Result)
+			s.settleBodies(ctx, out.Result, target, log)
 			s.recordFailure(target.Name, mode, "panic")
 		}
 	}()
@@ -227,16 +238,20 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		return out, nil
 	}
 
-	res, err := s.capture(ctx, scanID, target, mode, log)
+	bodies = s.decideBodies(ctx, scanID, target, mode, log)
+
+	res, err := s.capture(ctx, scanID, target, mode, bodies, log)
 	if res == nil {
 		// Only a configuration-level failure gets here; still record it.
 		res = s.failedResult(scanID, target, mode, errorText(err))
 	}
 
 	res.ScanID = scanID
+	res.BodyCapture = mergeBodyCapture(bodies, res.BodyCapture)
 	out.Result = res
 
 	s.persist(ctx, log, res)
+	s.settleBodies(ctx, res, target, log)
 
 	out.Diff = s.compare(target, res, log)
 
@@ -267,6 +282,7 @@ func (s *Scanner) capture(
 	scanID string,
 	target config.Resolved,
 	mode model.ConsentMode,
+	bodies *model.BodyCapture,
 	log *slog.Logger,
 ) (*model.Result, error) {
 	lease, err := s.deps.Pool.Acquire(ctx)
@@ -303,6 +319,7 @@ func (s *Scanner) capture(
 	defer cancelScan()
 
 	opts := s.captureOptions(target, mode)
+	applyBodyDecision(&opts, bodies)
 	opts.BrowserReused = reused
 	opts.WsawVersion = s.opts.WsawVersion
 	opts.ChromeVersion = s.opts.ChromeVersion
@@ -311,7 +328,7 @@ func (s *Scanner) capture(
 	opts.BrowserSandbox = s.opts.BrowserSandbox
 	opts.Secrets = s.deps.Secrets
 
-	if target.Screenshots || target.StoreBodies {
+	if target.Screenshots || opts.Bodies != model.BodyStoreNone {
 		opts.BodySink = s.artifactSink
 		opts.ScreenshotSink = s.artifactSink
 	}
@@ -398,7 +415,7 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		ScrollToBottom:    target.ScrollToBottom,
 		Beacons:           target.Beacons,
 		HashResourceTypes: s.opts.HashResourceTypes,
-		StoreBodies:       target.StoreBodies,
+		Bodies:            model.BodyStoreNone,
 		Screenshots:       target.Screenshots,
 		ViewportWidth:     target.ViewportWidth,
 		ViewportHeight:    target.ViewportHeight,
@@ -414,6 +431,23 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		BasicAuthPassword: target.BasicAuthPassword,
 		Proxy:             target.Proxy,
 	}
+}
+
+// applyBodyDecision turns the sampling decision into capture options. Only a
+// sampled scan stores anything, and only a sampled scan is held to the body
+// caps the configuration names: an unsampled scan reads its scripts for
+// digests under capture's own default, exactly as before Story 1.11.
+func applyBodyDecision(opts *capture.Options, bodies *model.BodyCapture) {
+	opts.Bodies = model.BodyStoreNone
+
+	if bodies == nil || !bodies.Sampled {
+		return
+	}
+
+	opts.Bodies = bodies.Store
+	opts.RequestBodies = bodies.RequestBodies
+	opts.MaxBodyBytes = bodies.MaxBodyBytes
+	opts.MaxScanBodyBytes = bodies.MaxScanBytes
 }
 
 func (s *Scanner) artifactSink(kind string, data []byte) (string, error) {

@@ -48,6 +48,15 @@ func WithBodies(res *model.Result, load BodyLoader) *model.Result {
 
 	for i := range res.Requests {
 		req := &res.Requests[i]
+
+		if req.RequestBodyRef != "" {
+			if !copied {
+				out, copied = shallowCopy(res), true
+			}
+
+			inlinePayload(&out.Requests[i], load)
+		}
+
 		if req.BodyRef == "" {
 			continue
 		}
@@ -82,6 +91,19 @@ func WithBodies(res *model.Result, load BodyLoader) *model.Result {
 	}
 
 	return out
+}
+
+// inlinePayload carries a stored request payload into an export, on the same
+// terms as a response body (Story 1.11, AC14).
+func inlinePayload(req *model.Request, load BodyLoader) {
+	payload, err := load(req.RequestBodyRef)
+	if err != nil {
+		req.RequestBodyUnavailable = "stored request body could not be read: " + err.Error()
+
+		return
+	}
+
+	req.RequestBody, req.RequestBodyEncoding = encodeBody(payload)
 }
 
 // shallowCopy duplicates the result and its request slice, so inlining bodies

@@ -280,17 +280,17 @@ func (d *Daemon) dispatch(ctx context.Context, now time.Time, sem chan struct{},
 			continue
 		}
 
-		attempt, previous := d.markStarted(j, now)
+		run := d.markStarted(j, now)
 
 		wg.Add(1)
 
-		go func(j *job, attempt int, previous string) {
+		go func(j *job, run startedRun) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer d.origins.release(origin)
 
-			d.runJob(ctx, j, attempt, previous)
-		}(j, attempt, previous)
+			d.runJob(ctx, j, run)
+		}(j, run)
 	}
 }
 
@@ -309,12 +309,20 @@ func (d *Daemon) dueJobs(now time.Time) []*job {
 	return due
 }
 
+// startedRun is what one run of a job is: which attempt, why the previous one
+// failed, and the sampling decision a retry inherits.
+type startedRun struct {
+	attempt  int
+	previous string
+	bodies   *model.BodyCapture
+}
+
 // markStarted advances the schedule before the scan runs, so a long scan does
 // not queue up duplicates of itself on every tick.
 //
 // It returns the attempt this run is, read under the same lock that advances
 // the schedule so a concurrent reload cannot change it underneath.
-func (d *Daemon) markStarted(j *job, now time.Time) (attempt int, previous string) {
+func (d *Daemon) markStarted(j *job, now time.Time) startedRun {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -329,11 +337,20 @@ func (d *Daemon) markStarted(j *job, now time.Time) (attempt int, previous strin
 		j.attempt = 1
 	}
 
-	return j.attempt, j.prevError
+	run := startedRun{attempt: j.attempt, previous: j.prevError}
+
+	// Only a retry inherits a decision; a first attempt takes its own.
+	if j.attempt > 1 {
+		run.bodies = j.bodies
+	}
+
+	return run
 }
 
-func (d *Daemon) runJob(ctx context.Context, j *job, attempt int, previous string) {
-	scanCtx := scanner.WithAttempt(ctx, attempt, j.target.Retry.MaxAttempts(), previous)
+func (d *Daemon) runJob(ctx context.Context, j *job, run startedRun) {
+	attempt := run.attempt
+	scanCtx := scanner.WithAttempt(ctx, attempt, j.target.Retry.MaxAttempts(), run.previous)
+	scanCtx = scanner.WithInheritedBodies(scanCtx, run.bodies)
 
 	out, err := d.scanner.Scan(scanCtx, j.target, j.mode)
 	if err != nil {
@@ -411,7 +428,14 @@ func (d *Daemon) considerRetry(
 	next := attempt + 1
 	delay := policy.Delay(next, j.key())
 
-	if !d.scheduleRetry(j.key(), delay, retryReason(out, scanErr)) {
+	// The retry inherits the first attempt's sampling decision, which every
+	// attempt records on its result (Story 1.11, AC7).
+	var bodies *model.BodyCapture
+	if out.Result != nil {
+		bodies = out.Result.BodyCapture
+	}
+
+	if !d.scheduleRetry(j.key(), delay, retryReason(out, scanErr), bodies) {
 		return false
 	}
 
@@ -448,7 +472,7 @@ func (d *Daemon) retryPolicy(key string) (retry.Policy, bool) {
 // scheduleRetry requeues the current job under key, and reports false when a
 // reload has removed it. The lookup and the requeue share one lock, so a
 // reload cannot replace the job in between.
-func (d *Daemon) scheduleRetry(key string, delay time.Duration, because string) bool {
+func (d *Daemon) scheduleRetry(key string, delay time.Duration, because string, bodies *model.BodyCapture) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -457,7 +481,7 @@ func (d *Daemon) scheduleRetry(key string, delay time.Duration, because string) 
 		return false
 	}
 
-	j.scheduleRetry(time.Now(), delay, because)
+	j.scheduleRetry(time.Now(), delay, because, bodies)
 
 	return true
 }

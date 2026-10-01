@@ -432,6 +432,6 @@ func (s *site) target() config.Resolved {
 		MaxBytes:     1 << 20,
 		Robots:       config.RobotsIgnore,
 		Screenshots:  true,
-		StoreBodies:  true,
+		Bodies:       config.BodyPolicy{Store: model.BodyStoreHashed, Ratio: 1, MaxBodyBytes: 8 << 20, MaxScanBytes: 64 << 20},
 	}
 }

@@ -153,7 +153,8 @@ paths:
           in: query
           description: >
             Set to `false` for metadata only, which is what a client polling
-            this endpoint wants; the `bodyRef` of each body is still returned.
+            this endpoint wants; the `bodyRef` of each body and the
+            `requestBodyRef` of each stored request payload are still returned.
           schema: {type: string, enum: ["false", "0", "no"]}
       responses:
         "200":
@@ -168,11 +169,12 @@ paths:
   /api/v1/artifacts/{ref}:
     get:
       tags: [results]
-      summary: Fetch a stored response body or screenshot
+      summary: Fetch a stored response body, request payload or screenshot
       description: >
         Artifacts live outside the result document as content-addressed objects
-        in the artifact bucket; a result names one in its `bodyRef` or
-        screenshot field. A response body is served as an opaque attachment and
+        in the artifact bucket; a result names one in its `bodyRef`,
+        `requestBodyRef` or screenshot field. A response body or request
+        payload is served as an opaque attachment and
         never as anything a browser will render: the bytes came from a scanned
         page, so rendering them on wsaw's own origin would hand a hostile page a
         same-origin context. A screenshot is wsaw's own PNG and is served inline

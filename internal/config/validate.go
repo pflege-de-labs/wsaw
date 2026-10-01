@@ -142,12 +142,15 @@ func (c *Config) validateTargets(add addFunc) {
 
 		validateSeverityRules(t.Severity, t.line, field+".severity", add)
 		validateBeacons(t.Beacons, t.line, field+".beacons", add)
+		validateBodies(t, field, add)
+		validateBodyPolicy(c.bodyPolicy(t), c.resolveTargetFields(t).Interval, t.line, field, add)
 	}
 
 	// Defaults are validated for the parts that make sense globally.
 	c.validateTargetModes(&c.Defaults, "defaults", add)
 	c.validateTargetSchedule(&c.Defaults, "defaults", add)
 	validateBeacons(c.Defaults.Beacons, c.Defaults.line, "defaults.beacons", add)
+	validateBodies(&c.Defaults, "defaults", add)
 
 	if c.Defaults.Robots != "" && c.Defaults.Robots != RobotsIgnore && c.Defaults.Robots != RobotsRespect {
 		add(c.Defaults.line, "defaults.robots", "%q is not a valid policy; use \"ignore\" or \"respect\"", c.Defaults.Robots)

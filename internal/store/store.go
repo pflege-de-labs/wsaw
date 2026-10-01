@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -104,6 +105,14 @@ type SQL struct {
 	// can refuse one without filling a disk (Story 4.13, AC13). Nil in every
 	// store that is not a test's.
 	freeSpaceFn func(dir string) (int64, error)
+
+	// ledgerMu serializes this process's body sampling decisions
+	// (Story 1.11, AC5). The database's own isolation is what keeps two
+	// daemons from claiming one slot, but under contention it does so by
+	// failing all but one transaction, and a burst of scans starting
+	// together in one daemon would exhaust the retry policy on conflicts
+	// that a lock here never lets happen.
+	ledgerMu sync.Mutex
 }
 
 // Options configures a store.

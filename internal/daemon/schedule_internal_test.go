@@ -154,7 +154,7 @@ func TestScheduleTimesCarryNoMonotonicReading(t *testing.T) {
 		t.Errorf("next after advance carries a monotonic reading: %v", j.next)
 	}
 
-	j.scheduleRetry(now, time.Minute, "network unreachable")
+	j.scheduleRetry(now, time.Minute, "network unreachable", nil)
 
 	if hasMonotonic(j.next) {
 		t.Errorf("next after scheduleRetry carries a monotonic reading: %v", j.next)

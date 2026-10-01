@@ -78,6 +78,10 @@ type dialect interface {
 	// ddlIsTransactional reports whether schema changes roll back with a
 	// transaction. MySQL commits implicitly on DDL, so they do not.
 	ddlIsTransactional() bool
+	// ledgerTxOptions is the isolation the body sampling decision needs, so
+	// that two decisions for one series cannot both read the same window
+	// (Story 1.11, AC5). Nil means the dialect's default already gives that.
+	ledgerTxOptions() *sql.TxOptions
 	// alreadyApplied reports whether a schema statement failed because what
 	// it asks for is already true. It exists for the dialect that cannot say
 	// so in SQL: SQLite and PostgreSQL write `if exists`, MySQL has no such

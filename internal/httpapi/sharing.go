@@ -433,7 +433,8 @@ func (s *Server) handleSharedArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 // resultNamesArtifact reports whether a result actually references an
-// artifact: one of its screenshots, or one of its stored response bodies.
+// artifact: one of its screenshots, one of its stored response bodies, or one
+// of its stored request payloads.
 func resultNamesArtifact(res *model.Result, ref string) bool {
 	if ref == "" {
 		return false
@@ -446,7 +447,7 @@ func resultNamesArtifact(res *model.Result, ref string) bool {
 	}
 
 	for i := range res.Requests {
-		if res.Requests[i].BodyRef == ref {
+		if res.Requests[i].BodyRef == ref || res.Requests[i].RequestBodyRef == ref {
 			return true
 		}
 	}
