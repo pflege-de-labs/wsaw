@@ -389,6 +389,7 @@ func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
 				Legacy:      n.TeamsFormat() == config.TeamsMessageCard,
 				BaseURL:     n.BaseURL,
 				MaxChanges:  n.MaxChanges,
+				Confidence:  common.confidence,
 				Headers:     common.headers,
 				Timeout:     n.Timeout.Or(10 * time.Second),
 				MaxRetries:  n.MaxRetries,
@@ -420,6 +421,7 @@ func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
 				Labels:      n.Labels,
 				ChangeTypes: changeTypes,
 				Template:    n.Template,
+				Confidence:  common.confidence,
 				Headers:     common.headers,
 				Timeout:     n.Timeout.Or(10 * time.Second),
 				MaxRetries:  n.MaxRetries,
@@ -436,6 +438,7 @@ func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
 		Logger:        a.Logger,
 		OnSent:        a.Metrics.NotifySent,
 		OnFailed:      a.Metrics.NotifyFailed,
+		OnSuppressed:  a.Metrics.NotifySuppressed,
 		ScanNotifiers: scanNotifiers,
 	}), nil
 }
@@ -446,6 +449,7 @@ type resolvedNotifier struct {
 	url         secret.Value
 	headers     map[string]secret.Value
 	minSeverity diff.Severity
+	confidence  notify.ConfidenceGate
 }
 
 func resolveNotifier(a *app.App, n config.Notifier) (resolvedNotifier, error) {
@@ -478,6 +482,14 @@ func resolveNotifier(a *app.App, n config.Notifier) (resolvedNotifier, error) {
 		out.minSeverity, err = diff.ParseSeverity(n.MinSeverity)
 		if err != nil {
 			return out, fmt.Errorf("notifier %q: %w", n.Name, err)
+		}
+	}
+
+	if n.MinConfidence != nil {
+		out.confidence = notify.ConfidenceGate{
+			Enabled: true,
+			Min:     *n.MinConfidence,
+			Drop:    n.BelowConfidenceAction() == config.BelowConfidenceDrop,
 		}
 	}
 

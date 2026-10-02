@@ -597,6 +597,71 @@ notify:
 `)
 }
 
+// Story 5.37, AC7: the confidence threshold is checked with the rest of the
+// notifier, and each error names the notifier's field.
+func TestNotifierConfidenceValidation(t *testing.T) {
+	t.Parallel()
+
+	cfg := parse(t, `
+notify:
+  - name: channel
+    kind: teams
+    url: https://example.com/hook
+    minConfidence: 60
+    belowConfidence: drop
+  - name: hook
+    url: https://example.com/hook
+    minConfidence: 0
+`)
+
+	if got := cfg.Notify[0]; got.MinConfidence == nil || *got.MinConfidence != 60 ||
+		got.BelowConfidenceAction() != config.BelowConfidenceDrop {
+		t.Errorf("teams notifier: minConfidence %v, belowConfidence %q", got.MinConfidence, got.BelowConfidenceAction())
+	}
+
+	if got := cfg.Notify[1]; got.MinConfidence == nil || *got.MinConfidence != 0 ||
+		got.BelowConfidenceAction() != config.BelowConfidenceCaveat {
+		t.Errorf("webhook notifier: minConfidence %v, belowConfidence %q, want 0 and the caveat default",
+			got.MinConfidence, got.BelowConfidenceAction())
+	}
+
+	for name, tc := range map[string]struct{ body, field string }{
+		"above 100": {`
+notify:
+  - name: hook
+    url: https://example.com/hook
+    minConfidence: 101
+`, "notify[0].minConfidence"},
+		"negative": {`
+notify:
+  - name: hook
+    url: https://example.com/hook
+    minConfidence: -1
+`, "notify[0].minConfidence"},
+		"unknown action": {`
+notify:
+  - name: hook
+    url: https://example.com/hook
+    minConfidence: 60
+    belowConfidence: ignore
+`, "notify[0].belowConfidence"},
+		"action without threshold": {`
+notify:
+  - name: hook
+    url: https://example.com/hook
+    belowConfidence: drop
+`, "notify[0].belowConfidence"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := parseErr(t, tc.body); !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error does not name %s: %v", tc.field, err)
+			}
+		})
+	}
+}
+
 func TestRetryConfiguration(t *testing.T) {
 	t.Parallel()
 

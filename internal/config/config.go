@@ -940,6 +940,14 @@ const (
 	TeamsMessageCard = "messagecard"
 )
 
+// What a notifier does with a scan below its minimum confidence.
+const (
+	// BelowConfidenceCaveat delivers the findings, marked as low confidence.
+	BelowConfidenceCaveat = "caveat"
+	// BelowConfidenceDrop holds the findings back, logged and counted.
+	BelowConfidenceDrop = "drop"
+)
+
 // Notifier delivers change events.
 type Notifier struct {
 	Name string `yaml:"name"`
@@ -955,6 +963,15 @@ type Notifier struct {
 	Labels  map[string]string `yaml:"labels,omitempty"`
 	// ChangeTypes restricts which kinds of change are delivered.
 	ChangeTypes []string `yaml:"changeTypes,omitempty"`
+
+	// MinConfidence is the lowest confidence score (0-100, Story 5.35) whose
+	// findings this notifier reports at face value. A pointer, because 0 is a
+	// real threshold ("a score must exist") and unset means no threshold.
+	MinConfidence *int `yaml:"minConfidence,omitempty"`
+	// BelowConfidence says what happens to a scan under MinConfidence:
+	// "caveat" (the default) delivers it marked as low confidence, "drop"
+	// holds it back and records that it did (Story 5.37).
+	BelowConfidence string `yaml:"belowConfidence,omitempty"`
 
 	// Template renders the payload. Empty sends the raw event JSON. Webhook
 	// notifiers only: a Teams card is built in Go because a malformed one
@@ -984,6 +1001,17 @@ func (n Notifier) NotifierKind() string {
 	}
 
 	return n.Kind
+}
+
+// BelowConfidenceAction returns what happens to a scan under MinConfidence,
+// defaulting to a caveat so that no finding goes unsent unless an operator
+// asked for it.
+func (n Notifier) BelowConfidenceAction() string {
+	if n.BelowConfidence == "" {
+		return BelowConfidenceCaveat
+	}
+
+	return n.BelowConfidence
 }
 
 // TeamsFormat returns the configured card format, defaulting to Adaptive.

@@ -214,6 +214,27 @@ func stripVolatile(s string) string {
 	return b.String()
 }
 
+// Story 5.37, AC4: a held-back notification is counted by notifier and
+// reason, in a stable order.
+func TestSuppressedNotificationsAreCounted(t *testing.T) {
+	t.Parallel()
+
+	r := metrics.New("test")
+
+	r.NotifySuppressed("teams", "low-confidence")
+	r.NotifySuppressed("hook", "low-confidence")
+	r.NotifySuppressed("hook", "low-confidence")
+
+	out := render(t, r)
+
+	want := "# TYPE wsaw_notifications_suppressed_total counter\n" +
+		`wsaw_notifications_suppressed_total{notifier="hook",reason="low-confidence"} 2` + "\n" +
+		`wsaw_notifications_suppressed_total{notifier="teams",reason="low-confidence"} 1` + "\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("missing\n%s\nin\n%s", want, out)
+	}
+}
+
 func TestCountersForBrowserAndNotifications(t *testing.T) {
 	t.Parallel()
 

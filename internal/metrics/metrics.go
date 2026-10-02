@@ -38,6 +38,10 @@ type Registry struct {
 	browserRestarts int64
 	notifyFailures  int64
 
+	// notifySuppressed counts deliveries a notifier held back on purpose,
+	// by notifier and reason (Story 5.37, AC4).
+	notifySuppressed map[suppression]int64
+
 	// artifactBytesIn is what the store was handed, artifactStoredBytes what
 	// it wrote. Together they report what compression saved (Story 4.8).
 	artifactBytesIn     int64
@@ -144,6 +148,8 @@ func New(version string) *Registry {
 		bodiesStored:      make(map[string]int64),
 		bodyBytesStored:   make(map[string]int64),
 		bodiesUnavailable: make(map[string]int64),
+
+		notifySuppressed: make(map[suppression]int64),
 	}
 }
 
@@ -247,6 +253,23 @@ func (r *Registry) NotifyFailed() {
 	defer r.mu.Unlock()
 
 	r.notifyFailures++
+}
+
+// suppression keys the held-back notification counter.
+type suppression struct {
+	notifier string
+	reason   string
+}
+
+// NotifySuppressed counts a notification a notifier held back on purpose,
+// such as the findings of a scan below its minimum confidence. A held-back
+// alert that left no trace would be indistinguishable from a quiet site
+// (Story 5.37, AC4).
+func (r *Registry) NotifySuppressed(notifier, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.notifySuppressed[suppression{notifier: notifier, reason: reason}]++
 }
 
 // StoreRetried counts a store operation that had to be retried. A database
@@ -538,6 +561,7 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeGaugeValue(&b, "wsaw_browser_restarts_total", "Browsers discarded and replaced.", float64(r.browserRestarts))
 	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
 	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
+	writeSuppressed(&b, r.notifySuppressed)
 	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
 	writeGaugeValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", float64(r.resultsPruned))
 	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
@@ -663,6 +687,33 @@ func withoutNoBody(codes []string) []string {
 	}
 
 	return out
+}
+
+// writeSuppressed renders the held-back notification counter in a stable
+// order. Only notifiers that have held something back appear, since which
+// notifiers can do so is configuration the registry does not know.
+func writeSuppressed(b *strings.Builder, values map[suppression]int64) {
+	const name = "wsaw_notifications_suppressed_total"
+
+	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s counter\n", name,
+		"Notifications a notifier held back on purpose, by notifier and reason.", name)
+
+	keys := make([]suppression, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].notifier != keys[j].notifier {
+			return keys[i].notifier < keys[j].notifier
+		}
+
+		return keys[i].reason < keys[j].reason
+	})
+
+	for _, k := range keys {
+		fmt.Fprintf(b, "%s{notifier=%q,reason=%q} %d\n", name, k.notifier, k.reason, values[k])
+	}
 }
 
 // writeOutcomes renders a counter labelled only by outcome, in a stable

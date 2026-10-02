@@ -677,6 +677,13 @@ notify:
     baseUrl: https://wsaw.example.com
     # How many changes one card lists before it reports the rest as a count.
     maxChanges: 12
+    # Findings from a scan whose confidence score (0-100; high 90+, medium
+    # 60-89, low 1-59) is below minConfidence are posted under a "low
+    # confidence" caveat, or with belowConfidence: drop held back, logged and
+    # counted. A failed or skipped scan is always reported. Works on webhook
+    # notifiers too.
+    # minConfidence: 60
+    # belowConfidence: caveat   # or drop
     # format: messagecard  # deprecated; only for a tenant still on a
     #                      # connector webhook
 
