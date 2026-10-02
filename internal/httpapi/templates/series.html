@@ -95,10 +95,14 @@
       {{end}}
       <td>
         {{/* Approving the baseline again would write an audit record for a
-             change that did not happen (Story 5.20, AC4). */}}
-        {{if .IsBaseline}}
+             change that did not happen (Story 5.20, AC4). Which rows may
+             offer it is decided once, for this page and the scan's own
+             (Story 5.36, AC1). */}}
+        {{if .Approval.Current}}
         <span class="muted">current baseline</span>
-        {{else if not $page.ReadOnly}}
+        {{else if .Approval.Refused}}
+        <span class="muted" title="this scan did not produce a trustworthy asset list">cannot be a baseline</span>
+        {{else if .Approval.Offered}}
         <form method="post" action="/approve/{{.Target}}/{{.ConsentMode}}" class="inline">
           <input type="hidden" name="csrf" value="{{$page.CSRF}}">
           <input type="hidden" name="scanId" value="{{.ScanID}}">

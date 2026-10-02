@@ -620,26 +620,56 @@ func (s *Server) handleResultMarkdown(w http.ResponseWriter, r *http.Request) {
 }
 
 // diffFor compares a result against its baseline, falling back to the
-// previous scan.
+// previous scan. It is comparisonFor's report, for the callers that need
+// nothing else.
+func (s *Server) diffFor(res *model.Result) *diff.Report {
+	return s.comparisonFor(res).Report
+}
+
+// comparison is what a scan was measured against, and what a page needs to
+// say so.
+type comparison struct {
+	Report *diff.Report
+
+	// Baseline is the series' approved baseline, or nil when it has none.
+	Baseline *store.Baseline
+
+	// OwnBaseline says the scan compared is that baseline. Comparing it with
+	// itself would report "no changes", which is true, says nothing, and
+	// reads exactly like a scan that genuinely changed nothing (Tenet 5) — so
+	// such a scan is compared with the previous stored scan instead, as a
+	// series without a baseline is (Story 5.36, AC5).
+	OwnBaseline bool
+}
+
+// comparisonFor compares a result against its baseline, falling back to the
+// previous scan — and to the previous scan also when the result is itself the
+// baseline.
 //
 // The one failure it does not shrug off is a previous result whose document
 // has left the bucket. Treating that as "there is nothing earlier" would render
 // the page a first-ever scan renders, and a reader would have no way to know
 // that a comparison was owed and could not be made (Story 8.2, AC5; Tenet 5).
-func (s *Server) diffFor(res *model.Result) *diff.Report {
+func (s *Server) comparisonFor(res *model.Result) comparison {
 	var (
-		baseline *model.Result
-		gone     bool
+		c    comparison
+		base *model.Result
+		gone bool
 	)
 
 	if b, err := s.deps.Store.GetBaseline(res.Target, res.ConsentMode); err == nil {
-		baseline = b.Result
+		c.Baseline = b
+		c.OwnBaseline = b.ScanID == res.ScanID
+	}
+
+	if c.Baseline != nil && !c.OwnBaseline {
+		base = c.Baseline.Result
 	} else {
 		prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID)
 
 		switch {
 		case err == nil:
-			baseline = prev
+			base = prev
 
 		case errors.Is(err, store.ErrEvidenceGone):
 			gone = true
@@ -650,13 +680,21 @@ func (s *Server) diffFor(res *model.Result) *diff.Report {
 		}
 	}
 
-	rep := diff.Compare(baseline, res, diff.Options{Normalizer: s.deps.Normalizer})
+	rep := diff.Compare(base, res, diff.Options{Normalizer: s.deps.Normalizer})
 
-	if gone {
+	switch {
+	case gone:
 		rep.Reason = diff.ReasonEvidenceGone
+
+	case c.OwnBaseline && base == nil:
+		// Compare would say there is no baseline, which is the one thing
+		// that is not true of this scan.
+		rep.Reason = diff.ReasonFirstBaseline
 	}
 
-	return rep
+	c.Report = rep
+
+	return c
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {

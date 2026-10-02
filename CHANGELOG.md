@@ -17,6 +17,17 @@ additive change against which 2.1 documents still validate.
 
 ### Added
 
+- A scan can be approved as the baseline from its own result page, next to
+  the changes being judged. Before this, approval was only possible from the
+  scan's row in the target's history, which meant finding the row by its scan
+  ID. The page uses the same form, CSRF check, read-only rule and audit entry
+  as the history row, with an optional note. After approving, you land back
+  on the scan you approved, and a refusal also returns there with its reason.
+  Where an approval returns to is decided by the server and cannot be set
+  from the request. A failed or skipped scan says it cannot be a baseline, a
+  truncated one warns that its asset list may be incomplete, and the
+  baseline's own page says it is the current baseline and who approved it.
+  Shared links show none of this (Story 5.36).
 - Every start now logs the store's schema version and whether this start
   migrated it: `store schema is current; no migration was needed` with
   `schema_version` when nothing ran, or `migrating the store schema`
@@ -77,6 +88,17 @@ additive change against which 2.1 documents still validate.
 
 ### Changed
 
+- The baseline's own scan is no longer compared with itself. Before, its page
+  and `GET /api/v1/diff/{target}/{mode}/{scan}` always reported "no changes".
+  That looked like a scan that genuinely changed nothing and hid what had
+  been approved. Now the baseline is compared with the previous stored scan,
+  which its page names and links and the diff report gives as
+  `baselineScanId`. A baseline with no earlier scan reports that. Every other
+  scan is still compared with the baseline. The report's shape is unchanged
+  (Story 5.36).
+- A failed or skipped scan's row in a target's history now says "cannot be a
+  baseline" instead of offering an approve button the store always refused
+  (Story 5.36).
 - With `--browser-runtime auto` (the default), a missing browser image no
   longer stops startup. wsaw checks each container runtime for the image at
   startup, tries Docker when Podman lacks it, and when neither has it falls

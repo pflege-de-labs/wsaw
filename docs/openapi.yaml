@@ -311,6 +311,12 @@ paths:
     get:
       tags: [results]
       summary: Compare a result against its baseline
+      description: >-
+        Compares the scan against the series' approved baseline, or against
+        the previous stored scan when there is no baseline. The baseline's own
+        scan is never compared with itself. It is compared with the previous
+        stored scan, which baselineScanId then names. If no earlier scan is
+        stored, comparable is false and reason says so.
       parameters:
         - {$ref: "#/components/parameters/target"}
         - {$ref: "#/components/parameters/mode"}

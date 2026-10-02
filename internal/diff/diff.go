@@ -254,6 +254,15 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 const ReasonEvidenceGone = "the result this scan should be compared against is recorded, " +
 	"but its stored document is no longer in the artifact bucket"
 
+// ReasonFirstBaseline is the Reason a caller sets when the scan it compared
+// is the series' approved baseline and no scan is stored before it.
+//
+// A baseline is not compared with itself — that would report "no changes" and
+// mean nothing — so it is compared with the scan before it, and when there is
+// none Compare would say "no baseline to compare against", which is the one
+// thing that is not true of a baseline (Story 5.36, AC5).
+const ReasonFirstBaseline = "this scan is the baseline, and no earlier scan is stored to compare it with"
+
 // incomparable reports why two results must not be diffed.
 func incomparable(baseline, current *model.Result) (string, bool) {
 	switch {
