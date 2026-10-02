@@ -37,10 +37,12 @@ func TestSeriesStorageGroupsByTargetAndMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.SeriesStorage(t.Context())
+	report, err := s.Storage(t.Context())
 	if err != nil {
-		t.Fatalf("SeriesStorage: %v", err)
+		t.Fatalf("Storage: %v", err)
 	}
+
+	got := report.Series
 
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
@@ -53,7 +55,7 @@ func TestSeriesStorageGroupsByTargetAndMode(t *testing.T) {
 
 	siteSeries, ok := byTarget["site/reject"]
 	if !ok {
-		t.Fatal("site/reject is missing from SeriesStorage")
+		t.Fatal("site/reject is missing from Storage")
 	}
 
 	if siteSeries.Count != 2 {
@@ -74,7 +76,7 @@ func TestSeriesStorageGroupsByTargetAndMode(t *testing.T) {
 
 	otherSeries, ok := byTarget["other/accept"]
 	if !ok {
-		t.Fatal("other/accept is missing from SeriesStorage")
+		t.Fatal("other/accept is missing from Storage")
 	}
 
 	if otherSeries.Count != 1 {

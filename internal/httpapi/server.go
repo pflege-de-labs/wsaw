@@ -191,7 +191,7 @@ type Deps struct {
 	// assertion against the concrete *store.SQL wherever the server is
 	// built (cmd/wsaw/run.go); nil on a store that is not one, and the
 	// dashboard says so rather than reporting zeroes (Tenet 5).
-	SeriesStorage      func(ctx context.Context) ([]store.SeriesStorage, error)
+	Storage            func(ctx context.Context) (store.StorageReport, error)
 	MonthlyStorage     func(ctx context.Context, since time.Time) ([]store.MonthlyBytes, error)
 	LastMaintenanceRun func(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
 	MaintenanceRuns    func(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)

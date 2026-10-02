@@ -571,13 +571,24 @@ func (b *bucket) doN(ctx context.Context, op string, fn func(context.Context) (i
 // slash, and the hex SHA-256 of the bytes — so the same screenshot stored
 // twice costs one object and an existing directory keeps its shape (AC2, AC3).
 func (b *bucket) put(ctx context.Context, kind string, data []byte) (string, error) {
+	ref, _, err := b.putMeasured(ctx, kind, data)
+
+	return ref, err
+}
+
+// putMeasured is put, also reporting how many bytes the bucket holds for the
+// object when this call wrote it — after packing, so what the bucket actually
+// occupies. stored is -1 when the key was already there: its size is the one
+// recorded when it was first written, and measuring it again would be a
+// request per unchanged asset per scan.
+func (b *bucket) putMeasured(ctx context.Context, kind string, data []byte) (ref string, stored int64, err error) {
 	if !validKind(kind) {
-		return "", fmt.Errorf("artifact kind %q is not one this store writes: %w",
+		return "", -1, fmt.Errorf("artifact kind %q is not one this store writes: %w",
 			truncateForMessage(kind), errInvalidRef)
 	}
 
 	sum := sha256.Sum256(data)
-	ref := kind + refSeparator + hex.EncodeToString(sum[:])
+	ref = kind + refSeparator + hex.EncodeToString(sum[:])
 
 	// A key that exists already holds these exact bytes, so rewriting it
 	// would spend a round trip to produce no change — and captured evidence
@@ -590,24 +601,24 @@ func (b *bucket) put(ctx context.Context, kind string, data []byte) (string, err
 	// everything it holds packed (Story 4.8, AC5).
 	switch _, err := b.storedKey(ctx, ref); {
 	case err == nil:
-		return ref, nil
+		return ref, -1, nil
 	case !errors.Is(err, ErrNotFound):
-		return "", err
+		return "", -1, err
 	}
 
-	key, stored := b.pack(ref, data)
+	key, packed := b.pack(ref, data)
 
 	if err := b.doN(ctx, "storing an artifact", func(ctx context.Context) (int64, error) {
-		return int64(len(stored)), b.write(ctx, key, stored)
+		return int64(len(packed)), b.write(ctx, key, packed)
 	}); err != nil {
-		return "", artifactError("storing", ref, err)
+		return "", -1, artifactError("storing", ref, err)
 	}
 
 	if b.onArtifactStored != nil {
-		b.onArtifactStored(kind, int64(len(data)), int64(len(stored)))
+		b.onArtifactStored(kind, int64(len(data)), int64(len(packed)))
 	}
 
-	return ref, nil
+	return ref, int64(len(packed)), nil
 }
 
 // write performs one attempt at creating a key.

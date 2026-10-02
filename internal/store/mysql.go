@@ -306,6 +306,17 @@ func (mysqlDialect) migrations() [][]string {
 				unique key body_samples_scan (scan_id)
 			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
 		},
+
+		// Version 11: how many bytes each object occupies in the bucket. The
+		// sqlite dialect carries the reasoning; the reference is sized and
+		// collated as result_artifacts' own.
+		{
+			`create table if not exists ` + artifactSizesTable + ` (
+				artifact_ref varchar(128) not null primary key,
+				stored_bytes bigint       not null,
+				measured_at  bigint       not null
+			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
+		},
 	}
 }
 

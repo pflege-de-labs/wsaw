@@ -128,9 +128,14 @@ func TestSchemaVersionsAreConsecutiveAndCurrent(t *testing.T) {
 			schemaBodySamples, schemaConfidence)
 	}
 
-	if got := len(sqliteDialect{}.migrations()); got != schemaBodySamples {
-		t.Errorf("the schema has %d migrations; the body sampling ledger is version %d and the latest",
-			got, schemaBodySamples)
+	if schemaArtifactSizes != schemaBodySamples+1 {
+		t.Errorf("the artifact size record is version %d and the body sampling ledger is version %d; they are consecutive",
+			schemaArtifactSizes, schemaBodySamples)
+	}
+
+	if got := len(sqliteDialect{}.migrations()); got != schemaArtifactSizes {
+		t.Errorf("the schema has %d migrations; the artifact size record is version %d and the latest",
+			got, schemaArtifactSizes)
 	}
 }
 

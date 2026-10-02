@@ -1153,7 +1153,10 @@ func (r *rebuildRun) checkIndexed(ctx context.Context, page []indexedScan) error
 // an operator asked for on the way past; the recovery is what they ran the
 // command for, and it has already happened.
 func (r *rebuildRun) surveyOrphans(ctx context.Context, s *SQL) {
-	stats, err := s.PlanSweep(ctx, r.opts.at(), SweepOptions{})
+	// A rebuild that writes the index also records the stored size of every
+	// object the survey lists: the sizes are part of the index it is
+	// rebuilding, and the listing already reports them.
+	stats, err := s.PlanSweep(ctx, r.opts.at(), SweepOptions{measureSizes: r.opts.Mode.writes()})
 
 	switch {
 	case errors.Is(err, ErrEmptyIndex):

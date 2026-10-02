@@ -11,9 +11,13 @@ criteria, and any that are still open, are written down.
 
 Upgrading: nothing to do by hand. `storeBodies` keeps working and means what
 it did; setting it and `bodies` on the same level is now a configuration
-error. The store migrates to schema version 10 on first start, adding the
-`body_samples` table, and result documents move to `schemaVersion` 2.2, an
-additive change against which 2.1 documents still validate.
+error. The store migrates to schema version 11 on first start, adding the
+`body_samples` and `artifact_sizes` tables, and result documents move to
+`schemaVersion` 2.2, an additive change against which 2.1 documents still
+validate. The storage page reports existing evidence as "no recorded size yet"
+until the first sweep after the upgrade measures it; the daemon sweeps shortly
+after starting when its last sweep is overdue, and `wsaw store sweep` runs one
+at once.
 
 ### Added
 
@@ -137,6 +141,56 @@ additive change against which 2.1 documents still validate.
 - A body that could not be fingerprinted because too many requests finished
   at once now says so on the request (`body queue full`), where before only a
   scan warning did (Story 1.11).
+
+### Fixed
+
+- The storage page (`/storage`, `/api/v1/storage`) now reports what the
+  evidence occupies on disk. Before, it added up many times more than the
+  bucket held: one 409 MB store read as 7.0 GB. A scan's document was counted
+  once for every screenshot and body the scan referenced. A body or screenshot
+  shared by many scans was counted once per scan. Documents and bodies were
+  counted at their uncompressed size.
+  The page now counts each stored object once, at the size the bucket stores
+  it. Each series' row is what only that series references, which is what
+  deleting it would give back. Objects several series reference, such as a
+  script loaded under every consent mode of a site, are counted once in a new
+  "shared by several series" row, so the rows add up to the total. The growth
+  chart counts each object once, in the month of the oldest scan still holding
+  it.
+  The index now records each object's stored size when wsaw writes it, and
+  every real sweep records the sizes its listing reports. Objects stored
+  before this release are counted as "no recorded size yet", in no figure,
+  until the next sweep measures them. In `/api/v1/storage` the on-disk
+  figures are new fields: `storedTotalBytes`, `storedSharedBytes`,
+  `storedSharedPercent` and `unmeasuredObjects`, and per series
+  `storedDocumentBytes`, `storedArtifactBytes`, `storedSharedBytes`,
+  `storedSharePercent` and `unmeasuredObjects`. `grandTotalBytes`,
+  `documentBytes`, `artifactBytes` and `sharePercent` keep their meaning:
+  what the results record about their own size, before compression. Per
+  series, `documentBytes` no longer counts a document once for every
+  artifact its scan references (Story 5.32).
+- A target's history page now gives each scan's size on disk. Before, it used
+  sizes before compression, so a 25 KB document showed as 238 KB. A scan
+  whose screenshot had a recorded size but whose bodies predated size
+  tracking showed a complete-looking figure that was simply too small. That
+  was 1,103 of 1,994 scans in one store, while only 125 were marked "size
+  not recorded". Now any object without a recorded size marks the scan as
+  "N unmeasured" and leaves it out of the series total. The cost estimate is
+  now the median of what each scan *added* to the bucket, not of what it
+  references. Evidence unchanged since the scan before is stored once, so it
+  no longer counts as growth in every scan. A scan's size still counts
+  everything it references, and what it added appears in the size's tooltip.
+  `GET /api/v1/results/{target}/{mode}` summaries gain
+  `storedDocumentBytes`, `storedArtifactBytes`, `storedNewBytes` and
+  `unmeasuredObjects`. `documentBytes`, `artifactBytes` and
+  `artifactBytesRecorded` keep their meaning (Story 5.31).
+- The API description (`docs/openapi.yaml`) is version 1.1. It adds the
+  stored-size fields above and documents `/api/v1/storage` and the summary
+  size fields, which 1.0 did not describe. Nothing was removed or changed in
+  meaning.
+- The storage page's header named no evidence location ("evidence in .")
+  when the bucket was the default directory beside the database. It now
+  names the location the store opened (Story 5.32, AC3).
 
 ## [0.5.0] - 2026-09-30
 

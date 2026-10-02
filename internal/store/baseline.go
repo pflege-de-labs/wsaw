@@ -412,10 +412,12 @@ func (s *SQL) PutArtifact(kind string, data []byte) (string, error) {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	ref, err := s.bucket.put(ctx, kind, data)
+	ref, stored, err := s.bucket.putMeasured(ctx, kind, data)
 	if err != nil {
 		return "", err
 	}
+
+	s.recordArtifactSize(ctx, ref, stored, time.Now())
 
 	// Claimed after the write rather than before it: a claim on a key that was
 	// never stored would protect nothing and would have to be cleaned up

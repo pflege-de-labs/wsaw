@@ -380,6 +380,25 @@ func (sqliteDialect) migrations() [][]string {
 			`create unique index if not exists body_samples_scan
 				on ` + bodySamplesTable + ` (scan_id)`,
 		},
+
+		// Version 11: how many bytes each object occupies in the bucket.
+		//
+		// result_artifacts.bytes (version 7) and results.document_size record
+		// what a result holds before the bucket packs it, and they record it
+		// once per result that names the object, so neither can say what the
+		// bucket actually holds: a body twenty scans share is one object, and
+		// a compressed one is a fraction of its recorded size. This table has
+		// one row per object, keyed by reference, holding its stored size. It
+		// is filled when the store writes an object and refreshed by every
+		// sweep from the sizes its listing already reports, which is also how
+		// a store written before this version gets its sizes (artifactsizes.go).
+		{
+			`create table if not exists ` + artifactSizesTable + ` (
+				artifact_ref text    not null primary key,
+				stored_bytes integer not null,
+				measured_at  integer not null
+			) strict`,
+		},
 	}
 }
 

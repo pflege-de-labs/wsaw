@@ -1030,7 +1030,12 @@ func (s *SQL) collectOne(
 // A key that is already gone counts as done rather than failed: something else
 // collected it, which is the outcome this method wanted.
 func (s *SQL) removeArtifact(ctx context.Context, ref string) (bytes int64, deleted bool) {
-	return reclaimArtifact(ctx, s.bucket, s.log, ref)
+	bytes, deleted = reclaimArtifact(ctx, s.bucket, s.log, ref)
+	if deleted {
+		s.forgetArtifactSize(ctx, ref)
+	}
+
+	return bytes, deleted
 }
 
 // reclaimArtifact is removeArtifact for whichever kind of store is pruning.
@@ -1079,7 +1084,13 @@ func reclaimArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref strin
 // artifacts are still worth reclaiming, and the key stays referenced so the
 // next sweep meets it again (AC4).
 func (s *SQL) deleteArtifact(ctx context.Context, ref string) bool {
-	return dropArtifact(ctx, s.bucket, s.log, ref)
+	if !dropArtifact(ctx, s.bucket, s.log, ref) {
+		return false
+	}
+
+	s.forgetArtifactSize(ctx, ref)
+
+	return true
 }
 
 // dropArtifact is deleteArtifact for whichever kind of store is collecting; see
@@ -1305,6 +1316,12 @@ type SweepOptions struct {
 	// An operator who really does have a bucket full of garbage and an empty
 	// history says so, and the sweep proceeds.
 	AllowEmptyIndex bool
+
+	// measureSizes makes a plan record the stored size of every object its
+	// listing reports, as a real sweep always does. A plan otherwise writes
+	// nothing; this is for a rebuild's survey of the bucket, which is
+	// rebuilding the index the sizes belong to (Story 8.10).
+	measureSizes bool
 }
 
 // Sweep collects artifacts that nothing references (AC3).
@@ -1426,7 +1443,7 @@ func (s *SQL) sweep(ctx context.Context, trigger string, now time.Time, opts Swe
 		return stats, err
 	}
 
-	if err := s.sweepBucket(ctx, now, &stats, plan); err != nil {
+	if err := s.sweepBucket(ctx, now, &stats, plan, !plan || opts.measureSizes); err != nil {
 		return stats, err
 	}
 
@@ -1569,9 +1586,31 @@ func (s *SQL) sweepDangling(ctx context.Context, now time.Time, stats *SweepStat
 // this store — a leftover from another tool, a provider's placeholder, another
 // deployment's layout — and is counted apart and left alone: a sweep may only
 // collect what wsaw wrote (AC3, AC4).
-func (s *SQL) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats, plan bool) error {
+func (s *SQL) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats, plan, measureSizes bool) error {
 	cutoff := now.Add(-unreferencedArtifactGrace)
 	page := make([]artifactObject, 0, artifactRefPageSize)
+
+	// A real sweep, and a plan asked to (measureSizes), also records what
+	// every object it lists occupies, because
+	// the listing has already reported it: that is how the index learns the
+	// stored size of an object written before it recorded one, and how it
+	// corrects one the bucket no longer agrees with (artifactsizes.go). The
+	// clock is the wall clock rather than now, which a caller may have moved
+	// to judge the grace period, because the records it is compared with are
+	// stamped by the write path's own wall clock.
+	walkStarted := time.Now()
+	listed := make([]artifactObject, 0, artifactRefPageSize)
+
+	measure := func() error {
+		if !measureSizes || len(listed) == 0 {
+			return nil
+		}
+
+		err := s.upsertArtifactSizes(ctx, listed, time.Now())
+		listed = listed[:0]
+
+		return err
+	}
 
 	flush := func() error {
 		if len(page) == 0 {
@@ -1603,6 +1642,16 @@ func (s *SQL) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats,
 		stats.ArtifactsScanned++
 		stats.BytesScanned += obj.size
 
+		if measureSizes {
+			listed = append(listed, obj)
+
+			if len(listed) == artifactRefPageSize {
+				if err := measure(); err != nil {
+					return err
+				}
+			}
+		}
+
 		if obj.modTime.After(cutoff) {
 			// Too young to be called garbage: this is what an artifact of a
 			// scan that has not finished writing its row looks like (AC3).
@@ -1623,7 +1672,21 @@ func (s *SQL) sweepBucket(ctx context.Context, now time.Time, stats *SweepStats,
 		return fmt.Errorf("sweeping artifact bucket %s: %w", s.bucket, err)
 	}
 
-	return flush()
+	if err := measure(); err != nil {
+		return err
+	}
+
+	if err := flush(); err != nil {
+		return err
+	}
+
+	if !measureSizes {
+		return nil
+	}
+
+	// Every key has been seen, so a record nothing has measured since the walk
+	// began names an object the bucket no longer holds.
+	return s.forgetUnlistedSizes(ctx, walkStarted)
 }
 
 // collectUnreferenced deletes the objects in one page that no stored result

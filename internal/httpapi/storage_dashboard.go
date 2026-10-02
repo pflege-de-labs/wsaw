@@ -17,10 +17,11 @@ import (
 // it holds, plots how that has grown, and states what the last prune and
 // sweep gave back.
 //
-// Every figure on it comes from the index alone — SeriesStorage and
-// MonthlyStorage read the results and result_artifacts tables the same way
-// Story 5.31's history page does, and LastMaintenanceRun/MaintenanceRuns
-// read Story 4.11's receipt log — never from a bucket operation (AC10). The
+// Every figure on it comes from the index alone — Storage and MonthlyStorage
+// read the results and result_artifacts tables and the stored size the index
+// records for each object, and LastMaintenanceRun/MaintenanceRuns read Story
+// 4.11's receipt log — never from a bucket operation (AC10). The figures are
+// what the bucket occupies: each object once, at its stored size. The
 // page deletes nothing: no prune button, no sweep button, only the CLI
 // commands named (AC11).
 
@@ -65,19 +66,36 @@ func (c *storageCache) get(
 type storageRow struct {
 	Series store.Series `json:"series"`
 
-	Count         int   `json:"count"`
-	DocumentBytes int64 `json:"documentBytes"`
-	ArtifactBytes int64 `json:"artifactBytes"`
+	Count int `json:"count"`
 
-	// SharePercent is this row's share of the grand total, out of 100.
-	SharePercent float64 `json:"sharePercent"`
+	// DocumentBytes and ArtifactBytes are what the series' results record
+	// about their own size, before packing, each result charged for every
+	// artifact it references (Story 5.31, AC2); SharePercent is their total's
+	// share of GrandTotalBytes. API 1.0's figures, kept as they were.
+	DocumentBytes int64   `json:"documentBytes"`
+	ArtifactBytes int64   `json:"artifactBytes"`
+	SharePercent  float64 `json:"sharePercent"`
+
+	// StoredDocumentBytes and StoredArtifactBytes are what the bucket stores
+	// for the objects only this series references, at their stored size:
+	// what deleting it would give back. StoredSharedBytes is what it
+	// references that another series does too, which is in the shared row
+	// instead. StoredSharePercent is the row's share of StoredTotalBytes.
+	StoredDocumentBytes int64   `json:"storedDocumentBytes"`
+	StoredArtifactBytes int64   `json:"storedArtifactBytes"`
+	StoredSharedBytes   int64   `json:"storedSharedBytes"`
+	StoredSharePercent  float64 `json:"storedSharePercent"`
+
+	// UnmeasuredObjects counts the objects whose stored size the index has
+	// not recorded yet, in none of this row's Stored figures.
+	UnmeasuredObjects int `json:"unmeasuredObjects"`
 
 	Oldest time.Time `json:"oldest,omitzero"`
 	Newest time.Time `json:"newest,omitzero"`
 }
 
-// TotalBytes is what this series holds together.
-func (r storageRow) TotalBytes() int64 { return r.DocumentBytes + r.ArtifactBytes }
+// StoredTotalBytes is what the bucket stores for this series alone.
+func (r storageRow) StoredTotalBytes() int64 { return r.StoredDocumentBytes + r.StoredArtifactBytes }
 
 // prunePanel is Story 5.32, AC7's panel for the last recorded prune run —
 // read once from LastMaintenanceRun and never recomputed from the runs
@@ -145,8 +163,27 @@ type storageData struct {
 	Driver           string `json:"driver"`
 	ArtifactLocation string `json:"artifactLocation"`
 
+	// GrandTotalBytes is the sum of every row's DocumentBytes and
+	// ArtifactBytes: what the results record about their own size. It is
+	// not what the bucket holds — shared evidence is in it once per result
+	// that references it, and everything at its size before packing.
 	GrandTotalBytes int64        `json:"grandTotalBytes"`
 	Rows            []storageRow `json:"series"`
+
+	// StoredTotalBytes is what the bucket holds for the results still
+	// stored: each object once, at its stored size. It is every row's
+	// StoredTotalBytes plus StoredSharedBytes, which is what more than one
+	// series references, each object once, and its own row of the table;
+	// StoredSharedPercent is that row's share.
+	StoredTotalBytes    int64   `json:"storedTotalBytes"`
+	StoredSharedBytes   int64   `json:"storedSharedBytes"`
+	StoredSharedPercent float64 `json:"storedSharedPercent"`
+
+	// UnmeasuredObjects counts the referenced objects whose stored size the
+	// index has not recorded yet — what a store written before sizes were
+	// recorded holds until its next sweep measures them. They are in no
+	// Stored figure, and the page says so rather than reading low in silence.
+	UnmeasuredObjects int `json:"unmeasuredObjects"`
 
 	SeriesChart       template.HTML `json:"-"`
 	GrowthChart       template.HTML `json:"-"`
@@ -166,10 +203,10 @@ type storageData struct {
 }
 
 // computeStorageData builds one snapshot. It never touches the bucket: every
-// figure comes from SeriesStorage, MonthlyStorage and the maintenance run
-// log, each already an index-only read (AC10).
+// figure comes from Storage, MonthlyStorage and the maintenance run log, each
+// an index-only read (AC10).
 func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
-	if s.deps.SeriesStorage == nil {
+	if s.deps.Storage == nil {
 		return storageData{Available: false}, nil
 	}
 
@@ -182,42 +219,57 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		ArtifactLocation: secret.RedactURL(s.deps.ArtifactLocation),
 	}
 
-	series, err := s.deps.SeriesStorage(ctx)
+	report, err := s.deps.Storage(ctx)
 	if err != nil {
 		return storageData{}, fmt.Errorf("reading storage by series: %w", err)
 	}
 
-	sort.Slice(series, func(i, j int) bool { return series[i].TotalBytes() > series[j].TotalBytes() })
+	series := report.Series
 
-	for _, sd := range series {
-		data.GrandTotalBytes += sd.TotalBytes()
-	}
+	// The page ranks by what is on disk; the API 1.0 figures ride along.
+	sort.Slice(series, func(i, j int) bool { return series[i].StoredTotalBytes() > series[j].StoredTotalBytes() })
+
+	data.GrandTotalBytes = report.TotalBytes
+	data.StoredTotalBytes = report.StoredTotalBytes
+	data.StoredSharedBytes = report.StoredSharedBytes
+	data.StoredSharedPercent = sharePercent(report.StoredSharedBytes, report.StoredTotalBytes)
+	data.UnmeasuredObjects = report.Unmeasured
 
 	data.Rows = make([]storageRow, 0, len(series))
 
-	barRows := make([]hBarRow, 0, len(series))
+	barRows := make([]hBarRow, 0, len(series)+1)
 
 	for _, sd := range series {
-		share := 0.0
-		if data.GrandTotalBytes > 0 {
-			share = float64(sd.TotalBytes()) / float64(data.GrandTotalBytes) * 100
-		}
-
 		data.Rows = append(data.Rows, storageRow{
 			Series: sd.Series, Count: sd.Count,
 			DocumentBytes: sd.DocumentBytes, ArtifactBytes: sd.ArtifactBytes,
-			SharePercent: share, Oldest: sd.Oldest, Newest: sd.Newest,
+			SharePercent:        sharePercent(sd.TotalBytes(), report.TotalBytes),
+			StoredDocumentBytes: sd.StoredDocumentBytes, StoredArtifactBytes: sd.StoredArtifactBytes,
+			StoredSharedBytes:  sd.StoredSharedBytes,
+			StoredSharePercent: sharePercent(sd.StoredTotalBytes(), report.StoredTotalBytes),
+			UnmeasuredObjects:  sd.Unmeasured,
+			Oldest:             sd.Oldest, Newest: sd.Newest,
 		})
 
 		label := sd.Series.Target + " / " + string(sd.Series.Mode)
 		barRows = append(barRows, hBarRow{
 			Label: label,
 			Detail: fmt.Sprintf("%s: document %s, artifacts %s",
-				label, formatBytes(sd.DocumentBytes), formatBytes(sd.ArtifactBytes)),
+				label, formatBytes(sd.StoredDocumentBytes), formatBytes(sd.StoredArtifactBytes)),
 			Segments: []hBarSegment{
-				{Bytes: sd.DocumentBytes, Fill: "var(--accent)"},
-				{Bytes: sd.ArtifactBytes, Fill: "var(--ok-partial)"},
+				{Bytes: sd.StoredDocumentBytes, Fill: "var(--accent)"},
+				{Bytes: sd.StoredArtifactBytes, Fill: "var(--ok-partial)"},
 			},
+		})
+	}
+
+	// Drawn last, as the table's last row: it is not a series, and ranking it
+	// among them would read as one.
+	if report.StoredSharedBytes > 0 {
+		barRows = append(barRows, hBarRow{
+			Label:    sharedRowLabel,
+			Detail:   fmt.Sprintf("%s: %s", sharedRowLabel, formatBytes(report.StoredSharedBytes)),
+			Segments: []hBarSegment{{Bytes: report.StoredSharedBytes, Fill: "var(--muted)"}},
 		})
 	}
 
@@ -231,6 +283,19 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		(data.LastSweep.ArtifactsProtected > 0 || data.LastSweep.ForeignObjects > 0)
 
 	return data, nil
+}
+
+// sharedRowLabel names the row that holds what several series share.
+const sharedRowLabel = "shared by several series"
+
+// sharePercent is part's share of whole, out of 100, and zero for an empty
+// whole.
+func sharePercent(part, whole int64) float64 {
+	if whole <= 0 {
+		return 0
+	}
+
+	return float64(part) / float64(whole) * 100
 }
 
 // growthChart is AC5's diagram: stored bytes by month for the last twelve
@@ -257,7 +322,7 @@ func (s *Server) growthChart(ctx context.Context) template.HTML {
 		values[i] = m.Bytes
 	}
 
-	return vBarChart("Stored bytes by month — what is still stored, not what was ever written",
+	return vBarChart("Stored bytes by month — what is still stored, each object in the month first stored",
 		labels, values, formatBytes)
 }
 

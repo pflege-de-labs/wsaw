@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: wsaw API
-  version: "1.0"
+  version: "1.1"
   description: |
     wsaw's HTTP interface. The bundled web interface is a client of exactly
     these endpoints: it has no privileged path into the store.
@@ -492,6 +492,37 @@ paths:
                 properties:
                   error: {type: string}
 
+  /api/v1/storage:
+    get:
+      tags: [operations]
+      summary: What the stored history holds, per series and in total
+      description: |
+        The storage page's figures (Story 5.32), from the index alone — no
+        bucket read. Served only when api.token is configured, on every
+        listener: without it the answer is 403 and names the setting.
+
+        Two kinds of figure. documentBytes, artifactBytes, grandTotalBytes
+        and sharePercent are what the results record about their own size,
+        before compression, every result charged for each artifact it
+        references — API 1.0's figures, unchanged. The stored* figures (added
+        in 1.1) are what the evidence occupies in the bucket: each object
+        once, at its stored size. Only those can be held against the disk.
+        unmeasuredObjects counts objects whose stored size is not recorded
+        yet; the next sweep measures them.
+      parameters:
+        - name: recompute
+          in: query
+          description: 1 recomputes the snapshot now instead of serving the cached one (cached up to five minutes).
+          schema: {type: string, enum: ["1"]}
+      responses:
+        "200":
+          description: The storage snapshot.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Storage"}
+        "403":
+          description: No api.token is configured, so storage figures are not served.
+
   /api/v1/audit:
     get:
       tags: [operations]
@@ -700,6 +731,66 @@ components:
         confidenceBand:
           enum: [high, medium, low, none]
           description: The score in words. none is a scan that failed or was skipped. Absent exactly when confidenceScore is.
+        documentBytes:
+          type: integer
+          description: The result document's recorded size, before compression (Story 5.31).
+        artifactBytes:
+          type: integer
+          description: The recorded size, before compression, of every screenshot and stored body the result references. Shared evidence is charged to every result that references it.
+        artifactBytesRecorded:
+          type: boolean
+          description: False for a result whose artifact sizes were never recorded — it names screenshots or bodies, but none carries a size. True when they do, and when it names none.
+        storedDocumentBytes:
+          type: integer
+          description: Added in 1.1. The document at what it occupies in the bucket, after compression.
+        storedArtifactBytes:
+          type: integer
+          description: Added in 1.1. The screenshots and stored bodies at what they occupy in the bucket, each charged to every result that references it.
+        storedNewBytes:
+          type: integer
+          description: Added in 1.1. What this result added to the bucket — the stored size of the objects no earlier stored result of its series references. What a series grows by per scan.
+        unmeasuredObjects:
+          type: integer
+          description: Added in 1.1. Objects this result references whose stored size is not recorded yet. While above zero, the stored* figures are incomplete; the next sweep measures them.
+
+    StorageSeries:
+      type: object
+      properties:
+        series:
+          type: object
+          properties:
+            target: {type: string}
+            mode: {type: string}
+        count: {type: integer, description: Results stored for the series.}
+        oldest: {type: string, format: date-time}
+        newest: {type: string, format: date-time}
+        documentBytes: {type: integer, description: The documents' recorded size, before compression, each result's once.}
+        artifactBytes: {type: integer, description: Screenshots and bodies at their recorded size, charged to every result that references them.}
+        sharePercent: {type: number, description: documentBytes plus artifactBytes as a share of grandTotalBytes.}
+        storedDocumentBytes: {type: integer, description: Added in 1.1. Documents only this series references, at their stored size.}
+        storedArtifactBytes: {type: integer, description: Added in 1.1. Screenshots and bodies only this series references, at their stored size — with storedDocumentBytes, what deleting the series would give back.}
+        storedSharedBytes: {type: integer, description: Added in 1.1. What the series references that another series does too; counted once in the response's storedSharedBytes, not in this row.}
+        storedSharePercent: {type: number, description: Added in 1.1. The row's stored total as a share of storedTotalBytes.}
+        unmeasuredObjects: {type: integer, description: Added in 1.1. Objects with no recorded stored size yet, in none of the row's stored figures.}
+
+    Storage:
+      type: object
+      properties:
+        available: {type: boolean, description: False when this store cannot report storage figures; every other field is then zero.}
+        driver: {type: string}
+        artifactLocation: {type: string, description: Where the evidence is, redacted.}
+        grandTotalBytes: {type: integer, description: The sum of every series' documentBytes and artifactBytes. Not what the bucket holds.}
+        storedTotalBytes: {type: integer, description: Added in 1.1. What the bucket holds for the stored results — each object once, at its stored size; every series' stored total plus storedSharedBytes.}
+        storedSharedBytes: {type: integer, description: Added in 1.1. What more than one series references, each object once.}
+        storedSharedPercent: {type: number, description: Added in 1.1. storedSharedBytes as a share of storedTotalBytes.}
+        unmeasuredObjects: {type: integer, description: Added in 1.1. Referenced objects with no recorded stored size yet, in no stored figure.}
+        series:
+          type: array
+          items: {$ref: "#/components/schemas/StorageSeries"}
+        lastPrune: {type: object, description: The last recorded prune run, or why there is none.}
+        lastSweep: {type: object, description: The last recorded sweep run, or why there is none.}
+        sweepFoundExtra: {type: boolean}
+        snapshotAt: {type: string, format: date-time}
 
     DiffReport:
       type: object
