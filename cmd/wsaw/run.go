@@ -593,32 +593,43 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Retention:        a.Retention,
 		Running:          a.RunningScans,
 		ConfigPath:       a.Config.Path(),
-		ArtifactLocation: a.Config.Store.ArtifactLocation(),
+		ArtifactLocation: artifactLocation(a),
 
 		// The storage dashboard's own narrow reads (Story 5.32), populated
 		// only when the store this daemon opened is the SQL index they need
 		// — the only implementation there is (internal/store/api.go's own
 		// doc comment), but a type assertion is what keeps that an
 		// observation rather than an assumption baked into the seam.
-		SeriesStorage:      sqlSeriesStorageFunc(a.Store),
+		Storage:            sqlStorageFunc(a.Store),
 		MonthlyStorage:     sqlMonthlyStorageFunc(a.Store),
 		LastMaintenanceRun: sqlLastMaintenanceRunFunc(a.Store),
 		MaintenanceRuns:    sqlMaintenanceRunsFunc(a.Store),
 	})
 }
 
-// sqlSeriesStorageFunc, sqlMonthlyStorageFunc, sqlLastMaintenanceRunFunc and
+// artifactLocation names where the evidence is for the storage dashboard's
+// header: the bucket the store actually opened, when it can say, because the
+// configured setting is empty for the default directory beside the database.
+func artifactLocation(a *app.App) string {
+	if located, ok := a.Store.(interface{ ArtifactLocation() string }); ok {
+		return located.ArtifactLocation()
+	}
+
+	return a.Config.Store.ArtifactLocation()
+}
+
+// sqlStorageFunc, sqlMonthlyStorageFunc, sqlLastMaintenanceRunFunc and
 // sqlMaintenanceRunsFunc each report nil when st is not a *store.SQL, so the
 // storage dashboard can tell "not available for this store" apart from
 // "available and empty" (Tenet 5) rather than the server panicking on a type
 // assertion at request time.
-func sqlSeriesStorageFunc(st store.Store) func(context.Context) ([]store.SeriesStorage, error) {
+func sqlStorageFunc(st store.Store) func(context.Context) (store.StorageReport, error) {
 	sql, ok := st.(*store.SQL)
 	if !ok {
 		return nil
 	}
 
-	return sql.SeriesStorage
+	return sql.Storage
 }
 
 func sqlMonthlyStorageFunc(st store.Store) func(context.Context, time.Time) ([]store.MonthlyBytes, error) {

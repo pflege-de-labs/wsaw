@@ -31,13 +31,19 @@ const daysPerMonth = 30
 type seriesSize struct {
 	// Listed is every row the table shows.
 	Listed int
-	// Sized is the rows among them whose ArtifactBytesRecorded is true —
-	// the ones DocumentBytes and ArtifactBytes below actually total.
+	// Sized is the rows among them with no unmeasured object — the ones
+	// DocumentBytes and ArtifactBytes below actually total, at their stored
+	// size.
 	Sized      int
 	Unrecorded int
 
 	DocumentBytes int64
 	ArtifactBytes int64
+
+	// NewBytes is what the sizeable listed rows added to the bucket
+	// together: each object counted once, in the oldest stored scan that
+	// references it.
+	NewBytes int64
 
 	// Oldest and Newest span every listed row, sized or not: the span is a
 	// statement about time, which every row's StartedAt answers regardless
@@ -54,9 +60,11 @@ func (s seriesSize) TotalBytes() int64 { return s.DocumentBytes + s.ArtifactByte
 
 // seriesEstimate is the month/year projection beneath the series total.
 type seriesEstimate struct {
-	// MedianBytes is the median stored size (document plus artifacts) of the
-	// sizeable rows — the median, never the mean, so one outlier scan
-	// cannot set a year's budget (AC6).
+	// MedianBytes is the median of what each sizeable row added to the
+	// bucket (Summary.StoredNewBytes) — the median, never the mean, so one
+	// outlier scan cannot set a year's budget (AC6). What a scan adds, not
+	// what it references: evidence unchanged since the scan before is
+	// stored once, so a series grows by its new objects alone.
 	MedianBytes int64
 
 	// ScansPerMonth is the cadence the estimate multiplies MedianBytes by.
@@ -95,15 +103,16 @@ func computeSeriesSize(results []seriesRow) seriesSize {
 			sz.Newest = r.StartedAt
 		}
 
-		if !r.ArtifactBytesRecorded {
+		if r.UnmeasuredObjects > 0 {
 			sz.Unrecorded++
 
 			continue
 		}
 
 		sz.Sized++
-		sz.DocumentBytes += r.DocumentBytes
-		sz.ArtifactBytes += r.ArtifactBytes
+		sz.DocumentBytes += r.StoredDocumentBytes
+		sz.ArtifactBytes += r.StoredArtifactBytes
+		sz.NewBytes += r.StoredNewBytes
 	}
 
 	return sz
@@ -119,7 +128,7 @@ func computeSeriesSize(results []seriesRow) seriesSize {
 // has no schedule for — exactly the case AC7's observed-cadence fallback
 // exists to answer instead.
 func computeSeriesEstimate(results []seriesRow, sz seriesSize, interval time.Duration, hasInterval bool) *seriesEstimate {
-	median := medianTotalBytes(results)
+	median := medianNewBytes(results)
 	if median <= 0 {
 		return nil
 	}
@@ -138,17 +147,17 @@ func computeSeriesEstimate(results []seriesRow, sz seriesSize, interval time.Dur
 	}
 }
 
-// medianTotalBytes is AC6's median over the sizeable rows' own totals
-// (document plus artifacts).
-func medianTotalBytes(results []seriesRow) int64 {
+// medianNewBytes is AC6's median over what each sizeable row added to the
+// bucket.
+func medianNewBytes(results []seriesRow) int64 {
 	sizes := make([]int64, 0, len(results))
 
 	for _, r := range results {
-		if !r.ArtifactBytesRecorded {
+		if r.UnmeasuredObjects > 0 {
 			continue
 		}
 
-		sizes = append(sizes, r.DocumentBytes+r.ArtifactBytes)
+		sizes = append(sizes, r.StoredNewBytes)
 	}
 
 	if len(sizes) == 0 {

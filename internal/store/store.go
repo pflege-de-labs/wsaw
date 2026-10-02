@@ -484,6 +484,11 @@ func (s *SQL) closeAfterFailedOpen() {
 // tests that must run against every dialect.
 func (s *SQL) Driver() string { return s.d.name() }
 
+// ArtifactLocation names the bucket this store opened, redacted. It is the
+// resolved location, default included: the configuration's own setting is
+// empty when the operator left the bucket beside the database.
+func (s *SQL) ArtifactLocation() string { return s.bucket.String() }
+
 // SchemaVersion reports the schema version the store was at once it opened,
 // after any migration the open applied.
 func (s *SQL) SchemaVersion() int { return s.schemaVersion }
@@ -846,10 +851,12 @@ func (s *SQL) PutResult(res *model.Result) error {
 func (s *SQL) putDocument(ctx context.Context, document []byte) (resultRef, error) {
 	digest := documentDigest(document)
 
-	ref, err := s.bucket.put(ctx, artifactKindResult, document)
+	ref, stored, err := s.bucket.putMeasured(ctx, artifactKindResult, document)
 	if err != nil {
 		return resultRef{}, err
 	}
+
+	s.recordArtifactSize(ctx, ref, stored, time.Now())
 
 	return resultRef{
 		ref:    ref,
@@ -1001,6 +1008,23 @@ type Summary struct {
 	// only this flag, not a bare zero, tells them apart.
 	ArtifactBytesRecorded bool `json:"artifactBytesRecorded"`
 
+	// StoredDocumentBytes and StoredArtifactBytes are the same document and
+	// artifacts at what they occupy in the bucket, after packing, from the
+	// stored size the index records for each object (artifactsizes.go). Like
+	// ArtifactBytes they charge this result for everything it references.
+	StoredDocumentBytes int64 `json:"storedDocumentBytes"`
+	StoredArtifactBytes int64 `json:"storedArtifactBytes"`
+	// StoredNewBytes is what this result added to the bucket: the stored size
+	// of the objects it references that no earlier stored result of its
+	// series references. It is what a series grows by per scan, and what
+	// Story 5.31's estimate multiplies (AC6).
+	StoredNewBytes int64 `json:"storedNewBytes"`
+	// UnmeasuredObjects counts the objects this result references whose
+	// stored size the index has not recorded yet — evidence stored before
+	// sizes were recorded, until a sweep measures it. They are in none of the
+	// Stored figures, which are incomplete while it is above zero.
+	UnmeasuredObjects int `json:"unmeasuredObjects"`
+
 	// ConfidenceScore and ConfidenceBand are the scan's confidence (Story
 	// 5.35), copied from its document. Both are absent for a result whose
 	// document carries none — written before schema 2.1 — rather than
@@ -1141,7 +1165,25 @@ func (s *SQL) ListResults(target string, mode model.ConsentMode, limit int) ([]S
 			out = append(out, sm)
 		}
 
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		// What each result occupies on disk, read for the whole series
+		// because "new in this scan" depends on every earlier stored scan,
+		// listed or not — still from the index alone (Story 8.3, AC2).
+		sizes, err := s.scanSizes(ctx, target, mode)
+		if err != nil {
+			return err
+		}
+
+		for i := range out {
+			sz := sizes[out[i].ScanID]
+			out[i].StoredDocumentBytes, out[i].StoredArtifactBytes = sz.document, sz.artifacts
+			out[i].StoredNewBytes, out[i].UnmeasuredObjects = sz.added, sz.unmeasured
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing results for %s/%s: %w", target, mode, err)

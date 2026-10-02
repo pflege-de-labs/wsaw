@@ -38,7 +38,7 @@ func withStorageDashboard(d *httpapi.Deps) {
 		panic("withStorageDashboard: the fixture's store is not *store.SQL")
 	}
 
-	d.SeriesStorage = sql.SeriesStorage
+	d.Storage = sql.Storage
 	d.MonthlyStorage = sql.MonthlyStorage
 	d.LastMaintenanceRun = sql.LastMaintenanceRun
 	d.MaintenanceRuns = sql.MaintenanceRuns

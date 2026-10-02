@@ -15,13 +15,13 @@ import (
 func sizedRow(scanID string, at time.Time, total int64) seriesRow {
 	return seriesRow{Summary: store.Summary{
 		ScanID: scanID, StartedAt: at,
-		DocumentBytes: total, ArtifactBytesRecorded: true,
+		StoredDocumentBytes: total, StoredNewBytes: total, ArtifactBytesRecorded: true,
 	}}
 }
 
 func unsizedRow(scanID string, at time.Time) seriesRow {
 	return seriesRow{Summary: store.Summary{
-		ScanID: scanID, StartedAt: at, ArtifactBytesRecorded: false,
+		ScanID: scanID, StartedAt: at, UnmeasuredObjects: 1,
 	}}
 }
 
@@ -70,7 +70,7 @@ func TestComputeSeriesSizeTotalsOnlySizedRows(t *testing.T) {
 // so one enormous scan does not set a year's budget. Ten scans at 1 MB and
 // one at 100 MB: the mean would be dragged past 9 MB, the median stays at
 // 1 MB.
-func TestMedianTotalBytesIsNotSwungByAnOutlier(t *testing.T) {
+func TestMedianNewBytesIsNotSwungByAnOutlier(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -83,8 +83,35 @@ func TestMedianTotalBytesIsNotSwungByAnOutlier(t *testing.T) {
 
 	rows = append(rows, sizedRow("outlier", now.Add(11*time.Hour), 100<<20))
 
-	if got := medianTotalBytes(rows); got != 1<<20 {
-		t.Errorf("medianTotalBytes = %d, want %d (the median, unmoved by the outlier)", got, int64(1)<<20)
+	if got := medianNewBytes(rows); got != 1<<20 {
+		t.Errorf("medianNewBytes = %d, want %d (the median, unmoved by the outlier)", got, int64(1)<<20)
+	}
+}
+
+// TestEstimateIsBuiltFromWhatEachScanAdds: a series whose scans each
+// reference 10 MB but add 1 MB grows by 1 MB a scan, because unchanged
+// evidence is stored once — an estimate from the 10 MB would be ten times
+// the bucket's real growth.
+func TestEstimateIsBuiltFromWhatEachScanAdds(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	rows := make([]seriesRow, 0, 5)
+
+	for i := range 5 {
+		row := sizedRow("scan-"+string(rune('a'+i)), now.Add(time.Duration(i)*24*time.Hour), 10<<20)
+		row.StoredNewBytes = 1 << 20
+		rows = append(rows, row)
+	}
+
+	est := computeSeriesEstimate(rows, computeSeriesSize(rows), 24*time.Hour, true)
+	if est == nil {
+		t.Fatal("no estimate, want one from a daily schedule")
+	}
+
+	if est.MedianBytes != 1<<20 {
+		t.Errorf("MedianBytes = %d, want %d (what a scan adds, not what it references)", est.MedianBytes, int64(1)<<20)
 	}
 }
 

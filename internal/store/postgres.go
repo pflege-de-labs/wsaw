@@ -229,6 +229,16 @@ func (postgresDialect) migrations() [][]string {
 			`create unique index if not exists body_samples_scan
 				on ` + bodySamplesTable + ` (scan_id)`,
 		},
+
+		// Version 11: how many bytes each object occupies in the bucket. The
+		// sqlite dialect carries the reasoning.
+		{
+			`create table if not exists ` + artifactSizesTable + ` (
+				artifact_ref text   not null primary key,
+				stored_bytes bigint not null,
+				measured_at  bigint not null
+			)`,
+		},
 	}
 }
 

@@ -16,11 +16,17 @@
 </p>
 
 <div class="panel">
-  <strong>{{bytes .GrandTotalBytes}}</strong> referenced across {{len .Rows}} series, on the
+  <strong>{{bytes .StoredTotalBytes}}</strong> stored for {{len .Rows}} series, on the
   <strong>{{.Driver}}</strong> store, evidence in <code>{{.ArtifactLocation}}</code>.
-  {{/* AC3: what the index knows is referenced, not a claim about the bucket itself — only a sweep's own
-       bucket-wide listing can answer that, and it runs on the daemon's own schedule (Story 4.12), never from this page. */}}
-  <p class="note">This total is what the index currently references, not a listing of the bucket itself.</p>
+  {{/* AC3: what the index records the bucket holding for the results still stored — not a listing of the
+       bucket itself, which only a sweep makes, on the daemon's own schedule (Story 4.12), never from this page. */}}
+  <p class="note">Each stored object is counted once, at the size the bucket stores it, for the results
+    still stored. The figure comes from the index, not from listing the bucket.</p>
+  {{if .UnmeasuredObjects}}
+  <p class="note warn">{{.UnmeasuredObjects}} stored object(s) have no recorded size yet and are in no figure
+    on this page, so every total here is low by their size. The next sweep measures them; <code>wsaw store
+    sweep</code> runs one now.</p>
+  {{end}}
   {{if .SweepFoundExtra}}
   <p class="note warn">The last sweep found protected or foreign objects this total does not include —
     see the sweep panel below.</p>
@@ -41,6 +47,7 @@
       <th>Newest</th>
       <th class="num">Document</th>
       <th class="num">Artifacts</th>
+      <th class="num" title="Also referenced by another series; counted once, in the shared row">Shared</th>
       <th class="num">Total</th>
       <th class="num">Share</th>
     </tr>
@@ -53,26 +60,38 @@
       <td class="num">{{.Count}}</td>
       <td title="{{time .Oldest}}">{{ago .Oldest}}</td>
       <td title="{{time .Newest}}">{{ago .Newest}}</td>
-      <td class="num">{{bytes .DocumentBytes}}</td>
-      <td class="num">{{bytes .ArtifactBytes}}</td>
-      <td class="num">{{bytes .TotalBytes}}</td>
-      <td class="num">{{printf "%.1f%%" .SharePercent}}</td>
+      <td class="num">{{bytes .StoredDocumentBytes}}</td>
+      <td class="num">{{bytes .StoredArtifactBytes}}</td>
+      <td class="num">{{bytes .StoredSharedBytes}}</td>
+      <td class="num">{{bytes .StoredTotalBytes}}</td>
+      <td class="num">{{printf "%.1f%%" .StoredSharePercent}}</td>
+    </tr>
+  {{end}}
+  {{if .StoredSharedBytes}}
+    <tr>
+      <td>Shared by several series</td>
+      <td></td><td></td><td></td><td></td><td></td><td></td>
+      <td class="num">{{bytes .StoredSharedBytes}}</td>
+      <td class="num">{{printf "%.1f%%" .StoredSharedPercent}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
 
-<p class="note">Artifacts are content-addressed: evidence shared by more than one scan is charged to each
-  series that references it here, even though the bucket stores it once (the same note the history page
-  gives for one series' own scans).</p>
+<p class="note">Artifacts are content-addressed, so the bucket stores evidence once however many scans
+  reference it. A series' total is what only it references — what deleting it would give back. What
+  several series reference, such as a script every consent mode of a site loads, is counted once in the
+  shared row, so the rows add up to the total. The history page charges each scan for everything it
+  references, so its figures are larger.</p>
 {{else}}
 <p class="empty">Nothing is stored yet.</p>
 {{end}}
 
 {{if .GrowthChart}}
 <h2>Growth over time</h2>
-<p class="note">Stored bytes by month, for the scans still stored today — a month retention has already
-  thinned reads as small, which is retention working, not a quiet month.</p>
+<p class="note">Stored bytes by month, for the scans still stored today, each object counted once in the
+  month of the oldest scan still holding it — a month retention has already thinned reads as small, which
+  is retention working, not a quiet month.</p>
 <div class="chart">{{.GrowthChart}}</div>
 {{end}}
 
