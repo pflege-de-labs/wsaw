@@ -40,6 +40,11 @@ const (
 	chartLabelW   = 160
 	chartWidth    = 640
 	chartPlotW    = chartWidth - chartLabelW - 80
+
+	// chartSlotW is one vertical bar's share of its chart: wide enough for
+	// the value above it and the label below it — "1023.9 KB" is about 60
+	// units at chartFontSize — so neighbouring labels never run together.
+	chartSlotW = 64
 )
 
 // hBarSegment is one coloured piece of a stacked horizontal bar.
@@ -85,9 +90,9 @@ func seriesBarSVG(rows []hBarRow) template.HTML {
 
 	var b strings.Builder
 
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" width="100%%" height="%d" role="img" `+
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" width="%d" height="%d" role="img" `+
 		`aria-label="Storage by series. Largest: %s (%s)." xmlns="http://www.w3.org/2000/svg">`,
-		chartWidth, height, height, svgEscape(rows[0].Label), formatBytes(maxTotal))
+		chartWidth, height, chartWidth, height, svgEscape(rows[0].Label), formatBytes(maxTotal))
 	fmt.Fprintf(&b, `<title>Storage by series, largest first</title>`)
 
 	for i, r := range rows {
@@ -132,18 +137,16 @@ func vBarChart(title string, labels []string, values []int64, format func(int64)
 	}
 
 	const (
-		width     = chartWidth
 		plotH     = 120
-		barGap    = 4
+		barGap    = 16
 		labelH    = 28
 		valueH    = 14
 		topMargin = 8
 	)
 
-	barW := float64(width) / float64(len(labels))
-	if barW > 40 {
-		barW = 40
-	}
+	const barW = float64(chartSlotW)
+
+	width := len(labels) * chartSlotW
 
 	var maxV int64
 
@@ -160,13 +163,10 @@ func vBarChart(title string, labels []string, values []int64, format func(int64)
 
 	var b strings.Builder
 
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" width="100%%" height="%d" role="img" `+
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" width="%d" height="%d" role="img" `+
 		`aria-label="%s. Largest: %s (%s)." xmlns="http://www.w3.org/2000/svg">`,
-		width, height, height, svgEscape(title), svgEscape(labels[maxIdx]), format(maxV))
+		width, height, width, height, svgEscape(title), svgEscape(labels[maxIdx]), format(maxV))
 	fmt.Fprintf(&b, `<title>%s</title>`, svgEscape(title))
-
-	totalW := barW * float64(len(labels))
-	startX := (float64(width) - totalW) / 2
 
 	for i, v := range values {
 		h := 0.0
@@ -174,7 +174,7 @@ func vBarChart(title string, labels []string, values []int64, format func(int64)
 			h = float64(v) / float64(maxV) * float64(plotH)
 		}
 
-		x := startX + float64(i)*barW
+		x := float64(i) * barW
 		y := float64(topMargin + valueH + plotH)
 
 		fmt.Fprintf(&b, `<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="var(--accent)"><title>%s: %s</title></rect>`,
