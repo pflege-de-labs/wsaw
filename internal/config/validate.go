@@ -1057,7 +1057,31 @@ func (c *Config) validateNotifiers(add addFunc) {
 			add(0, field+".maxRetries", "must not be negative")
 		}
 
+		validateNotifierConfidence(n, field, add)
 		validateNotifierKind(n, field, add)
+	}
+}
+
+// validateNotifierConfidence checks the confidence threshold (Story 5.37,
+// AC7). belowConfidence on its own is rejected rather than ignored: an
+// operator who wrote "drop" believes something is being held back.
+func validateNotifierConfidence(n Notifier, field string, add addFunc) {
+	if n.MinConfidence != nil && (*n.MinConfidence < 0 || *n.MinConfidence > 100) {
+		add(0, field+".minConfidence", "must be between 0 and 100, got %d", *n.MinConfidence)
+	}
+
+	if n.BelowConfidence == "" {
+		return
+	}
+
+	switch n.BelowConfidence {
+	case BelowConfidenceCaveat, BelowConfidenceDrop:
+	default:
+		add(0, field+".belowConfidence", "%q is not valid; use caveat or drop", n.BelowConfidence)
+	}
+
+	if n.MinConfidence == nil {
+		add(0, field+".belowConfidence", "has no effect without minConfidence")
 	}
 }
 

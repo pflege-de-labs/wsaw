@@ -37,6 +37,17 @@ type ScanEvent struct {
 	// Caveat explains an untrustworthy scan in one sentence.
 	Caveat string `json:"caveat,omitempty"`
 
+	// Confidence is the scan's stored confidence score, absent when the scan
+	// has none (Story 5.35).
+	Confidence *ScanConfidence `json:"confidence,omitempty"`
+	// BelowConfidence is true when the scan is untrustworthy only because it
+	// scored under this notifier's minConfidence (Story 5.37).
+	BelowConfidence bool `json:"belowConfidence,omitempty"`
+
+	// observedNothing marks a failed or skipped scan, which no confidence
+	// threshold may hold back.
+	observedNothing bool
+
 	ConsentOutcome model.ConsentOutcome `json:"consentOutcome"`
 	ConsentReason  string               `json:"consentReason,omitempty"`
 	CMP            string               `json:"cmp,omitempty"`
@@ -78,6 +89,8 @@ func NewScanEvent(res *model.Result, rep *diff.Report) ScanEvent {
 	}
 
 	ev.Trustworthy, ev.Caveat = trustworthiness(res)
+	ev.Confidence = scanConfidence(res)
+	ev.observedNothing = !res.OK()
 
 	if rep != nil {
 		ev.Changes = rep.Changes

@@ -81,6 +81,9 @@ type TeamsConfig struct {
 	// MaxChanges caps how many changes the card lists.
 	MaxChanges int
 
+	// Confidence is the notifier's minimum confidence (Story 5.37).
+	Confidence ConfidenceGate
+
 	Headers map[string]secret.Value
 
 	Timeout    time.Duration
@@ -140,6 +143,8 @@ func NewTeams(cfg TeamsConfig, client *http.Client, log *slog.Logger) (*Teams, e
 // Name identifies the notifier.
 func (t *Teams) Name() string { return t.cfg.Name }
 
+func (t *Teams) confidenceGate() ConfidenceGate { return t.cfg.Confidence }
+
 // Legacy reports whether this notifier posts the retired connector format, so
 // the caller can warn about it once at startup rather than on every delivery.
 func (t *Teams) Legacy() bool { return t.cfg.Legacy }
@@ -151,7 +156,7 @@ func (t *Teams) WantsScan(ev ScanEvent) bool {
 
 // DeliverScan posts one card.
 func (t *Teams) DeliverScan(ctx context.Context, ev ScanEvent) error {
-	body, err := t.payload(ev)
+	body, err := t.payload(t.cfg.Confidence.markScan(ev))
 	if err != nil {
 		return err
 	}
@@ -363,6 +368,12 @@ func changeHeading(ev ScanEvent) string {
 // the same information (AC5).
 func headline(ev ScanEvent) string {
 	switch {
+	case ev.BelowConfidence:
+		// The severity stays in the headline: the scan did observe the page,
+		// and the reader decides what a low-confidence finding is worth. The
+		// caveat line below says why the confidence is low.
+		return "Low confidence — " + severityHeadline(ev)
+
 	case !ev.Trustworthy:
 		// The termination is named only when it is what went wrong. A scan
 		// that reached network idle but failed its consent interaction is not
@@ -376,13 +387,18 @@ func headline(ev ScanEvent) string {
 			return "Result not trustworthy"
 		}
 
-	case len(ev.Changes) == 0:
-		return "No changes"
-
 	default:
-		return fmt.Sprintf("Highest severity: %s — %d change%s",
-			strings.ToUpper(string(ev.Highest)), len(ev.Changes), plural(len(ev.Changes)))
+		return severityHeadline(ev)
 	}
+}
+
+func severityHeadline(ev ScanEvent) string {
+	if len(ev.Changes) == 0 {
+		return "No changes"
+	}
+
+	return fmt.Sprintf("Highest severity: %s — %d change%s",
+		strings.ToUpper(string(ev.Highest)), len(ev.Changes), plural(len(ev.Changes)))
 }
 
 func (t *Teams) facts(ev ScanEvent) [][2]string {

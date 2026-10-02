@@ -892,6 +892,25 @@ The card leads with the target, the consent mode, the highest severity present a
 
 The retired `MessageCard` format is available as `format: messagecard` for a tenant still running an Office 365 connector webhook. Microsoft retired those on 30 April 2026; wsaw warns at startup when it is used.
 
+### Requiring a minimum confidence
+
+Every scan carries a confidence score from 0 to 100 (`high` is 90–100, `medium` 60–89, `low` 1–59), which drops when requests failed, the scan stopped early, it ran far shorter or longer than usual, or consent was not verified. A scan that lost part of the page can still report a finding as real. For example, when a network change on the scanning host stops a site's own script from loading, the page can throw an error, its error reporter contacts `sentry.io`, and that shows up as a new third-party host, `high`, before consent. The next clean scan takes it back. `minConfidence` keeps findings like that from reaching a channel as fact:
+
+```yaml
+notify:
+  - name: teams
+    kind: teams
+    url: "${env:WSAW_TEAMS_WORKFLOW_URL}"
+    minSeverity: medium
+    minConfidence: 60        # medium or better is reported at face value
+    belowConfidence: caveat  # or drop
+```
+
+- **`caveat`** (the default) still delivers a scan below the threshold, marked as low confidence with the score, the threshold and the largest reason: "confidence 59 of 100, below this channel's 60: 8 of 114 network requests not observed, most often net::ERR_NETWORK_CHANGED". A Teams card puts that line above the changes and keeps the severity in its headline. A webhook event gains `confidence` (`score`, `band`, `reason`) and `belowConfidence: true`, for a template or a router to act on. A low-confidence scan with nothing at or above `minSeverity` posts nothing.
+- **`drop`** sends nothing for such a scan. Every held-back delivery writes a `Warn` log line (`notification held back`, with the scan, the score and the number of changes) and increments `wsaw_notifications_suppressed_total{notifier,reason="low-confidence"}`. The changes stay on the scan page and in the API.
+
+Either way, a scan that failed or was skipped is always reported. The threshold filters partial observations, never a missing one. A scan with no stored score, such as one written before scores existed, counts as below any threshold, including `minConfidence: 0`. Without `minConfidence` a notifier behaves exactly as before. Every change event now carries the scan's `confidence`, whether or not a threshold is set.
+
 ## Logs
 
 Log format follows where the output is going: readable and coloured on a

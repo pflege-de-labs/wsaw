@@ -21,6 +21,20 @@ at once.
 
 ### Added
 
+- A notifier can require a minimum confidence score before it reports a
+  scan's findings as fact: set `minConfidence` (0–100) on a webhook or Teams
+  notifier. With the default `belowConfidence: caveat`, a scan below the
+  threshold is still delivered, marked as low confidence, with the score and
+  its largest reason. With `belowConfidence: drop`, it is held back. Each
+  held-back delivery logs a warning and counts in the new
+  `wsaw_notifications_suppressed_total{notifier,reason}` metric. A failed or
+  skipped scan is always reported, and a scan without a stored score counts
+  as below the threshold. This stops a scan that lost part of the page, such
+  as one where a network change broke the site's own script and its error
+  reporter showed up as a new third-party host, from alerting as a real
+  finding. Webhook change events now also carry the scan's `confidence`, plus
+  `belowConfidence` when a threshold applies. Without `minConfidence`,
+  nothing changes (Story 5.37).
 - A scan can be approved as the baseline from its own result page, next to
   the changes being judged. Before this, approval was only possible from the
   scan's row in the target's history, which meant finding the row by its scan

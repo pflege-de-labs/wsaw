@@ -35,6 +35,18 @@ type Event struct {
 	At     time.Time `json:"at"`
 
 	Change diff.Change `json:"change"`
+
+	// Confidence is the scan's stored confidence score, absent when the scan
+	// has none (Story 5.35).
+	Confidence *ScanConfidence `json:"confidence,omitempty"`
+	// BelowConfidence is true when the scan scored under this notifier's
+	// minConfidence and its findings are delivered as low confidence
+	// (Story 5.37).
+	BelowConfidence bool `json:"belowConfidence,omitempty"`
+
+	// observedNothing marks a change from a failed or skipped scan, which no
+	// confidence threshold may hold back.
+	observedNothing bool
 }
 
 // Notifier delivers events. It is an interface because a second
@@ -60,6 +72,9 @@ type Config struct {
 	// Template renders the payload. Empty sends the event as JSON.
 	Template string
 	Headers  map[string]secret.Value
+
+	// Confidence is the notifier's minimum confidence (Story 5.37).
+	Confidence ConfidenceGate
 
 	Timeout    time.Duration
 	MaxRetries int
@@ -133,6 +148,8 @@ func templateFuncs() template.FuncMap {
 // Name identifies the notifier.
 func (w *Webhook) Name() string { return w.cfg.Name }
 
+func (w *Webhook) confidenceGate() ConfidenceGate { return w.cfg.Confidence }
+
 // Wants reports whether this notifier is interested in an event.
 func (w *Webhook) Wants(ev Event) bool {
 	if w.cfg.MinSeverity != "" && !ev.Change.Severity.AtLeast(w.cfg.MinSeverity) {
@@ -158,7 +175,7 @@ func (w *Webhook) Wants(ev Event) bool {
 
 // Deliver posts one event, retrying with exponential backoff.
 func (w *Webhook) Deliver(ctx context.Context, ev Event) error {
-	body, contentType, err := w.render(ev)
+	body, contentType, err := w.render(w.cfg.Confidence.markChange(ev))
 	if err != nil {
 		return err
 	}
@@ -331,8 +348,9 @@ type Dispatcher struct {
 	queue     chan envelope
 	log       *slog.Logger
 
-	onSent   func()
-	onFailed func()
+	onSent       func()
+	onFailed     func()
+	onSuppressed func(notifier, reason string)
 
 	wg   sync.WaitGroup
 	once sync.Once
@@ -344,6 +362,10 @@ type DispatcherOptions struct {
 	Logger    *slog.Logger
 	OnSent    func()
 	OnFailed  func()
+	// OnSuppressed counts a delivery a notifier held back on purpose, by
+	// notifier and reason, so a quiet channel can be told apart from a
+	// filtered one (Story 5.37, AC4).
+	OnSuppressed func(notifier, reason string)
 
 	// ScanNotifiers receive one event per scan instead of one per change.
 	ScanNotifiers []ScanNotifier
@@ -360,12 +382,13 @@ func NewDispatcher(notifiers []Notifier, opts DispatcherOptions) *Dispatcher {
 	}
 
 	return &Dispatcher{
-		notifiers: notifiers,
-		scanners:  opts.ScanNotifiers,
-		queue:     make(chan envelope, opts.QueueSize),
-		log:       opts.Logger,
-		onSent:    opts.OnSent,
-		onFailed:  opts.OnFailed,
+		notifiers:    notifiers,
+		scanners:     opts.ScanNotifiers,
+		queue:        make(chan envelope, opts.QueueSize),
+		log:          opts.Logger,
+		onSent:       opts.OnSent,
+		onFailed:     opts.OnFailed,
+		onSuppressed: opts.OnSuppressed,
 	}
 }
 
@@ -441,6 +464,12 @@ func (d *Dispatcher) deliverScan(ctx context.Context, ev ScanEvent) {
 			continue
 		}
 
+		if d.heldBack(n, ev.Confidence, ev.observedNothing, heldBackScan{
+			scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: len(ev.Changes),
+		}) {
+			continue
+		}
+
 		if err := n.DeliverScan(ctx, ev); err != nil {
 			d.log.Error("scan notification delivery failed",
 				"notifier", n.Name(),
@@ -466,6 +495,12 @@ func (d *Dispatcher) deliverScan(ctx context.Context, ev ScanEvent) {
 func (d *Dispatcher) deliverChange(ctx context.Context, ev Event) {
 	for _, n := range d.notifiers {
 		if !n.Wants(ev) {
+			continue
+		}
+
+		if d.heldBack(n, ev.Confidence, ev.observedNothing, heldBackScan{
+			scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: 1,
+		}) {
 			continue
 		}
 
@@ -500,6 +535,8 @@ func (d *Dispatcher) Publish(res *model.Result, rep *diff.Report) {
 		return
 	}
 
+	confidence := scanConfidence(res)
+
 	if rep != nil {
 		for _, c := range rep.Changes {
 			change := Event{
@@ -510,6 +547,9 @@ func (d *Dispatcher) Publish(res *model.Result, rep *diff.Report) {
 				ScanID:      res.ScanID,
 				At:          res.StartedAt,
 				Change:      c,
+				Confidence:  confidence,
+
+				observedNothing: !res.OK(),
 			}
 
 			d.enqueue(envelope{change: &change},
@@ -525,6 +565,51 @@ func (d *Dispatcher) Publish(res *model.Result, rep *diff.Report) {
 		d.enqueue(envelope{scan: &scan},
 			"scan_id", scan.ScanID, "changes", len(scan.Changes))
 	}
+}
+
+// reasonLowConfidence is the suppression reason for a scan under a
+// notifier's minConfidence. It is a metric label value, so it is part of the
+// public interface.
+const reasonLowConfidence = "low-confidence"
+
+// heldBackScan is what the held-back log line says about the scan.
+type heldBackScan struct {
+	scanID      string
+	target      string
+	consentMode model.ConsentMode
+	changes     int
+}
+
+// heldBack reports whether a notifier holds this delivery back under its
+// confidence threshold, and when it does, logs and counts it: a finding that
+// is held back without a trace is the silent failure Tenet 5 rules out
+// (Story 5.37, AC4).
+func (d *Dispatcher) heldBack(n interface{ Name() string }, c *ScanConfidence, observedNothing bool, s heldBackScan) bool {
+	g, ok := n.(confidenceGated)
+	if !ok || !g.confidenceGate().drops(c, observedNothing) {
+		return false
+	}
+
+	var score any = "not computed"
+	if c != nil {
+		score = c.Score
+	}
+
+	d.log.Warn("notification held back: scan is below the notifier's minimum confidence",
+		"scan_id", s.scanID,
+		"target", s.target,
+		"consent_mode", string(s.consentMode),
+		"notifier", n.Name(),
+		"confidence", score,
+		"min_confidence", g.confidenceGate().Min,
+		"changes", s.changes,
+	)
+
+	if d.onSuppressed != nil {
+		d.onSuppressed(n.Name(), reasonLowConfidence)
+	}
+
+	return true
 }
 
 func (d *Dispatcher) enqueue(env envelope, detail ...any) {
