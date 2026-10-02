@@ -144,6 +144,12 @@ at once.
 
 ### Fixed
 
+- The storage page's charts are drawn at their natural size again (Story
+  5.32). On a wide window they stretched to the page width, and their labels
+  grew with them to two or three times the size of the surrounding text. The
+  month and prune-run charts also ran each bar's value into its neighbour's.
+  A chart now never grows beyond its own width, shrinks to fit a narrow
+  window, and gives every bar room for its labels.
 - The storage page (`/storage`, `/api/v1/storage`) now reports what the
   evidence occupies on disk. Before, it added up many times more than the
   bucket held: one 409 MB store read as 7.0 GB. A scan's document was counted
