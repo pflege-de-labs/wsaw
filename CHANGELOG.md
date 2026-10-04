@@ -158,6 +158,14 @@ at once.
 
 ### Fixed
 
+- The daily Chromium version checks (`chromium.yaml`, `chromium-debian.yaml`)
+  no longer go quiet after failing to open a bump pull request. When a run
+  pushed its `deps/chromium-*` branch but could not open the pull request, for
+  example because GitHub Actions was not allowed to create one, every later
+  run saw the branch, assumed a pull request existed, and passed. The new
+  Chromium, usually a security release, then went unnoticed. A run now fails
+  while such a branch has no pull request, until someone opens one from it or
+  deletes the branch.
 - The storage page's charts are drawn at their natural size again (Story
   5.32). On a wide window they stretched to the page width, and their labels
   grew with them to two or three times the size of the surrounding text. The
