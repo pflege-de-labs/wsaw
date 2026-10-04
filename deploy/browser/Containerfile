@@ -33,8 +33,8 @@
 # never says it is stale.
 FROM debian:forky-slim@sha256:2f3607b1ec79933241f58759eb9de9a691a393520820477dd81df5097a8b7da7
 
-ARG SNAPSHOT=20260930T000000Z
-ARG CHROMIUM_VERSION=154.0.8037.57-1
+ARG SNAPSHOT=20261004T000000Z
+ARG CHROMIUM_VERSION=154.0.8037.92-1
 
 # A Release file is valid for a week after Debian signs it, and a snapshot
 # keeps serving it long after, which is why Check-Valid-Until is off; the
