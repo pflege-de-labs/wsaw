@@ -96,8 +96,16 @@ jobs:
           GH_TOKEN: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
         run: |
           head="deps/chromium-$LATEST"
+          # A branch left behind without a pull request means an earlier run
+          # pushed it and then failed to open one. Passing quietly here would
+          # hide the bump for good, so fail until a human opens or deletes it.
           if git ls-remote --exit-code --heads origin "$head" >/dev/null; then
-            echo "::notice::$head already exists; not opening a second pull request"
+            pr="$(gh pr list --head "$head" --state all --json number --jq '.[0].number')"
+            if [ -z "$pr" ]; then
+              echo "::error::$head exists but has no pull request; open one from it, or delete the branch so the next run starts over"
+              exit 1
+            fi
+            echo "::notice::$head already has pull request #$pr; not opening a second one"
             exit 0
           fi
 
