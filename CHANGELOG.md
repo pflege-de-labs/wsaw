@@ -21,6 +21,11 @@ at once.
 
 ### Added
 
+- YouTube's own consent page (`consent.youtube.com`), where a target that
+  redirects to a YouTube channel lands, is now driven in both `accept` and
+  `reject` mode and verified by the page leaving the consent host. Before, it
+  was recorded as `not-needed` with "no consent management platform
+  detected" (Story 2.4).
 - A notifier can require a minimum confidence score before it reports a
   scan's findings as fact: set `minConfidence` (0–100) on a webhook or Teams
   notifier. With the default `belowConfidence: caveat`, a scan below the

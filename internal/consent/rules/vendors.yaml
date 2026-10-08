@@ -412,3 +412,28 @@ rules:
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
     dismissed: |
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
+
+  # YouTube's own consent interstitial. A target that links or redirects to a
+  # YouTube channel lands on consent.youtube.com/m, a full page rather than a
+  # banner, so no banner-shaped element is found and the scan used to report
+  # "no consent management platform detected".
+  #
+  # The choices are plain forms posting to /save; which one is which is said
+  # by their hidden inputs, not by the generated class names on the buttons:
+  # "Alle akzeptieren" sets set_ytc=true, "Alle ablehnen" sets set_eom=true
+  # and nothing else. A successful save redirects to the form's continue URL,
+  # so leaving the consent host is the evidence the choice was recorded.
+  # Markup confirmed on consent.youtube.com, 2026-10-08.
+  - name: youtube-consent
+    vendor: YouTube
+    priority: 90
+    detect: |
+      location.hostname === 'consent.youtube.com' && !!document.querySelector('form[action$="/save"]')
+    accept:
+      - click: 'form[action$="/save"]:has(input[name="set_ytc"][value="true"]) button'
+    reject:
+      - click: 'form[action$="/save"]:has(input[name="set_eom"][value="true"]):not(:has(input[name="set_ytc"])) button'
+    verify: |
+      location.hostname !== 'consent.youtube.com'
+    dismissed: |
+      location.hostname !== 'consent.youtube.com'
