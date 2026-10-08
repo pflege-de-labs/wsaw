@@ -1,0 +1,47 @@
+# Site-specific consent rules shipped with wsaw.
+#
+# A rule here handles one site's own consent UI, where no vendor rule can,
+# and is scoped to that site with hosts. When the site is redesigned and the
+# rule stops matching, the scan records it as stale (Story 2.9, AC6) rather
+# than silently falling through. The conventions are those of vendors.yaml.
+#
+# Priority sits above the vendor rules: a site that wraps a CMP in its own
+# UI is handled by the rule written for that UI.
+
+version: 1
+
+rules:
+  # wetter.com shows its own "pay or OK" wall (contentpass) in front of a
+  # Usercentrics TCF CMP that has no UI of its own on the page, so neither
+  # the TCF API nor the usercentrics-v2 rule can express a choice. The wall
+  # offers "Akzeptieren und weiter" and a contentpass subscription; its
+  # "Privatsphäre Einstellungen" panel offers only "Alles akzeptieren". There
+  # is no reject or necessary-only control, so this rule defines accept only
+  # and a reject-mode scan stays failed. Accepting reloads the page.
+  #
+  # Verification reads the choice back through the TCF API: before the choice
+  # it reports eventStatus "cmpuishown" with an empty TC string, afterwards a
+  # TC string. The CMP answers getTCData synchronously.
+  # Markup confirmed on www.wetter.com, 2026-10-08.
+  - name: wetter-com-contentpass
+    hosts: [wetter.com]
+    priority: 110
+    detect: |
+      !!document.getElementById('cmp-btn-accept')
+    accept:
+      - click: "#cmp-btn-accept"
+    verify: |
+      (() => {
+        let recorded = false;
+        try {
+          window.__tcfapi('getTCData', 2, (data, ok) => {
+            recorded = !!(ok && data && data.tcString && data.eventStatus !== 'cmpuishown');
+          });
+        } catch (e) { return false; }
+        return recorded;
+      })()
+    dismissed: |
+      (() => {
+        const b = document.getElementById('cmp-btn-accept');
+        return !b || !(b.offsetWidth || b.offsetHeight);
+      })()

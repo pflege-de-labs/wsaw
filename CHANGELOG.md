@@ -26,6 +26,10 @@ at once.
   `reject` mode and verified by the page leaving the consent host. Before, it
   was recorded as `not-needed` with "no consent management platform
   detected" (Story 2.4).
+- wetter.com's own "pay or OK" wall in front of its TCF CMP is accepted
+  through a host-scoped rule in the new `sites.yaml` pack and verified
+  through the TCF API. The wall offers no reject and no necessary-only
+  choice, so `reject` scans of it stay `failed` (Story 2.9).
 - A notifier can require a minimum confidence score before it reports a
   scan's findings as fact: set `minConfidence` (0–100) on a webhook or Teams
   notifier. With the default `belowConfidence: caveat`, a scan below the
