@@ -43,6 +43,28 @@ type Action struct {
 	// Optional marks a step that may legitimately find nothing, such as an
 	// intermediate "manage settings" button that some variants skip.
 	Optional bool `yaml:"optional,omitempty"`
+	// Frame runs a Click or WaitFor inside the document of the iframe whose
+	// element matches this selector in the top document, for CMPs that draw
+	// their message in a frame of their own (Sourcepoint). The step runs in an
+	// isolated world: it sees the frame's DOM but none of its scripts'
+	// globals, which is why only DOM steps may set it. A frame the browser
+	// renders in another process, typically one served from another site,
+	// cannot be reached this way, and the step fails saying so.
+	Frame string `yaml:"frame,omitempty"`
+}
+
+// checkFrameSteps refuses a frame on a step that cannot run inside one, at
+// load rather than as a confusing failure mid-scan.
+func checkFrameSteps(r Rule) error {
+	for _, steps := range [][]Action{r.Accept, r.Reject, r.Necessary} {
+		for i, s := range steps {
+			if s.Frame != "" && s.Click == "" && s.WaitFor == "" {
+				return fmt.Errorf("step %d sets frame, which only a click or waitFor step can use", i+1)
+			}
+		}
+	}
+
+	return nil
 }
 
 // Rule handles one CMP, or one site's bespoke banner.
@@ -193,6 +215,10 @@ func parseRules(source string, b []byte) ([]Rule, error) {
 		if len(file.Rules[i].Accept) == 0 && len(file.Rules[i].Reject) == 0 && len(file.Rules[i].Necessary) == 0 {
 			return nil, fmt.Errorf("rule file %s: rule %q defines neither accept, reject, nor necessary steps",
 				source, file.Rules[i].Name)
+		}
+
+		if err := checkFrameSteps(file.Rules[i]); err != nil {
+			return nil, fmt.Errorf("rule file %s: rule %q: %w", source, file.Rules[i].Name, err)
 		}
 	}
 

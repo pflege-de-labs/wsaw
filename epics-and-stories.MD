@@ -266,6 +266,7 @@ Interact with the site's consent management platform (CMP) so the same URL can b
 
 - AC1: A rule set maps host patterns and/or DOM signatures to CSS/XPath selectors plus an action for `accept` and `reject`.
 - AC2: Rules search the main frame and all same-origin and cross-origin iframes, plus open shadow roots.
+  - A frame is entered by naming it: a `click` or `waitFor` step sets `frame` to a selector for the `<iframe>` element, and runs in an isolated world inside that frame's document, same-origin or not. Only those two steps may set it, because an isolated world sees the frame's DOM but not its scripts. A frame the browser renders in another process, as under strict site isolation, is not reachable this way; the step fails and the reason says so. The shipped headless browser renders cross-site frames in-process. Searching every frame without naming it is not done, so a rule never clicks into an advertising frame by accident.
 - AC3: A built-in rule set ships with the binary and can be extended or overridden by user rule files without recompiling.
 - AC4: Rules support waiting for the selector to appear (bounded), scrolling it into view, clicking, and an optional follow-up step (e.g. "open settings → deny all → save").
 - AC5: A generic heuristic fallback (multilingual label matching, DE/EN at minimum) is attempted last and clearly flagged as heuristic in the result.

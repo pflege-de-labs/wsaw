@@ -259,6 +259,53 @@ rules:
 	}
 }
 
+// TestFrameIsOnlyForDOMSteps covers the frame field's one constraint: a step
+// inside a frame runs in an isolated world that cannot see the page's
+// scripts, so a vendor-API eval there could only ever fail mid-scan.
+func TestFrameIsOnlyForDOMSteps(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		step string
+		ok   bool
+	}{
+		{"click", `click: "button.ok"`, true},
+		{"waitFor", `waitFor: "button.ok"`, true},
+		{"eval", `eval: "window.cmp.accept()"`, false},
+		{"trustedClick", `trustedClick: "button.ok"`, false},
+		{"waitMillis", `waitMillis: 200`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeRules(t, `
+version: 1
+rules:
+  - name: framed
+    detect: "true"
+    accept:
+      - `+tc.step+`
+        frame: "iframe#message"
+    verify: "true"
+`)
+
+			_, err := consent.LoadRuleFiles(path)
+
+			switch {
+			case tc.ok && err != nil:
+				t.Fatalf("LoadRuleFiles: %v", err)
+			case !tc.ok && err == nil:
+				t.Fatal("a frame on a step that cannot run inside one was accepted")
+			case !tc.ok && !strings.Contains(err.Error(), "frame"):
+				t.Errorf("error does not name the frame field: %v", err)
+			}
+		})
+	}
+}
+
 func TestHostPatternMatching(t *testing.T) {
 	t.Parallel()
 

@@ -21,6 +21,13 @@ at once.
 
 ### Added
 
+- Consent rule steps can run inside an iframe: a `click` or `waitFor` step
+  that sets `frame` to a selector for an `<iframe>` element runs in that
+  frame's document. CMPs that draw their message in a frame of their own,
+  Sourcepoint among them, can now be handled by a rule. Only those two step
+  kinds may set it, and a rule file that puts it elsewhere is refused at load.
+  A frame the browser renders in another process cannot be reached, and the
+  step fails saying so (Story 2.4).
 - YouTube's own consent page (`consent.youtube.com`), where a target that
   redirects to a YouTube channel lands, is now driven in both `accept` and
   `reject` mode and verified by the page leaving the consent host. Before, it

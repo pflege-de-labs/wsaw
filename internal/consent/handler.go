@@ -1010,6 +1010,11 @@ func (h *handler) escalateClicks(ctx context.Context, steps []Action) bool {
 
 	for _, step := range steps {
 		switch {
+		case step.Frame != "" && step.Click != "":
+			if h.simulateClickInFrame(ctx, step.Frame, step.Click) {
+				clicked = true
+			}
+
 		case step.Click != "":
 			if h.simulateClick(ctx, step.Click) {
 				clicked = true
@@ -1141,6 +1146,9 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 	h.ensureHelpers(stepCtx)
 
 	switch {
+	case step.Frame != "":
+		return h.runFrameStep(stepCtx, step)
+
 	case step.WaitFor != "":
 		return h.waitFor(stepCtx, step.WaitFor)
 

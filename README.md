@@ -212,6 +212,17 @@ A rule without a `verify` expression can never report `applied`, only `unverifie
 
 A rule written for one site binds to what survives that site's next deploy: visible text, `role` and `aria-*`, an author-written `id` or `data-` attribute. Never to class names a bundler generated — those change on every build, and a rule that quietly stops matching is worse than no rule. Where a host-scoped rule no longer matches the host it was written for, wsaw records it as stale in the result and as a warning on the scan.
 
+Some CMPs draw their message in an iframe of their own, Sourcepoint among them, so no selector in the top document reaches their buttons. A `click` or `waitFor` step can name the frame it runs in with `frame`, a selector for the `<iframe>` element in the top document:
+
+```yaml
+    accept:
+      - waitFor: 'iframe[id^="sp_message_iframe"]'
+      - click: "button.sp_choice_type_11"
+        frame: 'iframe[id^="sp_message_iframe"]'
+```
+
+The step runs in an isolated world inside the frame: it sees the frame's DOM, and a click reaches the page's own listeners, but none of the frame's script globals are visible. That is why only `click` and `waitFor` may set `frame`, and a rule file that puts it on another step is refused when it is loaded. A frame the browser renders in another process cannot be reached this way. That happens under strict site isolation, typically for a frame from another site. The step then fails and the reason says so. The shipped headless browser renders cross-site frames in-process.
+
 `verify` proves the CMP recorded the choice; it does not prove the banner closed — a vendor API commonly records consent without ever running the banner's own dismiss handler. When `verify` passes but the banner is still on screen, wsaw retries the rule's click steps with a fuller pointer/mouse event sequence and, failing that, the generic label-matching fallback, before giving up and reporting `banner-visible` rather than `applied`. A rule can name its own banner-gone check with `dismissed`; left unset, wsaw falls back to the same "does anything banner-shaped remain" heuristic the label-matching fallback uses.
 
 ## Reading a result
