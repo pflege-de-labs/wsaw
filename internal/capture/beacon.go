@@ -100,6 +100,43 @@ var DefaultBeacons = []Beacon{
 
 	// Cloudflare Web Analytics, served from the site's own origin.
 	{URLPattern: `/cdn-cgi/rum(\?|$)`},
+
+	// Snowplow's default collector path, wherever the collector is hosted;
+	// it is usually a first-party CNAME. A collector configured with a custom
+	// path needs its own rule.
+	{URLPattern: `/com\.snowplowanalytics\.snowplow/tp2(\?|$)`},
+
+	// Smartico's widget reports impressions as JSONP calls about once a
+	// second for as long as it is on screen. The widget's scripts, images
+	// and fonts come from d., cdn. and cdn1.smartico.one; this host only
+	// receives tracking.
+	{Host: "tracking2.smartico.one"},
+
+	// Relevant Yield's Prebid analytics. The same host runs its server-side
+	// auctions under /openrtb2/, which load creatives and stay counted.
+	{URLPattern: `^https?://[a-z0-9-]+\.relevant-digital\.com/analytics(/|\?|$)`},
+
+	// Permutive's event batches and SDK metrics. api.permutive.app also
+	// answers identify calls the page waits on, hence the paths.
+	{URLPattern: `^https?://api\.permutive\.app/v2\.0/(batch/events|internal/metrics)(\?|$)`},
+
+	// Google's ad viewability and measurement pings, sent for every slot on
+	// every refresh. Both hosts also serve the ad scripts and GPT's ad
+	// requests, which are scoped out by path.
+	{URLPattern: `^https?://pagead2\.googlesyndication\.com/(pagead/gen_204|pcs/activeview)(\?|$)`},
+	{URLPattern: `^https?://securepubads\.g\.doubleclick\.net/pcs/view(\?|$)`},
+
+	// Integral Ad Science's viewability pixel. Its scripts come from
+	// static., fw. and jsconfig.adsafeprotected.com.
+	{URLPattern: `^https?://dt\.adsafeprotected\.com/dt(\?|$)`},
+
+	// AWS WAF's client SDK reports telemetry on an interval. The same
+	// per-customer host serves challenge.js.
+	{URLPattern: `^https?://[a-z0-9]+\.edge\.sdk\.awswaf\.com/.*/telemetry(\?|$)`},
+
+	// Ogury's (presage.io) bid-timeout monitoring. Its header bidding goes to
+	// mweb-hb.presage.io and stays counted.
+	{Host: "ms-ads-monitoring-events.presage.io"},
 }
 
 // Beacons is a compiled rule set. The zero value matches nothing, and a

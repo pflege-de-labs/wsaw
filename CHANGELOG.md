@@ -30,6 +30,16 @@ at once.
   through a host-scoped rule in the new `sites.yaml` pack and verified
   through the TCF API. The wall offers no reject and no necessary-only
   choice, so `reject` scans of it stay `failed` (Story 2.9).
+- More periodic telemetry endpoints in the shipped beacon list, so they no
+  longer hold a scan open until its hard timeout: Snowplow's default
+  collector path, Smartico's impression tracking, Relevant Yield's Prebid
+  analytics, Permutive's event batches, Google's ad viewability pings
+  (`gen_204`, `activeview`, `pcs/view`), Integral Ad Science's viewability
+  pixel, AWS WAF telemetry and Ogury's bid-timeout monitoring. Scripts and ad
+  auctions on the same hosts are still waited for. In a run over Funke's
+  sites, 29 accept-mode scans ended on their hard timeout; replaying their
+  requests against the new list, about 23 would have gone idle. Ad refresh
+  keeps the rest busy (Story 1.10).
 - A notifier can require a minimum confidence score before it reports a
   scan's findings as fact: set `minConfidence` (0–100) on a webhook or Teams
   notifier. With the default `belowConfidence: caveat`, a scan below the

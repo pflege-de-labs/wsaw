@@ -714,12 +714,16 @@ targets:
 ```
 
 The shipped list covers the periodic beacons known to hold scans open —
-Taboola, Outbrain, Clarity, GA4, Matomo, New Relic, Datadog, Sentry,
-FullStory, Hotjar, Chartbeat and a few more — and every entry names an
+Taboola, Outbrain, Clarity, GA4, Matomo, Snowplow, New Relic, Datadog,
+Sentry, FullStory, Hotjar, Chartbeat, Google's ad viewability pings, Permutive,
+Smartico and a few more — and every entry names an
 endpoint that exists to receive telemetry. Where a vendor serves its script
 from the same host, the rule is scoped by path: excluding a *script* from idle
 detection would end the scan before the assets that script loads were ever
-requested. `useDefaultBeacons: false` declines the list entirely.
+requested. For the same reason ad auctions are never on the list: a Prebid
+or Google Ad Manager request loads the creative it wins, so a page that
+refreshes its ads every few seconds can still run into its hard timeout.
+`useDefaultBeacons: false` declines the list entirely.
 
 Nothing is filtered out of the result. A beacon is recorded like any other
 request — URL, timing, status, party, initiator — and counts against
