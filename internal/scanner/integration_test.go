@@ -207,14 +207,23 @@ func newScanner(t *testing.T, info browser.Info, site *fixtureSite) (*scanner.Sc
 func newScannerFor(t *testing.T, info browser.Info, resolverRules string) (*scanner.Scanner, func()) {
 	t.Helper()
 
+	if resolverRules == "" {
+		return newScannerForArgs(t, info)
+	}
+
+	return newScannerForArgs(t, info, "host-resolver-rules="+resolverRules)
+}
+
+// newScannerForArgs builds a scanner whose browser is launched with extra
+// command-line switches, for a fixture that needs more than host mapping.
+func newScannerForArgs(t *testing.T, info browser.Info, extraArgs ...string) (*scanner.Scanner, func()) {
+	t.Helper()
+
 	launch := browser.Options{
 		Info:          info,
 		LaunchTimeout: 40 * time.Second,
 		ProfileDir:    t.TempDir(),
-	}
-
-	if resolverRules != "" {
-		launch.ExtraArgs = []string{"host-resolver-rules=" + resolverRules}
+		ExtraArgs:     extraArgs,
 	}
 
 	pool := browser.NewPool(browser.PoolOptions{Size: 1, Launch: launch})

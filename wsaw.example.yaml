@@ -113,8 +113,9 @@ capture:
   # waited for.
   #
   # The shipped list covers the vendors known to do this (Taboola, Outbrain,
-  # Clarity, GA4, Matomo, New Relic, Datadog, Sentry, FullStory, Hotjar,
-  # Chartbeat and a few more). Set this to false to decline it.
+  # Clarity, GA4, Matomo, Snowplow, New Relic, Datadog, Sentry, FullStory,
+  # Hotjar, Chartbeat, Google's ad viewability pings and a few more). Set
+  # this to false to decline it.
   useDefaultBeacons: true
   beacons:
     # An exact host, a bare domain covering its subdomains, or a "*." wildcard.

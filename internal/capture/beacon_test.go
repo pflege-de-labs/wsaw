@@ -155,6 +155,22 @@ func TestDefaultBeaconsAreUsable(t *testing.T) {
 		{"https://rs.fullstory.com/rec/bundle", "rs.fullstory.com"},
 		{"https://example.com/matomo.php?idsite=1&rec=1", "example.com"},
 		{"https://example.com/cdn-cgi/rum?", "example.com"},
+
+		// Observed holding the accept-mode scans of Funke's news sites open
+		// past their hard timeout (run of 2026-10-06).
+		{"https://tracking2.smartico.one/tracking.php?params=x", "tracking2.smartico.one"},
+		{"https://tracking2.smartico.one/increment_ads_impressions.php?params=x", "tracking2.smartico.one"},
+		{"https://cluster7.relevant-digital.com/analytics", "cluster7.relevant-digital.com"},
+		{"https://cluster7.relevant-digital.com/analytics/line_item_info", "cluster7.relevant-digital.com"},
+		{"https://anonym.data.funkedigital.de/com.snowplowanalytics.snowplow/tp2", "anonym.data.funkedigital.de"},
+		{"https://api.permutive.app/v2.0/batch/events?enrichment_flags=x", "api.permutive.app"},
+		{"https://api.permutive.app/v2.0/internal/metrics?k=x", "api.permutive.app"},
+		{"https://pagead2.googlesyndication.com/pagead/gen_204?id=x", "pagead2.googlesyndication.com"},
+		{"https://pagead2.googlesyndication.com/pcs/activeview?xai=x", "pagead2.googlesyndication.com"},
+		{"https://securepubads.g.doubleclick.net/pcs/view?xai=x", "securepubads.g.doubleclick.net"},
+		{"https://dt.adsafeprotected.com/dt?anId=x", "dt.adsafeprotected.com"},
+		{"https://492c2b26b048.edge.sdk.awswaf.com/492c2b26b048/f1d2d2f924e9/telemetry", "492c2b26b048.edge.sdk.awswaf.com"},
+		{"https://ms-ads-monitoring-events.presage.io/bid_timeout", "ms-ads-monitoring-events.presage.io"},
 	}
 
 	for _, m := range matched {
@@ -171,6 +187,21 @@ func TestDefaultBeaconsAreUsable(t *testing.T) {
 		{"https://edge.fullstory.com/s/fs.js", "edge.fullstory.com"},
 		{"https://static.hotjar.com/c/hotjar-123.js", "static.hotjar.com"},
 		{"https://www.example.com/", "www.example.com"},
+
+		// The same vendors' scripts, creatives and auctions: an auction
+		// loads the creative it wins, so it is an asset request, not
+		// telemetry.
+		{"https://d.smartico.one/get/wg/2aa9261715881f84f108b1318c184ce10df60a1f?region=x", "d.smartico.one"},
+		{"https://cdn1.smartico.one/sresize/gallery/645116/1/image.jpeg?w=390", "cdn1.smartico.one"},
+		{"https://cluster7.relevant-digital.com/openrtb2/auction", "cluster7.relevant-digital.com"},
+		{"https://funke-cdn.relevant-digital.com/static/tags/123.js", "funke-cdn.relevant-digital.com"},
+		{"https://api.permutive.app/v2.0/identify?k=x", "api.permutive.app"},
+		{"https://pagead2.googlesyndication.com/pagead/managed/js/activeview/current/ufs_web_display.js", "pagead2.googlesyndication.com"},
+		{"https://securepubads.g.doubleclick.net/gampad/ads?iu=x", "securepubads.g.doubleclick.net"},
+		{"https://securepubads.g.doubleclick.net/tag/js/gpt.js", "securepubads.g.doubleclick.net"},
+		{"https://static.adsafeprotected.com/sca.17.6.4.js", "static.adsafeprotected.com"},
+		{"https://492c2b26b048.edge.sdk.awswaf.com/492c2b26b048/f1d2d2f924e9/challenge.js", "492c2b26b048.edge.sdk.awswaf.com"},
+		{"https://mweb-hb.presage.io/api/header-bidding-request", "mweb-hb.presage.io"},
 	}
 
 	for _, m := range notMatched {

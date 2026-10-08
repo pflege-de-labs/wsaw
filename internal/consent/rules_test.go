@@ -63,7 +63,7 @@ func TestBuiltinRulesCoverExpectedVendors(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{"usercentrics", "onetrust", "cookiebot", "didomi", "sourcepoint", "consentmanager", "complianz", "borlabs cookie", "ccm19"} {
+	for _, want := range []string{"usercentrics", "onetrust", "cookiebot", "didomi", "sourcepoint", "consentmanager", "complianz", "borlabs cookie", "ccm19", "youtube"} {
 		if !vendors[want] {
 			t.Errorf("builtin rules do not cover %q", want)
 		}

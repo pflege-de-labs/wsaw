@@ -351,17 +351,39 @@ rules:
     dismissed: |
       !document.querySelector('.cmplz-cookiebanner.cmplz-show')
 
+  # Borlabs Cookie 2 renders anchors with _brlbs- classes; Borlabs Cookie 3
+  # mounts a Vue dialog into #BorlabsCookieBox whose buttons carry
+  # brlbs-btn-accept-all and brlbs-btn-accept-only-essential, the latter being
+  # v3's single "reject everything optional" control.
+  #
+  # v3 can be configured to mount its dialog only once the visitor scrolls or
+  # presses a key (dialogShowDialogAfterUserInteraction), so a freshly loaded
+  # page shows nothing but the floating widget. The widget is a control the
+  # visitor sees and uses to open the same dialog, so it is clicked first; it
+  # is optional because v2 and widget-less sites have none.
+  #
+  # Both versions record the choice in the borlabs-cookie cookie, and only
+  # once a choice was made. window.BorlabsCookie.Cookie, which this rule used
+  # to verify with, exists in v3 from the moment the script loads.
   - name: borlabs
     vendor: Borlabs Cookie
     priority: 80
     detect: |
       !!(window.BorlabsCookie || document.getElementById('BorlabsCookieBox'))
     accept:
-      - click: "#BorlabsCookieBox a._brlbs-btn-accept-all, #BorlabsCookieBox a._brlbs-btn-accept-all-cookies"
+      - click: "#BorlabsCookieWidget .brlbs-cmpnt-widget"
+        optional: true
+      - waitFor: "#BorlabsCookieBox a._brlbs-btn-accept-all, #BorlabsCookieBox a._brlbs-btn-accept-all-cookies, #BorlabsCookieBox .brlbs-btn-accept-all"
+        optional: true
+      - click: "#BorlabsCookieBox a._brlbs-btn-accept-all, #BorlabsCookieBox a._brlbs-btn-accept-all-cookies, #BorlabsCookieBox .brlbs-btn-accept-all"
     reject:
-      - click: "#BorlabsCookieBox a._brlbs-btn-refuse-all, #BorlabsCookieBox a._brlbs-refuse-cookie"
+      - click: "#BorlabsCookieWidget .brlbs-cmpnt-widget"
+        optional: true
+      - waitFor: "#BorlabsCookieBox a._brlbs-btn-refuse-all, #BorlabsCookieBox a._brlbs-refuse-cookie, #BorlabsCookieBox .brlbs-btn-accept-only-essential"
+        optional: true
+      - click: "#BorlabsCookieBox a._brlbs-btn-refuse-all, #BorlabsCookieBox a._brlbs-refuse-cookie, #BorlabsCookieBox .brlbs-btn-accept-only-essential"
     verify: |
-      !!(window.BorlabsCookie && window.BorlabsCookie.Cookie)
+      /(?:^|;\s*)borlabs-cookie=/.test(document.cookie)
 
   - name: klaro
     vendor: Klaro
@@ -390,3 +412,28 @@ rules:
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
     dismissed: |
       !document.querySelector('.osano-cm-dialog--type_bar.osano-cm-dialog--visible')
+
+  # YouTube's own consent interstitial. A target that links or redirects to a
+  # YouTube channel lands on consent.youtube.com/m, a full page rather than a
+  # banner, so no banner-shaped element is found and the scan used to report
+  # "no consent management platform detected".
+  #
+  # The choices are plain forms posting to /save; which one is which is said
+  # by their hidden inputs, not by the generated class names on the buttons:
+  # "Alle akzeptieren" sets set_ytc=true, "Alle ablehnen" sets set_eom=true
+  # and nothing else. A successful save redirects to the form's continue URL,
+  # so leaving the consent host is the evidence the choice was recorded.
+  # Markup confirmed on consent.youtube.com, 2026-10-08.
+  - name: youtube-consent
+    vendor: YouTube
+    priority: 90
+    detect: |
+      location.hostname === 'consent.youtube.com' && !!document.querySelector('form[action$="/save"]')
+    accept:
+      - click: 'form[action$="/save"]:has(input[name="set_ytc"][value="true"]) button'
+    reject:
+      - click: 'form[action$="/save"]:has(input[name="set_eom"][value="true"]):not(:has(input[name="set_ytc"])) button'
+    verify: |
+      location.hostname !== 'consent.youtube.com'
+    dismissed: |
+      location.hostname !== 'consent.youtube.com'

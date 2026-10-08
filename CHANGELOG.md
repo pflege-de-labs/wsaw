@@ -21,6 +21,25 @@ at once.
 
 ### Added
 
+- YouTube's own consent page (`consent.youtube.com`), where a target that
+  redirects to a YouTube channel lands, is now driven in both `accept` and
+  `reject` mode and verified by the page leaving the consent host. Before, it
+  was recorded as `not-needed` with "no consent management platform
+  detected" (Story 2.4).
+- wetter.com's own "pay or OK" wall in front of its TCF CMP is accepted
+  through a host-scoped rule in the new `sites.yaml` pack and verified
+  through the TCF API. The wall offers no reject and no necessary-only
+  choice, so `reject` scans of it stay `failed` (Story 2.9).
+- More periodic telemetry endpoints in the shipped beacon list, so they no
+  longer hold a scan open until its hard timeout: Snowplow's default
+  collector path, Smartico's impression tracking, Relevant Yield's Prebid
+  analytics, Permutive's event batches, Google's ad viewability pings
+  (`gen_204`, `activeview`, `pcs/view`), Integral Ad Science's viewability
+  pixel, AWS WAF telemetry and Ogury's bid-timeout monitoring. Scripts and ad
+  auctions on the same hosts are still waited for. In a run over Funke's
+  sites, 29 accept-mode scans ended on their hard timeout; replaying their
+  requests against the new list, about 23 would have gone idle. Ad refresh
+  keeps the rest busy (Story 1.10).
 - A notifier can require a minimum confidence score before it reports a
   scan's findings as fact: set `minConfidence` (0–100) on a webhook or Teams
   notifier. With the default `belowConfidence: caveat`, a scan below the
@@ -158,6 +177,18 @@ at once.
 
 ### Fixed
 
+- A consent choice that reloads or navigates the page is verified again.
+  The helpers wsaw injects into the page were lost with the old document, so
+  verification afterwards failed with `__wsawConsentContainer is not a
+  function` and a recorded choice was reported `unverified`. Seen on
+  touringen.de and wetter.com (Story 2.5).
+- The `borlabs` rule drives Borlabs Cookie 3. Version 3 renders buttons
+  instead of the version 2 anchors, and it can hold its dialog back until the
+  visitor scrolls, so a scan saw only the floating widget and recorded the
+  rule as `failed`. The rule now opens the dialog through that widget, clicks
+  either version's buttons, and verifies the `borlabs-cookie` cookie. It used
+  to verify `BorlabsCookie.Cookie`, which version 3 defines before any choice
+  is made (Story 2.4).
 - The daily Chromium version checks (`chromium.yaml`, `chromium-debian.yaml`)
   no longer go quiet after failing to open a bump pull request. When a run
   pushed its `deps/chromium-*` branch but could not open the pull request, for
