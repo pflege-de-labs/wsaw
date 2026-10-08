@@ -184,6 +184,14 @@ at once.
 
 ### Fixed
 
+- The `sourcepoint` rule now works. Its clicks ran in the top document, but
+  Sourcepoint's buttons are inside its message iframe, so the rule could never
+  click anything. It now clicks inside the frame, by the `sp_choice_type_11`
+  and `sp_choice_type_13` classes that carry the choice. It also detects the
+  `_sp_queue` stub sites define before Sourcepoint loads, so a lazily loaded
+  Sourcepoint, as on brigitte.de, eltern.de and gala.de behind contentpass, is
+  no longer missed. Those three offer no reject, only a paid alternative, so
+  `reject` scans of them stay `failed` (Story 2.4).
 - A consent choice that reloads or navigates the page is verified again.
   The helpers wsaw injects into the page were lost with the old document, so
   verification afterwards failed with `__wsawConsentContainer is not a

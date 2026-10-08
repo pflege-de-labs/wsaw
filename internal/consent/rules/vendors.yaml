@@ -165,19 +165,36 @@ rules:
     verify: |
       !!(window.Didomi && window.Didomi.getUserConsentStatusForAll)
 
+  # Sourcepoint draws its message in an iframe of its own, so its buttons are
+  # never in the top document: the clicks run inside the frame. Each button
+  # carries the choice it makes as a class, sp_choice_type_11 for "accept
+  # all" and sp_choice_type_13 for "reject all", whatever its label says.
+  #
+  # The frame is often served from a first-party CNAME (baseendpoint.brigitte.de
+  # on the Funke magazine sites), which the browser renders in the page's own
+  # process. Served from Sourcepoint's own domain, it is rendered in another
+  # process, which a frame step cannot reach; the step fails saying so.
+  #
+  # _sp_queue is the site's own stub, defined before Sourcepoint loads. A
+  # wrapper such as contentpass loads Sourcepoint lazily, and a rule that
+  # waited for _sp_ found nothing yet.
   - name: sourcepoint
     vendor: Sourcepoint
     priority: 90
     detect: |
-      !!(window._sp_ || document.querySelector('iframe[id^="sp_message_iframe"]'))
+      !!(window._sp_ || window._sp_queue || document.querySelector('iframe[id^="sp_message_iframe"]'))
     accept:
       - waitFor: 'iframe[id^="sp_message_iframe"]'
-        optional: true
-      - click: "button[title='Accept all'], button[title='Accept All'], .sp_choice_type_11"
+      - waitFor: 'button[class*="sp_choice_type_"]'
+        frame: 'iframe[id^="sp_message_iframe"]'
+      - click: "button.sp_choice_type_11"
+        frame: 'iframe[id^="sp_message_iframe"]'
     reject:
       - waitFor: 'iframe[id^="sp_message_iframe"]'
-        optional: true
-      - click: "button[title='Reject all'], button[title='Reject All'], .sp_choice_type_13"
+      - waitFor: 'button[class*="sp_choice_type_"]'
+        frame: 'iframe[id^="sp_message_iframe"]'
+      - click: "button.sp_choice_type_13"
+        frame: 'iframe[id^="sp_message_iframe"]'
     verify: |
       !document.querySelector('iframe[id^="sp_message_iframe"]')
     dismissed: |
