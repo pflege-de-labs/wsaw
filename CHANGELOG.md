@@ -163,6 +163,13 @@ at once.
   verification afterwards failed with `__wsawConsentContainer is not a
   function` and a recorded choice was reported `unverified`. Seen on
   touringen.de and wetter.com (Story 2.5).
+- The `borlabs` rule drives Borlabs Cookie 3. Version 3 renders buttons
+  instead of the version 2 anchors, and it can hold its dialog back until the
+  visitor scrolls, so a scan saw only the floating widget and recorded the
+  rule as `failed`. The rule now opens the dialog through that widget, clicks
+  either version's buttons, and verifies the `borlabs-cookie` cookie. It used
+  to verify `BorlabsCookie.Cookie`, which version 3 defines before any choice
+  is made (Story 2.4).
 - The daily Chromium version checks (`chromium.yaml`, `chromium-debian.yaml`)
   no longer go quiet after failing to open a bump pull request. When a run
   pushed its `deps/chromium-*` branch but could not open the pull request, for
