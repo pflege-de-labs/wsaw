@@ -158,6 +158,11 @@ at once.
 
 ### Fixed
 
+- A consent choice that reloads or navigates the page is verified again.
+  The helpers wsaw injects into the page were lost with the old document, so
+  verification afterwards failed with `__wsawConsentContainer is not a
+  function` and a recorded choice was reported `unverified`. Seen on
+  touringen.de and wetter.com (Story 2.5).
 - The daily Chromium version checks (`chromium.yaml`, `chromium-debian.yaml`)
   no longer go quiet after failing to open a bump pull request. When a run
   pushed its `deps/chromium-*` branch but could not open the pull request, for

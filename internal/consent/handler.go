@@ -359,6 +359,19 @@ func (h *handler) injectHelpers(ctx context.Context) error {
 	return nil
 }
 
+// ensureHelpers injects the helpers again if the document no longer has them.
+// A consent choice often reloads or navigates the page, which replaces the
+// document the helpers were injected into; an expression evaluated afterwards
+// would otherwise throw "is not a function" and turn a recorded choice into
+// an unverified one. The script is idempotent, so a document that kept them
+// is left alone. A failure here is only logged: the evaluation that follows
+// fails with the reason that matters, and its caller retries.
+func (h *handler) ensureHelpers(ctx context.Context) {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(helperScript, nil)); err != nil {
+		h.opts.Logger.Debug("re-injecting consent helpers failed", "error", err)
+	}
+}
+
 type probeResult struct {
 	TCF        bool `json:"tcf"`
 	GPP        bool `json:"gpp"`
@@ -911,6 +924,8 @@ func (h *handler) bannerGone(ctx context.Context, rule Rule) (bool, error) {
 	)
 
 	for range attempts {
+		h.ensureHelpers(stepCtx)
+
 		err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone))
 		if err == nil && gone {
 			return true, nil
@@ -1122,6 +1137,9 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
 	defer cancel()
 
+	// An earlier step may have reloaded the page.
+	h.ensureHelpers(stepCtx)
+
 	switch {
 	case step.WaitFor != "":
 		return h.waitFor(stepCtx, step.WaitFor)
@@ -1186,6 +1204,8 @@ func (h *handler) waitFor(ctx context.Context, selector string) error {
 	expr := fmt.Sprintf("!!window.__wsawQuery(%s)", jsString(selector))
 
 	for {
+		h.ensureHelpers(ctx)
+
 		var found bool
 		if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &found)); err == nil && found {
 			return nil
@@ -1214,6 +1234,8 @@ func (h *handler) verify(ctx context.Context, rule Rule) (bool, error) {
 
 	for range attempts {
 		var ok bool
+
+		h.ensureHelpers(stepCtx)
 
 		err := chromedp.Run(stepCtx, chromedp.Evaluate(rule.Verify, &ok))
 		if err == nil && ok {
