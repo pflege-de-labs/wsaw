@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chromedp/cdproto/browser"
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/chromedp"
 
+	"github.com/pflege-de-labs/wsaw/internal/browser"
 	"github.com/pflege-de-labs/wsaw/internal/classify"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
@@ -105,7 +106,14 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 		scrub:         s.scrub,
 	})
 
-	s.listen()
+	// A capture that cannot see the page's traffic has nothing to report, and
+	// must not report that as a page that loaded nothing.
+	if err := s.listen(); err != nil {
+		err = fmt.Errorf("listening to the page: %w", err)
+		s.finish(err)
+
+		return res, err
+	}
 
 	bodyDone := s.startBodyWorker()
 
@@ -190,10 +198,12 @@ func (s *session) interacted() bool {
 	return s.interactedOnce
 }
 
-// listen registers the CDP event handlers. Handlers must not block: they hand
-// work to the recorder and return immediately.
-func (s *session) listen() {
-	chromedp.ListenTarget(s.runCtx, func(ev any) {
+// listen registers the CDP event handlers. The events arrive in the order the
+// browser sent them, which the recorder relies on to pair a request with its
+// response and completion. Handlers must not block: they hand work to the
+// recorder and return immediately.
+func (s *session) listen() error {
+	return browser.Listen(s.runCtx, func(ev any) {
 		switch e := ev.(type) {
 		case *network.EventRequestWillBeSent:
 			s.rec.requestWillBeSent(e)
@@ -210,12 +220,15 @@ func (s *session) listen() {
 
 		case *page.EventJavascriptDialogOpening:
 			// Dialog spam would otherwise block the page forever (Story 6.6).
-			// Dismissing runs in its own goroutine because a CDP call from
-			// inside a listener would deadlock.
+			// Dismissing runs in its own goroutine so the events behind the
+			// dialog are not held up while it is answered.
 			go s.dismissDialog(e)
 
-		case *browser.EventDownloadWillBegin:
+		case *cdpbrowser.EventDownloadWillBegin:
 			s.rec.addWarning("page attempted a download; downloads are suppressed")
+
+		case *browser.EventError:
+			s.rec.addWarning("browser events were lost, so the capture may be incomplete: " + s.scrub(e.Error()))
 		}
 	})
 }
@@ -230,7 +243,8 @@ func (s *session) dismissDialog(ev *page.EventJavascriptDialogOpening) {
 	// everything else is dismissed so the page cannot extract a decision.
 	accept := ev.Type == page.DialogTypeBeforeunload
 
-	if err := chromedp.Run(ctx, page.HandleJavaScriptDialog(accept)); err != nil {
+	_, err := chromedp.Call(ctx, page.HandleJavaScriptDialog, page.HandleJavaScriptDialogParams{Accept: accept})
+	if err != nil {
 		s.rec.addWarning("could not dismiss a JavaScript dialog: " + s.scrub(err.Error()))
 	}
 }
@@ -375,18 +389,20 @@ func (s *session) preConsentCtx(hooks Hooks) context.Context {
 // prepare configures the browser context before navigation: emulation,
 // headers, and the network domain.
 func (s *session) prepare() error {
-	actions := []chromedp.Action{
+	actions := []chromedp.Action[chromedp.Void]{
 		s.enableNetwork(),
-		page.Enable(),
-		runtime.Enable(),
+		call(page.Enable, page.EnableParams{}),
+		call(runtime.Enable, cdp.Empty{}),
 
 		// A scanned page must never be able to write a file to disk.
 		s.denyDownloads(),
 
-		emulation.SetDeviceMetricsOverride(
-			int64(s.opts.ViewportWidth), int64(s.opts.ViewportHeight),
-			s.opts.DeviceScale, s.opts.Mobile,
-		),
+		call(emulation.SetDeviceMetricsOverride, emulation.SetDeviceMetricsOverrideParams{
+			Width:             int64(s.opts.ViewportWidth),
+			Height:            int64(s.opts.ViewportHeight),
+			DeviceScaleFactor: s.opts.DeviceScale,
+			Mobile:            s.opts.Mobile,
+		}),
 	}
 
 	// Nothing is cleared here. A scan starts from an empty cookie jar, cache
@@ -397,36 +413,36 @@ func (s *session) prepare() error {
 	// unprimed visitor actually experiences. Disabled rather than merely
 	// empty, so a resource the page requests twice is fetched twice and both
 	// requests are recorded as the network saw them.
-	actions = append(actions, network.SetCacheDisabled(true))
+	actions = append(actions, call(network.SetCacheDisabled, network.SetCacheDisabledParams{CacheDisabled: true}))
 
 	if s.opts.UserAgent != "" || s.opts.AcceptLanguage != "" {
-		ua := emulation.SetUserAgentOverride(s.opts.UserAgent)
-		if s.opts.AcceptLanguage != "" {
-			ua = ua.WithAcceptLanguage(s.opts.AcceptLanguage)
-		}
-
-		actions = append(actions, ua)
+		actions = append(actions, call(emulation.SetUserAgentOverride, emulation.SetUserAgentOverrideParams{
+			UserAgent:      s.opts.UserAgent,
+			AcceptLanguage: s.opts.AcceptLanguage,
+		}))
 	}
 
 	if s.opts.Timezone != "" {
-		actions = append(actions, emulation.SetTimezoneOverride(s.opts.Timezone))
+		actions = append(actions, call(emulation.SetTimezoneOverride,
+			emulation.SetTimezoneOverrideParams{TimezoneID: s.opts.Timezone}))
 	}
 
 	if s.opts.Latitude != nil && s.opts.Longitude != nil {
-		actions = append(actions, emulation.SetGeolocationOverride().
-			WithLatitude(*s.opts.Latitude).
-			WithLongitude(*s.opts.Longitude).
-			WithAccuracy(1))
+		actions = append(actions, call(emulation.SetGeolocationOverride, emulation.SetGeolocationOverrideParams{
+			Latitude:  new(*s.opts.Latitude),
+			Longitude: new(*s.opts.Longitude),
+			Accuracy:  new(1.0),
+		}))
 	}
 
 	if headers := s.headers(); len(headers) > 0 {
-		actions = append(actions, network.SetExtraHTTPHeaders(headers))
+		actions = append(actions, call(network.SetExtraHTTPHeaders, network.SetExtraHTTPHeadersParams{Headers: headers}))
 	}
 
 	ctx, cancel := context.WithTimeout(s.runCtx, s.opts.NavTimeout)
 	defer cancel()
 
-	if err := chromedp.Run(ctx, actions...); err != nil {
+	if err := chromedp.Do(ctx, actions...); err != nil {
 		return fmt.Errorf("preparing page: %w", err)
 	}
 
@@ -443,22 +459,31 @@ func (s *session) prepare() error {
 // from the normal outcome into a rare, recorded one. A scan that stores
 // nothing beyond digests keeps the defaults, so it costs what it always did
 // (Story 1.11, AC9).
-func (s *session) enableNetwork() chromedp.Action {
-	enable := network.Enable()
+func (s *session) enableNetwork() chromedp.Action[chromedp.Void] {
+	var enable network.EnableParams
 
 	if s.opts.Bodies == model.BodyStoreAll {
-		enable = enable.
-			WithMaxTotalBufferSize(s.opts.MaxScanBodyBytes).
-			WithMaxResourceBufferSize(s.opts.MaxBodyBytes)
+		enable.MaxTotalBufferSize = new(s.opts.MaxScanBodyBytes)
+		enable.MaxResourceBufferSize = new(s.opts.MaxBodyBytes)
 	}
 
 	if s.opts.RequestBodies && s.opts.Bodies != model.BodyStoreNone {
 		// Payloads up to the body cap travel in the event itself, which saves
 		// a round trip per beacon; larger ones are asked for.
-		enable = enable.WithMaxPostDataSize(s.opts.MaxBodyBytes)
+		enable.MaxPostDataSize = new(s.opts.MaxBodyBytes)
 	}
 
-	return enable
+	return call(network.Enable, enable)
+}
+
+// call makes an action that sends one protocol command to the scan's tab and
+// discards its result.
+func call[P, R any](cmd cdp.Command[P, R], params P) chromedp.Action[chromedp.Void] {
+	return chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		_, err := cdp.Call(ctx, t, cmd, params)
+
+		return err
+	})
 }
 
 // denyDownloads forbids downloads in this scan's browser context. Named
@@ -468,17 +493,20 @@ func (s *session) enableNetwork() chromedp.Action {
 //
 // Like the cookie read, a call that names a context goes to the browser
 // target rather than the tab.
-func (s *session) denyDownloads() chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		deny := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny)
-		exec := ctx
+func (s *session) denyDownloads() chromedp.Action[chromedp.Void] {
+	return chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		deny := cdpbrowser.SetDownloadBehaviorParams{Behavior: cdpbrowser.SetDownloadBehaviorBehaviorDeny}
+
+		var session cdp.Session = t
 
 		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" && c.Browser != nil {
-			deny = deny.WithBrowserContextID(c.BrowserContextID)
-			exec = cdp.WithExecutor(ctx, c.Browser)
+			deny.BrowserContextID = c.BrowserContextID
+			session = c.Browser
 		}
 
-		return deny.Do(exec)
+		_, err := cdp.Call(ctx, session, cdpbrowser.SetDownloadBehavior, deny)
+
+		return err
 	})
 }
 
@@ -516,11 +544,11 @@ func (s *session) navigate() error {
 	// the frame's lifecycle events lose that race. Recording it here lets
 	// finish check the recorder's own, independent view of whether the
 	// document actually loaded.
-	if tree, err := page.GetFrameTree().Do(ctx); err == nil {
-		s.rec.setMainFrame(tree.Frame.ID)
+	if res, err := chromedp.Call(ctx, page.GetFrameTree, cdp.Empty{}); err == nil && res.FrameTree != nil {
+		s.rec.setMainFrame(res.FrameTree.Frame.ID)
 	}
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(s.opts.URL)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(s.opts.URL)); err != nil {
 		return fmt.Errorf("navigating to %s: %w", s.opts.URL, err)
 	}
 
@@ -620,7 +648,7 @@ func (s *session) scroll() {
 		window.scrollTo(0, 0);
 	})()`
 
-	if err := chromedp.Run(ctx, chromedp.Evaluate(script, nil, awaitPromise)); err != nil {
+	if _, err := chromedp.Run(ctx, chromedp.Evaluate[chromedp.Void](script, chromedp.EvalAwaitPromise)); err != nil {
 		s.rec.addWarning("scrolling to bottom failed: " + s.scrub(err.Error()))
 	}
 }
@@ -704,18 +732,7 @@ func (s *session) fingerprintBody(id network.RequestID) {
 	ctx, cancel := context.WithTimeout(s.runCtx, DefaultBodyTimeout)
 	defer cancel()
 
-	var body []byte
-
-	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		b, err := network.GetResponseBody(id).Do(ctx)
-		if err != nil {
-			return err
-		}
-
-		body = b
-
-		return nil
-	}))
+	res, err := chromedp.Call(ctx, network.GetResponseBody, network.GetResponseBodyParams{RequestID: id})
 	if err != nil {
 		// Chrome evicts bodies from its cache aggressively. That is a fact
 		// about the observation, so it is recorded rather than ignored. A
@@ -729,6 +746,8 @@ func (s *session) fingerprintBody(id network.RequestID) {
 
 		return
 	}
+
+	body := res.Body
 
 	if int64(len(body)) > s.opts.MaxBodyBytes {
 		s.rec.setBodyDigest(id, "", 0, "",
@@ -793,18 +812,7 @@ func (s *session) fetchPayload(id network.RequestID) {
 	ctx, cancel := context.WithTimeout(s.runCtx, DefaultBodyTimeout)
 	defer cancel()
 
-	var data []byte
-
-	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		b, err := network.GetRequestPostData(id).Do(ctx)
-		if err != nil {
-			return err
-		}
-
-		data = b
-
-		return nil
-	}))
+	res, err := chromedp.Call(ctx, network.GetRequestPostData, network.GetRequestPostDataParams{RequestID: id})
 	if err != nil {
 		reason := model.BodyReasonNotRetrievable + ": " + s.scrub(err.Error())
 		if s.runCtx.Err() != nil {
@@ -816,7 +824,7 @@ func (s *session) fetchPayload(id network.RequestID) {
 		return
 	}
 
-	s.rec.setPayload(id, s.rec.storePayload(data))
+	s.rec.setPayload(id, s.rec.storePayload(res.PostData))
 }
 
 // recordScreenshotIdentity notes when the before- and after-interaction
@@ -949,36 +957,24 @@ func (s *session) markSurfaceUnavailable() {
 }
 
 func (s *session) captureFromSurface(ctx context.Context) ([]byte, error) {
-	var buf []byte
-
-	if err := chromedp.Run(ctx, page.BringToFront(), captureAction(&buf, true)); err != nil {
+	if _, err := chromedp.Call(ctx, page.BringToFront, cdp.Empty{}); err != nil {
 		return nil, err
 	}
 
-	return buf, nil
+	return capture(ctx, true)
 }
 
 func (s *session) captureFromView(ctx context.Context) ([]byte, error) {
-	var buf []byte
+	return capture(ctx, false)
+}
 
-	if err := chromedp.Run(ctx, captureAction(&buf, false)); err != nil {
+func capture(ctx context.Context, fromSurface bool) ([]byte, error) {
+	res, err := chromedp.Call(ctx, page.CaptureScreenshot, page.CaptureScreenshotParams{FromSurface: new(fromSurface)})
+	if err != nil {
 		return nil, err
 	}
 
-	return buf, nil
-}
-
-func captureAction(buf *[]byte, fromSurface bool) chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		out, err := page.CaptureScreenshot().WithFromSurface(fromSurface).Do(ctx)
-		if err != nil {
-			return err
-		}
-
-		*buf = out
-
-		return nil
-	})
+	return res.Data, nil
 }
 
 // finish assembles the result, including the termination reason, which must
@@ -1065,11 +1061,11 @@ func (s *session) collectCookies() {
 		return
 	}
 
-	var cookies []*network.Cookie
-
-	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		get := storage.GetCookies()
-		exec := ctx
+	cookies, err := chromedp.Run(ctx, func(ctx context.Context, t *chromedp.Target) ([]*network.Cookie, error) {
+		var (
+			get     storage.GetCookiesParams
+			session cdp.Session = t
+		)
 
 		// Scoped to this scan's browser context. Unscoped, Storage.getCookies
 		// answers for the browser's default context, which is not where an
@@ -1078,19 +1074,17 @@ func (s *session) collectCookies() {
 		// tab: sent over the tab's session the call answers with an empty
 		// jar, and a scan that set cookies would report none.
 		if c := chromedp.FromContext(ctx); c != nil && c.BrowserContextID != "" && c.Browser != nil {
-			get = get.WithBrowserContextID(c.BrowserContextID)
-			exec = cdp.WithExecutor(ctx, c.Browser)
+			get.BrowserContextID = c.BrowserContextID
+			session = c.Browser
 		}
 
-		res, err := get.Do(exec)
+		res, err := cdp.Call(ctx, session, storage.GetCookies, get)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		cookies = res
-
-		return nil
-	}))
+		return res.Cookies, nil
+	})
 	if err != nil {
 		s.res.Warnings = append(s.res.Warnings, "cookies could not be read: "+s.scrub(err.Error()))
 
@@ -1131,9 +1125,7 @@ func (s *session) collectFinalURL() {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.runCtx), urlTimeout)
 	defer cancel()
 
-	var final string
-
-	if err := chromedp.Run(ctx, chromedp.Location(&final)); err == nil {
+	if final, err := chromedp.Run(ctx, chromedp.Location()); err == nil {
 		s.res.FinalURL = final
 	}
 }
@@ -1180,9 +1172,4 @@ func (o *Options) environment() model.Environment {
 
 func basicAuth(user, password string) string {
 	return base64Encode(user + ":" + password)
-}
-
-// awaitPromise makes chromedp await the evaluated promise.
-func awaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-	return p.WithAwaitPromise(true)
 }

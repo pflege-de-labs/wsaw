@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -293,7 +293,7 @@ func (h *handler) bannerSummary(ctx context.Context) bannerSummary {
 
 	var out bannerSummary
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawConsentSummary()", &out)); err != nil {
+	if err := evaluate(stepCtx, "window.__wsawConsentSummary()", &out); err != nil {
 		h.opts.Logger.Debug("consent banner summary failed", "error", err)
 	}
 
@@ -309,7 +309,7 @@ func (h *handler) storageSnapshot(ctx context.Context) map[string]int {
 
 	out := map[string]int{}
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate("window.__wsawStorageSnapshot()", &out)); err != nil {
+	if err := evaluate(stepCtx, "window.__wsawStorageSnapshot()", &out); err != nil {
 		h.opts.Logger.Debug("consent storage snapshot failed", "error", err)
 
 		return nil
@@ -352,7 +352,7 @@ func (h *handler) injectHelpers(ctx context.Context) error {
 	stepCtx, cancel := context.WithTimeout(ctx, h.opts.StepTimeout)
 	defer cancel()
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(helperScript, nil)); err != nil {
+	if err := evaluateOnly(stepCtx, helperScript); err != nil {
 		return fmt.Errorf("injecting consent helpers: %w", err)
 	}
 
@@ -367,7 +367,7 @@ func (h *handler) injectHelpers(ctx context.Context) error {
 // is left alone. A failure here is only logged: the evaluation that follows
 // fails with the reason that matters, and its caller retries.
 func (h *handler) ensureHelpers(ctx context.Context) {
-	if err := chromedp.Run(ctx, chromedp.Evaluate(helperScript, nil)); err != nil {
+	if err := evaluateOnly(ctx, helperScript); err != nil {
 		h.opts.Logger.Debug("re-injecting consent helpers failed", "error", err)
 	}
 }
@@ -385,7 +385,7 @@ func (h *handler) probe(ctx context.Context) probeResult {
 
 	var out probeResult
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(tcfProbeScript, &out)); err != nil {
+	if err := evaluate(stepCtx, tcfProbeScript, &out); err != nil {
 		h.opts.Logger.Debug("consent API probe failed", "error", err)
 	}
 
@@ -421,7 +421,7 @@ func (h *handler) applyTCF(ctx context.Context, probe probeResult) (model.Consen
 	// reports useractioncomplete.
 	h.interacted()
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(script, &out, awaitPromise)); err != nil {
+	if err := evaluate(stepCtx, script, &out, chromedp.EvalAwaitPromise); err != nil {
 		return model.Consent{
 			Outcome:   model.OutcomeFailed,
 			Reason:    "TCF API call failed: " + err.Error(),
@@ -477,7 +477,7 @@ func (h *handler) readGPP(ctx context.Context) string {
 		GPPString string `json:"gppString"`
 	}
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(gppReadScript, &out, awaitPromise)); err != nil {
+	if err := evaluate(stepCtx, gppReadScript, &out, chromedp.EvalAwaitPromise); err != nil {
 		return ""
 	}
 
@@ -665,7 +665,7 @@ func (h *handler) detect(ctx context.Context, rule Rule) (bool, error) {
 
 	var matched bool
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(rule.Detect, &matched)); err != nil {
+	if err := evaluate(stepCtx, rule.Detect, &matched); err != nil {
 		return false, err
 	}
 
@@ -926,7 +926,7 @@ func (h *handler) bannerGone(ctx context.Context, rule Rule) (bool, error) {
 	for range attempts {
 		h.ensureHelpers(stepCtx)
 
-		err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &gone))
+		err := evaluate(stepCtx, expr, &gone)
 		if err == nil && gone {
 			return true, nil
 		}
@@ -1072,7 +1072,7 @@ func (h *handler) simulateClick(ctx context.Context, selector string) bool {
 
 	expr := fmt.Sprintf("window.__wsawSimulateClick(%s)", jsString(selector))
 
-	if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &out)); err != nil {
+	if err := evaluate(stepCtx, expr, &out); err != nil {
 		return false
 	}
 
@@ -1107,7 +1107,7 @@ func (h *handler) trustedClick(ctx context.Context, selector string) error {
 
 	locateExpr := fmt.Sprintf("window.__wsawLocate(%s)", jsString(selector))
 
-	if err := chromedp.Run(ctx, chromedp.Evaluate(locateExpr, &loc)); err != nil {
+	if err := evaluate(ctx, locateExpr, &loc); err != nil {
 		return fmt.Errorf("locating %s: %w", selector, err)
 	}
 
@@ -1120,7 +1120,7 @@ func (h *handler) trustedClick(ctx context.Context, selector string) error {
 
 		clickExpr := fmt.Sprintf("window.__wsawClick(%s)", jsString(selector))
 
-		if err := chromedp.Run(ctx, chromedp.Evaluate(clickExpr, &out)); err != nil {
+		if err := evaluate(ctx, clickExpr, &out); err != nil {
 			return fmt.Errorf("clicking %s: %w", selector, err)
 		}
 
@@ -1131,7 +1131,7 @@ func (h *handler) trustedClick(ctx context.Context, selector string) error {
 		return nil
 	}
 
-	if err := chromedp.Run(ctx, chromedp.MouseClickXY(loc.X, loc.Y)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.MouseClickXY(loc.X, loc.Y)); err != nil {
 		return fmt.Errorf("clicking %s: %w", selector, err)
 	}
 
@@ -1168,7 +1168,7 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 
 		expr := fmt.Sprintf("window.__wsawClick(%s)", jsString(step.Click))
 
-		if err := chromedp.Run(stepCtx, chromedp.Evaluate(expr, &out)); err != nil {
+		if err := evaluate(stepCtx, expr, &out); err != nil {
 			return fmt.Errorf("clicking %s: %w", step.Click, err)
 		}
 
@@ -1188,7 +1188,7 @@ func (h *handler) runStep(ctx context.Context, step Action) error {
 		// applicable" and let the next step try.
 		var raw json.RawMessage
 
-		if err := chromedp.Run(stepCtx, chromedp.Evaluate(step.Eval, &raw, awaitPromise)); err != nil {
+		if err := evaluate(stepCtx, step.Eval, &raw, chromedp.EvalAwaitPromise); err != nil {
 			return fmt.Errorf("evaluating rule step: %w", err)
 		}
 
@@ -1215,7 +1215,7 @@ func (h *handler) waitFor(ctx context.Context, selector string) error {
 		h.ensureHelpers(ctx)
 
 		var found bool
-		if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &found)); err == nil && found {
+		if err := evaluate(ctx, expr, &found); err == nil && found {
 			return nil
 		}
 
@@ -1245,7 +1245,7 @@ func (h *handler) verify(ctx context.Context, rule Rule) (bool, error) {
 
 		h.ensureHelpers(stepCtx)
 
-		err := chromedp.Run(stepCtx, chromedp.Evaluate(rule.Verify, &ok))
+		err := evaluate(stepCtx, rule.Verify, &ok)
 		if err == nil && ok {
 			return true, nil
 		}
@@ -1350,6 +1350,34 @@ func jsString(s string) string {
 	return string(b)
 }
 
-func awaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-	return p.WithAwaitPromise(true)
+// evaluate runs expr in the page and decodes its result into out.
+//
+// A null result leaves out at its zero value and is not an error, and an
+// undefined one is an error only where out cannot hold nil. That is how
+// chromedp decoded results before v0.20, and the rule scripts, the helpers and
+// the decisions taken on their answers were all written against it: a probe
+// that answers null means "nothing here", never "the probe failed".
+func evaluate[T any](ctx context.Context, expr string, out *T, opts ...chromedp.EvaluateOption) error {
+	raw, err := chromedp.Run(ctx, chromedp.Evaluate[[]byte](expr, opts...))
+	if err != nil {
+		return err
+	}
+
+	if len(raw) == 0 {
+		switch reflect.TypeFor[T]().Kind() {
+		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+			raw = []byte("null")
+		default:
+			return chromedp.ErrJSUndefined
+		}
+	}
+
+	return json.Unmarshal(raw, out)
+}
+
+// evaluateOnly runs expr in the page for its effect and ignores its result.
+func evaluateOnly(ctx context.Context, expr string) error {
+	_, err := chromedp.Run(ctx, chromedp.Evaluate[chromedp.Void](expr))
+
+	return err
 }
