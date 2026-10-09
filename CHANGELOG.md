@@ -181,6 +181,9 @@ at once.
 - A body that could not be fingerprinted because too many requests finished
   at once now says so on the request (`body queue full`), where before only a
   scan warning did (Story 1.11).
+- The embedded SQLite driver, `modernc.org/sqlite`, is updated from 1.59.0 to
+  1.60.1, and with it `modernc.org/libc` from 1.75.7 to 1.77.1 (split out of
+  #118). It is still pure Go, and no module was added.
 
 ### Fixed
 
