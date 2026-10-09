@@ -195,6 +195,12 @@ at once.
   Sourcepoint, as on brigitte.de, eltern.de and gala.de behind contentpass, is
   no longer missed. Those three offer no reject, only a paid alternative, so
   `reject` scans of them stay `failed` (Story 2.4).
+- `wsaw browser build --base debian` builds on amd64. The Debian build
+  file pinned its base image to the arm64 image alone rather than to the
+  multi-architecture index, so on anything but arm64 the first build step
+  failed with `exec container process /bin/sh: Exec format error`. It now
+  pins the `debian:forky-slim` index, and the runtime picks the image for the
+  machine it builds on (Story 1.8).
 - A consent choice that reloads or navigates the page is verified again.
   The helpers wsaw injects into the page were lost with the old document, so
   verification afterwards failed with `__wsawConsentContainer is not a

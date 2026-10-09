@@ -31,7 +31,7 @@
 # .github/workflows/chromium-debian.yaml checks daily and opens a pull
 # request making that change, since a snapshot pin never breaks and so
 # never says it is stale.
-FROM debian:forky-slim@sha256:2f3607b1ec79933241f58759eb9de9a691a393520820477dd81df5097a8b7da7
+FROM debian:forky-slim@sha256:3c80e257eff6274d593eb33a94bda5174ccd619836e6a728a73e11c97f2213e3
 
 ARG SNAPSHOT=20261004T000000Z
 ARG CHROMIUM_VERSION=154.0.8037.92-1
