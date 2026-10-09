@@ -56,7 +56,7 @@ env:
   # would publish numbers nobody can compare with anything. The tool versions
   # are also the Makefile's defaults; they are passed explicitly anyway, so the
   # two files cannot silently disagree about what produced the SBOM.
-  GO_VERSION: "1.27.1"
+  GO_VERSION: "1.27.2"
   GOVULNCHECK_VERSION: "v1.7.0"
   CYCLONEDX_GOMOD_VERSION: "v1.12.0"
 
