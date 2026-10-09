@@ -21,6 +21,13 @@ at once.
 
 ### Added
 
+- Consent rule steps can run inside an iframe: a `click` or `waitFor` step
+  that sets `frame` to a selector for an `<iframe>` element runs in that
+  frame's document. CMPs that draw their message in a frame of their own,
+  Sourcepoint among them, can now be handled by a rule. Only those two step
+  kinds may set it, and a rule file that puts it elsewhere is refused at load.
+  A frame the browser renders in another process cannot be reached, and the
+  step fails saying so (Story 2.4).
 - YouTube's own consent page (`consent.youtube.com`), where a target that
   redirects to a YouTube channel lands, is now driven in both `accept` and
   `reject` mode and verified by the page leaving the consent host. Before, it
@@ -177,6 +184,14 @@ at once.
 
 ### Fixed
 
+- The `sourcepoint` rule now works. Its clicks ran in the top document, but
+  Sourcepoint's buttons are inside its message iframe, so the rule could never
+  click anything. It now clicks inside the frame, by the `sp_choice_type_11`
+  and `sp_choice_type_13` classes that carry the choice. It also detects the
+  `_sp_queue` stub sites define before Sourcepoint loads, so a lazily loaded
+  Sourcepoint, as on brigitte.de, eltern.de and gala.de behind contentpass, is
+  no longer missed. Those three offer no reject, only a paid alternative, so
+  `reject` scans of them stay `failed` (Story 2.4).
 - A consent choice that reloads or navigates the page is verified again.
   The helpers wsaw injects into the page were lost with the old document, so
   verification afterwards failed with `__wsawConsentContainer is not a
