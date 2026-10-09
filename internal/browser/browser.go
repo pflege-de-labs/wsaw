@@ -125,6 +125,10 @@ type Browser struct {
 	// wsaw started it, so wsaw removes it.
 	instance ContainerInstance
 
+	// tap sees every event the browser sends, so a scan can listen to its
+	// tab's events in order (see Listen).
+	tap *eventTap
+
 	scans atomic.Int64
 
 	closeOnce sync.Once
@@ -138,7 +142,7 @@ type Browser struct {
 // Launch starts a browser. The returned Browser must be closed by the caller,
 // which removes its temporary profile directory.
 func Launch(ctx context.Context, opts Options) (*Browser, error) {
-	b := &Browser{opts: opts}
+	b := &Browser{opts: opts, tap: newEventTap()}
 
 	remoteURL := opts.RemoteURL
 
@@ -155,7 +159,7 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 	}
 
 	if remoteURL != "" {
-		b.allocCtx, b.allocCancel = chromedp.NewRemoteAllocator(context.Background(), remoteURL)
+		b.allocCtx, b.allocCancel = chromedp.NewAllocatorContext(context.Background(), newAttacher(remoteURL, b.tap))
 	} else {
 		dir, err := os.MkdirTemp(opts.ProfileDir, "wsaw-profile-")
 		if err != nil {
@@ -181,7 +185,7 @@ func Launch(ctx context.Context, opts Options) (*Browser, error) {
 
 	go func() {
 		// chromedp starts the process on first action.
-		done <- chromedp.Run(b.browserCtx)
+		done <- chromedp.Do(b.browserCtx)
 	}()
 
 	select {
@@ -206,6 +210,10 @@ func (b *Browser) execOptions(userDataDir string) []chromedp.ExecAllocatorOption
 		chromedp.ExecPath(b.opts.Info.Path),
 		chromedp.UserDataDir(userDataDir),
 		chromedp.Headless,
+
+		// A websocket rather than chromedp's default pipe, because only a
+		// connection wsaw dials itself can go through the event tap.
+		chromedp.WithDialer(b.tap.dialer),
 
 		// Determinism and containment, not convenience: each of these removes
 		// a source of noise or of unbounded work.
@@ -356,7 +364,7 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 
 	done := make(chan error, 1)
 
-	go func() { done <- chromedp.Run(linked) }()
+	go func() { done <- chromedp.Do(linked) }()
 
 	select {
 	case err := <-done:
@@ -374,7 +382,7 @@ func (b *Browser) NewScanContext(ctx context.Context) (context.Context, context.
 
 	b.scans.Add(1)
 
-	return linked, cancel, nil
+	return context.WithValue(linked, tapKey{}, b.tap), cancel, nil
 }
 
 // ErrBrowserContextsUnavailable reports that the browser refused to create a
@@ -408,7 +416,7 @@ const browserTimeout = 10 * time.Second
 
 // onBrowser runs fn against the browser target rather than a tab, bounded by
 // browserTimeout and by ctx.
-func (b *Browser) onBrowser(ctx context.Context, fn func(exec context.Context) error) error {
+func (b *Browser) onBrowser(ctx context.Context, fn func(ctx context.Context, s cdp.Session) error) error {
 	// Derived from the browser's own context, which carries the CDP
 	// connection; the caller's cancellation still applies.
 	runCtx, cancel := context.WithTimeout(b.browserCtx, browserTimeout)
@@ -417,14 +425,12 @@ func (b *Browser) onBrowser(ctx context.Context, fn func(exec context.Context) e
 	stop := context.AfterFunc(ctx, cancel)
 	defer stop()
 
-	return chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		c := chromedp.FromContext(ctx)
-		if c == nil || c.Browser == nil {
-			return errors.New("no browser connection")
-		}
+	c := chromedp.FromContext(runCtx)
+	if c == nil || c.Browser == nil {
+		return errors.New("no browser connection")
+	}
 
-		return fn(cdp.WithExecutor(ctx, c.Browser))
-	}))
+	return fn(runCtx, c.Browser)
 }
 
 // openBrowserContext creates a browser context and a blank tab in it.
@@ -442,21 +448,26 @@ func (b *Browser) openBrowserContext(ctx context.Context) (cdp.BrowserContextID,
 		tab target.ID
 	)
 
-	err := b.onBrowser(ctx, func(exec context.Context) error {
-		var err error
-
-		id, err = target.CreateBrowserContext().WithDisposeOnDetach(true).Do(exec)
+	err := b.onBrowser(ctx, func(ctx context.Context, s cdp.Session) error {
+		created, err := cdp.Call(ctx, s, target.CreateBrowserContext, target.CreateBrowserContextParams{
+			DisposeOnDetach: new(true),
+		})
 		if err != nil {
-			return refusal(exec, "creating a browser context", err)
+			return refusal(ctx, "creating a browser context", err)
 		}
 
-		tab, err = target.CreateTarget("about:blank").
-			WithBrowserContextID(id).
-			WithNewWindow(true).
-			Do(exec)
+		id = created.BrowserContextID
+
+		opened, err := cdp.Call(ctx, s, target.CreateTarget, target.CreateTargetParams{
+			URL:              "about:blank",
+			BrowserContextID: id,
+			NewWindow:        new(true),
+		})
 		if err != nil {
-			return refusal(exec, "opening a tab in a browser context", err)
+			return refusal(ctx, "opening a tab in a browser context", err)
 		}
+
+		tab = opened.TargetID
 
 		return nil
 	})
@@ -492,8 +503,10 @@ func refusal(ctx context.Context, what string, err error) error {
 // isolation — the next scan gets a new one regardless — so a failure is
 // logged rather than returned.
 func (b *Browser) disposeBrowserContext(id cdp.BrowserContextID) {
-	err := b.onBrowser(context.Background(), func(exec context.Context) error {
-		return target.DisposeBrowserContext(id).Do(exec)
+	err := b.onBrowser(context.Background(), func(ctx context.Context, s cdp.Session) error {
+		_, err := cdp.Call(ctx, s, target.DisposeBrowserContext, target.DisposeBrowserContextParams{BrowserContextID: id})
+
+		return err
 	})
 	if err != nil && !b.dead.Load() {
 		b.opts.logger().Warn("could not dispose of a scan's browser context",
@@ -522,9 +535,7 @@ func (b *Browser) Alive(ctx context.Context) bool {
 
 	// Run an empty action against the browser context; it fails fast if the
 	// process is gone.
-	if err := chromedp.Run(b.browserCtx, chromedp.ActionFunc(func(context.Context) error {
-		return nil
-	})); err != nil {
+	if err := chromedp.Do(b.browserCtx); err != nil {
 		b.dead.Store(true)
 
 		return false

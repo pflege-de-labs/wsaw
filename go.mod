@@ -3,8 +3,9 @@ module github.com/pflege-de-labs/wsaw
 go 1.26.0
 
 require (
-	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
-	github.com/chromedp/chromedp v0.16.0
+	github.com/chromedp/cdproto v0.157.9
+	github.com/chromedp/chromedp v0.20.1
+	github.com/chromedp/chromedp/remote v0.2.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -52,7 +53,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.3 // indirect
 	github.com/aws/smithy-go v1.26.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect

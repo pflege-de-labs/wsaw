@@ -184,6 +184,18 @@ at once.
 - The embedded SQLite driver, `modernc.org/sqlite`, is updated from 1.59.0 to
   1.60.1, and with it `modernc.org/libc` from 1.75.7 to 1.77.1 (split out of
   #118). It is still pure Go, and no module was added.
+- The Chrome driver, `chromedp`, is updated from 0.16.0 to 0.20.1, and the
+  protocol package `cdproto` to 0.157.9 (#118). Nothing changes in
+  configuration or in what a scan records. The new driver no longer offers
+  one ordered stream of a tab's events, and a capture pairs a request with its
+  response and its completion by that order, so wsaw now reads the events off
+  the browser connection itself. A scan that loses events on the way, which
+  should not happen, now says so in a warning instead of leaving requests
+  quietly unfinished. Its websocket code moved into a module of its own,
+  `chromedp/remote`, which wsaw now requires, while `chromedp/sysutil` is no
+  longer needed. wsaw still talks to the Chrome it starts over a local
+  debugging port; the driver's new pipe connection would leave no place to
+  read the events.
 
 ### Fixed
 

@@ -1,7 +1,6 @@
 package capture
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -211,17 +210,7 @@ func (r *recorder) inlinePayload(ev *network.EventRequestWillBeSent) payloadResu
 	var data []byte
 
 	for _, entry := range ev.Request.PostDataEntries {
-		chunk, err := base64.StdEncoding.DecodeString(entry.Bytes)
-		if err != nil {
-			// The entries are Chrome's own encoding, so a bad one means the
-			// event cannot be trusted for the payload; asking for it again is
-			// the way to get the real bytes.
-			out.fetch = true
-
-			return out
-		}
-
-		data = append(data, chunk...)
+		data = append(data, entry.Bytes...)
 	}
 
 	stored := r.storePayload(data)
