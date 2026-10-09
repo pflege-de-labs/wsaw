@@ -9,7 +9,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/robfig/cron/v3 v3.0.1
 	gocloud.dev v0.46.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.59.0
 )

@@ -251,6 +251,14 @@ at once.
   when the bucket was the default directory beside the database. It now
   names the location the store opened (Story 5.32, AC3).
 
+### Security
+
+- Built with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix
+  GO-2026-6617: a race in the HTTP/2 HPACK encoder that can crash an HTTP/2
+  server. govulncheck reports call paths from wsaw's web interface and API
+  server and from its HTTP clients, so a build with Go 1.27.1 is affected.
+  Upgrade; nothing changes in configuration or behaviour.
+
 ## [0.5.0] - 2026-09-30
 
 Every scan now says how far it can be trusted. A confidence score from 0 to
