@@ -187,8 +187,8 @@ at once.
 - CI runs the test suite once on Linux instead of twice. The race-enabled
   run now measures coverage as well, so the coverage gate no longer repeats
   every browser test, and the store suites against PostgreSQL, MySQL and
-  MinIO run as their own jobs beside it instead of one after another behind
-  it. `make cover` takes `COVER_FLAGS` for the same purpose; without it the
+  MinIO and the `cloudblob` build run as their own jobs beside it instead of
+  one after another behind it. `make cover` takes `COVER_FLAGS` for the same purpose; without it the
   target behaves as before.
 
 ### Fixed

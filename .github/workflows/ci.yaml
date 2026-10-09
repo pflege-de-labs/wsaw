@@ -125,20 +125,6 @@ jobs:
       - name: Test the store suite against a bucket in memory
         run: make test-store-memory
 
-      # The cloud drivers are behind a build tag (Story 8.8, AC3), and a file
-      # whose build constraint is off is invisible to go build, go vet and the
-      # linter alike. Without this step the second released variant would be
-      # compiled for the first time by the release job, or by an operator.
-      #
-      # Linux only. The tag selects one file, which is pure Go with no platform
-      # constraint beyond the tag, so a macOS run repeats the Linux one — and
-      # this step compiles some 455 extra packages plus a -race store suite on
-      # a runner billed at ten times the rate. The darwin cloud binaries are
-      # cross-compiled by the cross-compile job.
-      - name: Test the cloudblob build
-        if: runner.os == 'Linux'
-        run: make test-cloudblob
-
   # The store suite against the backends that need a server (Story 4.7, AC5;
   # Story 8.9, AC2), one job each so they run beside the test job and beside
   # each other rather than after the browser tests. Each one starts its own
@@ -183,6 +169,32 @@ jobs:
           cache: true
       - name: Test the store against ${{ matrix.backend }}
         run: make test-store-${{ matrix.backend }} STORE_TEST_RUNTIME=docker
+
+  # The cloud drivers are behind a build tag (Story 8.8, AC3), and a file
+  # whose build constraint is off is invisible to go build, go vet and the
+  # linter alike. Without this job the second released variant would be
+  # compiled for the first time by the release job, or by an operator.
+  #
+  # Its own job, beside the test job rather than after it: it needs no
+  # browser and nothing the test job builds, only some 455 extra packages and
+  # a -race store suite, which is two minutes nobody should wait for in
+  # series.
+  #
+  # Linux only. The tag selects one file, which is pure Go with no platform
+  # constraint beyond the tag, so a macOS run would repeat the Linux one on a
+  # runner billed at ten times the rate. The darwin cloud binaries are
+  # cross-compiled by the cross-compile job.
+  cloudblob:
+    name: cloudblob build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Test the cloudblob build
+        run: make test-cloudblob
 
   lint:
     name: golangci-lint
