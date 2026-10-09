@@ -196,6 +196,12 @@ at once.
   longer needed. wsaw still talks to the Chrome it starts over a local
   debugging port; the driver's new pipe connection would leave no place to
   read the events.
+- CI runs the test suite once on Linux instead of twice. The race-enabled
+  run now measures coverage as well, so the coverage gate no longer repeats
+  every browser test, and the store suites against PostgreSQL, MySQL and
+  MinIO and the `cloudblob` build run as their own jobs beside it instead of
+  one after another behind it. `make cover` takes `COVER_FLAGS` for the same
+  purpose; without it the target behaves as before.
 
 ### Fixed
 

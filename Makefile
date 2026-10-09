@@ -634,9 +634,17 @@ test-store-minio:
 # //go:build ignore.
 COVER_PKGS = $(shell go list ./... | grep -v '/test/e2e/' | paste -sd, -)
 
+# COVER_FLAGS reaches the coverage run's `go test`. CI sets it to the race
+# detector, so that one pass over the suite is both the race gate and the
+# coverage measurement: the browser tests are most of the suite's wall clock,
+# and running them a second time only to count statements doubled the job.
+# -race switches the profile to atomic mode, which `go tool cover -func`
+# totals the same way.
+COVER_FLAGS ?=
+
 .PHONY: cover
 cover:
-	go test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out ./...
+	go test $(COVER_FLAGS) -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
 # COVER_MIN is a ratchet, not an aspiration: it holds the number CI last
