@@ -55,23 +55,23 @@ func (s *session) collectStorage() {
 		truncated bool
 	)
 
-	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		if err := domstorage.Enable().Do(ctx); err != nil {
+	err = chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		if _, err := cdp.Call(ctx, t, domstorage.Enable, cdp.Empty{}); err != nil {
 			return fmt.Errorf("enabling DOM storage: %w", err)
 		}
 
-		tree, err := page.GetFrameTree().Do(ctx)
+		tree, err := cdp.Call(ctx, t, page.GetFrameTree, cdp.Empty{})
 		if err != nil {
 			return fmt.Errorf("reading the frame tree: %w", err)
 		}
 
-		for _, frame := range flattenFrames(tree) {
+		for _, frame := range flattenFrames(tree.FrameTree) {
 			origin := frameOrigin(frame)
 			if origin == "" {
 				continue
 			}
 
-			key, err := storage.GetStorageKey().WithFrameID(frame.ID).Do(ctx)
+			key, err := cdp.Call(ctx, t, storage.GetStorageKey, storage.GetStorageKeyParams{FrameID: frame.ID})
 			if err != nil {
 				// A frame can be gone by now, or carry an opaque origin. That
 				// is not a scan failure; it is one frame with no storage to
@@ -82,8 +82,8 @@ func (s *session) collectStorage() {
 			party := cl.Classify(origin).Party
 
 			for _, area := range []model.StorageArea{model.StorageLocal, model.StorageSession} {
-				found, hitCap := readStorageArea(ctx, storageRead{
-					key:    string(key),
+				found, hitCap := readStorageArea(ctx, t, storageRead{
+					key:    string(key.StorageKey),
 					origin: origin,
 					area:   area,
 					party:  party,
@@ -128,18 +128,22 @@ type storageRead struct {
 // readStorageArea reads one storage area, stopping at the budget. An area
 // that cannot be read yields nothing rather than failing the collection: one
 // unreadable frame is not a reason to lose the rest.
-func readStorageArea(ctx context.Context, r storageRead) ([]model.StorageEntry, bool) {
+func readStorageArea(ctx context.Context, s cdp.Session, r storageRead) ([]model.StorageEntry, bool) {
 	if r.room <= 0 {
 		return nil, true
 	}
 
-	items, err := domstorage.GetDOMStorageItems(&domstorage.StorageID{
-		StorageKey:     domstorage.SerializedStorageKey(r.key),
-		IsLocalStorage: r.area == model.StorageLocal,
-	}).Do(ctx)
+	res, err := cdp.Call(ctx, s, domstorage.GetDOMStorageItems, domstorage.GetDOMStorageItemsParams{
+		StorageID: &domstorage.StorageID{
+			StorageKey:     domstorage.SerializedStorageKey(r.key),
+			IsLocalStorage: r.area == model.StorageLocal,
+		},
+	})
 	if err != nil {
 		return nil, false
 	}
+
+	items := res.Entries
 
 	out := make([]model.StorageEntry, 0, len(items))
 

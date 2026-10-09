@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -801,12 +802,13 @@ func convertInitiator(in *network.Initiator) model.Initiator {
 	return out
 }
 
-func monotonic(t *cdp.MonotonicTime) *time.Time {
-	if t == nil {
-		return nil
-	}
-
-	tt := t.Time()
+// monotonic turns Chrome's monotonic clock, seconds since an arbitrary start,
+// into a time. Only differences between two of them mean anything, which is
+// all offset uses them for. The clock ticks in microseconds, and rounding to
+// them keeps float error from turning 300ms into 299.999999ms.
+func monotonic(t cdp.MonotonicTime) *time.Time {
+	us := time.Duration(math.Round(float64(t) * float64(time.Second/time.Microsecond)))
+	tt := time.Unix(0, 0).Add(us * time.Microsecond)
 
 	return &tt
 }

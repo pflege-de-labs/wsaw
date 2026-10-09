@@ -36,10 +36,8 @@ func newTestRecorder(t *testing.T) *recorder {
 		DefaultMaxBodyBytes, false, nil, Beacons{})
 }
 
-func mono(offset time.Duration) *cdp.MonotonicTime {
-	t := cdp.MonotonicTime(time.Now().Add(offset))
-
-	return &t
+func mono(offset time.Duration) cdp.MonotonicTime {
+	return cdp.MonotonicTime((time.Duration(time.Now().UnixMicro())*time.Microsecond + offset).Seconds())
 }
 
 func willBeSent(id, url, method string, typ network.ResourceType) *network.EventRequestWillBeSent {
@@ -589,12 +587,11 @@ func TestRecorderOffsetsAreRelativeToTheFirstEvent(t *testing.T) {
 
 	r := newTestRecorder(t)
 
-	// A monotonic clock far from the wall clock, as Chrome's actually is.
-	base := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-	at := func(d time.Duration) *cdp.MonotonicTime {
-		m := cdp.MonotonicTime(base.Add(d))
-
-		return &m
+	// A monotonic clock far from the wall clock, as Chrome's actually is: it
+	// counts seconds since an arbitrary start.
+	const base = 978307200 * time.Second
+	at := func(d time.Duration) cdp.MonotonicTime {
+		return cdp.MonotonicTime((base + d).Seconds())
 	}
 
 	first := willBeSent("1", "https://example.com/a.js", "GET", network.ResourceTypeScript)

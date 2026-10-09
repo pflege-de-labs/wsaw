@@ -102,50 +102,62 @@ func (h *handler) simulateClickInFrame(ctx context.Context, frameSel, selector s
 func (h *handler) evalInFrame(ctx context.Context, frameSel, expr string, out any) error {
 	h.ensureHelpers(ctx)
 
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		frameID, err := h.locateFrame(ctx, frameSel)
+	return chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		frameID, err := h.locateFrame(ctx, t, frameSel)
 		if err != nil {
 			return err
 		}
 
-		world, err := page.CreateIsolatedWorld(frameID).WithWorldName(frameWorldName).Do(ctx)
+		world, err := cdp.Call(ctx, t, page.CreateIsolatedWorld, page.CreateIsolatedWorldParams{
+			FrameID:   frameID,
+			WorldName: frameWorldName,
+		})
 		if err != nil {
 			return fmt.Errorf("entering frame: %w", err)
 		}
 
-		if err := evalInWorld(ctx, world, helperScript, nil); err != nil {
+		if err := evalInWorld(ctx, t, world.ExecutionContextID, helperScript, nil); err != nil {
 			return fmt.Errorf("preparing frame: %w", err)
 		}
 
-		return evalInWorld(ctx, world, expr, out)
+		return evalInWorld(ctx, t, world.ExecutionContextID, expr, out)
 	}))
 }
 
 // locateFrame resolves frameSel in the top document to the frame its element
 // displays.
-func (h *handler) locateFrame(ctx context.Context, frameSel string) (cdp.FrameID, error) {
-	obj, exc, err := runtime.Evaluate(fmt.Sprintf("window.__wsawQuery(%s)", jsString(frameSel))).Do(ctx)
+func (h *handler) locateFrame(ctx context.Context, s cdp.Session, frameSel string) (cdp.FrameID, error) {
+	res, err := cdp.Call(ctx, s, runtime.Evaluate, runtime.EvaluateParams{
+		Expression: fmt.Sprintf("window.__wsawQuery(%s)", jsString(frameSel)),
+	})
 	if err != nil {
 		return "", fmt.Errorf("finding frame %s: %w", frameSel, err)
 	}
 
-	if exc != nil {
-		return "", fmt.Errorf("finding frame %s: %w", frameSel, exc)
+	if res.ExceptionDetails != nil {
+		return "", fmt.Errorf("finding frame %s: %w", frameSel, &chromedp.ExceptionError{ExceptionDetails: res.ExceptionDetails})
 	}
 
-	if obj.ObjectID == "" {
+	obj := res.Result
+	if obj == nil || obj.ObjectID == "" {
 		return "", fmt.Errorf("no frame matched %s", frameSel)
 	}
 
 	defer func() {
-		if err := runtime.ReleaseObject(obj.ObjectID).Do(ctx); err != nil {
+		_, err := cdp.Call(ctx, s, runtime.ReleaseObject, runtime.ReleaseObjectParams{ObjectID: obj.ObjectID})
+		if err != nil {
 			h.opts.Logger.Debug("releasing frame element failed", "error", err)
 		}
 	}()
 
-	node, err := dom.DescribeNode().WithObjectID(obj.ObjectID).Do(ctx)
+	described, err := cdp.Call(ctx, s, dom.DescribeNode, dom.DescribeNodeParams{ObjectID: obj.ObjectID})
 	if err != nil {
 		return "", fmt.Errorf("describing frame %s: %w", frameSel, err)
+	}
+
+	node := described.Node
+	if node == nil {
+		return "", fmt.Errorf("describing frame %s: the browser returned no node", frameSel)
 	}
 
 	if name := strings.ToUpper(node.NodeName); name != "IFRAME" && name != "FRAME" {
@@ -163,20 +175,22 @@ func (h *handler) locateFrame(ctx context.Context, frameSel string) (cdp.FrameID
 	return node.FrameID, nil
 }
 
-func evalInWorld(ctx context.Context, world runtime.ExecutionContextID, expr string, out any) error {
-	res, exc, err := runtime.Evaluate(expr).
-		WithContextID(world).
-		WithReturnByValue(true).
-		WithAwaitPromise(true).
-		Do(ctx)
+func evalInWorld(ctx context.Context, s cdp.Session, world runtime.ExecutionContextID, expr string, out any) error {
+	evaluated, err := cdp.Call(ctx, s, runtime.Evaluate, runtime.EvaluateParams{
+		Expression:    expr,
+		ContextID:     world,
+		ReturnByValue: new(true),
+		AwaitPromise:  new(true),
+	})
 	if err != nil {
 		return err
 	}
 
-	if exc != nil {
-		return exc
+	if evaluated.ExceptionDetails != nil {
+		return &chromedp.ExceptionError{ExceptionDetails: evaluated.ExceptionDetails}
 	}
 
+	res := evaluated.Result
 	if out == nil || res == nil || len(res.Value) == 0 {
 		return nil
 	}

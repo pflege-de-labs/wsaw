@@ -1,7 +1,6 @@
 package capture
 
 import (
-	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -212,8 +211,8 @@ func payloadEvent(id, body, contentType string) *network.EventRequestWillBeSent 
 
 	if body != "" {
 		ev.Request.PostDataEntries = []*network.PostDataEntry{
-			{Bytes: base64.StdEncoding.EncodeToString([]byte(body[:len(body)/2]))},
-			{Bytes: base64.StdEncoding.EncodeToString([]byte(body[len(body)/2:]))},
+			{Bytes: []byte(body[:len(body)/2])},
+			{Bytes: []byte(body[len(body)/2:])},
 		}
 	}
 
