@@ -184,6 +184,12 @@ at once.
 - The embedded SQLite driver, `modernc.org/sqlite`, is updated from 1.59.0 to
   1.60.1, and with it `modernc.org/libc` from 1.75.7 to 1.77.1 (split out of
   #118). It is still pure Go, and no module was added.
+- CI runs the test suite once on Linux instead of twice. The race-enabled
+  run now measures coverage as well, so the coverage gate no longer repeats
+  every browser test, and the store suites against PostgreSQL, MySQL and
+  MinIO run as their own jobs beside it instead of one after another behind
+  it. `make cover` takes `COVER_FLAGS` for the same purpose; without it the
+  target behaves as before.
 
 ### Fixed
 

@@ -92,7 +92,21 @@ jobs:
         run: go vet ./...
 
       - name: Test
+        if: runner.os != 'Linux'
         run: go test -race ${{ matrix.test-flags }} -timeout 15m ./...
+
+      # The same race-enabled run, measuring coverage as it goes. A gate, not
+      # a readout: below COVER_MIN this fails. The minimum is a ratchet held
+      # in the Makefile, and it is calibrated against this job — a developer
+      # machine with Podman and Chrome covers container paths that skip here,
+      # so its number is the higher one and cannot set the floor.
+      #
+      # One pass rather than a test step and a coverage step: the browser
+      # tests are most of the suite's wall clock, and a separate coverage run
+      # repeated every one of them for nothing but a percentage.
+      - name: Test, with the coverage gate
+        if: runner.os == 'Linux'
+        run: make cover-gate COVER_FLAGS="-race ${{ matrix.test-flags }} -timeout 15m"
 
       # The other axis of the same suite: where the evidence goes, rather than
       # where the index is kept (Story 8.9, AC1). It runs the whole store suite
@@ -125,56 +139,50 @@ jobs:
         if: runner.os == 'Linux'
         run: make test-cloudblob
 
-      # The one gate in this repository that meets an implementation of object
-      # storage nobody here wrote (Story 8.9, AC2). A directory, a memory bucket
-      # and the fake that lags on a schedule are three models, and a model
-      # cannot disagree with the assumption it was built from: listing order,
-      # pagination, modification times, delete semantics and gcerrors codes are
-      # what this step checks and the other three cannot.
-      #
-      # On every push rather than on the nightly schedule, unlike the
-      # end-to-end stack Story 7.6 puts there: this is one small image and about
-      # twenty seconds, and the whole point of the epic is that a bucket is not
-      # a directory. A provider difference found a month later, by an operator,
-      # is the failure the story exists to prevent.
-      #
-      # Linux only — the macOS runners have no container runtime — and docker,
-      # because that is what a GitHub runner has; the target prefers podman
-      # everywhere else.
-      - name: Test the store against a real object store
-        if: runner.os == 'Linux'
-        run: make test-store-minio STORE_TEST_RUNTIME=docker
-
-      # The store suite against the other two databases it supports (Story 4.7,
-      # AC5). The suite has been parameterised by dialect since the dialects
-      # were written, but until now only a developer who remembered to run
-      # these targets ever ran it anywhere but SQLite — and Story 4.11 merged a
-      # migration MySQL could not apply at all, a column named with one of its
-      # reserved words, because nothing on the way to main asked MySQL. A
-      # dialect nobody tests is a dialect a deployment finds broken first.
-      #
-      # Through the make targets rather than as service containers, so that CI
-      # and a developer start the same image, on the same port, with the same
-      # readiness probe — MySQL's is subtle enough (see the note above
-      # test-store-mysql) that a second copy of it here would be the one that
-      # drifts. The images are pinned there. Linux only, and docker, for the
-      # same reasons as the object-store step above; each is a small image and
-      # well under a minute.
-      - name: Test the store against PostgreSQL
-        if: runner.os == 'Linux'
-        run: make test-store-postgres STORE_TEST_RUNTIME=docker
-
-      - name: Test the store against MySQL
-        if: runner.os == 'Linux'
-        run: make test-store-mysql STORE_TEST_RUNTIME=docker
-
-      # A gate, not a readout: below COVER_MIN this fails. The minimum is a
-      # ratchet held in the Makefile, and it is calibrated against this job —
-      # a developer machine with Podman and Chrome covers container paths that
-      # skip here, so its number is the higher one and cannot set the floor.
-      - name: Coverage gate
-        if: runner.os == 'Linux'
-        run: make cover-gate
+  # The store suite against the backends that need a server (Story 4.7, AC5;
+  # Story 8.9, AC2), one job each so they run beside the test job and beside
+  # each other rather than after the browser tests. Each one starts its own
+  # container, so they share nothing that would make them wait on one another.
+  #
+  # PostgreSQL and MySQL: the suite has been parameterised by dialect since
+  # the dialects were written, but until now only a developer who remembered
+  # to run these targets ever ran it anywhere but SQLite — and Story 4.11
+  # merged a migration MySQL could not apply at all, a column named with one
+  # of its reserved words, because nothing on the way to main asked MySQL. A
+  # dialect nobody tests is a dialect a deployment finds broken first.
+  #
+  # MinIO: the one gate in this repository that meets an implementation of
+  # object storage nobody here wrote. A directory, a memory bucket and the
+  # fake that lags on a schedule are three models, and a model cannot
+  # disagree with the assumption it was built from: listing order,
+  # pagination, modification times, delete semantics and gcerrors codes are
+  # what this checks and the others cannot. On every push rather than on the
+  # nightly schedule, unlike the end-to-end stack Story 7.6 puts there: a
+  # provider difference found a month later, by an operator, is the failure
+  # the story exists to prevent.
+  #
+  # Through the make targets rather than as service containers, so that CI
+  # and a developer start the same image, on the same port, with the same
+  # readiness probe — MySQL's is subtle enough (see the note above
+  # test-store-mysql) that a second copy of it here would be the one that
+  # drifts. The images are pinned there. Linux only — the macOS runners have
+  # no container runtime — and docker, because that is what a GitHub runner
+  # has; the targets prefer podman everywhere else.
+  store:
+    name: store (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [postgres, mysql, minio]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Test the store against ${{ matrix.backend }}
+        run: make test-store-${{ matrix.backend }} STORE_TEST_RUNTIME=docker
 
   lint:
     name: golangci-lint
