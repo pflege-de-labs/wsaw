@@ -386,7 +386,7 @@ vet:
 # module whose go directive is newer than the Go it was built with, and this
 # module's floor comes from chromedp, which tracks Go closely — so a prebuilt
 # binary drifts out of range. Building it here keeps local and CI identical.
-GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 
 # Twice, for the same reason the licence gate and govulncheck run twice: a file
 # whose build constraint is off is invisible to the linter. Without the second

@@ -29,7 +29,7 @@ env:
   # which is measured with this same toolchain. Bump it deliberately.
   GO_VERSION: "1.27.2"
   # Pinned, and built from source below with the Go above — see the lint job.
-  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GOLANGCI_LINT_VERSION: "v2.14.0"
   # Pinned: a floating licence classifier can change a gate's verdict without
   # anything in this repository changing.
   GO_LICENSES_VERSION: "v2.0.1"
