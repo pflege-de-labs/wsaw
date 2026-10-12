@@ -110,9 +110,11 @@ func (g ConfidenceGate) markChange(ev Event) Event {
 	return ev
 }
 
-// confidenceGated is a notifier with a minimum confidence. The dispatcher,
-// not the notifier, holds a dropped delivery back, because the dispatcher
-// owns the log line and the counter that keep a drop from being silent (AC4).
+// confidenceGated is what every notifier is: one with a minimum confidence.
+// The dispatcher, not the notifier, holds a dropped delivery back, because
+// the dispatcher owns the log line and the counter that keep a drop from
+// being silent (AC4).
 type confidenceGated interface {
+	Name() string
 	confidenceGate() ConfidenceGate
 }

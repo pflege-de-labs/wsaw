@@ -572,7 +572,7 @@ func (s *SQL) RebuildIndex(ctx context.Context, opts RebuildOptions) (RebuildSta
 	return runRebuild(ctx, s, opts)
 }
 
-// runRebuild is the whole operation, for every store kind.
+// runRebuild is the whole operation.
 //
 // The order is deliberate and each step's reason is on it. What it adds up to
 // is that the report describes the index as it was found and the bucket as it
@@ -1145,7 +1145,7 @@ func (r *rebuildRun) checkIndexed(ctx context.Context, page []indexedScan) error
 // It borrows the sweep's plan rather than joining the references a second time.
 // A plan deletes nothing, it already knows the grace period that separates
 // garbage from a scan still being written, it already counts the objects that
-// wsaw did not write, and it is already tested for both store kinds — a second
+// wsaw did not write, and it is already tested — a second
 // implementation of the same join would be a second answer to the same question
 // with only one of them under test.
 //
@@ -1346,7 +1346,7 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 
 	key := rebuildKey(id)
 
-	if err := b.putIndex(ctx, key, body); err != nil {
+	if err := b.putMarker(ctx, id, body); err != nil {
 		return nil, fmt.Errorf("marking a rebuild of the index as in progress: %w", err)
 	}
 
@@ -1360,7 +1360,7 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 		done, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
 		defer cancel()
 
-		if err := b.deleteIndex(done, key); err != nil && !errors.Is(err, ErrNotFound) {
+		if err := b.deleteMarker(done, key); err != nil && !errors.Is(err, ErrNotFound) {
 			run.log.Error("the marker that says a rebuild of the index is in progress could not be cleared, "+
 				"so sweeps of this bucket will collect nothing until it is deleted",
 				"key", key, "bucket", b.String(), "error", err)
@@ -1371,9 +1371,9 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 // rebuildMarkers names the markers that say a rebuild of an index is running
 // against this bucket right now.
 //
-// It is on the bucket rather than on either store because the marker is a fact
-// about the bucket: whichever store is being rebuilt, the objects a sweep would
-// collect are in here, and both stores' sweeps ask this question.
+// It is on the bucket rather than on the store because the marker is a fact
+// about the bucket: whichever deployment is being rebuilt, the objects a sweep
+// would collect are in here.
 //
 // The keys are returned rather than counted so that the sweep's report can name
 // them. "Let the rebuild finish, or clear its marker" is not actionable advice
@@ -1386,35 +1386,28 @@ func markRebuild(ctx context.Context, b *bucket, run *rebuildRun) (func(), error
 // permanently unsweepable. It is logged at Error rather than passed over,
 // because a marker that outlived its run is a leftover somebody has to delete.
 func (b *bucket) rebuildMarkers(ctx context.Context, now time.Time, log *slog.Logger) ([]string, error) {
-	var (
-		live   []string
-		cursor indexCursor
-	)
+	keys, err := b.listMarkers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("checking whether a rebuild of the index is in progress: %w", err)
+	}
 
-	for cursor.more() {
-		page, err := b.listIndexPage(ctx, indexRebuildPrefix, cursor, indexListPageSize)
+	var live []string
+
+	for _, key := range keys {
+		stale, err := b.rebuildMarkerIsStale(ctx, key, now)
 		if err != nil {
-			return nil, fmt.Errorf("checking whether a rebuild of the index is in progress: %w", err)
+			return nil, err
 		}
 
-		cursor = page.next
+		if stale {
+			log.Error("a marker says a rebuild of an index has been running for more than a day, "+
+				"so it is being treated as the leftover of a run that was killed; delete the object to clear it",
+				"key", key, "bucket", b.String(), "after", rebuildMarkerTTL.String())
 
-		for _, object := range page.objects {
-			stale, err := b.rebuildMarkerIsStale(ctx, object.key, now)
-			if err != nil {
-				return nil, err
-			}
-
-			if stale {
-				log.Error("a marker says a rebuild of an index has been running for more than a day, "+
-					"so it is being treated as the leftover of a run that was killed; delete the object to clear it",
-					"key", object.key, "bucket", b.String(), "after", rebuildMarkerTTL.String())
-
-				continue
-			}
-
-			live = append(live, object.key)
+			continue
 		}
+
+		live = append(live, key)
 	}
 
 	return live, nil
@@ -1429,7 +1422,7 @@ func (b *bucket) rebuildMarkers(ctx context.Context, now time.Time, log *slog.Lo
 // be aged has to keep protecting the bucket, and the sweep names it so that a
 // person can decide.
 func (b *bucket) rebuildMarkerIsStale(ctx context.Context, key string, now time.Time) (bool, error) {
-	raw, err := b.getIndex(ctx, key)
+	raw, err := b.getMarker(ctx, key)
 
 	switch {
 	case errors.Is(err, ErrNotFound):

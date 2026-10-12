@@ -14,7 +14,6 @@
 package notify
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -162,7 +161,7 @@ func (t *Teams) DeliverScan(ctx context.Context, ev ScanEvent) error {
 	}
 
 	return retryPost(ctx, t.cfg.Name, t.cfg.MaxRetries, func(ctx context.Context) error {
-		return t.post(ctx, body)
+		return post(ctx, t.client, t.cfg.Timeout, t.cfg.URL, t.cfg.Headers, body, "application/json")
 	})
 }
 
@@ -220,39 +219,6 @@ func (t *Teams) encode(ev ScanEvent, listed int) ([]byte, error) {
 	}
 
 	return body, nil
-}
-
-func (t *Teams) post(ctx context.Context, body []byte) error {
-	reqCtx, cancel := context.WithTimeout(ctx, t.cfg.Timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, t.cfg.URL.Reveal(), bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("building request: %w", scrubURL(err, t.cfg.URL))
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "wsaw")
-
-	for name, value := range t.cfg.Headers {
-		req.Header.Set(name, value.Reveal())
-	}
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("posting: %w", scrubURL(err, t.cfg.URL))
-	}
-
-	defer func() { _ = resp.Body.Close() }()
-
-	// Every 2xx is a success. A Workflow answers 202 Accepted rather than 200,
-	// and treating that as a failure would retry messages that were in fact
-	// delivered — turning one alert into four (AC3).
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &httpError{status: resp.StatusCode}
-	}
-
-	return nil
 }
 
 // message wraps the card in the envelope a Workflow expects.

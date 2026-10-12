@@ -25,14 +25,6 @@ const (
 // error messages. SQLite is first because it is the default.
 func Drivers() []string { return []string{DriverSQLite, DriverPostgres, DriverMySQL} }
 
-// execer is the part of *sql.DB and *sql.Tx that schema work needs, so a
-// migration can run inside a transaction or outside one without two code
-// paths.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // dialect isolates exactly the parts of the store's SQL that differ between
 // databases: placeholder style, the schema itself, where the schema version
 // lives, the upsert form, and the delete-by-identity form retention uses.
@@ -74,7 +66,7 @@ type dialect interface {
 	// recorded in if that does not exist yet.
 	schemaVersion(ctx context.Context, db *sql.DB) (int, error)
 	// setSchemaVersion records a newly applied version.
-	setSchemaVersion(ctx context.Context, ex execer, version int) error
+	setSchemaVersion(ctx context.Context, ex querier, version int) error
 	// ddlIsTransactional reports whether schema changes roll back with a
 	// transaction. MySQL commits implicitly on DDL, so they do not.
 	ddlIsTransactional() bool

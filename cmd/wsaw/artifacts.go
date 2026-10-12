@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
+	"github.com/pflege-de-labs/wsaw/internal/httpapi"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -68,7 +69,7 @@ func cmdArtifactsCompress(ctx context.Context, args []string) error {
 
 	if *verbose {
 		opts.OnArtifact = func(ref string, original, stored int64) {
-			fmt.Printf("%s  %s -> %s\n", ref, formatBytes(original), formatBytes(stored))
+			fmt.Printf("%s  %s -> %s\n", ref, httpapi.FormatBytes(original), httpapi.FormatBytes(stored))
 		}
 	}
 
@@ -100,26 +101,7 @@ func printCompactStats(stats store.CompactStats, dryRun bool) {
 	}
 
 	fmt.Printf("%s -> %s, saving %s (%.0f%%)\n",
-		formatBytes(stats.BytesBefore), formatBytes(stats.BytesAfter),
-		formatBytes(stats.Saved()),
+		httpapi.FormatBytes(stats.BytesBefore), httpapi.FormatBytes(stats.BytesAfter),
+		httpapi.FormatBytes(stats.Saved()),
 		100*float64(stats.Saved())/float64(stats.BytesBefore))
-}
-
-// formatBytes renders a size for a human reading a terminal, which is the
-// only place these numbers go.
-func formatBytes(n int64) string {
-	const unit = 1024
-
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-
-	div, exp := int64(unit), 0
-
-	for n/div >= unit && exp < 3 {
-		div *= unit
-		exp++
-	}
-
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
 }

@@ -189,13 +189,6 @@ func (b *bucket) setRetry(fn retryFunc) {
 	}
 }
 
-// setMeter lends the bucket someone to report its requests to.
-func (b *bucket) setMeter(fn meterFunc) {
-	if fn != nil {
-		b.meter = fn
-	}
-}
-
 // observe reports one request, and is where the nil check lives so that no
 // caller has to make it.
 func (b *bucket) observe(op string, bytes int64) {

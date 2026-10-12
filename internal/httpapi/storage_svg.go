@@ -92,7 +92,7 @@ func seriesBarSVG(rows []hBarRow) template.HTML {
 
 	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" width="%d" height="%d" role="img" `+
 		`aria-label="Storage by series. Largest: %s (%s)." xmlns="http://www.w3.org/2000/svg">`,
-		chartWidth, height, chartWidth, height, svgEscape(rows[0].Label), formatBytes(maxTotal))
+		chartWidth, height, chartWidth, height, svgEscape(rows[0].Label), FormatBytes(maxTotal))
 	fmt.Fprintf(&b, `<title>Storage by series, largest first</title>`)
 
 	for i, r := range rows {
@@ -117,7 +117,7 @@ func seriesBarSVG(rows []hBarRow) template.HTML {
 		}
 
 		fmt.Fprintf(&b, `<text x="%d" y="%d" font-size="%d" fill="var(--fg)" dominant-baseline="middle">%s</text>`,
-			chartLabelW+chartPlotW+6, y+chartBarH/2, chartFontSize, formatBytes(r.total()))
+			chartLabelW+chartPlotW+6, y+chartBarH/2, chartFontSize, FormatBytes(r.total()))
 	}
 
 	b.WriteString(`</svg>`)

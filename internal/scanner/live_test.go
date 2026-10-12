@@ -15,9 +15,9 @@ import (
 func TestLiveReportsWhatIsRunning(t *testing.T) {
 	t.Parallel()
 
-	live := NewLive()
+	live := newLive()
 
-	if got := live.Count(); got != 0 {
+	if got := len(live.Running()); got != 0 {
 		t.Fatalf("a fresh registry reports %d running, want 0", got)
 	}
 
@@ -37,7 +37,7 @@ func TestLiveReportsWhatIsRunning(t *testing.T) {
 
 	release()
 
-	if got := live.Count(); got != 0 {
+	if got := len(live.Running()); got != 0 {
 		t.Errorf("after release, %d scans still look running", got)
 	}
 }
@@ -47,7 +47,7 @@ func TestLiveReportsWhatIsRunning(t *testing.T) {
 func TestRunningIsOrderedOldestFirst(t *testing.T) {
 	t.Parallel()
 
-	live := NewLive()
+	live := newLive()
 	base := time.Now()
 
 	defer live.begin(Running{ScanID: "newer", StartedAt: base.Add(time.Minute)})()
@@ -69,7 +69,7 @@ func TestRunningIsOrderedOldestFirst(t *testing.T) {
 func TestRunningOrderIsStableForIdenticalStartTimes(t *testing.T) {
 	t.Parallel()
 
-	live := NewLive()
+	live := newLive()
 	at := time.Now()
 
 	defer live.begin(Running{ScanID: "b", StartedAt: at})()
@@ -90,7 +90,7 @@ func TestNilLiveIsUsable(t *testing.T) {
 
 	var live *Live
 
-	if got := live.Count(); got != 0 {
+	if got := len(live.Running()); got != 0 {
 		t.Errorf("nil registry Count = %d, want 0", got)
 	}
 

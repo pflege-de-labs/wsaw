@@ -71,8 +71,8 @@ type Live struct {
 	running map[string]Running
 }
 
-// NewLive creates an empty registry.
-func NewLive() *Live {
+// newLive creates an empty registry.
+func newLive() *Live {
 	return &Live{running: make(map[string]Running)}
 }
 
@@ -122,21 +122,6 @@ func (l *Live) Running() []Running {
 	return out
 }
 
-// Count reports how many scans are in flight.
-func (l *Live) Count() int {
-	if l == nil {
-		return 0
-	}
-
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
-	return len(l.running)
-}
-
 // Running exposes the in-flight scans of this scanner, for the API and the web
 // interface.
 func (s *Scanner) Running() []Running { return s.live.Running() }
-
-// RunningCount reports how many scans this scanner has in flight.
-func (s *Scanner) RunningCount() int { return s.live.Count() }

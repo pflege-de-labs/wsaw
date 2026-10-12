@@ -193,6 +193,24 @@ func TestClientErrorIsNotRetried(t *testing.T) {
 	}
 }
 
+// TestInformationalStatusIsNotSuccess: only a 2xx says the endpoint took the
+// event. A 101 is a final response the client hands back, and counting it as
+// delivered would hide a misconfigured endpoint behind a sent counter.
+func TestInformationalStatusIsNotSuccess(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+	defer srv.Close()
+
+	wh := webhook(t, notify.Config{MaxRetries: 1, Timeout: time.Second}, srv)
+
+	if err := wh.Deliver(context.Background(), event(diff.SeverityHigh)); err == nil {
+		t.Fatal("a 101 was reported as success")
+	}
+}
+
 func TestRateLimitIsRetried(t *testing.T) {
 	t.Parallel()
 

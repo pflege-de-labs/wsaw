@@ -27,20 +27,17 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
-// open returns a store of whichever kind the suite is being run against.
+// open returns a store on whichever database the suite is being run against.
 //
 // Every test below uses it, so one set of test bodies exercises SQLite,
-// PostgreSQL, MySQL (Story 4.7, AC5) and — since Story 8.10 — the store that
-// keeps its index in the artifact bucket instead of in rows (AC15). The tests
-// are the specification of what a store does; a store that needed its own
-// tests would be a store that had changed the behaviour.
+// PostgreSQL and MySQL (Story 4.7, AC5). The tests are the specification of
+// what a store does; a database that needed its own tests would be a store
+// that had changed the behaviour.
 //
-// It returns the interface rather than a concrete store, which is what makes
-// the last of those possible: the bucket-index store is not a *store.SQL and
-// has no dialect, and every test body here asks only what the seam promises.
+// It returns the interface rather than *store.SQL so that every test body here
+// asks only what the seam promises.
 //
 //	go test ./internal/store
-//	WSAW_TEST_STORE_DRIVER=blob                                 go test ./internal/store
 //	WSAW_TEST_STORE_DRIVER=postgres WSAW_TEST_POSTGRES_DSN=... go test ./internal/store
 //	WSAW_TEST_STORE_DRIVER=mysql    WSAW_TEST_MYSQL_DSN=...    go test ./internal/store
 func open(t *testing.T) store.Store {
@@ -1672,12 +1669,6 @@ func TestAMissingDocumentLeavesTheRestReadable(t *testing.T) {
 // removed from the bucket, a listing must still be complete and correct,
 // because it never reads one. (The bucket-operation count itself is asserted in
 // the white-box test, which can see the bucket.)
-//
-// It runs against the bucket-index store too, and it is the criterion that
-// survives being carried there. "A listing performs zero bucket reads" cannot
-// hold where the index is the bucket; what has to hold, and what this asserts,
-// is that a listing never fetches the megabytes a scan's document runs to
-// (Story 8.10, §6.4).
 func TestListingNeedsNoDocumentAtAll(t *testing.T) {
 	t.Parallel()
 

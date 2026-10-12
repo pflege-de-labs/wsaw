@@ -145,6 +145,18 @@ type Store interface {
 	SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error)
 }
 
+// StorageIndex is the storage dashboard's own narrow read of the SQL index,
+// and nothing else reads it. It is declared here rather than widening Store,
+// for the reason Story 4.11, AC6 keeps the maintenance-run readers off the
+// Store seam in the first place: this page is their one consumer, and every
+// store should not have to answer questions only a SQL index can.
+type StorageIndex interface {
+	Storage(ctx context.Context) (store.StorageReport, error)
+	MonthlyStorage(ctx context.Context, since time.Time) ([]store.MonthlyBytes, error)
+	LastMaintenanceRun(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
+	MaintenanceRuns(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)
+}
+
 // Deps are the collaborators the server reads from.
 type Deps struct {
 	// Store is required: New refuses a nil one. A non-nil interface holding a
@@ -182,19 +194,10 @@ type Deps struct {
 	// because those are different claims (Tenet 5).
 	Running func() []scanner.Running
 
-	// The four collaborators the storage dashboard reads (Story 5.32) and
-	// nothing else does. Functions rather than a widened Store, for the
-	// reason Story 4.11, AC6 keeps the maintenance-run readers off the Store
-	// seam in the first place: this page is their one consumer, and it
-	// declares the narrow interface it needs instead of asking every store
-	// to answer questions only a SQL index can. Populated from a type
-	// assertion against the concrete *store.SQL wherever the server is
-	// built (cmd/wsaw/run.go); nil on a store that is not one, and the
-	// dashboard says so rather than reporting zeroes (Tenet 5).
-	Storage            func(ctx context.Context) (store.StorageReport, error)
-	MonthlyStorage     func(ctx context.Context, since time.Time) ([]store.MonthlyBytes, error)
-	LastMaintenanceRun func(ctx context.Context, kind string) (store.MaintenanceRun, bool, error)
-	MaintenanceRuns    func(ctx context.Context, kind string, limit int) ([]store.MaintenanceRun, error)
+	// StorageIndex is what the storage dashboard reads (Story 5.32). Nil on
+	// a store that cannot answer it, and the dashboard says so rather than
+	// reporting zeroes (Tenet 5).
+	StorageIndex StorageIndex
 
 	// ArtifactLocation names where the evidence bucket is, as configured —
 	// shown in the storage dashboard's header (AC3). It may carry a

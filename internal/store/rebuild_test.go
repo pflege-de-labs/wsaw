@@ -150,12 +150,11 @@ func assertReadsBackIdentically(t *testing.T, s store.Store, scans []rebuiltScan
 }
 
 // TestRebuildingALostIndexBringsEveryResultBack is AC1, AC2 and AC13 together,
-// for whichever store the suite is running against.
+// for whichever database the suite is running against.
 //
-// It is also the supported way between store kinds, written out: a store opened
-// against a bucket it has no index for is exactly a store of another kind
-// pointed at somebody else's bucket, and what it takes to make the history
-// readable is this command and nothing else.
+// It is also the supported way onto a new database, written out: a store opened
+// against a bucket it has no index for needs this command and nothing else to
+// make the history readable.
 func TestRebuildingALostIndexBringsEveryResultBack(t *testing.T) {
 	t.Parallel()
 
@@ -699,9 +698,8 @@ func TestASweepCollectsNothingWhileARebuildIsInProgress(t *testing.T) {
 // running one.
 //
 // Written into the bucket directly, because what the sweep honours is an object
-// in the bucket and not a fact one store told another: a rebuild of a
-// bucket-index store's index protects the documents a SQL store keeps in the
-// same bucket, and the other way round.
+// in the bucket and not a fact one store told another: a rebuild by one
+// deployment protects the documents another keeps in the same bucket.
 func markRebuildInProgress(t *testing.T, bucket *store.TestBucket) {
 	t.Helper()
 

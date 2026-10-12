@@ -38,10 +38,7 @@ func withStorageDashboard(d *httpapi.Deps) {
 		panic("withStorageDashboard: the fixture's store is not *store.SQL")
 	}
 
-	d.Storage = sql.Storage
-	d.MonthlyStorage = sql.MonthlyStorage
-	d.LastMaintenanceRun = sql.LastMaintenanceRun
-	d.MaintenanceRuns = sql.MaintenanceRuns
+	d.StorageIndex = sql
 	d.ArtifactLocation = "/var/lib/wsaw/artifacts"
 }
 

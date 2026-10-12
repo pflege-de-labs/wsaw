@@ -460,7 +460,7 @@ func connect(ctx context.Context, opts Options) (*SQL, error) {
 	// so `maxAttempts` and `retryBackoff` mean the same thing for evidence as
 	// they do for rows (Story 8.1, AC8).
 	b.setRetry(s.retry)
-	b.setMeter(opts.OnBucketOp)
+	b.meter = opts.OnBucketOp
 
 	// How artifacts are packed is the bucket's business, because the bucket is
 	// what writes and reads them: the store hands over the decision and never
@@ -1398,18 +1398,49 @@ func (s *SQL) queryResult(ctx context.Context, query string, args ...any) (*mode
 	return s.readDocument(ctx, ref)
 }
 
-// readDocument reads the document one row references.
+// readDocument fetches the document one row references from the bucket and
+// checks it against what the row recorded about it.
 //
-// What it is answerable for is the one case only a SQL index has: a row an
-// older wsaw wrote, whose document is still in the column and has not been
-// moved into the bucket yet (Story 8.4). There is nothing there to read, and
-// that is absence rather than corruption. Everything after that — the digest
-// and size check, and telling lost evidence from a corrupt reference — is the
-// same judgement for every kind of index and is made once, on the bucket.
+// A row an older wsaw wrote may still hold its document in the column, not
+// yet moved into the bucket (Story 8.4). There is nothing there to read, and
+// that is absence rather than corruption.
+//
+// The check is the point. Once the payload is outside the database it is
+// outside the database's guarantees too: a truncated upload, a lifecycle rule
+// that replaced an object, or a key rewritten by something else would
+// otherwise be returned as the scan (Story 8.2, AC6). A mismatch is
+// corruption, and corruption is reported, never served as evidence.
+//
+// The two ways a reference can fail are told apart rather than merged into the
+// bucket's own answer. A key that is gone while the row still names it is
+// lost evidence (ErrEvidenceGone), not a scan that never happened; a reference
+// that is not the shape this store writes came out of wsaw's own database, so
+// it is a corrupt row (ErrCorrupt), not an absent artifact.
 func (s *SQL) readDocument(ctx context.Context, ref resultRef) (*model.Result, error) {
 	if ref.ref == "" {
 		return nil, fmt.Errorf("this result's document has not been moved to the artifact bucket: %w", ErrNotFound)
 	}
 
-	return s.bucket.resultDocument(ctx, ref)
+	document, err := s.bucket.get(ctx, ref.ref)
+
+	switch {
+	case errors.Is(err, errInvalidRef):
+		return nil, fmt.Errorf("this result names artifact %q, which is not a reference this store wrote: %w: %w",
+			truncateForMessage(ref.ref), ErrCorrupt, err)
+
+	case errors.Is(err, ErrNotFound):
+		// The row survived and the object did not — a lifecycle rule on the
+		// bucket, a restore without its matching database, a sweep that
+		// collected too much. Reported as its own fault so that a caller which
+		// skips a result that does not exist cannot skip this one just as
+		// quietly (Story 8.2, AC5). The bucket's own ErrNotFound is
+		// deliberately not carried through: a caller testing for it would go
+		// on treating deleted evidence as a scan that never happened.
+		return nil, fmt.Errorf("artifact %s: %w", ref.ref, ErrEvidenceGone)
+
+	case err != nil:
+		return nil, err
+	}
+
+	return decodeDocument(ref, document)
 }

@@ -1,6 +1,7 @@
 package report
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -188,7 +189,7 @@ func postDataOf(req *model.Request) *harPostData {
 	}
 
 	pd := &harPostData{
-		MimeType: orDefault(req.RequestBodyMimeType, "application/octet-stream"),
+		MimeType: cmp.Or(req.RequestBodyMimeType, "application/octet-stream"),
 		Text:     req.RequestBody,
 	}
 
@@ -278,9 +279,9 @@ func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 			Time:            durationMillis(req.Timing.EndOffset - req.Timing.StartOffset),
 			ServerIPAddress: req.RemoteIP,
 			Request: harRequest{
-				Method:      orDefault(req.Method, "GET"),
+				Method:      cmp.Or(req.Method, "GET"),
 				URL:         req.URL,
-				HTTPVersion: orDefault(req.Protocol, "HTTP/1.1"),
+				HTTPVersion: cmp.Or(req.Protocol, "HTTP/1.1"),
 				Cookies:     []struct{}{},
 				Headers:     []struct{}{},
 				QueryString: []struct{}{},
@@ -291,7 +292,7 @@ func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 			Response: harResponse{
 				Status:      req.Status,
 				StatusText:  req.StatusText,
-				HTTPVersion: orDefault(req.Protocol, "HTTP/1.1"),
+				HTTPVersion: cmp.Or(req.Protocol, "HTTP/1.1"),
 				Cookies:     []struct{}{},
 				Headers:     []struct{}{},
 				RedirectURL: req.RedirectTo,
@@ -299,7 +300,7 @@ func WriteHAR(w io.Writer, res *model.Result, load BodyLoader) error {
 				BodySize:    req.TransferSize,
 				Content: harContent{
 					Size:     req.DecodedSize,
-					MimeType: orDefault(req.MimeType, "application/octet-stream"),
+					MimeType: cmp.Or(req.MimeType, "application/octet-stream"),
 				},
 			},
 			Timings: harTimings{
@@ -369,12 +370,4 @@ func durationMillis(d time.Duration) float64 {
 	}
 
 	return float64(d) / float64(time.Millisecond)
-}
-
-func orDefault(s, fallback string) string {
-	if s == "" {
-		return fallback
-	}
-
-	return s
 }

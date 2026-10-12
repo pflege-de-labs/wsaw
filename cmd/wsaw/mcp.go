@@ -80,10 +80,7 @@ func serveMCP(ctx context.Context, args []string, in io.Reader, out, errOut io.W
 
 	// Diffs key assets under the configured rules, so a comparison read here
 	// matches the one the scan reported.
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		return err
-	}
+	rules := cfg.NormalizeRules()
 
 	normalizer, err := normalize.New(rules)
 	if err != nil {

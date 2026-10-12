@@ -579,7 +579,8 @@ func diffScansTool(st Store, n *normalize.Normalizer) tool {
 			Description: "Compare one scan against the approved baseline, the previous scan, or another scan of the " +
 				"same target and consent mode, and list what changed with a severity per change: new or removed " +
 				"hosts, assets, script content and cookies. Uses wsaw's default severity rules, as the web interface does. " +
-				`With "against" omitted, compares against the baseline if there is one and the previous scan otherwise.`,
+				`With "against" omitted, compares against the baseline if there is one and the previous scan otherwise, ` +
+				`and the baseline itself against the scan before it.`,
 			InputSchema: seriesSchema(map[string]property{
 				"against": str(`"baseline", "previous", or a scan ID. Default: baseline if approved, else previous.`),
 			}),
@@ -605,7 +606,7 @@ func diffScansTool(st Store, n *normalize.Normalizer) tool {
 				return nil, err
 			}
 
-			base, basis, err := loadBase(st, cur, a.Against)
+			c, basis, err := loadBase(st, cur, a.Against)
 			if err != nil {
 				return nil, err
 			}
@@ -614,48 +615,55 @@ func diffScansTool(st Store, n *normalize.Normalizer) tool {
 				"against":   basis,
 				"rules":     "default",
 				"untrusted": untrustedNote,
-				"report":    diff.Compare(base, cur, diff.Options{Normalizer: n}),
+				"report":    c.Report(cur, diff.Options{Normalizer: n}),
 			})
 		},
 	}
 }
 
 // loadBase finds what cur is compared against. With nothing to compare to —
-// a first scan with no baseline — it returns a nil base, and diff.Compare
-// reports the pair as incomparable with its reason rather than as unchanged.
-func loadBase(st Store, cur *model.Result, against string) (*model.Result, string, error) {
+// a first scan with no baseline — the base is nil, and the report says why
+// rather than calling the pair unchanged.
+//
+// The default is the web interface's (store.ComparisonFor), so a baseline is
+// never compared with itself (Tenet 5).
+func loadBase(st Store, cur *model.Result, against string) (store.Comparison, string, error) {
 	switch against {
 	case "":
-		has, err := st.HasBaseline(cur.Target, cur.ConsentMode)
+		c, err := store.ComparisonFor(st, cur)
 		if err != nil {
-			return nil, "", fmt.Errorf("checking the baseline of %s/%s: %w", cur.Target, cur.ConsentMode, err)
+			return c, "", err
 		}
 
-		if has {
-			return loadBase(st, cur, scanBaseline)
+		if c.Baseline != nil && !c.OwnBaseline {
+			return c, scanBaseline, nil
 		}
 
-		return loadBase(st, cur, basePrevious)
+		return c, basePrevious, nil
 
 	case basePrevious:
 		prev, err := st.PreviousResult(cur.Target, cur.ConsentMode, cur.ScanID)
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, basePrevious, nil
+
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return store.Comparison{}, basePrevious, nil
+
+		case errors.Is(err, store.ErrEvidenceGone):
+			return store.Comparison{EvidenceGone: true}, basePrevious, nil
+
+		case err != nil:
+			return store.Comparison{}, "", fmt.Errorf("reading the scan before %s: %w", cur.ScanID, err)
 		}
 
-		if err != nil {
-			return nil, "", fmt.Errorf("reading the scan before %s: %w", cur.ScanID, err)
-		}
-
-		return prev, basePrevious, nil
+		return store.Comparison{Base: prev}, basePrevious, nil
 
 	default:
 		base, err := loadScan(st, cur.Target, cur.ConsentMode, against)
 		if err != nil {
-			return nil, "", err
+			return store.Comparison{}, "", err
 		}
 
-		return base, against, nil
+		return store.Comparison{Base: base}, against, nil
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -1030,42 +1029,25 @@ func (s *SQL) collectOne(
 // A key that is already gone counts as done rather than failed: something else
 // collected it, which is the outcome this method wanted.
 func (s *SQL) removeArtifact(ctx context.Context, ref string) (bytes int64, deleted bool) {
-	bytes, deleted = reclaimArtifact(ctx, s.bucket, s.log, ref)
-	if deleted {
-		s.forgetArtifactSize(ctx, ref)
-	}
-
-	return bytes, deleted
-}
-
-// reclaimArtifact is removeArtifact for whichever kind of store is pruning.
-//
-// It is a function of the bucket and a logger rather than a method, because
-// both stores reach this point with the same question and must answer it the
-// same way: the bucket-index store's prune decides which artifacts have lost
-// their last owner from index objects instead of from rows, and everything
-// after that decision — measure, delete, count the bytes, treat an absent key
-// as done — is the policy of Story 8.5 and not of a store kind. Two copies
-// would be two policies, and the one that drifted would be the one nobody was
-// reading.
-func reclaimArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref string) (bytes int64, deleted bool) {
-	ctx, cancel := opCtxFrom(ctx)
+	opCtx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	obj, err := b.stat(ctx, ref)
+	obj, err := s.bucket.stat(opCtx, ref)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
+		s.forgetArtifactSize(ctx, ref)
+
 		return 0, true
 
 	case err != nil:
-		log.Warn("an unreferenced artifact could not be measured, so it was left for the next sweep",
-			"artifact", ref, "bucket", b.String(), "error", err)
+		s.log.Warn("an unreferenced artifact could not be measured, so it was left for the next sweep",
+			"artifact", ref, "bucket", s.bucket.String(), "error", err)
 
 		return 0, false
 	}
 
-	if !dropArtifact(ctx, b, log, ref) {
+	if !s.deleteArtifact(opCtx, ref) {
 		return 0, false
 	}
 
@@ -1084,31 +1066,19 @@ func reclaimArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref strin
 // artifacts are still worth reclaiming, and the key stays referenced so the
 // next sweep meets it again (AC4).
 func (s *SQL) deleteArtifact(ctx context.Context, ref string) bool {
-	if !dropArtifact(ctx, s.bucket, s.log, ref) {
+	opCtx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	if err := s.bucket.remove(opCtx, ref); err != nil && !errors.Is(err, ErrNotFound) {
+		s.log.Warn("an unreferenced artifact could not be deleted and was left for the next sweep",
+			"artifact", ref, "bucket", s.bucket.String(), "error", err)
+
 		return false
 	}
 
 	s.forgetArtifactSize(ctx, ref)
 
 	return true
-}
-
-// dropArtifact is deleteArtifact for whichever kind of store is collecting; see
-// reclaimArtifact for why it is shared.
-func dropArtifact(ctx context.Context, b *bucket, log *slog.Logger, ref string) bool {
-	ctx, cancel := opCtxFrom(ctx)
-	defer cancel()
-
-	switch err := b.remove(ctx, ref); {
-	case err == nil, errors.Is(err, ErrNotFound):
-		return true
-
-	default:
-		log.Warn("an unreferenced artifact could not be deleted and was left for the next sweep",
-			"artifact", ref, "bucket", b.String(), "error", err)
-
-		return false
-	}
 }
 
 // orphanedRefs lists the artifacts a plan would delete, without touching the
@@ -1184,16 +1154,10 @@ func (s *SQL) measureArtifacts(ctx context.Context, refs []string) (count int, b
 
 // statArtifact reads one artifact's size under its own deadline.
 func (s *SQL) statArtifact(ctx context.Context, ref string) (int64, error) {
-	return measureArtifact(ctx, s.bucket, ref)
-}
-
-// measureArtifact reads one artifact's size under its own deadline, for
-// whichever kind of store is planning a deletion.
-func measureArtifact(ctx context.Context, b *bucket, ref string) (int64, error) {
 	ctx, cancel := opCtxFrom(ctx)
 	defer cancel()
 
-	obj, err := b.stat(ctx, ref)
+	obj, err := s.bucket.stat(ctx, ref)
 
 	return obj.size, err
 }
@@ -1415,9 +1379,8 @@ func (s *SQL) sweep(ctx context.Context, trigger string, now time.Time, opts Swe
 		// evidence the rebuild exists to recover, so nothing is judged at all
 		// (Story 8.10, AC12).
 		//
-		// The marker is in the bucket rather than in either index because that
-		// is where the risk is, so a SQL store honours it exactly as the
-		// bucket-index store does — including a rebuild of a bucket-index store
+		// The marker is in the bucket rather than in the database because that
+		// is where the risk is — including a rebuild by another deployment
 		// running against the same bucket this one keeps its evidence in.
 		stats.RebuildInProgress = len(rebuilding)
 		stats.RebuildMarkers = rebuilding

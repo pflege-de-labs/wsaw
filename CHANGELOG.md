@@ -202,9 +202,45 @@ at once.
   MinIO and the `cloudblob` build run as their own jobs beside it instead of
   one after another behind it. `make cover` takes `COVER_FLAGS` for the same
   purpose; without it the target behaves as before.
+- Sizes in the web interface and storage dashboard are labelled in binary
+  units (KiB, MiB, GiB), as `wsaw artifacts` and the configuration reference
+  already were. The figures were always binary; only the labels change.
+- A rescan request with a malformed consent mode is now answered `400` on a
+  read-only server too, where it used to get `403`: the web interface and the
+  API check a rescan the same way, path first.
+- Twelve `*_total` metrics are now exposed as `# TYPE counter` instead of
+  `gauge`; their values are unchanged. They are
+  `wsaw_browser_restarts_total`, `wsaw_notifications_sent_total`,
+  `wsaw_notifications_failed_total`, `wsaw_store_retries_total`,
+  `wsaw_results_pruned_total`, `wsaw_scan_retries_total`,
+  `wsaw_scan_retries_exhausted_total`, `wsaw_artifacts_deleted_total`,
+  `wsaw_artifact_bytes_freed_total`, `wsaw_artifact_deletions_failed_total`,
+  `wsaw_artifact_bytes_total` and `wsaw_artifact_stored_bytes_total`. Query
+  them with `rate()` or `increase()`; a query using `delta()` or `deriv()` on
+  them should move to those.
+- Internal: removed the plumbing left from the dropped bucket-index store
+  (Story 8.10) and several single-use abstractions. Nothing changes in
+  configuration, in what a scan records, or in the rebuild markers already in
+  a bucket.
 
 ### Fixed
 
+- `wsaw mcp`'s `diff_scans` no longer compares the approved baseline with
+  itself when `against` is omitted, which reported "no changes" for a scan
+  nothing had been compared with. It now does what the web interface does:
+  the baseline is compared with the scan before it, a baseline with no earlier
+  scan says it is the first, and an earlier scan whose evidence has left the
+  artifact bucket is reported as such instead of failing the call
+  (Story 5.36; Tenet 5).
+- `wsaw share` now escapes the target, consent mode and scan ID in the link it
+  prints, as the web interface already did. A target whose name contains `/`
+  or `?` produced a link that did not open the shared scan.
+- `wsaw_browser_restarts_total` counted every browser a scan discarded twice.
+  It now counts each restart once; expect the value to drop to the true
+  count, and review any alert threshold tuned to the doubled one.
+- Webhook notifiers now count only a `2xx` response as delivered, as Teams
+  already did. A final `1xx` is a failed delivery and counts in
+  `wsaw_notifications_failed_total` instead of `_sent_total`.
 - The `sourcepoint` rule now works. Its clicks ran in the top document, but
   Sourcepoint's buttons are inside its message iframe, so the rule could never
   click anything. It now clicks inside the frame, by the `sp_choice_type_11`

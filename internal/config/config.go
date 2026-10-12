@@ -8,6 +8,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -580,11 +581,7 @@ func (s Store) ArtifactCompression() string {
 
 // StoreDriver returns the configured driver, defaulting to SQLite.
 func (s Store) StoreDriver() string {
-	if s.Driver == "" {
-		return store.DriverSQLite
-	}
-
-	return s.Driver
+	return cmp.Or(s.Driver, store.DriverSQLite)
 }
 
 // IsServerStore reports whether the store is a database with a server, which
@@ -996,31 +993,19 @@ type Notifier struct {
 
 // NotifierKind returns the configured kind, defaulting to a plain webhook.
 func (n Notifier) NotifierKind() string {
-	if n.Kind == "" {
-		return NotifyWebhook
-	}
-
-	return n.Kind
+	return cmp.Or(n.Kind, NotifyWebhook)
 }
 
 // BelowConfidenceAction returns what happens to a scan under MinConfidence,
 // defaulting to a caveat so that no finding goes unsent unless an operator
 // asked for it.
 func (n Notifier) BelowConfidenceAction() string {
-	if n.BelowConfidence == "" {
-		return BelowConfidenceCaveat
-	}
-
-	return n.BelowConfidence
+	return cmp.Or(n.BelowConfidence, BelowConfidenceCaveat)
 }
 
 // TeamsFormat returns the configured card format, defaulting to Adaptive.
 func (n Notifier) TeamsFormat() string {
-	if n.Format == "" {
-		return TeamsAdaptive
-	}
-
-	return n.Format
+	return cmp.Or(n.Format, TeamsAdaptive)
 }
 
 // Logging configures slog.

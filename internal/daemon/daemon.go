@@ -22,18 +22,6 @@ type Scanner interface {
 	Scan(ctx context.Context, target config.Resolved, mode model.ConsentMode) (scanner.Outcome, error)
 }
 
-// Sink receives the outcome of every scan: change events for notification,
-// results for export.
-type Sink interface {
-	Publish(ctx context.Context, out scanner.Outcome)
-}
-
-// SinkFunc adapts a function to Sink.
-type SinkFunc func(ctx context.Context, out scanner.Outcome)
-
-// Publish implements Sink.
-func (f SinkFunc) Publish(ctx context.Context, out scanner.Outcome) { f(ctx, out) }
-
 // Options configures the daemon.
 type Options struct {
 	Concurrency          int
@@ -106,7 +94,7 @@ func (o *Options) withDefaults() Options {
 type Daemon struct {
 	opts    Options
 	scanner Scanner
-	sink    Sink
+	sink    func(context.Context, scanner.Outcome)
 
 	origins *originLimiter
 
@@ -119,8 +107,9 @@ type Daemon struct {
 	reload chan []config.Resolved
 }
 
-// New creates a Daemon.
-func New(s Scanner, sink Sink, targets []config.Resolved, opts Options) (*Daemon, error) {
+// New creates a Daemon. sink, which may be nil, receives the outcome of every
+// scan: change events for notification, results for export.
+func New(s Scanner, sink func(context.Context, scanner.Outcome), targets []config.Resolved, opts Options) (*Daemon, error) {
 	if s == nil {
 		return nil, errors.New("daemon: scanner is required")
 	}
@@ -535,7 +524,7 @@ func (d *Daemon) publish(ctx context.Context, out scanner.Outcome) {
 		out.Diff.Suppressed += suppressed
 	}
 
-	d.sink.Publish(ctx, out)
+	d.sink(ctx, out)
 }
 
 // shutdown waits for in-flight scans, then cancels them if they overrun.

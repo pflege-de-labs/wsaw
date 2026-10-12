@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,11 +47,11 @@ func newUIRenderer() (*uiRenderer, error) {
 // neverRendered is what an unset time.Time shows as everywhere on the page.
 const neverRendered = "never"
 
-// formatBytes is the human units every size on the interface uses — the
-// template func below and the storage dashboard's inline SVG (Story 5.32,
-// AC9) both call it, so a bar's own text label can never disagree with the
-// number beside it.
-func formatBytes(n int64) string {
+// FormatBytes is the human units every size wsaw shows uses — the
+// interface's template func, the storage dashboard's inline SVG (Story 5.32,
+// AC9) and the CLI's own reports all call it, so no two can disagree. The
+// units are binary and say so, as the configuration reference's are.
+func FormatBytes(n int64) string {
 	const unit = 1024
 
 	if n < unit {
@@ -58,12 +60,13 @@ func formatBytes(n int64) string {
 
 	div, exp := int64(unit), 0
 
-	for m := n / unit; m >= unit; m /= unit {
+	// Capped at TiB: anything larger is still shown, as thousands of TiB.
+	for n/div >= unit && exp < 3 {
 		div *= unit
 		exp++
 	}
 
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 func uiFuncs() template.FuncMap {
@@ -112,7 +115,7 @@ func uiFuncs() template.FuncMap {
 		"since": func(t time.Time) string {
 			return time.Since(t).Round(time.Second).String()
 		},
-		"bytes": formatBytes,
+		"bytes": FormatBytes,
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},
@@ -294,9 +297,9 @@ func (s *Server) renderWith(
 func refreshChoicesFor(current refreshSetting) []refreshChoice {
 	intervals := append([]time.Duration(nil), refreshChoices...)
 
-	if current.HasChosen && !containsInterval(intervals, current.Chosen) {
+	if current.HasChosen && !slices.Contains(intervals, current.Chosen) {
 		intervals = append(intervals, current.Chosen)
-		sortIntervals(intervals)
+		slices.Sort(intervals)
 	}
 
 	out := make([]refreshChoice, 0, len(intervals))
@@ -310,24 +313,6 @@ func refreshChoicesFor(current refreshSetting) []refreshChoice {
 	}
 
 	return out
-}
-
-func containsInterval(list []time.Duration, want time.Duration) bool {
-	for _, d := range list {
-		if d == want {
-			return true
-		}
-	}
-
-	return false
-}
-
-func sortIntervals(list []time.Duration) {
-	for i := 1; i < len(list); i++ {
-		for j := i; j > 0 && list[j] < list[j-1]; j-- {
-			list[j], list[j-1] = list[j-1], list[j]
-		}
-	}
 }
 
 // dashboardData is the target overview.
@@ -1082,26 +1067,11 @@ func (s *Server) handleUICompare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, domain := range sortedDomains(seen) {
+	for _, domain := range slices.Sorted(maps.Keys(seen)) {
 		data.Domains = append(data.Domains, compareRow{Domain: domain, Present: seen[domain]})
 	}
 
 	s.render(w, r, "compare.html", target+" — consent modes", data)
-}
-
-func sortedDomains(m map[string][]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-
-	return out
 }
 
 func (s *Server) handleUIAudit(w http.ResponseWriter, r *http.Request) {
@@ -1158,26 +1128,13 @@ func (s *Server) handleUIRescan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if allowed, reason := s.writeAllowed(); !allowed {
-		s.rescanRefused(w, r, "/", reason, http.StatusForbidden)
-
-		return
-	}
-
-	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
-		s.rescanRefused(w, r, "/", "ad-hoc scanning is disabled", http.StatusForbidden)
-
-		return
-	}
-
 	target, mode, ok := uiTargetMode(w, r)
 	if !ok {
 		return
 	}
 
-	if !s.isConfiguredTarget(target, mode) {
-		s.rescanRefused(w, r, "/",
-			"no such target and consent mode is configured", http.StatusNotFound)
+	if status, reason := s.scanRefusal(target, mode); status != 0 {
+		s.rescanRefused(w, r, "/", reason, status)
 
 		return
 	}
@@ -1326,19 +1283,7 @@ func (s *Server) loadResultUI(w http.ResponseWriter, r *http.Request) (*model.Re
 		return nil, false
 	}
 
-	scan := r.PathValue("scan")
-
-	var (
-		res *model.Result
-		err error
-	)
-
-	if scan == "latest" {
-		res, err = s.deps.Store.LatestResult(target, mode)
-	} else {
-		res, err = s.deps.Store.GetResult(target, mode, scan)
-	}
-
+	res, err := s.resultAt(target, mode, r.PathValue("scan"))
 	if err != nil {
 		s.uiStoreError(w, r, err)
 

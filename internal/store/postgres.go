@@ -289,7 +289,7 @@ func (postgresDialect) schemaVersion(ctx context.Context, db *sql.DB) (int, erro
 	return version, nil
 }
 
-func (postgresDialect) setSchemaVersion(ctx context.Context, ex execer, version int) error {
+func (postgresDialect) setSchemaVersion(ctx context.Context, ex querier, version int) error {
 	_, err := ex.ExecContext(ctx, `
 		insert into wsaw_schema_version (id, version) values (1, $1)
 		on conflict (id) do update set version = excluded.version`, version)

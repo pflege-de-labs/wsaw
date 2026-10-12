@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -316,4 +317,12 @@ func strictUnmarshal(data []byte, v any) error {
 	}
 
 	return nil
+}
+
+// Path is the server path a link for one scan points at. Each segment is
+// escaped: a target name is free text, and a '/' or '?' in it would otherwise
+// move the rest of the path or start the query, so the link would name a
+// different scan than its token does.
+func Path(target, mode, scanID string) string {
+	return "/shared/" + url.PathEscape(target) + "/" + url.PathEscape(mode) + "/" + url.PathEscape(scanID)
 }

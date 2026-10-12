@@ -35,26 +35,6 @@ func minimalConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
-func TestOrAutoAndOrInfo(t *testing.T) {
-	t.Parallel()
-
-	if got := orAuto(""); got != "auto" {
-		t.Errorf("orAuto(%q) = %q, want %q", "", got, "auto")
-	}
-
-	if got := orAuto("json"); got != "json" {
-		t.Errorf("orAuto(%q) = %q, want it unchanged", "json", got)
-	}
-
-	if got := orInfo(""); got != "info" {
-		t.Errorf("orInfo(%q) = %q, want %q", "", got, "info")
-	}
-
-	if got := orInfo("debug"); got != "debug" {
-		t.Errorf("orInfo(%q) = %q, want it unchanged", "debug", got)
-	}
-}
-
 func TestDefaultConfigPaths(t *testing.T) {
 	t.Parallel()
 

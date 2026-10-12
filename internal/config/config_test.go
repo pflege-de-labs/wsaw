@@ -431,10 +431,7 @@ normalize:
   dropQueryParams: [custom_param]
 `)
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := cfg.NormalizeRules()
 
 	var hasDefault, hasCustom bool
 
@@ -466,10 +463,7 @@ normalize:
   dropQueryParams: [only_this]
 `)
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := cfg.NormalizeRules()
 
 	if len(rules.DropQueryParams) != 1 || rules.DropQueryParams[0] != "only_this" {
 		t.Errorf("DropQueryParams = %v", rules.DropQueryParams)
@@ -1025,10 +1019,7 @@ normalize:
       keepQueryParams: [id]
 `)
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := cfg.NormalizeRules()
 
 	if got, want := len(rules.QueryRules), 1+len(normalize.DefaultQueryRules); got != want {
 		t.Fatalf("%d query rules, want the configured one plus %d shipped", got, len(normalize.DefaultQueryRules))
@@ -1050,10 +1041,7 @@ normalize:
   useDefaultQueryRules: false
 `)
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := cfg.NormalizeRules()
 
 	if len(rules.QueryRules) != 0 {
 		t.Errorf("QueryRules = %+v, want none after opting out", rules.QueryRules)
@@ -1112,27 +1100,21 @@ normalize:
 func TestNormalizeRulesIncludeShippedVolatileBodiesUnlessOptedOut(t *testing.T) {
 	t.Parallel()
 
-	rules, err := parse(t, `
+	rules := parse(t, `
 normalize:
   volatileBodies:
     - urlPattern: 'px\.example/script'
 `).NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	if got, want := len(rules.VolatileBodies), 1+len(normalize.DefaultVolatileBodies); got != want ||
 		rules.VolatileBodies[0].URLPattern != `px\.example/script` {
 		t.Errorf("VolatileBodies = %+v, want the configured one first, then the shipped ones", rules.VolatileBodies)
 	}
 
-	rules, err = parse(t, `
+	rules = parse(t, `
 normalize:
   useDefaultVolatileBodies: false
 `).NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	if len(rules.VolatileBodies) != 0 {
 		t.Errorf("VolatileBodies = %+v, want none after opting out", rules.VolatileBodies)

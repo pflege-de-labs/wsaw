@@ -537,10 +537,9 @@ func TestASweepLeavesWhatWsawDidNotWrite(t *testing.T) {
 	// sits under a prefix that is not a kind wsaw writes but has the right
 	// shape otherwise.
 	//
-	// The last two are a bucket-index layout (Story 8.10), which AC16
-	// explicitly permits this store to meet: a bucket whose index once lived
-	// in it beside the evidence, later served by a SQL deployment that has no
-	// idea those keys exist. They are the sharpest case, because the ref
+	// The last two are the layout of the bucket-index store Story 8.10 once
+	// shipped: a bucket whose index lived in it beside the evidence, now
+	// served by a SQL deployment that has no idea those keys exist. They are the sharpest case, because the ref
 	// marker ends in a kind and a digest that on their own would pass the
 	// shape test — the whole key is what is judged, and it begins with a
 	// prefix that is not a kind. A sweep that took them for garbage would ask

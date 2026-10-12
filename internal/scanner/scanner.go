@@ -34,10 +34,9 @@ import (
 // Metrics receives the counters a scan produces. Every field is optional, so
 // a caller that wants none of it passes the zero value.
 type Metrics struct {
-	ScanStarted    func(target string, mode model.ConsentMode)
-	ScanFinished   func(target string, mode model.ConsentMode, res *model.Result)
-	ScanFailed     func(target string, mode model.ConsentMode, reason string)
-	BrowserRestart func(target, reason string)
+	ScanStarted  func(target string, mode model.ConsentMode)
+	ScanFinished func(target string, mode model.ConsentMode, res *model.Result)
+	ScanFailed   func(target string, mode model.ConsentMode, reason string)
 }
 
 // ResultStore is what a scan needs from the store, and no more (AGENTS §4).
@@ -139,7 +138,7 @@ func New(deps Deps, opts Options) (*Scanner, error) {
 		deps.Logger = slog.Default()
 	}
 
-	return &Scanner{deps: deps, opts: opts, live: NewLive()}, nil
+	return &Scanner{deps: deps, opts: opts, live: newLive()}, nil
 }
 
 // Outcome is everything one scan produced.
@@ -311,7 +310,6 @@ func (s *Scanner) capture(
 		discarded = true
 
 		lease.Discard("could not create a scan context")
-		s.browserRestarted(target.Name, "could not create a scan context")
 
 		return nil, fmt.Errorf("creating an isolated scan context: %w", err)
 	}
@@ -333,14 +331,11 @@ func (s *Scanner) capture(
 		opts.ScreenshotSink = s.artifactSink
 	}
 
-	hooks := capture.Hooks{AfterLoad: s.consentHook(target, mode, log)}
-
-	res, captureErr := capture.Run(ctx, scanCtx, opts, hooks)
+	res, captureErr := capture.Run(ctx, scanCtx, opts, s.consentHook(target, mode, log))
 	if res == nil {
 		discarded = true
 
 		lease.Discard("capture could not start")
-		s.browserRestarted(target.Name, "capture could not start")
 
 		return nil, captureErr
 	}
@@ -354,7 +349,6 @@ func (s *Scanner) capture(
 
 		reason := "capture failed at the browser level: " + errorText(captureErr)
 		lease.Discard(reason)
-		s.browserRestarted(target.Name, reason)
 	}
 
 	return res, captureErr
@@ -597,12 +591,6 @@ func (s *Scanner) baselineFor(target config.Resolved, res *model.Result) (*model
 func (s *Scanner) recordFailure(target string, mode model.ConsentMode, reason string) {
 	if s.deps.Metrics.ScanFailed != nil {
 		s.deps.Metrics.ScanFailed(target, mode, reason)
-	}
-}
-
-func (s *Scanner) browserRestarted(target, reason string) {
-	if s.deps.Metrics.BrowserRestart != nil {
-		s.deps.Metrics.BrowserRestart(target, reason)
 	}
 }
 

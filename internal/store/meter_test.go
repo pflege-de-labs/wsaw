@@ -44,7 +44,7 @@ func (m *meter) totals() (ops int, bytes int64) {
 //
 // The numbers are asserted as inequalities rather than as exact counts on
 // purpose. What each read path costs in requests is pinned down exactly
-// elsewhere, per store kind and per path, by the tests that own that promise;
+// elsewhere, per path, by the tests that own that promise;
 // what this one owns is that the meter is connected to the bucket at all — a
 // hook that silently reported zero would make the soak's new line a lie, and a
 // convincing one.

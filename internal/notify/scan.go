@@ -137,7 +137,7 @@ func trustworthiness(res *model.Result) (bool, string) {
 // rather than an extension of it because the two disagree about what an event
 // is, and a notifier should implement only the shape it actually wants.
 type ScanNotifier interface {
-	Name() string
+	confidenceGated
 	WantsScan(ev ScanEvent) bool
 	DeliverScan(ctx context.Context, ev ScanEvent) error
 }

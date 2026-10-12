@@ -52,7 +52,7 @@ type Event struct {
 // Notifier delivers events. It is an interface because a second
 // implementation — e-mail, a queue — is plausible (Tenet 12).
 type Notifier interface {
-	Name() string
+	confidenceGated
 	Deliver(ctx context.Context, ev Event) error
 	Wants(ev Event) bool
 }
@@ -181,7 +181,7 @@ func (w *Webhook) Deliver(ctx context.Context, ev Event) error {
 	}
 
 	return retryPost(ctx, w.cfg.Name, w.cfg.MaxRetries, func(ctx context.Context) error {
-		return w.post(ctx, body, contentType)
+		return post(ctx, w.client, w.cfg.Timeout, w.cfg.URL, w.cfg.Headers, body, contentType)
 	})
 }
 
@@ -250,31 +250,38 @@ func (w *Webhook) render(ev Event) (body []byte, contentType string, err error) 
 	return buf.Bytes(), "application/json", nil
 }
 
-func (w *Webhook) post(ctx context.Context, body []byte, contentType string) error {
-	reqCtx, cancel := context.WithTimeout(ctx, w.cfg.Timeout)
+// post sends one request and reports anything but a 2xx as an error. It is
+// shared by every notifier so they agree on what delivered means. Every 2xx
+// counts: a Teams Workflow answers 202 Accepted, and treating that as a
+// failure would retry a message that was delivered, turning one alert into
+// four. Nothing else counts, a final 1xx included.
+func post(ctx context.Context, client *http.Client, timeout time.Duration,
+	endpoint secret.Value, headers map[string]secret.Value, body []byte, contentType string,
+) error {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, w.cfg.URL.Reveal(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint.Reveal(), bytes.NewReader(body))
 	if err != nil {
 		// The URL may contain a token, so it is never echoed into the error.
-		return fmt.Errorf("building request: %w", scrubURL(err, w.cfg.URL))
+		return fmt.Errorf("building request: %w", scrubURL(err, endpoint))
 	}
 
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "wsaw")
 
-	for name, value := range w.cfg.Headers {
+	for name, value := range headers {
 		req.Header.Set(name, value.Reveal())
 	}
 
-	resp, err := w.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting: %w", scrubURL(err, w.cfg.URL))
+		return fmt.Errorf("posting: %w", scrubURL(err, endpoint))
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &httpError{status: resp.StatusCode}
 	}
 
@@ -459,18 +466,12 @@ func (d *Dispatcher) deliver(ctx context.Context, env envelope) {
 }
 
 func (d *Dispatcher) deliverScan(ctx context.Context, ev ScanEvent) {
-	for _, n := range d.scanners {
-		if !n.WantsScan(ev) {
-			continue
-		}
+	held := heldBackScan{scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: len(ev.Changes)}
 
-		if d.heldBack(n, ev.Confidence, ev.observedNothing, heldBackScan{
-			scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: len(ev.Changes),
-		}) {
-			continue
-		}
-
-		if err := n.DeliverScan(ctx, ev); err != nil {
+	fanOut(d, d.scanners, ev.Confidence, ev.observedNothing, held,
+		func(n ScanNotifier) bool { return n.WantsScan(ev) },
+		func(n ScanNotifier) error { return n.DeliverScan(ctx, ev) },
+		func(n ScanNotifier, err error) {
 			d.log.Error("scan notification delivery failed",
 				"notifier", n.Name(),
 				"target", ev.Target,
@@ -478,41 +479,39 @@ func (d *Dispatcher) deliverScan(ctx context.Context, ev ScanEvent) {
 				"scan_id", ev.ScanID,
 				"error", err,
 			)
-
-			if d.onFailed != nil {
-				d.onFailed()
-			}
-
-			continue
-		}
-
-		if d.onSent != nil {
-			d.onSent()
-		}
-	}
+		})
 }
 
 func (d *Dispatcher) deliverChange(ctx context.Context, ev Event) {
-	for _, n := range d.notifiers {
-		if !n.Wants(ev) {
-			continue
-		}
+	held := heldBackScan{scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: 1}
 
-		if d.heldBack(n, ev.Confidence, ev.observedNothing, heldBackScan{
-			scanID: ev.ScanID, target: ev.Target, consentMode: ev.ConsentMode, changes: 1,
-		}) {
-			continue
-		}
-
-		if err := n.Deliver(ctx, ev); err != nil {
-			// Never silent: the operator must be able to see that alerting
-			// itself is broken.
+	fanOut(d, d.notifiers, ev.Confidence, ev.observedNothing, held,
+		func(n Notifier) bool { return n.Wants(ev) },
+		func(n Notifier) error { return n.Deliver(ctx, ev) },
+		func(n Notifier, err error) {
 			d.log.Error("notification delivery failed",
 				"notifier", n.Name(),
 				"target", ev.Target,
 				"change", string(ev.Change.Type),
 				"error", err,
 			)
+		})
+}
+
+// fanOut delivers one event to every notifier that wants it and is not
+// holding it back, and counts each outcome. A failure is logged by the caller,
+// which knows what the event was, and is never silent: the operator must be
+// able to see that alerting itself is broken.
+func fanOut[N confidenceGated](d *Dispatcher, notifiers []N, c *ScanConfidence, observedNothing bool, held heldBackScan,
+	wants func(N) bool, deliver func(N) error, failed func(N, error),
+) {
+	for _, n := range notifiers {
+		if !wants(n) || d.heldBack(n, c, observedNothing, held) {
+			continue
+		}
+
+		if err := deliver(n); err != nil {
+			failed(n, err)
 
 			if d.onFailed != nil {
 				d.onFailed()
@@ -584,9 +583,8 @@ type heldBackScan struct {
 // confidence threshold, and when it does, logs and counts it: a finding that
 // is held back without a trace is the silent failure Tenet 5 rules out
 // (Story 5.37, AC4).
-func (d *Dispatcher) heldBack(n interface{ Name() string }, c *ScanConfidence, observedNothing bool, s heldBackScan) bool {
-	g, ok := n.(confidenceGated)
-	if !ok || !g.confidenceGate().drops(c, observedNothing) {
+func (d *Dispatcher) heldBack(n confidenceGated, c *ScanConfidence, observedNothing bool, s heldBackScan) bool {
+	if !n.confidenceGate().drops(c, observedNothing) {
 		return false
 	}
 
@@ -601,7 +599,7 @@ func (d *Dispatcher) heldBack(n interface{ Name() string }, c *ScanConfidence, o
 		"consent_mode", string(s.consentMode),
 		"notifier", n.Name(),
 		"confidence", score,
-		"min_confidence", g.confidenceGate().Min,
+		"min_confidence", n.confidenceGate().Min,
 		"changes", s.changes,
 	)
 

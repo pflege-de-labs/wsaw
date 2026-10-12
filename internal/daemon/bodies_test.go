@@ -65,7 +65,7 @@ func TestARetryInheritsTheBodySamplingDecision(t *testing.T) {
 	fake := &decidingScanner{}
 	sink := &collectingSink{}
 
-	d, err := daemon.New(fake, sink,
+	d, err := daemon.New(fake, sink.Publish,
 		[]config.Resolved{retryTarget("site", retry.Policy{
 			Attempts: 3, Backoff: 5 * time.Millisecond, MaxBackoff: 20 * time.Millisecond,
 		})},

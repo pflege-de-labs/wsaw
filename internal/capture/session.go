@@ -49,7 +49,14 @@ type Context struct {
 // Run always returns a Result, even on failure: a scan that broke is a
 // recorded outcome, not an absence of data (Tenet 5). The error is returned
 // alongside for logging, and is also recorded in the Result.
-func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Hooks) (*model.Result, error) {
+//
+// afterLoad, when not nil, lets the caller act on the page between the
+// initial load and the final capture, without capture itself knowing
+// anything about consent. It runs once the initial load has settled; whatever
+// it returns is recorded as the scan's consent outcome, and every request
+// observed after it returns is marked post-interaction. It must respect its
+// context: capture's budget still applies.
+func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, afterLoad func(Context) (model.Consent, error)) (*model.Result, error) {
 	opts := rawOpts.withDefaults()
 
 	if opts.Normalizer == nil {
@@ -117,7 +124,7 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, hooks Ho
 
 	bodyDone := s.startBodyWorker()
 
-	err = s.execute(hooks)
+	err = s.execute(afterLoad)
 
 	// The body worker is stopped before the result is assembled so that every
 	// digest it produced is included.
@@ -251,7 +258,7 @@ func (s *session) dismissDialog(ev *page.EventJavascriptDialogOpening) {
 
 // execute prepares the page, navigates, settles, runs the consent hook, and
 // settles again.
-func (s *session) execute(hooks Hooks) error {
+func (s *session) execute(afterLoad func(Context) (model.Consent, error)) error {
 	if err := s.prepare(); err != nil {
 		return err
 	}
@@ -270,20 +277,20 @@ func (s *session) execute(hooks Hooks) error {
 	// "no CMP detected" for a page that plainly has one. That is a false
 	// negative on the product's headline finding, so the interaction gets its
 	// budget reserved up front.
-	s.settle(s.preConsentCtx(hooks))
+	s.settle(s.preConsentCtx(afterLoad != nil))
 
 	if err := s.screenshot("before-consent"); err != nil {
 		s.rec.addWarning("screenshot before consent failed: " + s.scrub(err.Error()))
 	}
 
-	if hooks.AfterLoad != nil {
+	if afterLoad != nil {
 		hookCtx := Context{
 			Context:        s.runCtx,
 			Screenshot:     s.screenshot,
 			MarkInteracted: s.markInteracted,
 		}
 
-		consent, err := hooks.AfterLoad(hookCtx)
+		consent, err := afterLoad(hookCtx)
 
 		// The consent outcome is recorded whatever happened; a failed
 		// interaction is a finding, not a lost scan.
@@ -359,8 +366,8 @@ func (s *session) execute(hooks Hooks) error {
 // The reservation is capped at half the scan budget: a site that does settle
 // normally should still get most of the budget for its initial load, and
 // reserving more would trade a real false negative for a different one.
-func (s *session) preConsentCtx(hooks Hooks) context.Context {
-	if hooks.AfterLoad == nil {
+func (s *session) preConsentCtx(interacts bool) context.Context {
+	if !interacts {
 		return s.runCtx
 	}
 

@@ -93,7 +93,7 @@ func (s *Server) handleMintShare(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url":       s.shareURL(res, token),
-		"path":      sharePath(res) + "?" + shareTokenParam + "=" + token,
+		"path":      share.Path(res.Target, string(res.ConsentMode), res.ScanID) + "?" + shareTokenParam + "=" + token,
 		"expiresAt": claims.Expiry(),
 		"note": "This link grants read-only access to this one scan until it expires. " +
 			"It cannot be revoked before then; rotate api.share.key to invalidate every outstanding link.",
@@ -124,19 +124,13 @@ func requestedValidity(r *http.Request) (time.Duration, error) {
 // shareURL builds the absolute link where a base URL is configured, so the
 // operator can copy something sendable rather than assemble it.
 func (s *Server) shareURL(res *model.Result, token string) string {
-	path := sharePath(res) + "?" + shareTokenParam + "=" + token
+	path := share.Path(res.Target, string(res.ConsentMode), res.ScanID) + "?" + shareTokenParam + "=" + token
 
 	if s.opts.ShareBaseURL == "" {
 		return path
 	}
 
 	return strings.TrimRight(s.opts.ShareBaseURL, "/") + path
-}
-
-func sharePath(res *model.Result) string {
-	return "/shared/" + url.PathEscape(res.Target) +
-		"/" + url.PathEscape(string(res.ConsentMode)) +
-		"/" + url.PathEscape(res.ScanID)
 }
 
 // sharedResult verifies the link and loads exactly the result it names.
@@ -326,7 +320,7 @@ func (s *Server) handleSharedResult(w http.ResponseWriter, r *http.Request) {
 		Screenshots: s.screenshotViews(r.Context(), res),
 		ExpiresAt:   claims.Expiry(),
 		Version:     s.opts.Version,
-		base:        sharePath(res),
+		base:        share.Path(res.Target, string(res.ConsentMode), res.ScanID),
 		token:       r.URL.Query().Get(shareTokenParam),
 	}
 

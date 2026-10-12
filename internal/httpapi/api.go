@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -525,19 +526,7 @@ func (s *Server) loadResult(w http.ResponseWriter, r *http.Request) (*model.Resu
 		return nil, false
 	}
 
-	scan := r.PathValue("scan")
-
-	var (
-		res *model.Result
-		err error
-	)
-
-	if scan == "latest" {
-		res, err = s.deps.Store.LatestResult(target, mode)
-	} else {
-		res, err = s.deps.Store.GetResult(target, mode, scan)
-	}
-
+	res, err := s.resultAt(target, mode, r.PathValue("scan"))
 	if err != nil {
 		writeStoreError(w, err)
 
@@ -545,6 +534,15 @@ func (s *Server) loadResult(w http.ResponseWriter, r *http.Request) (*model.Resu
 	}
 
 	return res, true
+}
+
+// resultAt reads one scan of a series, "latest" naming the newest.
+func (s *Server) resultAt(target string, mode model.ConsentMode, scan string) (*model.Result, error) {
+	if scan == "latest" {
+		return s.deps.Store.LatestResult(target, mode)
+	}
+
+	return s.deps.Store.GetResult(target, mode, scan)
 }
 
 func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
@@ -634,67 +632,34 @@ type comparison struct {
 	// Baseline is the series' approved baseline, or nil when it has none.
 	Baseline *store.Baseline
 
-	// OwnBaseline says the scan compared is that baseline. Comparing it with
-	// itself would report "no changes", which is true, says nothing, and
-	// reads exactly like a scan that genuinely changed nothing (Tenet 5) — so
-	// such a scan is compared with the previous stored scan instead, as a
-	// series without a baseline is (Story 5.36, AC5).
+	// OwnBaseline says the scan compared is that baseline, and so was compared
+	// with the previous scan instead (store.Comparison).
 	OwnBaseline bool
 }
 
-// comparisonFor compares a result against its baseline, falling back to the
-// previous scan — and to the previous scan also when the result is itself the
-// baseline.
+// comparisonFor compares a result against what store.ComparisonFor picks.
 //
-// The one failure it does not shrug off is a previous result whose document
-// has left the bucket. Treating that as "there is nothing earlier" would render
-// the page a first-ever scan renders, and a reader would have no way to know
-// that a comparison was owed and could not be made (Story 8.2, AC5; Tenet 5).
+// A previous result whose document has left the bucket is not shrugged off:
+// the report says a comparison was owed and could not be made, and the log
+// tells an operator (Story 8.2, AC5; Tenet 5).
 func (s *Server) comparisonFor(res *model.Result) comparison {
-	var (
-		c    comparison
-		base *model.Result
-		gone bool
-	)
-
-	if b, err := s.deps.Store.GetBaseline(res.Target, res.ConsentMode); err == nil {
-		c.Baseline = b
-		c.OwnBaseline = b.ScanID == res.ScanID
+	c, err := store.ComparisonFor(s.deps.Store, res)
+	if err != nil {
+		s.deps.Logger.Error("reading what a result is compared against",
+			"target", res.Target, "consent_mode", string(res.ConsentMode),
+			"scan_id", res.ScanID, "error", err)
 	}
 
-	if c.Baseline != nil && !c.OwnBaseline {
-		base = c.Baseline.Result
-	} else {
-		prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID)
-
-		switch {
-		case err == nil:
-			base = prev
-
-		case errors.Is(err, store.ErrEvidenceGone):
-			gone = true
-
-			s.deps.Logger.Error("the result this one should be compared against names evidence the artifact bucket no longer holds",
-				"target", res.Target, "consent_mode", string(res.ConsentMode),
-				"scan_id", res.ScanID, "error", err)
-		}
+	if c.EvidenceGone {
+		s.deps.Logger.Error("the result this one should be compared against names evidence the artifact bucket no longer holds",
+			"target", res.Target, "consent_mode", string(res.ConsentMode), "scan_id", res.ScanID)
 	}
 
-	rep := diff.Compare(base, res, diff.Options{Normalizer: s.deps.Normalizer})
-
-	switch {
-	case gone:
-		rep.Reason = diff.ReasonEvidenceGone
-
-	case c.OwnBaseline && base == nil:
-		// Compare would say there is no baseline, which is the one thing
-		// that is not true of this scan.
-		rep.Reason = diff.ReasonFirstBaseline
+	return comparison{
+		Report:      c.Report(res, diff.Options{Normalizer: s.deps.Normalizer}),
+		Baseline:    c.Baseline,
+		OwnBaseline: c.OwnBaseline,
 	}
-
-	c.Report = rep
-
-	return c
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
@@ -792,28 +757,35 @@ func (s *Server) handleDeleteBaseline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
+// scanRefusal says why a scan of a configured target may not be started on
+// request — from the API or the web interface's rescan button — with the
+// status to refuse it with. A zero status admits it.
+func (s *Server) scanRefusal(target string, mode model.ConsentMode) (int, string) {
 	if allowed, reason := s.writeAllowed(); !allowed {
-		writeJSONError(w, http.StatusForbidden, reason)
-
-		return
+		return http.StatusForbidden, reason
 	}
 
 	if !s.opts.AllowAdHocScan || s.deps.Trigger == nil {
-		writeJSONError(w, http.StatusForbidden, "ad-hoc scanning is disabled")
-
-		return
-	}
-
-	target, mode, ok := pathTargetMode(w, r)
-	if !ok {
-		return
+		return http.StatusForbidden, "ad-hoc scanning is disabled"
 	}
 
 	// Only configured targets may be scanned. Accepting an arbitrary URL here
 	// would turn the API into a request-forgery primitive.
 	if !s.isConfiguredTarget(target, mode) {
-		writeJSONError(w, http.StatusNotFound, "no such target and consent mode is configured")
+		return http.StatusNotFound, "no such target and consent mode is configured"
+	}
+
+	return 0, ""
+}
+
+func (s *Server) handleTriggerScan(w http.ResponseWriter, r *http.Request) {
+	target, mode, ok := pathTargetMode(w, r)
+	if !ok {
+		return
+	}
+
+	if status, reason := s.scanRefusal(target, mode); status != 0 {
+		writeJSONError(w, status, reason)
 
 		return
 	}
@@ -853,14 +825,8 @@ func (s *Server) isConfiguredTarget(name string, mode model.ConsentMode) bool {
 	}
 
 	for _, t := range s.deps.Targets() {
-		if t.Name != name {
-			continue
-		}
-
-		for _, m := range t.ConsentModes {
-			if m == mode {
-				return true
-			}
+		if t.Name == name && slices.Contains(t.ConsentModes, mode) {
+			return true
 		}
 	}
 

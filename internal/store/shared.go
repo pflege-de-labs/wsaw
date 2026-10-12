@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -16,30 +15,10 @@ import (
 // This file holds the defaults an Options gets when a field is left unset, the
 // retry policy, the deadline one operation runs under, and the envelope a
 // stored result document is written and read back through.
-//
-// Most of that is what every kind of store needs and none of them owns, because
-// the index a store keeps is the only thing that differs between them. A store
-// whose index is rows and a store whose index is objects in a bucket still retry
-// the same way, still bound one call the same way, and still record the same
-// three facts about a document — where it is, how big it should be, and what it
-// must hash to. Keeping those here is what stops a second implementation from
-// acquiring a second answer to a question the first one already settled, which
-// is the drift Tenet 12's seam exists to prevent.
-//
-// **Four of the defaults are not shared, and are here anyway**: timeout (a
-// SQLite busy_timeout), maxOpenConns, maxIdleConns and connMaxLifetime are a
-// connection pool, and the bucket-index store opens no connection —
-// config.validate refuses those settings for that driver precisely because they
-// mean nothing to it. They live here because Options is one type across all the
-// drivers, so its defaulting is one set of methods on that type; splitting them
-// would put four of the methods of one struct in another file and leave a
-// reader asking which file the fifth is in. Nothing but connect() and the
-// dialects call them.
 
 // Defaults for an Options with the field left unset. They live together, and
 // apart from the fields they default, so that "what does an unset MaxIdleConns
-// mean" has one place to be answered rather than one place per store — a
-// question, per the note above, that only a SQL store can ask.
+// mean" has one place to be answered.
 
 func (o *Options) logger() *slog.Logger {
 	if o.Logger != nil {
@@ -215,14 +194,12 @@ func opCtxFrom(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, opTimeout)
 }
 
-// resultRef is what an index carries in place of the document: where the bytes
-// are, how many of them there should be, and what they must hash to.
+// resultRef is what a result row carries in place of the document: where the
+// bytes are, how many of them there should be, and what they must hash to.
 //
-// It is the whole of what a store has to record about a document, which is why
-// it is here and not beside the columns one store happens to read it from: an
-// index that recorded less could not tell truncated evidence from intact
-// evidence, and an index that recorded more would be describing the document
-// twice.
+// It is the whole of what the store has to record about a document: a row that
+// recorded less could not tell truncated evidence from intact evidence, and a
+// row that recorded more would be describing the document twice.
 type resultRef struct {
 	ref    string
 	size   int64
@@ -275,154 +252,4 @@ func verifyDocument(ref resultRef, document []byte) error {
 	}
 
 	return nil
-}
-
-// The four artifact reads, shaped the way the store interface hands them out.
-//
-// They live here, on the bucket, rather than on either store, because reading
-// evidence is the one thing the two kinds of store do identically: the bytes
-// are in the same bucket under the same content-addressed key whether the index
-// that named them is rows or objects (Story 8.1, AC2). A second copy of them on
-// the second store would be a second answer to questions the first already
-// settled — the idle bound on a streaming read most of all, which is subtle
-// enough that two of it would eventually differ.
-//
-// Writing an artifact is deliberately not here. The write is where the two
-// stores genuinely differ: a SQL store also takes a claim row on the reference
-// so retention cannot collect it before the scan commits, and a store whose
-// index is objects has no row to take one in.
-
-// artifactInfo reports what the bucket knows about an artifact without reading
-// it.
-func (b *bucket) artifactInfo(ctx context.Context, ref string) (ArtifactInfo, error) {
-	ctx, cancel := opCtxFrom(ctx)
-	defer cancel()
-
-	obj, err := b.stat(ctx, ref)
-	if err != nil {
-		return ArtifactInfo{}, absentArtifact(err)
-	}
-
-	return ArtifactInfo{Size: obj.size, Digest: artifactDigest(ref), ModTime: obj.modTime}, nil
-}
-
-// artifactBytes reads a stored artifact whole.
-//
-// It takes no context because neither caller has one: both are store methods
-// that read evidence on behalf of a decode, and the deadline that bounds them
-// is the store's own (see opCtx).
-func (b *bucket) artifactBytes(ref string) ([]byte, error) {
-	ctx, cancel := opCtx()
-	defer cancel()
-
-	data, err := b.get(ctx, ref)
-	if err != nil {
-		return nil, absentArtifact(err)
-	}
-
-	return data, nil
-}
-
-// artifactReader opens a stored artifact for streaming, under a bound on
-// progress rather than on the transfer.
-//
-// The bucket has opTimeout to open the object and opTimeout to produce each
-// further piece of it, and a read that stops producing bytes for that long is
-// abandoned — but a transfer that keeps flowing runs as long as it takes. A
-// fixed deadline on the whole read would be a size and bandwidth limit dressed
-// as a timeout: a forty-megabyte document to a client on a slow link takes
-// longer than any per-operation deadline, and cutting it off would abort the
-// response after Content-Length had been declared and the status sent, with
-// nothing left to tell the reader. The reader who has actually gone away is
-// caught by their own request's context, which is this call's parent (Story
-// 8.7, AC6).
-func (b *bucket) artifactReader(ctx context.Context, ref string) (*ArtifactReader, error) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	// Armed before the open, so the open is bounded by it too, and re-armed by
-	// every piece of the body that arrives.
-	idle := time.AfterFunc(opTimeout, cancel)
-
-	release := func() {
-		idle.Stop()
-		cancel()
-	}
-
-	stream, err := b.newReader(ctx, ref)
-	if err != nil {
-		release()
-
-		return nil, absentArtifact(err)
-	}
-
-	return &ArtifactReader{
-		ReadCloser: stream,
-		ArtifactInfo: ArtifactInfo{
-			Size:    stream.size,
-			Digest:  artifactDigest(ref),
-			ModTime: stream.modTime,
-		},
-		idle:    idle,
-		release: release,
-	}, nil
-}
-
-// artifactURL signs a URL a reader can fetch one artifact from directly.
-func (b *bucket) artifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error) {
-	ctx, cancel := opCtxFrom(ctx)
-	defer cancel()
-
-	signed, err := b.signedURL(ctx, ref, ttl)
-	if err != nil {
-		return "", absentArtifact(err)
-	}
-
-	return signed, nil
-}
-
-// resultDocument fetches a result document from the bucket and checks it
-// against what the index recorded about it.
-//
-// It is here, on the bucket, because reading a document back is the same
-// operation whichever kind of index named it: the reference, the size and the
-// digest are one resultRef either way, and the three outcomes below are
-// judgements about the bucket rather than about the index. A second copy of
-// them on the second store would be a second opinion on when evidence is lost
-// and when it is corrupt, which is exactly the pair a caller must never see
-// merged.
-//
-// The check is the point. Once the payload is outside the index it is outside
-// the index's guarantees too: a truncated upload, a lifecycle rule that
-// replaced an object, or a key rewritten by something else would otherwise be
-// returned as the scan (Story 8.2, AC6). A mismatch is corruption, and
-// corruption is reported, never served as evidence.
-//
-// The two ways a reference can fail are told apart rather than merged into the
-// bucket's own answer. A key that is gone while the index still names it is
-// lost evidence (ErrEvidenceGone), not a scan that never happened; a reference
-// that is not the shape this store writes came out of wsaw's own index, so it
-// is a corrupt index entry (ErrCorrupt), not an absent artifact.
-func (b *bucket) resultDocument(ctx context.Context, ref resultRef) (*model.Result, error) {
-	document, err := b.get(ctx, ref.ref)
-
-	switch {
-	case errors.Is(err, errInvalidRef):
-		return nil, fmt.Errorf("this result names artifact %q, which is not a reference this store wrote: %w: %w",
-			truncateForMessage(ref.ref), ErrCorrupt, err)
-
-	case errors.Is(err, ErrNotFound):
-		// The index survived and the object did not — a lifecycle rule on the
-		// bucket, a restore without its matching index, a sweep that collected
-		// too much. Reported as its own fault so that a caller which skips a
-		// result that does not exist cannot skip this one just as quietly
-		// (Story 8.2, AC5). The bucket's own ErrNotFound is deliberately not
-		// carried through: a caller testing for it would go on treating
-		// deleted evidence as a scan that never happened.
-		return nil, fmt.Errorf("artifact %s: %w", ref.ref, ErrEvidenceGone)
-
-	case err != nil:
-		return nil, err
-	}
-
-	return decodeDocument(ref, document)
 }
