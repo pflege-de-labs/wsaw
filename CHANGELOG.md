@@ -9,9 +9,20 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
-Upgrading: nothing to do by hand. `storeBodies` keeps working and means what
-it did; setting it and `bodies` on the same level is now a configuration
-error. The store migrates to schema version 11 on first start, adding the
+## [0.6.0] - 2026-10-12
+
+Consent rules reach into frames, so Sourcepoint and other CMPs that draw their
+banner in an iframe can be handled by a rule. A notifier can hold back or
+caveat findings from a scan it cannot trust, and a baseline can be approved
+from the scan's own page. Comparisons follow the current normalization rules
+across history, a sampled share of scans keeps every response body, and the
+browser image is now built locally with `wsaw browser build`.
+
+Upgrading: run `wsaw browser build` once before upgrading the daemon if it
+runs scans in a container on the default image, since releases no longer
+publish `wsaw-browser` (see Changed). Nothing else needs doing by hand.
+`storeBodies` keeps working and means what it did; setting it and `bodies` on
+the same level is now a configuration error. The store migrates to schema version 11 on first start, adding the
 `body_samples` and `artifact_sizes` tables, and result documents move to
 `schemaVersion` 2.2, an additive change against which 2.1 documents still
 validate. The storage page reports existing evidence as "no recorded size yet"
@@ -924,7 +935,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.6.0
 [0.5.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.5.0
 [0.4.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.3.0
