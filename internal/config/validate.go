@@ -134,6 +134,7 @@ func (c *Config) validateTargets(add addFunc) {
 		c.validateTargetModes(t, field, add)
 		c.validateTargetSchedule(t, field, add)
 		c.validateTargetBudget(t, field, add)
+		validateRetryFitsInterval(t, field, add)
 
 		if t.Robots != "" && t.Robots != RobotsIgnore && t.Robots != RobotsRespect {
 			add(t.line, field+".robots", "%q is not a valid policy; use \"ignore\" or \"respect\"", t.Robots)
@@ -148,6 +149,7 @@ func (c *Config) validateTargets(add addFunc) {
 	// Defaults are validated for the parts that make sense globally.
 	c.validateTargetModes(&c.Defaults, "defaults", add)
 	c.validateTargetSchedule(&c.Defaults, "defaults", add)
+	c.validateTargetBudget(&c.Defaults, "defaults", add)
 	validateBeacons(c.Defaults.Beacons, c.Defaults.line, "defaults.beacons", add)
 	validateBodies(&c.Defaults, "defaults", add)
 
@@ -284,7 +286,12 @@ func validateTargetRetry(t *Target, field string, add addFunc) {
 			"retryMaxBackoff (%s) must not be shorter than retryBackoff (%s)",
 			t.RetryMaxBackoff.Duration(), t.RetryBackoff.Duration())
 	}
+}
 
+// validateRetryFitsInterval refuses retries that outlast a target's schedule.
+// It is not run on defaults: the delay depends on the target it is spread
+// over, so it is judged where a target uses it.
+func validateRetryFitsInterval(t *Target, field string, add addFunc) {
 	// AC9: retrying must finish inside the target's own schedule. A retry
 	// schedule longer than the scan schedule means the next scheduled scan of
 	// a target starts while its retries are still going, which is two runs of

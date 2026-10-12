@@ -760,6 +760,61 @@ targets:
 `)
 }
 
+// A value under defaults reaches every target that does not set its own, so
+// it is held to the same rules as one set on a target. Before, a negative
+// default was quietly replaced by the built-in value.
+func TestDefaultsBudgetAndRetryAreValidated(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		defaults string
+		field    string
+	}{
+		{"negative maxRequests", "maxRequests: -1", "defaults.maxRequests"},
+		{"negative maxBytes", "maxBytes: -1", "defaults.maxBytes"},
+		{"negative viewport", "viewportWidth: -1", "defaults"},
+		{"negative deviceScaleFactor", "deviceScaleFactor: -1", "defaults.deviceScaleFactor"},
+		{"latitude without longitude", "latitude: 50", "defaults"},
+		{"negative retryAttempts", "retryAttempts: -1", "defaults.retryAttempts"},
+		{"backoff above max", "retryBackoff: 5m\n  retryMaxBackoff: 1m", "defaults.retryMaxBackoff"},
+		{"idleQuiet not below hardTimeout", "idleQuiet: 1m\n  hardTimeout: 1m", "defaults"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := parseErr(t, "defaults:\n  "+tc.defaults+`
+targets:
+  - name: t
+    url: https://example.com/
+`)
+
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("the error does not name %s: %v", tc.field, err)
+			}
+		})
+	}
+}
+
+// The retry-inside-interval check (AC9) depends on the target, so a default
+// retry schedule is judged where a target uses it, not on its own.
+func TestDefaultsRetryIsNotJudgedAgainstAnInterval(t *testing.T) {
+	t.Parallel()
+
+	parse(t, `
+defaults:
+  interval: 1m
+  retryAttempts: 5
+  retryBackoff: 1m
+targets:
+  - name: t
+    url: https://example.com/
+    interval: 24h
+`)
+}
+
 func TestStoreDriverValidation(t *testing.T) {
 	t.Parallel()
 

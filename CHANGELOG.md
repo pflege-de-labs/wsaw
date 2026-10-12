@@ -225,6 +225,15 @@ at once.
 
 ### Fixed
 
+- The capture budget, emulation and retry settings under `defaults` are now
+  validated as they are on a target: a negative `maxRequests`, `maxBytes`,
+  viewport size, `deviceScaleFactor` or `retryAttempts`, a latitude without a
+  longitude, a `retryBackoff` above `retryMaxBackoff`, or an `idleQuiet` not
+  shorter than `hardTimeout` is refused at load, naming the `defaults` field.
+  Before, a negative number there was silently replaced by the built-in
+  default and the other combinations reached every target unchecked. **A
+  configuration that relied on that is now refused at startup**; remove the
+  value to keep the built-in default.
 - `wsaw mcp`'s `diff_scans` no longer compares the approved baseline with
   itself when `against` is omitted, which reported "no changes" for a scan
   nothing had been compared with. It now does what the web interface does:
