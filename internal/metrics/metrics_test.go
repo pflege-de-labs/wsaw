@@ -240,23 +240,19 @@ func TestCountersForBrowserAndNotifications(t *testing.T) {
 
 	r := metrics.New("test")
 
-	r.BrowserRestarted("site", "crashed")
-	r.BrowserRestarted("site", "scan limit")
+	r.BrowserRestarted()
+	r.BrowserRestarted()
 	r.NotifyFailed()
 	r.NotifySent()
 	r.SetQueueDepth(7)
-	r.ResultsPruned(5)
-	r.ResultsPruned(2)
-	r.ResultsPruned(0)
 
 	out := render(t, r)
 
 	for _, want := range []string{
-		"wsaw_results_pruned_total 7",
-		"wsaw_browser_restarts_total 2",
-		"wsaw_notifications_failed_total 1",
-		"wsaw_notifications_sent_total 1",
-		"wsaw_queue_depth 7",
+		"# TYPE wsaw_browser_restarts_total counter\nwsaw_browser_restarts_total 2\n",
+		"# TYPE wsaw_notifications_failed_total counter\nwsaw_notifications_failed_total 1\n",
+		"# TYPE wsaw_notifications_sent_total counter\nwsaw_notifications_sent_total 1\n",
+		"# TYPE wsaw_queue_depth gauge\nwsaw_queue_depth 7\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)

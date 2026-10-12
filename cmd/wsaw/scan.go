@@ -1,11 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -176,7 +178,7 @@ func runOnce(ctx context.Context, a *app.App, targets []config.Resolved) ([]scan
 	wg.Wait()
 
 	// Deterministic output regardless of completion order.
-	sortOutcomes(outcomes)
+	slices.SortStableFunc(outcomes, compareOutcome)
 
 	return outcomes, failures
 }
@@ -294,20 +296,11 @@ func retryReason(out scanner.Outcome, scanErr error) string {
 	}
 }
 
-func sortOutcomes(outcomes []scanner.Outcome) {
-	for i := 1; i < len(outcomes); i++ {
-		for j := i; j > 0 && lessOutcome(outcomes[j], outcomes[j-1]); j-- {
-			outcomes[j], outcomes[j-1] = outcomes[j-1], outcomes[j]
-		}
-	}
-}
-
-func lessOutcome(a, b scanner.Outcome) bool {
-	if a.Result.Target != b.Result.Target {
-		return a.Result.Target < b.Result.Target
-	}
-
-	return a.Result.ConsentMode < b.Result.ConsentMode
+// compareOutcome orders outcomes by target, then consent mode.
+func compareOutcome(a, b scanner.Outcome) int {
+	return cmp.Or(
+		cmp.Compare(a.Result.Target, b.Result.Target),
+		cmp.Compare(a.Result.ConsentMode, b.Result.ConsentMode))
 }
 
 // bodyLoader resolves stored response bodies for an export.

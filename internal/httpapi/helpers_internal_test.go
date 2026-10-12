@@ -281,32 +281,6 @@ func TestStaleness(t *testing.T) {
 	}
 }
 
-func TestSortedDomains(t *testing.T) {
-	t.Parallel()
-
-	got := sortedDomains(map[string][]string{
-		"tracker.test": {"a"},
-		"ads.test":     {"b"},
-		"example.com":  {"c"},
-	})
-
-	want := []string{"ads.test", "example.com", "tracker.test"}
-
-	if len(got) != len(want) {
-		t.Fatalf("sortedDomains = %v, want %v", got, want)
-	}
-
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("sortedDomains = %v, want %v", got, want)
-		}
-	}
-
-	if len(sortedDomains(nil)) != 0 {
-		t.Error("sortedDomains of nothing is not empty")
-	}
-}
-
 // Both path extractors refuse anything that is not a real consent mode,
 // before it can reach the store.
 func TestPathAndUITargetModeValidate(t *testing.T) {
@@ -525,9 +499,9 @@ func TestUIFuncs(t *testing.T) {
 	}{
 		{0, "0 B"},
 		{512, "512 B"},
-		{2048, "2.0 KB"},
-		{5 << 20, "5.0 MB"},
-		{3 << 30, "3.0 GB"},
+		{2048, "2.0 KiB"},
+		{5 << 20, "5.0 MiB"},
+		{3 << 30, "3.0 GiB"},
 	} {
 		if got := bytesFn(tc.in); got != tc.want {
 			t.Errorf("bytes(%d) = %q, want %q", tc.in, got, tc.want)

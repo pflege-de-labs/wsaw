@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/mcp"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
@@ -544,6 +545,47 @@ func TestDiffScans(t *testing.T) {
 
 	if got.Against != "previous" || got.Report.Comparable || got.Report.Reason == "" {
 		t.Errorf("first scan = %+v", got)
+	}
+}
+
+// TestDiffScansNeverComparesTheBaselineWithItself is the MCP side of what the
+// web interface already does: a baseline compared with itself reports "no
+// changes", which reads exactly like a scan that changed nothing (Tenet 5).
+func TestDiffScansNeverComparesTheBaselineWithItself(t *testing.T) {
+	t.Parallel()
+
+	f := seed(t)
+
+	type report struct {
+		Against string
+		Report  struct {
+			BaselineScanID string
+			Comparable     bool
+			Reason         string
+		}
+	}
+
+	// scan-1 is the baseline and the first scan: there is nothing to
+	// compare it with, and the answer says why.
+	var got report
+	decode(t, call(t, f.st, "diff_scans",
+		map[string]any{"target": "site", "consentMode": "reject", "scanId": "scan-1"}), &got)
+
+	if got.Against != "previous" || got.Report.Comparable || got.Report.Reason != diff.ReasonFirstBaseline {
+		t.Errorf("first baseline = %+v", got)
+	}
+
+	// A baseline with a scan before it is compared with that scan.
+	if _, err := f.st.SetBaseline("site", model.ConsentReject, "scan-2", "tester", ""); err != nil {
+		t.Fatalf("approving scan-2: %v", err)
+	}
+
+	got = report{}
+	decode(t, call(t, f.st, "diff_scans",
+		map[string]any{"target": "site", "consentMode": "reject", "scanId": "scan-2"}), &got)
+
+	if got.Against != "previous" || got.Report.BaselineScanID != "scan-1" || !got.Report.Comparable {
+		t.Errorf("later baseline = %+v", got)
 	}
 }
 

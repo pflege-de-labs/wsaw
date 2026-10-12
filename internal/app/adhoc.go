@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/adhoc"
@@ -92,13 +93,7 @@ func (a *App) adHocTarget(ctx context.Context, rawURL string, mode model.Consent
 // arrives in a request, so which modes exist is not the question — which ones
 // this deployment agreed to run is.
 func (a *App) adHocModeOffered(mode model.ConsentMode) bool {
-	for _, m := range a.Config.AdHocModes() {
-		if m == mode {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(a.Config.AdHocModes(), mode)
 }
 
 // adHocCooldown refuses a scan that would ask the same site again too soon.

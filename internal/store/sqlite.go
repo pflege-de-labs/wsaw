@@ -463,7 +463,7 @@ func (sqliteDialect) schemaVersion(ctx context.Context, db *sql.DB) (int, error)
 	return current, nil
 }
 
-func (sqliteDialect) setSchemaVersion(ctx context.Context, ex execer, version int) error {
+func (sqliteDialect) setSchemaVersion(ctx context.Context, ex querier, version int) error {
 	// user_version does not accept a placeholder.
 	_, err := ex.ExecContext(ctx, fmt.Sprintf("pragma user_version = %d", version))
 

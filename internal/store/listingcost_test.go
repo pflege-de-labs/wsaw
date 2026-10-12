@@ -9,19 +9,13 @@ import (
 )
 
 // TestListingReadsNoDocumentWhicheverStoreKeepsTheIndex is Story 8.3, AC2
-// carried to the store the criterion cannot be stated over unchanged
-// (Story 8.9, AC5).
+// asserted from outside the package (Story 8.9, AC5).
 //
-// "Listing performs zero bucket operations" is the SQL store's promise, and it
-// is asserted as a count of zero by TestListingPerformsNoBucketOperations,
-// beside the implementation where the bucket can be seen. It cannot hold where
-// the index *is* the bucket: a listing there is one prefix listing plus one
-// small entry object per summary, which is what Story 8.10, §6.4 chose and what
-// TestWhatEachReadPathCostsInRequests pins down request by request.
-//
-// What both stores owe, and what this asserts for whichever one the suite is
-// configured for, is that a listing never opens a *document*. That is the
-// regression the story is about: a summary is a few hundred bytes and a scan's
+// "Listing performs zero bucket operations" is asserted as a count of zero by
+// TestListingPerformsNoBucketOperations, beside the implementation where the
+// bucket can be seen. What this asserts through the seam alone is that a
+// listing never opens a *document*. That is the regression the story is
+// about: a summary is a few hundred bytes and a scan's
 // document runs to megabytes, so a listing that read one per row would turn a
 // page of history into a wait and a bill on every provider — and would look
 // perfectly fast on the local disk it was written on.

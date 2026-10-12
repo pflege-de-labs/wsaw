@@ -206,7 +206,7 @@ type storageData struct {
 // figure comes from Storage, MonthlyStorage and the maintenance run log, each
 // an index-only read (AC10).
 func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
-	if s.deps.Storage == nil {
+	if s.deps.StorageIndex == nil {
 		return storageData{Available: false}, nil
 	}
 
@@ -219,7 +219,7 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		ArtifactLocation: secret.RedactURL(s.deps.ArtifactLocation),
 	}
 
-	report, err := s.deps.Storage(ctx)
+	report, err := s.deps.StorageIndex.Storage(ctx)
 	if err != nil {
 		return storageData{}, fmt.Errorf("reading storage by series: %w", err)
 	}
@@ -255,7 +255,7 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		barRows = append(barRows, hBarRow{
 			Label: label,
 			Detail: fmt.Sprintf("%s: document %s, artifacts %s",
-				label, formatBytes(sd.StoredDocumentBytes), formatBytes(sd.StoredArtifactBytes)),
+				label, FormatBytes(sd.StoredDocumentBytes), FormatBytes(sd.StoredArtifactBytes)),
 			Segments: []hBarSegment{
 				{Bytes: sd.StoredDocumentBytes, Fill: "var(--accent)"},
 				{Bytes: sd.StoredArtifactBytes, Fill: "var(--ok-partial)"},
@@ -268,7 +268,7 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 	if report.StoredSharedBytes > 0 {
 		barRows = append(barRows, hBarRow{
 			Label:    sharedRowLabel,
-			Detail:   fmt.Sprintf("%s: %s", sharedRowLabel, formatBytes(report.StoredSharedBytes)),
+			Detail:   fmt.Sprintf("%s: %s", sharedRowLabel, FormatBytes(report.StoredSharedBytes)),
 			Segments: []hBarSegment{{Bytes: report.StoredSharedBytes, Fill: "var(--muted)"}},
 		})
 	}
@@ -301,13 +301,13 @@ func sharePercent(part, whole int64) float64 {
 // growthChart is AC5's diagram: stored bytes by month for the last twelve
 // months, from the scans still stored.
 func (s *Server) growthChart(ctx context.Context) template.HTML {
-	if s.deps.MonthlyStorage == nil {
+	if s.deps.StorageIndex == nil {
 		return ""
 	}
 
 	since := time.Now().AddDate(0, -11, 0)
 
-	months, err := s.deps.MonthlyStorage(ctx, since)
+	months, err := s.deps.StorageIndex.MonthlyStorage(ctx, since)
 	if err != nil {
 		s.deps.Logger.Warn("could not read storage by month for the storage dashboard", "error", err)
 
@@ -323,7 +323,7 @@ func (s *Server) growthChart(ctx context.Context) template.HTML {
 	}
 
 	return vBarChart("Stored bytes by month — what is still stored, each object in the month first stored",
-		labels, values, formatBytes)
+		labels, values, FormatBytes)
 }
 
 // pruneRunsChartLimit is how many of the newest prune runs the chart shows.
@@ -333,11 +333,11 @@ const pruneRunsChartLimit = 12
 // sharing an x-axis. A run that freed nothing still draws a zero-height bar,
 // because a run of runs that freed nothing is the finding.
 func (s *Server) pruneChart(ctx context.Context) (bytesChart, resultsChart template.HTML) {
-	if s.deps.MaintenanceRuns == nil {
+	if s.deps.StorageIndex == nil {
 		return "", ""
 	}
 
-	runs, err := s.deps.MaintenanceRuns(ctx, store.MaintenanceKindPrune, pruneRunsChartLimit)
+	runs, err := s.deps.StorageIndex.MaintenanceRuns(ctx, store.MaintenanceKindPrune, pruneRunsChartLimit)
 	if err != nil {
 		s.deps.Logger.Warn("could not read prune runs for the storage dashboard", "error", err)
 
@@ -372,7 +372,7 @@ func (s *Server) pruneChart(ctx context.Context) (bytesChart, resultsChart templ
 		resultsV[i] = int64(stats.ResultsDeleted)
 	}
 
-	bytesChart = vBarChart("Bytes freed by prune run, newest last", labels, bytesV, formatBytes)
+	bytesChart = vBarChart("Bytes freed by prune run, newest last", labels, bytesV, FormatBytes)
 	resultsChart = vBarChart("Results deleted by prune run, newest last", labels, resultsV,
 		func(n int64) string { return fmt.Sprintf("%d", n) })
 
@@ -382,11 +382,11 @@ func (s *Server) pruneChart(ctx context.Context) (bytesChart, resultsChart templ
 // prunePanel reads AC7's prune panel, naming why there is nothing to show
 // when there is nothing to show.
 func (s *Server) prunePanel(ctx context.Context) prunePanel {
-	if s.deps.LastMaintenanceRun == nil {
+	if s.deps.StorageIndex == nil {
 		return prunePanel{Available: false}
 	}
 
-	run, found, err := s.deps.LastMaintenanceRun(ctx, store.MaintenanceKindPrune)
+	run, found, err := s.deps.StorageIndex.LastMaintenanceRun(ctx, store.MaintenanceKindPrune)
 	if err != nil {
 		return prunePanel{Available: true, Reason: "the last prune run could not be read: " + err.Error()}
 	}
@@ -434,11 +434,11 @@ func (s *Server) noPruneReason(ctx context.Context) string {
 // comes shortly after it starts (Story 4.12), and a store may have been
 // configured with scheduled sweeping off.
 func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
-	if s.deps.LastMaintenanceRun == nil {
+	if s.deps.StorageIndex == nil {
 		return sweepPanel{Available: false}
 	}
 
-	run, found, err := s.deps.LastMaintenanceRun(ctx, store.MaintenanceKindSweep)
+	run, found, err := s.deps.StorageIndex.LastMaintenanceRun(ctx, store.MaintenanceKindSweep)
 	if err != nil {
 		return sweepPanel{Available: true, Reason: "the last sweep run could not be read: " + err.Error()}
 	}

@@ -300,52 +300,45 @@ func TestNewScanIDIsUniqueAndPrefixed(t *testing.T) {
 	}
 }
 
-func TestRunningCountTracksInFlightScans(t *testing.T) {
+func TestRunningTracksInFlightScans(t *testing.T) {
 	t.Parallel()
 
-	s := &Scanner{live: NewLive()}
+	s := &Scanner{live: newLive()}
 
-	if got := s.RunningCount(); got != 0 {
+	if got := len(s.Running()); got != 0 {
 		t.Fatalf("a fresh scanner reports %d running, want 0", got)
 	}
 
 	release := s.live.begin(Running{ScanID: "scan-1", Target: "site", StartedAt: time.Now()})
 
-	if got := s.RunningCount(); got != 1 {
+	if got := len(s.Running()); got != 1 {
 		t.Errorf("running count = %d, want 1", got)
 	}
 
 	release()
 
-	if got := s.RunningCount(); got != 0 {
+	if got := len(s.Running()); got != 0 {
 		t.Errorf("running count after release = %d, want 0", got)
 	}
 }
 
-func TestRecordFailureAndBrowserRestartAreOptional(t *testing.T) {
+func TestRecordFailureIsOptional(t *testing.T) {
 	t.Parallel()
 
 	// Every Metrics field is optional, so the zero value must not panic.
 	bare := &Scanner{}
 	bare.recordFailure("site", model.ConsentNone, "reason")
-	bare.browserRestarted("site", "reason")
 
-	var failed, restarted string
+	var failed string
 
 	s := &Scanner{deps: Deps{Metrics: Metrics{
-		ScanFailed:     func(target string, _ model.ConsentMode, reason string) { failed = target + ":" + reason },
-		BrowserRestart: func(target, reason string) { restarted = target + ":" + reason },
+		ScanFailed: func(target string, _ model.ConsentMode, reason string) { failed = target + ":" + reason },
 	}}}
 
 	s.recordFailure("site", model.ConsentReject, "timeout")
-	s.browserRestarted("site", "crashed")
 
 	if failed != "site:timeout" {
 		t.Errorf("ScanFailed saw %q", failed)
-	}
-
-	if restarted != "site:crashed" {
-		t.Errorf("BrowserRestart saw %q", restarted)
 	}
 }
 

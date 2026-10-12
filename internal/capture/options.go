@@ -52,7 +52,7 @@ type Options struct {
 	Labels map[string]string
 
 	// ConsentMode is recorded in the result; capture itself does not act on
-	// it. The interaction is performed by the Hooks.
+	// it. The interaction is performed by Run's afterLoad hook.
 	ConsentMode model.ConsentMode
 
 	// FirstPartyDomains are additional domains treated as the site's own.
@@ -237,15 +237,4 @@ func (o *Options) consentReserve() time.Duration {
 	}
 
 	return reserve
-}
-
-// Hooks lets the caller act on the page between the initial load and the
-// final capture, without capture itself knowing anything about consent.
-type Hooks struct {
-	// AfterLoad runs once the initial load has settled. Whatever it returns
-	// is recorded as the scan's consent outcome, and every request observed
-	// after it returns is marked post-interaction.
-	//
-	// It must respect its context: capture's budget still applies.
-	AfterLoad func(ctx Context) (model.Consent, error)
 }

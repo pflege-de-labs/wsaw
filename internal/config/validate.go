@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -559,7 +558,7 @@ func (c *Config) validateDetection(add addFunc) {
 }
 
 func validateSeverityRules(s diff.SeverityRules, line int, field string, add addFunc) {
-	check := func(name string, v diff.Severity) {
+	s.Each(func(name string, v diff.Severity) {
 		if v == "" {
 			return
 		}
@@ -567,34 +566,7 @@ func validateSeverityRules(s diff.SeverityRules, line int, field string, add add
 		if _, err := diff.ParseSeverity(string(v)); err != nil {
 			add(line, field+"."+name, "%v", err)
 		}
-	}
-
-	check("thirdPartyHostRejectMode", s.ThirdPartyHostRejectMode)
-	check("thirdPartyHostPreConsent", s.ThirdPartyHostPreConsent)
-	check("thirdPartyHostAdded", s.ThirdPartyHostAdded)
-	check("firstPartyHostAdded", s.FirstPartyHostAdded)
-	check("hostRemoved", s.HostRemoved)
-	check("thirdPartyScriptAdded", s.ThirdPartyScriptAdded)
-	check("thirdPartyAssetAdded", s.ThirdPartyAssetAdded)
-	check("firstPartyScriptAdded", s.FirstPartyScriptAdded)
-	check("firstPartyAssetAdded", s.FirstPartyAssetAdded)
-	check("assetRemoved", s.AssetRemoved)
-	check("thirdPartyScriptChanged", s.ThirdPartyScriptChanged)
-	check("firstPartyScriptChanged", s.FirstPartyScriptChanged)
-	check("thirdPartyCookieRejectMode", s.ThirdPartyCookieRejectMode)
-	check("thirdPartyCookieAdded", s.ThirdPartyCookieAdded)
-	check("firstPartyCookieAdded", s.FirstPartyCookieAdded)
-	check("cookieRemoved", s.CookieRemoved)
-	check("thirdPartyStorageRejectMode", s.ThirdPartyStorageRejectMode)
-	check("thirdPartyStorageAdded", s.ThirdPartyStorageAdded)
-	check("firstPartyStorageAdded", s.FirstPartyStorageAdded)
-	check("storageRemoved", s.StorageRemoved)
-	check("statusBecameError", s.StatusBecameError)
-	check("statusChanged", s.StatusChanged)
-	check("consentChanged", s.ConsentChanged)
-	check("consentDegraded", s.ConsentDegraded)
-	check("deniedHost", s.DeniedHost)
-	check("scanDegraded", s.ScanDegraded)
+	})
 }
 
 func (c *Config) validateConsent(add addFunc) {
@@ -1150,21 +1122,4 @@ func (c *Config) validateLogging(add addFunc) {
 	if !logging.Format(strings.ToLower(c.Logging.Format)).Valid() {
 		add(0, "logging.format", "%q is not valid; use auto, pretty, json or text", c.Logging.Format)
 	}
-}
-
-// AsError returns the errors as a plain error, or nil.
-func (e Errors) AsError() error {
-	if len(e) == 0 {
-		return nil
-	}
-
-	return e
-}
-
-// IsValidationError reports whether err came from config validation, so
-// callers can present it differently from an I/O failure.
-func IsValidationError(err error) bool {
-	var errs Errors
-
-	return errors.As(err, &errs)
 }

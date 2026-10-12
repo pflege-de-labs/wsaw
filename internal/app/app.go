@@ -5,6 +5,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -113,8 +114,8 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 	logger.Info(
 		"logging configured",
 		"format", string(logFormat),
-		"requested", orAuto(cfg.Logging.Format),
-		"level", orInfo(cfg.Logging.Level),
+		"requested", cmp.Or(cfg.Logging.Format, "auto"),
+		"level", cmp.Or(cfg.Logging.Level, "info"),
 	)
 	a.Metrics = metrics.New(opts.Version)
 
@@ -465,7 +466,7 @@ func (a *App) startBrowser(ctx context.Context) error {
 	a.Pool = browser.NewPool(browser.PoolOptions{
 		Size:               a.Config.PoolSize(),
 		MaxScansPerBrowser: a.Config.Browser.MaxScansPerBrowser,
-		OnRestart:          func(reason string) { a.Metrics.BrowserRestarted("", reason) },
+		OnRestart:          func(string) { a.Metrics.BrowserRestarted() },
 		Launch:             launch,
 	})
 
@@ -761,10 +762,7 @@ func missingSeccompProfile(kind container.Kind, keepsSandbox bool, extraArgs []s
 }
 
 func (a *App) buildScanner() error {
-	rules, err := a.Config.NormalizeRules()
-	if err != nil {
-		return err
-	}
+	rules := a.Config.NormalizeRules()
 
 	normalizer, err := normalize.New(rules)
 	if err != nil {
@@ -810,10 +808,9 @@ func (a *App) buildScanner() error {
 		Secrets: a.Secrets,
 		Logger:  a.Logger,
 		Metrics: scanner.Metrics{
-			ScanStarted:    a.Metrics.ScanStarted,
-			ScanFinished:   a.Metrics.ScanFinished,
-			ScanFailed:     a.Metrics.ScanFailed,
-			BrowserRestart: a.Metrics.BrowserRestarted,
+			ScanStarted:  a.Metrics.ScanStarted,
+			ScanFinished: a.Metrics.ScanFinished,
+			ScanFailed:   a.Metrics.ScanFailed,
 		},
 	}, scanner.Options{
 		Normalizer:            normalizer,
@@ -861,10 +858,7 @@ func (a *App) logBodyStorage() {
 // Normalizer rebuilds the normalizer, for commands that need one without a
 // scanner.
 func (a *App) Normalizer() (*normalize.Normalizer, error) {
-	rules, err := a.Config.NormalizeRules()
-	if err != nil {
-		return nil, err
-	}
+	rules := a.Config.NormalizeRules()
 
 	return normalize.New(rules)
 }
@@ -998,22 +992,6 @@ func (a *App) Close() error {
 	a.closers = nil
 
 	return errors.Join(errs...)
-}
-
-func orAuto(s string) string {
-	if s == "" {
-		return "auto"
-	}
-
-	return s
-}
-
-func orInfo(s string) string {
-	if s == "" {
-		return "info"
-	}
-
-	return s
 }
 
 // defaultStateDir returns the platform-appropriate state directory: XDG on

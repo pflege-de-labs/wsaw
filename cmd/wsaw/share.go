@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
@@ -86,10 +87,10 @@ func cmdShare(ctx context.Context, args []string) error {
 		return err
 	}
 
-	link := sharePathFor(res.Target, string(res.ConsentMode), res.ScanID) + "?t=" + token
+	link := share.Path(res.Target, string(res.ConsentMode), res.ScanID) + "?t=" + token
 
 	if base := cfg.API.Share.BaseURL; base != "" {
-		link = trimTrailingSlash(base) + link
+		link = strings.TrimRight(base, "/") + link
 	}
 
 	// The link goes to stdout on its own, so it can be piped; everything else
@@ -132,16 +133,4 @@ func loadShareTarget(a *app.App, target string, mode model.ConsentMode, scan str
 	}
 
 	return res, nil
-}
-
-func sharePathFor(target, mode, scan string) string {
-	return "/shared/" + target + "/" + mode + "/" + scan
-}
-
-func trimTrailingSlash(s string) string {
-	for len(s) > 0 && s[len(s)-1] == '/' {
-		s = s[:len(s)-1]
-	}
-
-	return s
 }

@@ -195,11 +195,10 @@ type bannerSummary struct {
 }
 
 func (h *handler) apply(ctx context.Context) (model.Consent, error) {
+	// A page that cannot be prepared is a consent outcome, not an error: a
+	// failed interaction is a finding, and the scan goes on.
 	if err := h.injectHelpers(ctx); err != nil {
-		return model.Consent{
-			Outcome: model.OutcomeFailed,
-			Reason:  "could not prepare the page for consent handling: " + err.Error(),
-		}, nil
+		return failedPreparation(err), nil
 	}
 
 	probe := h.probe(ctx)
@@ -220,7 +219,6 @@ func (h *handler) apply(ctx context.Context) (model.Consent, error) {
 
 		// TCF was present but could not be driven; fall through to rules and
 		// keep what was learned.
-		defer func() {}()
 	}
 
 	consent := h.applyRules(ctx, probe)
@@ -1380,4 +1378,11 @@ func evaluateOnly(ctx context.Context, expr string) error {
 	_, err := chromedp.Run(ctx, chromedp.Evaluate[chromedp.Void](expr))
 
 	return err
+}
+
+func failedPreparation(err error) model.Consent {
+	return model.Consent{
+		Outcome: model.OutcomeFailed,
+		Reason:  "could not prepare the page for consent handling: " + err.Error(),
+	}
 }

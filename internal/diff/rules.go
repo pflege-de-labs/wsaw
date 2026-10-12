@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"cmp"
 	"strings"
 
 	"github.com/pflege-de-labs/wsaw/internal/classify"
@@ -223,50 +224,63 @@ func DefaultSeverityRules() SeverityRules {
 }
 
 func (s SeverityRules) withDefaults() SeverityRules {
-	defaults := DefaultSeverityRules()
+	return s.Over(DefaultSeverityRules())
+}
 
-	fill := func(configured, fallback Severity) Severity {
-		if configured == "" {
-			return fallback
-		}
-
-		return configured
+// Over returns s with every unset rule taken from base, so layers of
+// configuration stack without restating which fields exist.
+func (s SeverityRules) Over(base SeverityRules) SeverityRules {
+	from := base.named()
+	for i, r := range s.named() {
+		*r.sev = cmp.Or(*r.sev, *from[i].sev)
 	}
 
-	return SeverityRules{
-		ThirdPartyHostRejectMode: fill(s.ThirdPartyHostRejectMode, defaults.ThirdPartyHostRejectMode),
-		ThirdPartyHostPreConsent: fill(s.ThirdPartyHostPreConsent, defaults.ThirdPartyHostPreConsent),
-		ThirdPartyHostAdded:      fill(s.ThirdPartyHostAdded, defaults.ThirdPartyHostAdded),
-		FirstPartyHostAdded:      fill(s.FirstPartyHostAdded, defaults.FirstPartyHostAdded),
-		HostRemoved:              fill(s.HostRemoved, defaults.HostRemoved),
+	return s
+}
 
-		ThirdPartyScriptAdded: fill(s.ThirdPartyScriptAdded, defaults.ThirdPartyScriptAdded),
-		ThirdPartyAssetAdded:  fill(s.ThirdPartyAssetAdded, defaults.ThirdPartyAssetAdded),
-		FirstPartyScriptAdded: fill(s.FirstPartyScriptAdded, defaults.FirstPartyScriptAdded),
-		FirstPartyAssetAdded:  fill(s.FirstPartyAssetAdded, defaults.FirstPartyAssetAdded),
-		AssetRemoved:          fill(s.AssetRemoved, defaults.AssetRemoved),
+// Each calls fn with every rule and its YAML key, so validation can name the
+// field an operator got wrong.
+func (s SeverityRules) Each(fn func(key string, sev Severity)) {
+	for _, r := range s.named() {
+		fn(r.key, *r.sev)
+	}
+}
 
-		ThirdPartyScriptChanged: fill(s.ThirdPartyScriptChanged, defaults.ThirdPartyScriptChanged),
-		FirstPartyScriptChanged: fill(s.FirstPartyScriptChanged, defaults.FirstPartyScriptChanged),
+type namedSeverity struct {
+	key string
+	sev *Severity
+}
 
-		ThirdPartyCookieRejectMode: fill(s.ThirdPartyCookieRejectMode, defaults.ThirdPartyCookieRejectMode),
-		ThirdPartyCookieAdded:      fill(s.ThirdPartyCookieAdded, defaults.ThirdPartyCookieAdded),
-		FirstPartyCookieAdded:      fill(s.FirstPartyCookieAdded, defaults.FirstPartyCookieAdded),
-		CookieRemoved:              fill(s.CookieRemoved, defaults.CookieRemoved),
-
-		ThirdPartyStorageRejectMode: fill(s.ThirdPartyStorageRejectMode, defaults.ThirdPartyStorageRejectMode),
-		ThirdPartyStorageAdded:      fill(s.ThirdPartyStorageAdded, defaults.ThirdPartyStorageAdded),
-		FirstPartyStorageAdded:      fill(s.FirstPartyStorageAdded, defaults.FirstPartyStorageAdded),
-		StorageRemoved:              fill(s.StorageRemoved, defaults.StorageRemoved),
-
-		StatusBecameError: fill(s.StatusBecameError, defaults.StatusBecameError),
-		StatusChanged:     fill(s.StatusChanged, defaults.StatusChanged),
-
-		ConsentChanged:  fill(s.ConsentChanged, defaults.ConsentChanged),
-		ConsentDegraded: fill(s.ConsentDegraded, defaults.ConsentDegraded),
-
-		DeniedHost:   fill(s.DeniedHost, defaults.DeniedHost),
-		ScanDegraded: fill(s.ScanDegraded, defaults.ScanDegraded),
+// named is the one list of rules that Over and Each walk. Both have value
+// receivers, so writing through these pointers never reaches a caller's value.
+func (s *SeverityRules) named() []namedSeverity {
+	return []namedSeverity{
+		{"thirdPartyHostRejectMode", &s.ThirdPartyHostRejectMode},
+		{"thirdPartyHostPreConsent", &s.ThirdPartyHostPreConsent},
+		{"thirdPartyHostAdded", &s.ThirdPartyHostAdded},
+		{"firstPartyHostAdded", &s.FirstPartyHostAdded},
+		{"hostRemoved", &s.HostRemoved},
+		{"thirdPartyScriptAdded", &s.ThirdPartyScriptAdded},
+		{"thirdPartyAssetAdded", &s.ThirdPartyAssetAdded},
+		{"firstPartyScriptAdded", &s.FirstPartyScriptAdded},
+		{"firstPartyAssetAdded", &s.FirstPartyAssetAdded},
+		{"assetRemoved", &s.AssetRemoved},
+		{"thirdPartyScriptChanged", &s.ThirdPartyScriptChanged},
+		{"firstPartyScriptChanged", &s.FirstPartyScriptChanged},
+		{"thirdPartyCookieRejectMode", &s.ThirdPartyCookieRejectMode},
+		{"thirdPartyCookieAdded", &s.ThirdPartyCookieAdded},
+		{"firstPartyCookieAdded", &s.FirstPartyCookieAdded},
+		{"cookieRemoved", &s.CookieRemoved},
+		{"thirdPartyStorageRejectMode", &s.ThirdPartyStorageRejectMode},
+		{"thirdPartyStorageAdded", &s.ThirdPartyStorageAdded},
+		{"firstPartyStorageAdded", &s.FirstPartyStorageAdded},
+		{"storageRemoved", &s.StorageRemoved},
+		{"statusBecameError", &s.StatusBecameError},
+		{"statusChanged", &s.StatusChanged},
+		{"consentChanged", &s.ConsentChanged},
+		{"consentDegraded", &s.ConsentDegraded},
+		{"deniedHost", &s.DeniedHost},
+		{"scanDegraded", &s.ScanDegraded},
 	}
 }
 

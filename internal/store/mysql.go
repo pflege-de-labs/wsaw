@@ -386,7 +386,7 @@ func (mysqlDialect) schemaVersion(ctx context.Context, db *sql.DB) (int, error) 
 	return version, nil
 }
 
-func (mysqlDialect) setSchemaVersion(ctx context.Context, ex execer, version int) error {
+func (mysqlDialect) setSchemaVersion(ctx context.Context, ex querier, version int) error {
 	_, err := ex.ExecContext(ctx, `
 		insert into wsaw_schema_version (id, version) values (1, ?) as new
 		on duplicate key update version = new.version`, version)

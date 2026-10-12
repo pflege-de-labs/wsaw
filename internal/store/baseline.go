@@ -14,11 +14,9 @@ import (
 
 // The two actions a store records about a baseline on its own account.
 //
-// They are constants shared by every kind of store rather than literals spelled
-// where each one writes, because an audit log whose action names depended on
-// which store wrote them would be an audit log nobody could filter: the entries
-// are read back by action, and the bucket index and the SQL stores must produce
-// the same word for the same decision.
+// They are constants rather than literals spelled where each one is written,
+// because the entries are read back by action, and an audit log whose action
+// names drifted between writers would be an audit log nobody could filter.
 const (
 	auditBaselineApproved = "baseline-approved"
 	auditBaselineDeleted  = "baseline-deleted"
@@ -299,10 +297,7 @@ func (s *SQL) appendAuditTx(ctx context.Context, tx *sql.Tx, e AuditEntry) error
 // is not now — a backfill, an action taken while the store was unreachable
 // and written when it came back, or an operator recording a decision made
 // earlier — and ordering such an entry by its row identity would put it at
-// the top of a log where it does not belong. It is also the ordering the
-// stores that keep no rows can honour: an index folded out of a listing has
-// nothing corresponding to an autoincrementing id, and an audit log whose
-// order changed with the store kind would not be an audit log.
+// the top of a log where it does not belong.
 //
 // The row identity breaks the tie, because two entries can share a timestamp
 // — an approval and its note, or two decisions inside one transaction — and a
@@ -470,7 +465,15 @@ type ArtifactInfo struct {
 // stops waiting on a bucket that is not answering (Story 8.7, AC6); the
 // store's own deadline still applies on top of it.
 func (s *SQL) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error) {
-	return s.bucket.artifactInfo(ctx, ref)
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	obj, err := s.bucket.stat(ctx, ref)
+	if err != nil {
+		return ArtifactInfo{}, absentArtifact(err)
+	}
+
+	return ArtifactInfo{Size: obj.size, Digest: artifactDigest(ref), ModTime: obj.modTime}, nil
 }
 
 // GetArtifact reads a stored artifact.
@@ -486,8 +489,20 @@ func (s *SQL) StatArtifact(ctx context.Context, ref string) (ArtifactInfo, error
 // Whether an artifact is stored compressed is the store's business and no
 // caller's: both forms come back as the bytes that were handed to PutArtifact
 // (Story 4.8, AC4).
+//
+// It takes no context because no caller has one to give: each reads evidence
+// on behalf of a decode, and the deadline that bounds it is the store's own
+// (see opCtx).
 func (s *SQL) GetArtifact(ref string) ([]byte, error) {
-	return s.bucket.artifactBytes(ref)
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	data, err := s.bucket.get(ctx, ref)
+	if err != nil {
+		return nil, absentArtifact(err)
+	}
+
+	return data, nil
 }
 
 // OpenArtifact opens a stored artifact for streaming.
@@ -499,15 +514,50 @@ func (s *SQL) GetArtifact(ref string) ([]byte, error) {
 // Content-Length, an entity tag and a modification date all have to be written
 // before the body is (Story 8.7, AC1 and AC4).
 //
-// What is bounded is progress, not the transfer, for the reason the bucket's
-// own artifactReader gives.
+// What is bounded is progress, not the transfer. The bucket has opTimeout to
+// open the object and opTimeout to produce each further piece of it, and a
+// read that stops producing bytes for that long is abandoned — but a transfer
+// that keeps flowing runs as long as it takes. A fixed deadline on the whole
+// read would be a size and bandwidth limit dressed as a timeout: a
+// forty-megabyte document to a client on a slow link takes longer than any
+// per-operation deadline, and cutting it off would abort the response after
+// Content-Length had been declared and the status sent, with nothing left to
+// tell the reader. The reader who has actually gone away is caught by their
+// own request's context, which is this call's parent (Story 8.7, AC6).
 //
 // The caller owns the reader and must close it. Closing is also what releases
 // the deadline and its timer, so a reader that is dropped rather than closed
 // holds both until the idle bound fires — the same contract every
 // io.ReadCloser has, stated because this one carries a context with it.
 func (s *SQL) OpenArtifact(ctx context.Context, ref string) (*ArtifactReader, error) {
-	return s.bucket.artifactReader(ctx, ref)
+	ctx, cancel := context.WithCancel(ctx)
+
+	// Armed before the open, so the open is bounded by it too, and re-armed by
+	// every piece of the body that arrives.
+	idle := time.AfterFunc(opTimeout, cancel)
+
+	release := func() {
+		idle.Stop()
+		cancel()
+	}
+
+	stream, err := s.bucket.newReader(ctx, ref)
+	if err != nil {
+		release()
+
+		return nil, absentArtifact(err)
+	}
+
+	return &ArtifactReader{
+		ReadCloser: stream,
+		ArtifactInfo: ArtifactInfo{
+			Size:    stream.size,
+			Digest:  artifactDigest(ref),
+			ModTime: stream.modTime,
+		},
+		idle:    idle,
+		release: release,
+	}, nil
 }
 
 // ArtifactReader is a stored artifact opened for reading: the bytes, still in
@@ -570,7 +620,15 @@ func (a *ArtifactReader) Close() error {
 // an invitation to fall back rather than a failure: the caller serves the
 // bytes itself, as it did before anyone asked for redirects.
 func (s *SQL) SignArtifactURL(ctx context.Context, ref string, ttl time.Duration) (string, error) {
-	return s.bucket.artifactURL(ctx, ref, ttl)
+	ctx, cancel := opCtxFrom(ctx)
+	defer cancel()
+
+	signed, err := s.bucket.signedURL(ctx, ref, ttl)
+	if err != nil {
+		return "", absentArtifact(err)
+	}
+
+	return signed, nil
 }
 
 // absentArtifact reports a reference this store never wrote as absent.

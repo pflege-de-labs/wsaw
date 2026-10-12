@@ -27,10 +27,7 @@ func TestTheShippedExampleBodyIdentitiesExtractTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules := cfg.NormalizeRules()
 
 	n, err := normalize.New(rules)
 	if err != nil {

@@ -231,15 +231,15 @@ func (r *Registry) ScanFailed(target string, mode model.ConsentMode, reason stri
 }
 
 // BrowserRestarted counts a browser replacement.
-func (r *Registry) BrowserRestarted(_, _ string) {
+func (r *Registry) BrowserRestarted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.browserRestarts++
 }
 
-// NotifySent and NotifyFailed count delivery outcomes, so a silently broken
-// alerting path is visible.
+// NotifySent counts a delivered notification. It and NotifyFailed count
+// delivery outcomes, so a silently broken alerting path is visible.
 func (r *Registry) NotifySent() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -280,20 +280,6 @@ func (r *Registry) StoreRetried() {
 	defer r.mu.Unlock()
 
 	r.storeRetries++
-}
-
-// ResultsPruned counts results retention removed. A policy that suddenly
-// deletes far more than usual — an edited keep policy, a clock that jumped —
-// shows up here before it shows up as a history somebody needed (Story 4.10).
-func (r *Registry) ResultsPruned(n int) {
-	if n <= 0 {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.resultsPruned += int64(n)
 }
 
 // ArtifactStored records one artifact written to storage: the bytes handed
@@ -558,21 +544,21 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 	writeCounter(&b, "wsaw_scans_failed_total", "Scans that did not produce a trustworthy asset list, by reason.", r.scansFailed)
 	writeCounter(&b, "wsaw_consent_outcome_total", "Consent interaction outcomes.", r.consentOutcomes)
 
-	writeGaugeValue(&b, "wsaw_browser_restarts_total", "Browsers discarded and replaced.", float64(r.browserRestarts))
-	writeGaugeValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", float64(r.notifySent))
-	writeGaugeValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", float64(r.notifyFailures))
+	writeCounterValue(&b, "wsaw_browser_restarts_total", "Browsers discarded and replaced.", r.browserRestarts)
+	writeCounterValue(&b, "wsaw_notifications_sent_total", "Notifications delivered.", r.notifySent)
+	writeCounterValue(&b, "wsaw_notifications_failed_total", "Notifications that could not be delivered.", r.notifyFailures)
 	writeSuppressed(&b, r.notifySuppressed)
-	writeGaugeValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", float64(r.storeRetries))
-	writeGaugeValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", float64(r.resultsPruned))
-	writeGaugeValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", float64(r.scanRetries))
-	writeGaugeValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", float64(r.retriesExceeded))
-	writeGaugeValue(&b, "wsaw_artifacts_deleted_total",
+	writeCounterValue(&b, "wsaw_store_retries_total", "Store operations retried after a transient failure.", r.storeRetries)
+	writeCounterValue(&b, "wsaw_results_pruned_total", "Results removed by retention.", r.resultsPruned)
+	writeCounterValue(&b, "wsaw_scan_retries_total", "Scans retried after producing no usable observation.", r.scanRetries)
+	writeCounterValue(&b, "wsaw_scan_retries_exhausted_total", "Scans that failed on every attempt.", r.retriesExceeded)
+	writeCounterValue(&b, "wsaw_artifacts_deleted_total",
 		"Artifacts deleted from the bucket because no stored result referenced them any more.",
-		float64(r.artifactsDeleted))
-	writeGaugeValue(&b, "wsaw_artifact_bytes_freed_total", "Bytes reclaimed from the artifact bucket by retention.",
-		float64(r.artifactBytesFreed))
-	writeGaugeValue(&b, "wsaw_artifact_deletions_failed_total",
-		"Artifact deletions the bucket refused, left for the next sweep.", float64(r.artifactDeleteErr))
+		r.artifactsDeleted)
+	writeCounterValue(&b, "wsaw_artifact_bytes_freed_total", "Bytes reclaimed from the artifact bucket by retention.",
+		r.artifactBytesFreed)
+	writeCounterValue(&b, "wsaw_artifact_deletions_failed_total",
+		"Artifact deletions the bucket refused, left for the next sweep.", r.artifactDeleteErr)
 	writeGaugeValue(&b, "wsaw_last_successful_prune_timestamp_seconds",
 		"Unix time of the last prune that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastPruneSuccess)))
@@ -590,7 +576,7 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 		"Unix time of the last sweep that completed without error, 0 if none has in this process.",
 		float64(unixOrZero(r.lastSweepSuccess)))
 	writeOutcomes(&b, "wsaw_vacuum_runs_total", "Completed vacuums of the SQLite database, by outcome.", r.vacuumRuns)
-	fmt.Fprintf(&b, "# HELP %[1]s %[2]s\n# TYPE %[1]s counter\n%[1]s %[3]d\n", "wsaw_vacuum_bytes_reclaimed_total",
+	writeCounterValue(&b, "wsaw_vacuum_bytes_reclaimed_total",
 		"Bytes the database file and its WAL shrank by across vacuums.", r.vacuumBytesReclaimed)
 	writeGaugeValue(&b, "wsaw_last_successful_vacuum_timestamp_seconds",
 		"Unix time of the last vacuum that rewrote the file or found no need to, 0 if none has in this process.",
@@ -603,10 +589,10 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 			"Unix time the certificate being served expires.", float64(r.tlsExpiry.Unix()))
 	}
 
-	writeGaugeValue(&b, "wsaw_artifact_bytes_total",
-		"Artifact bytes handed to the store, before compression.", float64(r.artifactBytesIn))
-	writeGaugeValue(&b, "wsaw_artifact_stored_bytes_total",
-		"Artifact bytes actually written to the bucket.", float64(r.artifactStoredBytes))
+	writeCounterValue(&b, "wsaw_artifact_bytes_total",
+		"Artifact bytes handed to the store, before compression.", r.artifactBytesIn)
+	writeCounterValue(&b, "wsaw_artifact_stored_bytes_total",
+		"Artifact bytes actually written to the bucket.", r.artifactStoredBytes)
 	writeGaugeValue(&b, "wsaw_queue_depth", "Scans waiting to start.", float64(r.queueDepth))
 	writeGaugeValue(&b, "wsaw_uptime_seconds", "Process uptime.", time.Since(r.startedAt).Seconds())
 	writeGaugeValue(&b, "wsaw_ready", "1 when Chrome is usable and configuration is loaded.", boolValue(r.chromeUsable && r.configLoaded))
@@ -643,6 +629,10 @@ func writeCounter(b *strings.Builder, name, help string, values map[labels]int64
 
 func writeGaugeValue(b *strings.Builder, name, help string, v float64) {
 	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n%s %s\n", name, help, name, name, formatSample(v))
+}
+
+func writeCounterValue(b *strings.Builder, name, help string, v int64) {
+	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, help, name, name, v)
 }
 
 // formatSample writes a sample value exactly. %g keeps six significant

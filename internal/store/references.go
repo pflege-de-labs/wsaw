@@ -197,9 +197,11 @@ func (s *SQL) replaceArtifactRefsTx(ctx context.Context, tx *sql.Tx, key resultR
 	return nil
 }
 
-// querier is the part of *sql.DB and *sql.Tx the reference queries need.
+// querier is the part of *sql.DB and *sql.Tx the reference queries and schema
+// work need, so either can run inside a transaction or outside one without two
+// code paths.
 //
-// It exists for the dry run, which has to see the world as it would be after a
+// The reference queries take it for the dry run, which has to see the world as it would be after a
 // prune: it deletes the rows inside a transaction, asks these same queries what
 // that orphaned, and then rolls the transaction back. Sharing the queries
 // rather than writing a second set is what stops a dry run from reporting

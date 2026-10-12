@@ -50,10 +50,6 @@ func (j *job) key() string {
 	return j.target.Name + "/" + string(j.mode)
 }
 
-// lastScanFunc reports when a target and mode were last scanned, and whether
-// they ever were.
-type lastScanFunc func(target string, mode model.ConsentMode) (time.Time, bool)
-
 // wall strips the monotonic clock reading from a timestamp, so every
 // comparison the scheduler makes is a wall-clock comparison.
 //
@@ -77,7 +73,7 @@ func wall(t time.Time) time.Time { return t.Round(0) }
 // lastScan may be nil, in which case every job starts as though its target
 // had never been scanned. That is only correct for a process that never
 // restarts, which is why the daemon always supplies it in practice.
-func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan lastScanFunc) ([]*job, error) {
+func buildJobs(targets []config.Resolved, now time.Time, catchUp bool, lastScan func(target string, mode model.ConsentMode) (time.Time, bool)) ([]*job, error) {
 	now = wall(now)
 
 	var jobs []*job

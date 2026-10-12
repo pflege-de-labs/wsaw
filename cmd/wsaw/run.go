@@ -103,11 +103,11 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		return targets
 	}
 
-	sink := daemon.SinkFunc(func(_ context.Context, out scanner.Outcome) {
+	sink := func(_ context.Context, out scanner.Outcome) {
 		if dispatcher != nil {
 			dispatcher.Publish(out.Result, out.Diff)
 		}
-	})
+	}
 
 	d, err := daemon.New(a.Scanner, sink, a.Targets, daemon.Options{
 		Concurrency:          a.Config.Concurrency(),
@@ -313,7 +313,7 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 			"%s cannot change without a restart; the running configuration is unchanged. "+
 				"Restart wsaw to apply %s",
 			strings.Join(changed, ", "),
-			pluralSettings(len(changed)))
+			oneOf(len(changed), "it", "them"))
 	}
 
 	// A certificate the new configuration names but the server could not
@@ -351,14 +351,6 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 		vacuum:    vacuum,
 		certPaths: tlsPaths{cert: cfg.API.TLSCert, key: cfg.API.TLSKey},
 	}, nil
-}
-
-func pluralSettings(n int) string {
-	if n == 1 {
-		return "it"
-	}
-
-	return "them"
 }
 
 func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
@@ -606,17 +598,22 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Running:          a.RunningScans,
 		ConfigPath:       a.Config.Path(),
 		ArtifactLocation: artifactLocation(a),
-
-		// The storage dashboard's own narrow reads (Story 5.32), populated
-		// only when the store this daemon opened is the SQL index they need
-		// — the only implementation there is (internal/store/api.go's own
-		// doc comment), but a type assertion is what keeps that an
-		// observation rather than an assumption baked into the seam.
-		Storage:            sqlStorageFunc(a.Store),
-		MonthlyStorage:     sqlMonthlyStorageFunc(a.Store),
-		LastMaintenanceRun: sqlLastMaintenanceRunFunc(a.Store),
-		MaintenanceRuns:    sqlMaintenanceRunsFunc(a.Store),
+		StorageIndex:     storageIndex(a.Store),
 	})
+}
+
+// storageIndex is the storage dashboard's own narrow reads (Story 5.32),
+// populated only when the store this daemon opened is the SQL index they
+// need — the only implementation there is (internal/store/api.go's own doc
+// comment), but a type assertion is what keeps that an observation rather
+// than an assumption baked into the seam. It returns an untyped nil
+// otherwise, so the dashboard says it is unavailable (Tenet 5).
+func storageIndex(st store.Store) httpapi.StorageIndex {
+	if sql, ok := st.(*store.SQL); ok {
+		return sql
+	}
+
+	return nil
 }
 
 // artifactLocation names where the evidence is for the storage dashboard's
@@ -628,45 +625,4 @@ func artifactLocation(a *app.App) string {
 	}
 
 	return a.Config.Store.ArtifactLocation()
-}
-
-// sqlStorageFunc, sqlMonthlyStorageFunc, sqlLastMaintenanceRunFunc and
-// sqlMaintenanceRunsFunc each report nil when st is not a *store.SQL, so the
-// storage dashboard can tell "not available for this store" apart from
-// "available and empty" (Tenet 5) rather than the server panicking on a type
-// assertion at request time.
-func sqlStorageFunc(st store.Store) func(context.Context) (store.StorageReport, error) {
-	sql, ok := st.(*store.SQL)
-	if !ok {
-		return nil
-	}
-
-	return sql.Storage
-}
-
-func sqlMonthlyStorageFunc(st store.Store) func(context.Context, time.Time) ([]store.MonthlyBytes, error) {
-	sql, ok := st.(*store.SQL)
-	if !ok {
-		return nil
-	}
-
-	return sql.MonthlyStorage
-}
-
-func sqlLastMaintenanceRunFunc(st store.Store) func(context.Context, string) (store.MaintenanceRun, bool, error) {
-	sql, ok := st.(*store.SQL)
-	if !ok {
-		return nil
-	}
-
-	return sql.LastMaintenanceRun
-}
-
-func sqlMaintenanceRunsFunc(st store.Store) func(context.Context, string, int) ([]store.MaintenanceRun, error) {
-	sql, ok := st.(*store.SQL)
-	if !ok {
-		return nil
-	}
-
-	return sql.MaintenanceRuns
 }

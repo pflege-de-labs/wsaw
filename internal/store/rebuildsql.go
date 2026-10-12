@@ -15,10 +15,10 @@ import (
 //
 // Everything about the bucket — listing the documents, reading them, checking
 // them against the content address they are stored under, deriving from them
-// and reporting what was found — is in rebuild.go and is the same for every
-// store. What is here is the four questions a SQL index answers differently
-// from an index made of objects: what it already records, whether one scan is
-// in it, how to put one in, and what it holds that no document could produce.
+// and reporting what was found — is in rebuild.go. What is here is the four
+// questions only the rows can answer: what they already record, whether one
+// scan is in them, how to put one in, and what they hold that no document could
+// produce.
 //
 // The derivation is deliberately not re-implemented. A row is built by
 // resultArgs from summarize(), and its references by artifactRefsOf, which are
@@ -35,9 +35,8 @@ func (s *SQL) rebuildLog() *slog.Logger { return s.log }
 // beginRebuild marks the bucket as having a rebuild in progress, so that a
 // sweep run against a half-rebuilt index collects nothing (AC12).
 //
-// A SQL store writes the same marker the bucket-index store does, and honours
-// it in the same place, because the risk is identical and lives in the bucket
-// rather than in either index: between a rebuild starting and finishing, the
+// The marker lives in the bucket rather than in the database because that is
+// where the risk is: between a rebuild starting and finishing, the
 // documents of the scans it has not reached yet are referenced by nothing, and
 // a sweep would read that as garbage and delete the evidence the rebuild exists
 // to recover.

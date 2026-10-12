@@ -530,14 +530,14 @@ func TestSinkReceivesOutcomes(t *testing.T) {
 		received int
 	)
 
-	sink := daemon.SinkFunc(func(_ context.Context, out scanner.Outcome) {
+	sink := func(_ context.Context, out scanner.Outcome) {
 		mu.Lock()
 		defer mu.Unlock()
 
 		if out.Result != nil {
 			received++
 		}
-	})
+	}
 
 	fake := &fakeScanner{}
 

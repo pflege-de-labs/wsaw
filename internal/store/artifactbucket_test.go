@@ -17,8 +17,8 @@ import (
 // The second axis this suite runs on (Story 8.9, AC1).
 //
 // WSAW_TEST_STORE_DRIVER picks how the index is kept — rows in SQLite,
-// PostgreSQL or MySQL, or objects in the bucket. This picks where the evidence
-// itself goes, and the two are independent: every store keeps its documents,
+// PostgreSQL or MySQL. This picks where the evidence itself goes, and the two
+// are independent: every database keeps its documents,
 // screenshots and stored bodies in the same bucket layout (Story 8.1, AC2), so
 // the same suite has to hold against a directory on local disk, against a
 // bucket that only exists in memory, and against a real object store.

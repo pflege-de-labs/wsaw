@@ -133,7 +133,7 @@ func TestAFailedScanIsRetried(t *testing.T) {
 	fake := &failingScanner{failFor: 1, termination: model.TermError, errText: "the browser crashed"}
 	sink := &collectingSink{}
 
-	d, err := daemon.New(fake, sink,
+	d, err := daemon.New(fake, sink.Publish,
 		[]config.Resolved{retryTarget("site", retry.Policy{
 			Attempts: 3, Backoff: 5 * time.Millisecond, MaxBackoff: 20 * time.Millisecond,
 		})},
@@ -170,7 +170,7 @@ func TestASkippedScanIsNotRetried(t *testing.T) {
 	fake := &failingScanner{failFor: 5, termination: model.TermSkipped, errText: "disallowed by robots.txt"}
 	sink := &collectingSink{}
 
-	d, err := daemon.New(fake, sink,
+	d, err := daemon.New(fake, sink.Publish,
 		[]config.Resolved{retryTarget("site", retry.Policy{
 			Attempts: 4, Backoff: 2 * time.Millisecond, MaxBackoff: 5 * time.Millisecond,
 		})},
@@ -206,7 +206,7 @@ func TestRetriesAreBoundedAndExhaustionIsReported(t *testing.T) {
 		exhausted int
 	)
 
-	d, err := daemon.New(fake, sink,
+	d, err := daemon.New(fake, sink.Publish,
 		[]config.Resolved{retryTarget("site", retry.Policy{
 			Attempts: 3, Backoff: 2 * time.Millisecond, MaxBackoff: 5 * time.Millisecond,
 		})},
@@ -269,7 +269,7 @@ func TestRetryingCanBeDisabled(t *testing.T) {
 	fake := &failingScanner{failFor: 99, termination: model.TermError, errText: "the browser crashed"}
 	sink := &collectingSink{}
 
-	d, err := daemon.New(fake, sink,
+	d, err := daemon.New(fake, sink.Publish,
 		[]config.Resolved{retryTarget("site", retry.Policy{Attempts: 1})},
 		daemon.Options{Concurrency: 2, PerOriginConcurrency: 2, CatchUp: true, Tick: 2 * time.Millisecond})
 	if err != nil {
@@ -397,7 +397,7 @@ func TestAPendingRetrySurvivesAReload(t *testing.T) {
 	// floor, so a second scan can only come from the retry.
 	tgt.MinInterval = time.Hour
 
-	d, err := daemon.New(fake, sink, []config.Resolved{tgt},
+	d, err := daemon.New(fake, sink.Publish, []config.Resolved{tgt},
 		daemon.Options{
 			Concurrency: 2, PerOriginConcurrency: 2, CatchUp: true, Tick: 2 * time.Millisecond,
 			OnRetry: func(string, model.ConsentMode, int) {
@@ -456,7 +456,7 @@ func TestAFailureDuringAReloadIsStillRetried(t *testing.T) {
 	})
 	tgt.MinInterval = time.Hour
 
-	d, err := daemon.New(fake, sink, []config.Resolved{tgt},
+	d, err := daemon.New(fake, sink.Publish, []config.Resolved{tgt},
 		daemon.Options{Concurrency: 2, PerOriginConcurrency: 2, CatchUp: true, Tick: 2 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

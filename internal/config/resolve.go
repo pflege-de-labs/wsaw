@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"runtime"
 	"time"
@@ -149,12 +150,12 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 
 	r.ExtraHeaders = headers
 
-	r.BasicAuthUser, err = resolveSecret(firstString(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
+	r.BasicAuthUser, err = resolveSecret(cmp.Or(t.BasicAuthUser, d.BasicAuthUser), "basicAuthUser", reg)
 	if err != nil {
 		return Resolved{}, err
 	}
 
-	r.BasicAuthPassword, err = resolveSecret(firstString(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
+	r.BasicAuthPassword, err = resolveSecret(cmp.Or(t.BasicAuthPassword, d.BasicAuthPassword), "basicAuthPassword", reg)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -174,7 +175,7 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 		URL:               t.URL,
 		Labels:            mergeLabels(d.Labels, t.Labels),
 		ConsentModes:      firstModes(t.ConsentModes, d.ConsentModes),
-		Cron:              firstString(t.Cron, d.Cron),
+		Cron:              cmp.Or(t.Cron, d.Cron),
 		FirstPartyDomains: append(append([]string{}, d.FirstPartyDomains...), t.FirstPartyDomains...),
 		IdleQuiet:         firstDuration(t.IdleQuiet, d.IdleQuiet, capture.DefaultIdleQuiet),
 		HardTimeout:       firstDuration(t.HardTimeout, d.HardTimeout, capture.DefaultHardTimeout),
@@ -190,13 +191,13 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 		ViewportHeight: firstInt(t.ViewportHeight, d.ViewportHeight, 800),
 		DeviceScale:    firstFloat(t.DeviceScale, d.DeviceScale, 1),
 		Mobile:         firstBool(t.Mobile, d.Mobile, false),
-		UserAgent:      firstString(t.UserAgent, d.UserAgent),
-		AcceptLanguage: firstString(t.AcceptLanguage, d.AcceptLanguage),
-		Timezone:       firstString(t.Timezone, d.Timezone),
-		Proxy:          firstString(t.Proxy, d.Proxy),
+		UserAgent:      cmp.Or(t.UserAgent, d.UserAgent),
+		AcceptLanguage: cmp.Or(t.AcceptLanguage, d.AcceptLanguage),
+		Timezone:       cmp.Or(t.Timezone, d.Timezone),
+		Proxy:          cmp.Or(t.Proxy, d.Proxy),
 		Screenshots:    firstBool(t.Screenshots, d.Screenshots, false),
 		Bodies:         c.bodyPolicy(t),
-		Robots:         firstRobots(t.Robots, d.Robots),
+		Robots:         cmp.Or(t.Robots, d.Robots, RobotsIgnore),
 		MinInterval:    firstDuration(t.MinInterval, d.MinInterval, c.Scheduler.MinInterval.Or(5*time.Minute)),
 		Jitter:         firstDuration(t.Jitter, d.Jitter, c.Scheduler.Jitter.Or(0)),
 		Retry: retry.Policy{
@@ -281,7 +282,7 @@ func resolveSecret(ref, field string, reg *secret.Registry) (secret.Value, error
 }
 
 // NormalizeRules builds the comparison rules from configuration.
-func (c *Config) NormalizeRules() (normalize.Rules, error) {
+func (c *Config) NormalizeRules() normalize.Rules {
 	r := normalize.Rules{
 		KeepQueryParams:   c.Normalize.KeepQueryParams,
 		DropAllQuery:      c.Normalize.DropAllQuery,
@@ -343,7 +344,7 @@ func (c *Config) NormalizeRules() (normalize.Rules, error) {
 		r.VolatileBodies = append(r.VolatileBodies, normalize.DefaultVolatileBodies...)
 	}
 
-	return r, nil
+	return r
 }
 
 // Concurrency resolves the worker count, defaulting from the machine.
@@ -393,48 +394,7 @@ func mergeLabels(defaults, overrides map[string]string) map[string]string {
 }
 
 func mergeSeverity(global, defaults, target diff.SeverityRules) diff.SeverityRules {
-	pick := func(a, b, c diff.Severity) diff.Severity {
-		switch {
-		case c != "":
-			return c
-		case b != "":
-			return b
-		default:
-			return a
-		}
-	}
-
-	return diff.SeverityRules{
-		ThirdPartyHostRejectMode:   pick(global.ThirdPartyHostRejectMode, defaults.ThirdPartyHostRejectMode, target.ThirdPartyHostRejectMode),
-		ThirdPartyHostPreConsent:   pick(global.ThirdPartyHostPreConsent, defaults.ThirdPartyHostPreConsent, target.ThirdPartyHostPreConsent),
-		ThirdPartyHostAdded:        pick(global.ThirdPartyHostAdded, defaults.ThirdPartyHostAdded, target.ThirdPartyHostAdded),
-		FirstPartyHostAdded:        pick(global.FirstPartyHostAdded, defaults.FirstPartyHostAdded, target.FirstPartyHostAdded),
-		HostRemoved:                pick(global.HostRemoved, defaults.HostRemoved, target.HostRemoved),
-		ThirdPartyScriptAdded:      pick(global.ThirdPartyScriptAdded, defaults.ThirdPartyScriptAdded, target.ThirdPartyScriptAdded),
-		ThirdPartyAssetAdded:       pick(global.ThirdPartyAssetAdded, defaults.ThirdPartyAssetAdded, target.ThirdPartyAssetAdded),
-		FirstPartyScriptAdded:      pick(global.FirstPartyScriptAdded, defaults.FirstPartyScriptAdded, target.FirstPartyScriptAdded),
-		FirstPartyAssetAdded:       pick(global.FirstPartyAssetAdded, defaults.FirstPartyAssetAdded, target.FirstPartyAssetAdded),
-		AssetRemoved:               pick(global.AssetRemoved, defaults.AssetRemoved, target.AssetRemoved),
-		ThirdPartyScriptChanged:    pick(global.ThirdPartyScriptChanged, defaults.ThirdPartyScriptChanged, target.ThirdPartyScriptChanged),
-		FirstPartyScriptChanged:    pick(global.FirstPartyScriptChanged, defaults.FirstPartyScriptChanged, target.FirstPartyScriptChanged),
-		ThirdPartyCookieRejectMode: pick(global.ThirdPartyCookieRejectMode, defaults.ThirdPartyCookieRejectMode, target.ThirdPartyCookieRejectMode),
-		ThirdPartyCookieAdded:      pick(global.ThirdPartyCookieAdded, defaults.ThirdPartyCookieAdded, target.ThirdPartyCookieAdded),
-		FirstPartyCookieAdded:      pick(global.FirstPartyCookieAdded, defaults.FirstPartyCookieAdded, target.FirstPartyCookieAdded),
-		CookieRemoved:              pick(global.CookieRemoved, defaults.CookieRemoved, target.CookieRemoved),
-		ThirdPartyStorageRejectMode: pick(global.ThirdPartyStorageRejectMode, defaults.ThirdPartyStorageRejectMode,
-			target.ThirdPartyStorageRejectMode),
-		ThirdPartyStorageAdded: pick(global.ThirdPartyStorageAdded, defaults.ThirdPartyStorageAdded,
-			target.ThirdPartyStorageAdded),
-		FirstPartyStorageAdded: pick(global.FirstPartyStorageAdded, defaults.FirstPartyStorageAdded,
-			target.FirstPartyStorageAdded),
-		StorageRemoved:    pick(global.StorageRemoved, defaults.StorageRemoved, target.StorageRemoved),
-		StatusBecameError: pick(global.StatusBecameError, defaults.StatusBecameError, target.StatusBecameError),
-		StatusChanged:     pick(global.StatusChanged, defaults.StatusChanged, target.StatusChanged),
-		ConsentChanged:    pick(global.ConsentChanged, defaults.ConsentChanged, target.ConsentChanged),
-		ConsentDegraded:   pick(global.ConsentDegraded, defaults.ConsentDegraded, target.ConsentDegraded),
-		DeniedHost:        pick(global.DeniedHost, defaults.DeniedHost, target.DeniedHost),
-		ScanDegraded:      pick(global.ScanDegraded, defaults.ScanDegraded, target.ScanDegraded),
-	}
+	return target.Over(defaults.Over(global))
 }
 
 // beaconRules collects every rule that applies to a target, in the order the
@@ -480,16 +440,6 @@ func firstModes(a, b []model.ConsentMode) []model.ConsentMode {
 	}
 
 	return []model.ConsentMode{model.ConsentReject}
-}
-
-func firstString(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-
-	return ""
 }
 
 func firstDuration(a, b Duration, fallback time.Duration) time.Duration {
@@ -544,14 +494,4 @@ func firstBool(a, b *bool, fallback bool) bool {
 	}
 
 	return fallback
-}
-
-func firstRobots(vals ...RobotsPolicy) RobotsPolicy {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-
-	return RobotsIgnore
 }

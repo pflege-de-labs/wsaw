@@ -45,16 +45,16 @@ func testApp(t *testing.T, cfg *config.Config) *app.App {
 	}
 }
 
-func TestPluralSettings(t *testing.T) {
+func TestOneOf(t *testing.T) {
 	t.Parallel()
 
-	if got := pluralSettings(1); got != "it" {
-		t.Errorf("pluralSettings(1) = %q, want %q", got, "it")
+	if got := oneOf(1, "it", "them"); got != "it" {
+		t.Errorf("oneOf(1) = %q, want %q", got, "it")
 	}
 
 	for _, n := range []int{0, 2, 7} {
-		if got := pluralSettings(n); got != "them" {
-			t.Errorf("pluralSettings(%d) = %q, want %q", n, got, "them")
+		if got := oneOf(n, "it", "them"); got != "them" {
+			t.Errorf("oneOf(%d) = %q, want %q", n, got, "them")
 		}
 	}
 }

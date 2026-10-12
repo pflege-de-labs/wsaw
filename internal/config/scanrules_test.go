@@ -39,10 +39,7 @@ normalize:
 		t.Fatalf("got %d body identity rules, want 1", len(cfg.Normalize.BodyIdentities))
 	}
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatalf("NormalizeRules: %v", err)
-	}
+	rules := cfg.NormalizeRules()
 
 	if len(rules.BodyIdentities) != 1 {
 		t.Fatalf("the rule did not reach the normalizer: %+v", rules.BodyIdentities)
@@ -176,10 +173,7 @@ func TestShippedExampleConfigIsValid(t *testing.T) {
 		t.Fatalf("the shipped example does not validate: %v", err)
 	}
 
-	rules, err := cfg.NormalizeRules()
-	if err != nil {
-		t.Fatalf("the example's normalize rules could not be built: %v", err)
-	}
+	rules := cfg.NormalizeRules()
 
 	// Building the rules does not compile the patterns; the normalizer does,
 	// and a pattern that does not compile would fail every scan.

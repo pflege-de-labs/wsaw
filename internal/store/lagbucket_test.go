@@ -37,7 +37,7 @@ import (
 // gocloud.dev/blob/driver.Bucket registered under the "lag" scheme, opened
 // through store.Options.ArtifactDir like any other bucket URL, so every
 // injected fault travels through the real blob.Bucket, the real bucket.go and
-// the real bucket_index.go — including their retry policy and their gcerrors
+// the real rebuildmarker.go — including their retry policy and their gcerrors
 // mapping. As with memblob's "mem://", the scheme is registered by a test file
 // and by nothing else, so no shipped binary can resolve it.
 //

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestSortOutcomesIsDeterministic(t *testing.T) {
 		outcome("a", model.ConsentNone),
 	}
 
-	sortOutcomes(outcomes)
+	slices.SortStableFunc(outcomes, compareOutcome)
 
 	var got []string
 	for _, out := range outcomes {
@@ -102,22 +103,22 @@ func TestSortOutcomesIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestLessOutcomeOrdersByTargetThenMode(t *testing.T) {
+func TestCompareOutcomeOrdersByTargetThenMode(t *testing.T) {
 	t.Parallel()
 
 	a := outcome("a", model.ConsentReject)
 	b := outcome("b", model.ConsentAccept)
 
-	if !lessOutcome(a, b) {
+	if compareOutcome(a, b) >= 0 {
 		t.Error("target should decide before consent mode")
 	}
 
-	if lessOutcome(b, a) {
+	if compareOutcome(b, a) <= 0 {
 		t.Error("ordering is not antisymmetric")
 	}
 
 	accept, reject := outcome("a", model.ConsentAccept), outcome("a", model.ConsentReject)
-	if !lessOutcome(accept, reject) {
+	if compareOutcome(accept, reject) >= 0 {
 		t.Error("within a target, the consent mode should decide")
 	}
 }

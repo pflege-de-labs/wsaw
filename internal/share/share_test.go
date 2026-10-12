@@ -313,3 +313,24 @@ func TestAValidityAboveTheMaximumIsRefusedAtStartup(t *testing.T) {
 		t.Error("a default validity above the maximum was accepted")
 	}
 }
+
+// TestPath pins the link path the CLI prints and the server builds, which
+// are one function so they cannot drift.
+func TestPath(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct{ target, want string }{
+		"plain":     {target: "site", want: "/shared/site/reject/scan-1"},
+		"separator": {target: "shop/de?x", want: "/shared/shop%2Fde%3Fx/reject/scan-1"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := share.Path(tc.target, "reject", "scan-1"); got != tc.want {
+				t.Errorf("Path(%q) = %q, want %q", tc.target, got, tc.want)
+			}
+		})
+	}
+}

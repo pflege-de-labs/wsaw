@@ -53,41 +53,6 @@ func storePath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "wsaw.db")
 }
 
-func TestSharePathFor(t *testing.T) {
-	t.Parallel()
-
-	got := sharePathFor("site", "reject", "scan-1")
-
-	if want := "/shared/site/reject/scan-1"; got != want {
-		t.Errorf("sharePathFor = %q, want %q", got, want)
-	}
-}
-
-func TestTrimTrailingSlash(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{in: "https://a.test/", want: "https://a.test"},
-		{in: "https://a.test///", want: "https://a.test"},
-		{in: "https://a.test", want: "https://a.test"},
-		{in: "", want: ""},
-		{in: "///", want: ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			t.Parallel()
-
-			if got := trimTrailingSlash(tc.in); got != tc.want {
-				t.Errorf("trimTrailingSlash(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestLoadShareTargetResolvesLatest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wsaw.db")

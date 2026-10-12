@@ -289,25 +289,11 @@ func storeMigrateApply(ctx context.Context, opts store.Options) error {
 	return nil
 }
 
-// entries writes a count of index entries. It is its own function because
-// plural() appends an "s" and would say "3 entrys", and teaching plural() every
-// English plural would be a worse trade than one more four-line function.
-func entries(n int) string {
-	if n == 1 {
-		return "1 entry"
-	}
-
-	return fmt.Sprintf("%d entries", n)
-}
-
-// plural writes a count with its noun, because a report that says
-// "1 documents" reads as a report nobody checked.
+// plural writes a count with a noun whose plural takes an "s", because a
+// report that says "1 documents" reads as a report nobody checked. Any other
+// plural goes through oneOf.
 func plural(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-
-	return fmt.Sprintf("%d %ss", n, noun)
+	return fmt.Sprintf("%d %s", n, oneOf(n, noun, noun+"s"))
 }
 
 // maxListedArtifacts bounds how many keys a dry run prints by default. An
@@ -329,7 +315,7 @@ const maxListedArtifacts = 20
 // result, approve a baseline or withdraw one, and none of them has any business
 // doing any of those; five methods is the whole of what `wsaw store prune`,
 // `wsaw store sweep` and `wsaw store rebuild-index` do. Closing the store is
-// not on it because the store is closed through the closure openForMaintenance
+// not on it because the store is closed through the closure openStoreFor
 // builds, which holds the concrete handle.
 type maintenanceStore interface {
 	Prune(ctx context.Context, trigger string, now time.Time, r store.Retention) (store.PruneStats, error)
@@ -352,7 +338,7 @@ type maintenance struct {
 	close func()
 }
 
-// openForMaintenance parses the flags every store subcommand shares, loads
+// openStoreFor parses the flags every store subcommand shares, loads
 // configuration, and opens the store.
 //
 // Opening it is not incidental: a store cannot be pruned or swept until its
@@ -367,13 +353,6 @@ type maintenance struct {
 // the way in is a change — a large, one-way one for a store that predates
 // Epic 8. They open through store.OpenForInspection, which refuses a store
 // whose schema is behind rather than upgrading it; see that function.
-func openForMaintenance(
-	ctx context.Context, name string, args []string, extra func(fs *flag.FlagSet),
-) (*maintenance, error) {
-	return openStoreFor(ctx, name, args, extra, nil)
-}
-
-// openStoreFor is openForMaintenance with a say in how the store is opened.
 //
 // The decision is a closure rather than a parameter because it is a function of
 // the parsed flags: whether a rebuild writes is `--verify` and `--dry-run`, and
@@ -457,7 +436,7 @@ func openStoreFor(
 // cmdStorePrune applies the configured retention and reclaims the artifacts it
 // orphans, or reports what doing so would remove (Story 8.5, AC6).
 func cmdStorePrune(ctx context.Context, args []string) error {
-	m, err := openForMaintenance(ctx, "prune", args, nil)
+	m, err := openStoreFor(ctx, "prune", args, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -655,7 +634,7 @@ func trimmed(printed, total, limit int) bool {
 		return false
 	}
 
-	fmt.Printf("  … and %d more (pass --limit=0 to list them all)\n", total-limit)
+	andMore("  ", limit, total)
 
 	return true
 }
@@ -665,10 +644,10 @@ func trimmed(printed, total, limit int) bool {
 func cmdStoreSweep(ctx context.Context, args []string) error {
 	var allowEmptyIndex bool
 
-	m, err := openForMaintenance(ctx, "sweep", args, func(fs *flag.FlagSet) {
+	m, err := openStoreFor(ctx, "sweep", args, func(fs *flag.FlagSet) {
 		fs.BoolVar(&allowEmptyIndex, "allow-empty-index", false,
 			"sweep even though this store holds no results, deleting everything in the bucket")
-	})
+	}, nil)
 	if err != nil {
 		return err
 	}
@@ -867,7 +846,7 @@ func reportVacuum(stats store.VacuumStats, dryRun bool) {
 // reports what doing so would change, or verifies the two against each other
 // (Story 8.10).
 //
-// It shares openForMaintenance with the prune and the sweep, so it inherits the
+// It shares openStoreFor with the prune and the sweep, so it inherits the
 // same configuration, the same logging and the same way in — a rebuild of a SQL
 // store's index needs that store's schema to be current, and going through a
 // second door would be a second answer to what "open the configured store"
@@ -977,7 +956,7 @@ func reportRebuild(stats store.RebuildStats, mode store.RebuildMode, limit int) 
 			fmt.Printf("             %s\n", scan)
 		}
 
-		andMore(len(stats.NewerDocuments), stats.DocumentsNewer)
+		andMore(reportIndent, len(stats.NewerDocuments), stats.DocumentsNewer)
 	}
 
 	reportRebuiltIndex(stats, mode)
@@ -1055,20 +1034,20 @@ func reportRebuiltIndex(stats store.RebuildStats, mode store.RebuildMode) {
 
 	fmt.Println()
 	fmt.Printf("index:     %s recorded before this run\n", plural(stats.EntriesFound, "scan"))
-	fmt.Printf("added:     %s %s added\n", entries(stats.EntriesAdded), verb)
+	fmt.Printf("added:     %d %s %s added\n", stats.EntriesAdded, oneOf(stats.EntriesAdded, "entry", "entries"), verb)
 
 	if stats.EntriesRepaired > 0 {
-		fmt.Printf("repaired:  %s %s completed, having been written only in part\n",
-			entries(stats.EntriesRepaired), verb)
+		fmt.Printf("repaired:  %d %s %s completed, having been written only in part\n",
+			stats.EntriesRepaired, oneOf(stats.EntriesRepaired, "entry", "entries"), verb)
 	}
 
 	if stats.EntriesRefreshed > 0 {
-		fmt.Printf("refreshed: %s %s re-derived, their summary no longer matching the document\n",
-			entries(stats.EntriesRefreshed), verb)
+		fmt.Printf("refreshed: %d %s %s re-derived, their summary no longer matching the document\n",
+			stats.EntriesRefreshed, oneOf(stats.EntriesRefreshed, "entry", "entries"), verb)
 	}
 
-	fmt.Printf("unchanged: %s already agreed with the document\n", entries(stats.EntriesUnchanged))
-	fmt.Printf("removed:   %s — this command removes none\n", entries(stats.EntriesRemoved))
+	fmt.Printf("unchanged: %d %s already agreed with the document\n", stats.EntriesUnchanged, oneOf(stats.EntriesUnchanged, "entry", "entries"))
+	fmt.Printf("removed:   %d %s — this command removes none\n", stats.EntriesRemoved, oneOf(stats.EntriesRemoved, "entry", "entries"))
 
 	reportPrunedDocuments(stats, mode)
 
@@ -1080,8 +1059,8 @@ func reportRebuiltIndex(stats store.RebuildStats, mode store.RebuildMode) {
 	}
 
 	if stats.EntriesStale > 0 {
-		fmt.Printf("kept:      %s %s a document the bucket does not hold, and %s left in place\n",
-			entries(stats.EntriesStale),
+		fmt.Printf("kept:      %d %s %s a document the bucket does not hold, and %s left in place\n",
+			stats.EntriesStale, oneOf(stats.EntriesStale, "entry", "entries"),
 			oneOf(stats.EntriesStale, "names", "name"),
 			oneOf(stats.EntriesStale, "was", "were"))
 		fmt.Println("           rather than deleted: a lost object and a listing that has not caught")
@@ -1119,8 +1098,12 @@ func reportPrunedDocuments(stats store.RebuildStats, mode store.RebuildMode) {
 		fmt.Printf("             %s\n", scan)
 	}
 
-	andMore(len(stats.PrunedScans), stats.DocumentsPruned)
+	andMore(reportIndent, len(stats.PrunedScans), stats.DocumentsPruned)
 }
+
+// reportIndent lines a rebuild report's listed items up under the text of
+// the "label:     " column above them.
+const reportIndent = "             "
 
 // andMore says how many of a list the report did not print.
 //
@@ -1128,12 +1111,12 @@ func reportPrunedDocuments(stats store.RebuildStats, mode store.RebuildMode) {
 // the report receives is already short and the count beside it is the true one.
 // Saying nothing would present the short list as the whole of it, which is the
 // quiet kind of wrong this command exists to avoid.
-func andMore(listed, total int) {
+func andMore(indent string, listed, total int) {
 	if total <= listed {
 		return
 	}
 
-	fmt.Printf("             … and %d more (pass --limit=0 to list them all)\n", total-listed)
+	fmt.Printf("%s… and %d more (pass --limit=0 to list them all)\n", indent, total-listed)
 }
 
 // reportRebuildEvidence is AC8: what the rebuilt results name and the bucket
@@ -1158,7 +1141,7 @@ func reportRebuildEvidence(stats store.RebuildStats) {
 		fmt.Printf("             %s — %s\n", gone.Scan, gone.Artifact)
 	}
 
-	andMore(len(stats.MissingEvidence), stats.EvidenceMissing)
+	andMore(reportIndent, len(stats.MissingEvidence), stats.EvidenceMissing)
 }
 
 // oneOf picks between the singular and the plural form of a word for a count,
