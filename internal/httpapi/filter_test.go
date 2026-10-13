@@ -108,7 +108,7 @@ func TestNeverScannedRowCarriesEmptyFilterData(t *testing.T) {
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	for _, want := range []string{`data-severity=""`, `data-outcome=""`, `data-modes="none reject"`} {
+	for _, want := range []string{`data-severity=""`, `data-outcome=""`, `data-modes="none"`, `data-modes="reject"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("a never-scanned row's filter data was not empty as expected: missing %s\n%s", want, html)
 		}

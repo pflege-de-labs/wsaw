@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -9,80 +10,95 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
-// The target list is compact because "none" and "reject" usually produce the
-// same result, and it flags a target whose last scan found anything
-// meaningful against its baseline. Neither is written into a story yet: both
-// were added on explicit request in the session that introduced them
-// (AGENTS.md §1's flag-it-if-not-in-a-story rule).
+// Story 5.38: every consent mode keeps its own tile, whatever its last scan
+// found, so one mode's finding never sits behind another mode's tile.
 
-// A reader should only have to look at "none" and "reject" as one line when
-// they genuinely agree.
-func TestDashboardFoldsNoneAndRejectWhenTheyAgree(t *testing.T) {
+// AC1: identical "none" and "reject" scans are still two tiles, each with its
+// own link.
+func TestDashboardNeverMergesAgreeingModes(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
 
-	// seed() produces the same request set every time, so two default scans
-	// agree on termination, outcome and every count.
+	// seed() produces the same request set every time, so these agree on
+	// termination, outcome and every count.
 	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
 	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
-	f.seed("scan-accept", model.ConsentAccept, time.Now(), nil)
 
 	html := body(t, f.get("/", "Accept", "text/html"))
-
-	if !strings.Contains(html, "none / reject") {
-		t.Error(`identical "none" and "reject" scans were not folded into one row`)
-	}
-
-	// Folding must not swallow either link: the reader still needs a way to
-	// open (or rescan) the mode the row represents.
-	if !strings.Contains(html, `href="/results/site/none/scan-none"`) &&
-		!strings.Contains(html, `href="/results/site/reject/scan-reject"`) {
-		t.Error("the folded row lost its link to the underlying scan")
-	}
-}
-
-// A disagreement between "did nothing" and "explicitly rejected" is itself a
-// finding, so it must not be hidden behind the fold.
-func TestDashboardKeepsNoneAndRejectSeparateWhenTheyDisagree(t *testing.T) {
-	t.Parallel()
-
-	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
-
-	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
-	f.seed("scan-reject", model.ConsentReject, time.Now(), func(r *model.Result) {
-		// Reject actually blocked the tracker that "none" let through.
-		r.Requests = r.Requests[:1]
-	})
-
-	html := body(t, f.get("/", "Accept", "text/html"))
-
-	if strings.Contains(html, "none / reject") {
-		t.Error(`"none" and "reject" were folded despite disagreeing`)
-	}
 
 	for _, want := range []string{
 		`href="/results/site/none/scan-none"`,
 		`href="/results/site/reject/scan-reject"`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("a disagreeing series lost its own row/link; looked for %s", want)
+			t.Errorf("a mode lost its own tile; looked for %s", want)
 		}
+	}
+
+	if strings.Contains(html, "none / reject") {
+		t.Error(`"none" and "reject" were merged into one tile`)
 	}
 }
 
-// Two never-scanned series (e.g. "accept" configured but never run) count as
-// agreeing, so an all-empty target still gets the compact treatment.
-func TestDashboardFoldsNeverScannedNoneAndReject(t *testing.T) {
+// AC1: two never-scanned series are two tiles too.
+func TestDashboardNeverMergesNeverScannedModes(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
 
 	html := body(t, f.get("/", "Accept", "text/html"))
 
-	if !strings.Contains(html, "none / reject") {
-		t.Error(`two never-scanned series were not folded`)
+	for _, want := range []string{`data-modes="none"`, `data-modes="reject"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("a never-scanned mode has no tile of its own; looked for %s", want)
+		}
 	}
+}
+
+// AC1: scans that agree on every figure the old fold compared, but not on
+// severity, each show their own severity.
+func TestDashboardShowsEachModesOwnSeverity(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, httpapi.Options{WebUI: true}, nil)
+
+	baseline := f.seed("scan-baseline", model.ConsentReject, time.Now().Add(-time.Hour), func(r *model.Result) {
+		r.Requests = r.Requests[:1]
+	})
+
+	if _, err := f.store.SetBaseline("site", model.ConsentReject, baseline.ScanID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same requests in both modes; only "reject" has a baseline the tracker
+	// is new against, which makes its change critical.
+	f.seed("scan-none", model.ConsentNone, time.Now(), nil)
+	f.seed("scan-reject", model.ConsentReject, time.Now(), nil)
+
+	html := body(t, f.get("/", "Accept", "text/html"))
+
+	if got := tileSeverity(t, html, model.ConsentReject); got != "critical" {
+		t.Errorf("the reject tile shows severity %q, want its own critical", got)
+	}
+
+	if got := tileSeverity(t, html, model.ConsentNone); got == "critical" {
+		t.Error("the none tile shows reject's critical severity")
+	}
+}
+
+// tileSeverity reads the data-severity of the board tile for mode.
+func tileSeverity(t *testing.T, html string, mode model.ConsentMode) string {
+	t.Helper()
+
+	re := regexp.MustCompile(`data-severity="([^"]*)"\s+data-outcome="[^"]*"\s+data-modes="` + string(mode) + `"`)
+
+	m := re.FindStringSubmatch(html)
+	if m == nil {
+		t.Fatalf("no %s tile on the board", mode)
+	}
+
+	return m[1]
 }
 
 // Story 5.8, AC1: the list must show whether the last scan found anything,

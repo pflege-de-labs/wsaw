@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -255,42 +256,58 @@ func TestAttachScheduleRunsBeforeShapeWatchboard(t *testing.T) {
 	}
 }
 
-func TestModeColumns(t *testing.T) {
+// Story 5.38, AC2: columns follow a fixed mode order, not the first target's,
+// and a target missing a mode gets a nil cell so its tiles keep their columns.
+func TestModeColumnsAndCells(t *testing.T) {
 	t.Parallel()
 
-	t.Run("folded row contributes both modes", func(t *testing.T) {
-		t.Parallel()
+	row := func(m model.ConsentMode) modeRow { return modeRow{Series: SeriesView{Mode: m}} }
 
-		g := envGroup{Targets: []watchTarget{{targetRow: targetRow{Rows: []modeRow{
-			{Label: "none / reject", Folded: true},
-			{Label: "accept"},
-		}}}}}
+	g := envGroup{Targets: []watchTarget{
+		{targetRow: targetRow{Rows: []modeRow{row(model.ConsentAccept)}}},
+		{targetRow: targetRow{Rows: []modeRow{row(model.ConsentAccept), row(model.ConsentReject), row(model.ConsentNone)}}},
+	}}
+	alignCells(g)
 
-		got := g.ModeColumns()
-		want := []string{"none", "reject", "accept"}
+	want := []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
+	if got := g.ModeColumns(); !slices.Equal(got, want) {
+		t.Fatalf("ModeColumns() = %v, want %v", got, want)
+	}
 
-		if len(got) != len(want) {
-			t.Fatalf("ModeColumns() = %v, want %v", got, want)
+	for ti, tg := range g.Targets {
+		if len(tg.Cells) != len(want) {
+			t.Fatalf("target %d has %d cells, want %d", ti, len(tg.Cells), len(want))
 		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("ModeColumns()[%d] = %q, want %q", i, got[i], want[i])
+
+		for c, cell := range tg.Cells {
+			switch {
+			case cell == nil && ti == 0 && c < 2:
+				// accept-only target: none and reject are gaps.
+			case cell == nil:
+				t.Errorf("target %d column %s is empty, want its own tile", ti, want[c])
+			case cell.Series.Mode != want[c]:
+				t.Errorf("target %d column %s holds a %s tile", ti, want[c], cell.Series.Mode)
 			}
 		}
-	})
+	}
 
-	t.Run("one mode", func(t *testing.T) {
-		t.Parallel()
+	if g.Targets[0].Cells[0] != nil || g.Targets[0].Cells[1] != nil {
+		t.Error("an accept-only target filled the none/reject columns")
+	}
 
-		g := envGroup{Targets: []watchTarget{{targetRow: targetRow{Rows: []modeRow{
-			{Label: "accept"},
-		}}}}}
+	ui, err := newUIRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-		got := g.ModeColumns()
-		if len(got) != 1 || got[0] != "accept" {
-			t.Errorf("ModeColumns() = %v, want [accept]", got)
-		}
-	})
+	var buf bytes.Buffer
+	if err := ui.tmpl.ExecuteTemplate(&buf, "dashboard.html", page{Data: dashboardData{Groups: []envGroup{g}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := strings.Count(buf.String(), "not configured"); n != 2 {
+		t.Errorf("rendered %d \"not configured\" cells, want 2 for the accept-only target", n)
+	}
 }
 
 // The cycle bar's width must never be an inline "style" attribute: the
@@ -311,7 +328,6 @@ func TestCycleBarHasNoInlineStyleAttribute(t *testing.T) {
 
 	now := time.Now()
 	row := modeRow{
-		Label: "accept",
 		Series: SeriesView{
 			Mode:     model.ConsentAccept,
 			LastScan: &store.Summary{StartedAt: now.Add(-30 * time.Minute)},
@@ -332,7 +348,7 @@ func TestCycleBarHasNoInlineStyleAttribute(t *testing.T) {
 	p := page{
 		Data: dashboardData{
 			Targets: []targetRow{target},
-			Groups:  []envGroup{{Label: "env", Targets: []watchTarget{{targetRow: target}}}},
+			Groups:  []envGroup{{Label: "env", Targets: []watchTarget{{targetRow: target, Cells: []*modeRow{&row}}}}},
 		},
 	}
 
