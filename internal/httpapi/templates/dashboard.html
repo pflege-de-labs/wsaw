@@ -92,13 +92,19 @@
           <span class="watch-host" title="{{$t.URL}}">{{$t.Host}}</span>
         </div>
 
-        {{range $t.Rows}}
+        {{range $t.Cells}}
+          {{if not .}}
+          {{/* The target does not run this column's mode: an explicit cell,
+               so its other tiles stay under their own headers (Story 5.38,
+               AC2). */}}
+          <div class="watch-tile is-unconfigured"><span class="muted">not configured</span></div>
+          {{else}}
           {{$row := .}}
           {{$mode := .Series.Mode}}
-          <div class="{{.TileClass}}{{if .Folded}} is-folded{{end}}"
+          <div class="{{.TileClass}}"
                data-severity="{{.Series.Severity}}"
                data-outcome="{{rowOutcome .Series}}"
-               data-modes="{{rowModes .Label}}">
+               data-modes="{{$mode}}">
 
             {{/* Title line: how this scan deviates from the one it is
                  compared against, and the tile's hit area — the whole tile
@@ -107,9 +113,7 @@
                  screen reader away (Story 5.28). The qualifier says what
                  the deviation is measured against, because "no change"
                  against an approved baseline and "no change" against an
-                 unreviewed scan are different claims. A folded row keeps an
-                 inline mode label, since the column header above it
-                 describes two columns it spans. */}}
+                 unreviewed scan are different claims. */}}
             {{with .Series.LastScan}}
               <a class="{{$row.ScanClass}}"
                  href="/results/{{$t.Name}}/{{$mode}}/{{.ScanID}}"
@@ -118,7 +122,6 @@
             {{else}}
               <span class="watch-scan muted">no observation yet</span>
             {{end}}
-            {{if .Folded}}<span class="watch-tile-mode">{{.Label}}</span>{{end}}
 
             <div class="watch-tile-status">
               {{with .Series.LastScan}}
@@ -179,6 +182,7 @@
               </div>
             {{end}}
           </div>
+          {{end}}
         {{end}}
       </div>
     {{end}}

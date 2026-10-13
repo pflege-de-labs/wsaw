@@ -144,14 +144,6 @@ func uiFuncs() template.FuncMap {
 		"filterModeValues": func() []model.ConsentMode {
 			return []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
 		},
-		// rowModes turns a modeRow's display label ("reject", or the folded
-		// "none / reject") into the space-separated mode tokens a filter
-		// checkbox value can match against — a folded row represents both
-		// modes it agreed on, not only the one its Series happens to carry
-		// (Story 5.22, AC1).
-		"rowModes": func(label string) string {
-			return strings.ReplaceAll(label, " / ", " ")
-		},
 		// rowOutcome reads the consent outcome for a target-list row's data
 		// attribute. A series with no last scan yet has none to report, and
 		// an empty attribute correctly matches no outcome filter rather than
@@ -356,12 +348,8 @@ type targetRow struct {
 	TargetView
 
 	// Rows is the target list's rendering of Series: one row per consent
-	// mode, except "none" and "reject" fold into a single row when their
-	// last scans agreed on every signal the list shows. The two usually
-	// produce the same result, so a reader should only have to look twice
-	// when they didn't. This folding is not yet written into Story 5.8 — a
-	// deviation made on explicit request in the session that added it,
-	// flagged per AGENTS.md §1.
+	// mode, never merged, so one mode's finding cannot sit behind another
+	// mode's tile (Story 5.38, AC1).
 	Rows []modeRow
 
 	// Severity is the worst Severity across the target's series, condensed
@@ -372,11 +360,9 @@ type targetRow struct {
 	Severity diff.Severity
 }
 
-// modeRow is one displayed row of a target's consent modes: either a single
-// mode's series, or the series "none" and "reject" agreed on — the fold
-// picks either one to show, since by definition they show the same thing.
+// modeRow is one displayed row of a target's consent modes: one mode's
+// series.
 type modeRow struct {
-	Label  string
 	Series SeriesView
 
 	// NextRun and LastRun are this series' schedule entry, or zero where the
@@ -385,10 +371,6 @@ type modeRow struct {
 	// its own, so it cannot claim a rhythm the daemon is not keeping.
 	NextRun time.Time
 	LastRun time.Time
-
-	// Folded marks the "none / reject" row, which covers two mode columns
-	// and therefore keeps an inline mode label of its own.
-	Folded bool
 }
 
 // newTargetRow groups a TargetView's series into modeRows and rolls its
@@ -409,61 +391,14 @@ func newTargetRow(v TargetView) targetRow {
 	return row
 }
 
-// modeRows groups a target's series for compact display. See targetRow.Rows.
+// modeRows gives each of a target's series its own row. See targetRow.Rows.
 func modeRows(series []SeriesView) []modeRow {
-	var (
-		none, reject *SeriesView
-		rest         []SeriesView
-		rows         []modeRow
-	)
-
-	for i := range series {
-		switch series[i].Mode {
-		case model.ConsentNone:
-			none = &series[i]
-		case model.ConsentReject:
-			reject = &series[i]
-		default:
-			rest = append(rest, series[i])
-		}
-	}
-
-	switch {
-	case none != nil && reject != nil && sameOutcome(none.LastScan, reject.LastScan):
-		rows = append(rows, modeRow{Label: "none / reject", Series: *none, Folded: true})
-	case none != nil && reject != nil:
-		// They disagree: both stay fully visible rather than picking one to
-		// show and burying the other, since the disagreement is itself the
-		// finding worth noticing.
-		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
-		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
-	case none != nil:
-		rows = append(rows, modeRow{Label: string(model.ConsentNone), Series: *none})
-	case reject != nil:
-		rows = append(rows, modeRow{Label: string(model.ConsentReject), Series: *reject})
-	}
-
-	for _, sv := range rest {
-		rows = append(rows, modeRow{Label: string(sv.Mode), Series: sv})
+	rows := make([]modeRow, 0, len(series))
+	for _, sv := range series {
+		rows = append(rows, modeRow{Series: sv})
 	}
 
 	return rows
-}
-
-// sameOutcome reports whether two series' last scans are indistinguishable
-// on every signal the target list shows: termination, consent outcome, and
-// the three request counts. Two never-scanned series count as the same; one
-// scanned and one not never does.
-func sameOutcome(a, b *store.Summary) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-
-	return a.Termination == b.Termination &&
-		a.ConsentOutcome == b.ConsentOutcome &&
-		a.Requests == b.Requests &&
-		a.ThirdPartyDomains == b.ThirdPartyDomains &&
-		a.PreConsentDomains == b.PreConsentDomains
 }
 
 type scheduleRow struct {

@@ -835,17 +835,9 @@ button:hover { border-color: var(--accent); }
   .watch-modes { display: none; }
 }
 
-/* A folded "none / reject" tile covers two of those columns, so it spans
-   them and keeps its own inline label — the column header above it no longer
-   describes it on its own. */
-.watch-tile.is-folded { grid-column: span 2; }
-
-.watch-tile-mode {
-  font: 600 0.68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
+/* A mode the target does not run holds its column open, dashed so it does
+   not read as a scan (Story 5.38, AC2). */
+.watch-tile.is-unconfigured { border-style: dashed; }
 
 /* The tile's title line: how the last scan deviates from what it is compared
    against. The deviation is what differs between renders — three absolute

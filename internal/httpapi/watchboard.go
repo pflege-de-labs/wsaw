@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/pflege-de-labs/wsaw/internal/diff"
+	"github.com/pflege-de-labs/wsaw/internal/model"
 )
 
 // The target list as a watchboard.
@@ -86,23 +87,25 @@ func (g envGroup) Count() string {
 	return plural(len(g.Targets), "target") + " · " + plural(series, "series")
 }
 
-// ModeColumns is the group's consent modes in the order its tiles appear, so
-// the column header above them names each one once. A folded "none / reject"
-// row contributes both of its modes, because the tile spans both columns.
-func (g envGroup) ModeColumns() []string {
-	var (
-		seen = map[string]bool{}
-		out  []string
-	)
+// boardModes is the fixed left-to-right order of the board's mode columns.
+var boardModes = []model.ConsentMode{model.ConsentNone, model.ConsentReject, model.ConsentAccept}
 
+// ModeColumns is the group's consent modes in boardModes order, limited to
+// the modes some target in the group runs. The order is fixed rather than
+// taken from whichever target comes first, so a column always means the same
+// mode (Story 5.38, AC2).
+func (g envGroup) ModeColumns() []model.ConsentMode {
+	used := map[model.ConsentMode]bool{}
 	for _, t := range g.Targets {
 		for _, r := range t.Rows {
-			for _, mode := range strings.Split(r.Label, "/") {
-				if mode = strings.TrimSpace(mode); mode != "" && !seen[mode] {
-					seen[mode] = true
-					out = append(out, mode)
-				}
-			}
+			used[r.Series.Mode] = true
+		}
+	}
+
+	var out []model.ConsentMode
+	for _, mode := range boardModes {
+		if used[mode] {
+			out = append(out, mode)
 		}
 	}
 
@@ -112,6 +115,12 @@ func (g envGroup) ModeColumns() []string {
 // watchTarget is one target as the board draws it.
 type watchTarget struct {
 	targetRow
+
+	// Cells is Rows laid out under the group's ModeColumns, nil where the
+	// target does not run that column's mode. The grid places tiles by
+	// position, so without the gap a tile would sit under another mode's
+	// header (Story 5.38, AC2).
+	Cells []*modeRow
 }
 
 // Host is the target's URL without its scheme. The scheme is the same on
@@ -340,15 +349,33 @@ func groupByLabel(rows []targetRow, key string, collapsed map[string]bool) []env
 			label = unlabelledGroup
 		}
 
-		out = append(out, envGroup{
+		g := envGroup{
 			Label:     label,
 			Value:     value,
 			Targets:   byValue[value],
 			Collapsed: collapsed[value],
-		})
+		}
+		alignCells(g)
+		out = append(out, g)
 	}
 
 	return out
+}
+
+// alignCells fills each target's Cells from its Rows, one per group column.
+func alignCells(g envGroup) {
+	cols := g.ModeColumns()
+	for i := range g.Targets {
+		t := &g.Targets[i]
+		t.Cells = make([]*modeRow, len(cols))
+		for c, mode := range cols {
+			for k := range t.Rows {
+				if t.Rows[k].Series.Mode == mode {
+					t.Cells[c] = &t.Rows[k]
+				}
+			}
+		}
+	}
 }
 
 // handleUIFilter stores the viewer's filter text and "hosts only" choice —

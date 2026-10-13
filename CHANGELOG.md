@@ -9,6 +9,16 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- The dashboard no longer merges a target's `none` and `reject` tiles into one
+  "none / reject" tile when their last scans looked alike. The merge compared
+  request counts, not hosts or severity, so a critical `reject` finding could
+  sit behind a quiet `none` tile with no link of its own. Every consent mode
+  now keeps its own tile, and each tile sits under its own mode's column: a
+  mode a target does not run shows as a "not configured" cell instead of
+  shifting the target's other tiles under the wrong header (Story 5.38).
+
 ## [0.6.0] - 2026-10-12
 
 Consent rules reach into frames, so Sourcepoint and other CMPs that draw their
