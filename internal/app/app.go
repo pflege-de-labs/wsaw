@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/browser"
@@ -36,8 +37,9 @@ import (
 
 // App holds everything a running wsaw needs.
 type App struct {
-	Config  *config.Config
-	Targets []config.Resolved
+	// Config is the configuration the process started with. A reload never
+	// replaces it: one that moved anything Config was built into is refused.
+	Config *config.Config
 
 	Logger  *slog.Logger
 	Metrics *metrics.Registry
@@ -72,6 +74,15 @@ type App struct {
 	fallback *isolationFallback
 
 	closers []func() error
+
+	// reloadMu guards what an accepted reload replaces: the resolved targets
+	// and the configuration they were resolved from (Story 3.4).
+	reloadMu sync.RWMutex
+	targets  []config.Resolved
+	// resolvedFrom is the configuration of the last accepted reload, nil
+	// before the first. Its reloadable sections, defaults among them, are
+	// what a target resolved later from a typed URL inherits.
+	resolvedFrom *config.Config
 }
 
 // Options are the inputs that come from flags rather than the config file.
@@ -124,7 +135,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 		return nil, fmt.Errorf("resolving targets: %w", err)
 	}
 
-	a.Targets = targets
+	a.targets = targets
 
 	if err := a.openStore(ctx); err != nil {
 		a.closeAfterFailedStart()
@@ -840,7 +851,7 @@ func (a *App) buildScanner() error {
 // how often, so an operator can tell from the log alone which targets store
 // possibly personal data (Story 1.11, AC16).
 func (a *App) logBodyStorage() {
-	for _, t := range a.Targets {
+	for _, t := range a.Targets() {
 		if !t.Bodies.Enabled() {
 			continue
 		}
@@ -863,9 +874,29 @@ func (a *App) Normalizer() (*normalize.Normalizer, error) {
 	return normalize.New(rules)
 }
 
+// Targets returns the resolved targets, as of the last accepted reload.
+func (a *App) Targets() []config.Resolved {
+	a.reloadMu.RLock()
+	defer a.reloadMu.RUnlock()
+
+	return a.targets
+}
+
+// Reload adopts an accepted reload: the targets resolved from cfg, and cfg
+// itself for targets resolved later from a typed URL. Ad-hoc scans read
+// both, so without this they would go on scanning with the settings the
+// process started with however many reloads were accepted (Story 3.4).
+func (a *App) Reload(cfg *config.Config, targets []config.Resolved) {
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
+
+	a.resolvedFrom = cfg
+	a.targets = targets
+}
+
 // TargetByName finds a resolved target.
 func (a *App) TargetByName(name string) (config.Resolved, bool) {
-	for _, t := range a.Targets {
+	for _, t := range a.Targets() {
 		if t.Name == name {
 			return t, true
 		}

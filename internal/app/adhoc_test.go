@@ -113,6 +113,30 @@ func TestAdHocCooldownRefusesAnAddressScannedTooRecently(t *testing.T) {
 	}
 }
 
+// A typed URL inherits the defaults of the last accepted reload, as a
+// configured target does, not the ones the process started with (Story 3.4).
+func TestAdHocTargetFollowsAReloadedDefault(t *testing.T) {
+	t.Parallel()
+
+	a := adHocApp(t, nil)
+
+	next := minimalConfig(t)
+	next.API = a.Config.API
+	next.Defaults.MinInterval = config.Duration(2 * time.Hour)
+
+	targets, err := next.ResolveTargets(a.Secrets)
+	if err != nil {
+		t.Fatalf("ResolveTargets: %v", err)
+	}
+
+	a.Reload(next, targets)
+
+	got := a.resolveAdHocTarget("example.com", "https://example.com/", model.ConsentReject)
+	if got.MinInterval != 2*time.Hour {
+		t.Errorf("MinInterval = %v, want the reloaded default 2h", got.MinInterval)
+	}
+}
+
 func TestAdHocCooldownIsSkippedWithoutAMinimumInterval(t *testing.T) {
 	t.Parallel()
 

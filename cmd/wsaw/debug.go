@@ -88,7 +88,7 @@ func cmdDebug(ctx context.Context, args []string) error {
 		}
 	}()
 
-	target := a.Targets[0]
+	target := a.Targets()[0]
 	target.HardTimeout = *timeout
 
 	fmt.Fprintf(os.Stderr, "scanning %s in %s mode with %s\n", url, consentMode, a.Chrome)
@@ -222,7 +222,7 @@ func cmdRulesTest(ctx context.Context, args []string) error {
 
 	defer func() { _ = a.Close() }()
 
-	out, scanErr := a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceCLI), a.Targets[0], consentMode)
+	out, scanErr := a.Scanner.Scan(scanner.WithSource(ctx, scanner.SourceCLI), a.Targets()[0], consentMode)
 	if out.Result == nil {
 		return scanErr
 	}

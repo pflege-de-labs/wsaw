@@ -75,7 +75,7 @@ func cmdScan(ctx context.Context, args []string) int {
 		}
 	}()
 
-	targets := a.Targets
+	targets := a.Targets()
 
 	if *target != "" {
 		t, ok := a.TargetByName(*target)
