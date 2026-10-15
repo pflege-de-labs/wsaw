@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "2.3"
+const SchemaVersion = "2.4"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -224,6 +224,12 @@ type Environment struct {
 	BrowserRuntime string `json:"browserRuntime,omitempty"`
 	// BrowserImage is the container image, when containerised.
 	BrowserImage string `json:"browserImage,omitempty"`
+	// BrowserImageID identifies what BrowserImage held when it rendered the
+	// scan: the digest of the image's configuration, as the runtime reports
+	// it. A name can be moved to another image — a pulled tag is, on every
+	// pull — so it is the ID that says which browser a result came from, and
+	// which stored scans still need an image (Story 6.13, AC9).
+	BrowserImageID string `json:"browserImageId,omitempty"`
 	// BrowserSandbox reports whether Chrome's own sandbox was active. In a
 	// container that depends on the image: the default one turns it off and
 	// leaves the container as the only boundary, one that declares

@@ -30,6 +30,9 @@ func cmdBrowser(ctx context.Context, args []string) error {
 	case "build":
 		return cmdBrowserBuild(ctx, rest, os.Stdout, os.Stderr)
 
+	case cmdNamePrune:
+		return cmdBrowserPrune(ctx, rest, os.Stdout, os.Stderr)
+
 	case cmdNameHelp, "-h", argHelp:
 		browserUsage(os.Stdout)
 
@@ -50,6 +53,9 @@ Usage:
   wsaw browser build [--runtime auto|podman|docker] [--base alpine|debian]
                      [--chromium-version V] [--timeout D]
                      Build the per-scan browser image on this machine
+  wsaw browser prune [--runtime auto|podman|docker] [--keep N | --keep-referenced]
+                     [--dry-run] [--timeout D] [-config FILE]
+                     Remove browser images the refresh made and no longer needs
 
 wsaw does not distribute Chromium. "build" makes the browser image locally,
 from the build files embedded in this binary, downloading the base image and
@@ -60,6 +66,12 @@ serves, so nothing is ever pulled in its place.
   --base alpine   builds %s, the image wsaw uses by default
   --base debian   builds %s, a newer Chromium from a dated
                   Debian snapshot; name it in browser.container.image to use it
+
+"prune" applies the rule browser.container.refreshKeep or refreshKeepReferenced
+sets — or --keep / --keep-referenced for this run — to the images the browser
+image refresh made. It never removes the image in service, the one the
+configuration names, the newest one the refresh made, or any image the refresh
+did not make, and the runtime refuses to remove one a container is running.
 `, container.ImageName, container.DefaultImage,
 		container.ImageTag(browser.ChromiumVersion(browser.BaseDebian)))
 }

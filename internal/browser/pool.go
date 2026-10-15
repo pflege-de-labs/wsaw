@@ -45,6 +45,10 @@ type Pool struct {
 	idle   []*Browser
 	live   int
 	closed bool
+
+	// generation counts Switch calls. Every browser records the one it was
+	// launched in, and one from an earlier generation is never handed out.
+	generation uint64
 }
 
 // NewPool creates a pool. It does not launch anything yet; browsers start on
@@ -160,6 +164,14 @@ func (p *Pool) take(ctx context.Context) (*Browser, error) {
 			return p.launch(ctx)
 		}
 
+		if p.stale(candidate) {
+			// Retired, not counted as a restart: it did nothing wrong, it was
+			// only launched from what the pool has switched away from.
+			p.closeBrowser(candidate)
+
+			continue
+		}
+
 		if reason, ok := p.shouldRecycle(ctx, candidate); ok {
 			p.discard(candidate, reason)
 
@@ -184,10 +196,16 @@ func (p *Pool) shouldRecycle(ctx context.Context, b *Browser) (string, bool) {
 }
 
 func (p *Pool) launch(ctx context.Context) (*Browser, error) {
-	b, err := Launch(ctx, p.launchOptions())
+	p.mu.Lock()
+	opts, generation := p.opts.Launch, p.generation
+	p.mu.Unlock()
+
+	b, err := Launch(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
+
+	b.generation = generation
 
 	p.mu.Lock()
 
@@ -222,7 +240,7 @@ func (p *Pool) put(b *Browser) {
 		p.mu.Unlock()
 		p.closeBrowser(b)
 
-	case b.dead.Load():
+	case b.dead.Load(), b.generation != p.generation:
 		p.mu.Unlock()
 		p.closeBrowser(b)
 
@@ -292,6 +310,44 @@ func (p *Pool) ProbeBrowserContexts(ctx context.Context) error {
 	lease.Release()
 
 	return nil
+}
+
+// Switch makes every browser the pool launches from now on come from launcher
+// and carry identity (Story 6.13, AC5). A scan running on a browser launched
+// before it finishes there; that browser is closed when the scan releases it,
+// and an idle one is closed now, so none of them serves another scan. The
+// pool is never without something to launch: the new launcher is in place
+// before the first old browser goes.
+//
+// Every other launch option, the isolation fallback included, is kept as it
+// is.
+func (p *Pool) Switch(launcher ContainerLauncher, identity Identity) {
+	p.mu.Lock()
+
+	p.opts.Launch.Container = launcher
+	p.opts.Launch.Identity = identity
+	p.generation++
+
+	idle := p.idle
+	p.idle = nil
+
+	p.mu.Unlock()
+
+	for _, b := range idle {
+		p.closeBrowser(b)
+	}
+}
+
+// Identity reports what a browser launched now would be.
+func (p *Pool) Identity() Identity {
+	return p.launchOptions().Identity
+}
+
+func (p *Pool) stale(b *Browser) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return b.generation != p.generation
 }
 
 func (p *Pool) useProcessIsolation() {

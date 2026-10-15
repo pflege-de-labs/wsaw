@@ -35,7 +35,7 @@ func cmdStore(ctx context.Context, args []string) error {
 	case "migrate":
 		return cmdStoreMigrate(ctx, rest)
 
-	case "prune":
+	case cmdNamePrune:
 		return cmdStorePrune(ctx, rest)
 
 	case "sweep":

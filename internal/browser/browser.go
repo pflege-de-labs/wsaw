@@ -65,8 +65,25 @@ type Options struct {
 	// browser whatever it is configured to do.
 	NoBrowserContexts bool
 
+	// Identity is what browsers launched with these options are, recorded in
+	// every result one of them renders.
+	Identity Identity
+
 	// Logger receives browser lifecycle events.
 	Logger *slog.Logger
+}
+
+// Identity is what a browser was launched from. It travels with the browser
+// rather than being read from the pool when a result is written, because the
+// pool can move to another image while a scan is still running on the old one
+// (Story 6.13, AC5), and the result has to name the browser that rendered it.
+type Identity struct {
+	// Version is what the browser reports itself as.
+	Version string
+	// Image and ImageID are the container image and its content ID, empty
+	// for a browser on this host.
+	Image   string
+	ImageID string
 }
 
 func (o *Options) launchTimeout() time.Duration {
@@ -130,6 +147,11 @@ type Browser struct {
 	tap *eventTap
 
 	scans atomic.Int64
+
+	// generation is the pool generation this browser was launched in. A
+	// browser from an earlier one was launched with options the pool has
+	// since switched away from, and is retired rather than reused.
+	generation uint64
 
 	closeOnce sync.Once
 	closeErr  error
@@ -517,6 +539,9 @@ func (b *Browser) disposeBrowserContext(id cdp.BrowserContextID) {
 // Scans reports how many scan contexts this browser has served, which drives
 // pool recycling.
 func (b *Browser) Scans() int64 { return b.scans.Load() }
+
+// Identity reports what this browser was launched from.
+func (b *Browser) Identity() Identity { return b.opts.Identity }
 
 // MarkDead records that the browser is unusable, so the pool discards it.
 func (b *Browser) MarkDead() { b.dead.Store(true) }

@@ -107,7 +107,7 @@ func TestStartupOnlySettingsAreRefusedByName(t *testing.T) {
 		"detection.hashResourceTypes": func(c *Config) {
 			c.Detection.HashResourceTypes = []string{"script", "stylesheet"}
 		},
-		"browser.container":          func(c *Config) { c.Browser.Container.SHMSize = "2g" },
+		"browser.container.shmSize":  func(c *Config) { c.Browser.Container.SHMSize = "2g" },
 		"browser.maxScansPerBrowser": func(c *Config) { c.Browser.MaxScansPerBrowser = 10 },
 		"browser.poolSize":           func(c *Config) { c.Browser.PoolSize = 4 },
 		"scheduler.concurrency":      func(c *Config) { c.Scheduler.Concurrency = 4 },
@@ -163,7 +163,8 @@ func TestTheLiveRegressionIsRefused(t *testing.T) {
 	next.Detection.DegradedFailureRatio = 0.05
 
 	want := []string{
-		"browser.container",
+		"browser.container.fileDescriptors",
+		"browser.container.shmSize",
 		"browser.maxScansPerBrowser",
 		"detection.degradedFailureRatio",
 		"normalize.bodyIdentity",
@@ -172,6 +173,30 @@ func TestTheLiveRegressionIsRefused(t *testing.T) {
 
 	if got := NonReloadableChanges(base(), next); !reflect.DeepEqual(got, want) {
 		t.Errorf("NonReloadableChanges() = %v, want %v", got, want)
+	}
+}
+
+// TestBrowserImageRefreshIsReloadable is Story 6.13, AC11: the four refresh
+// keys take effect on SIGHUP, and the container settings beside them do not.
+func TestBrowserImageRefreshIsReloadable(t *testing.T) {
+	t.Parallel()
+
+	keep, referenced := 3, true
+
+	next := base()
+	next.Browser.Container.Refresh = RefreshBuild
+	next.Browser.Container.RefreshInterval = Duration(24 * time.Hour)
+	next.Browser.Container.RefreshKeep = &keep
+	next.Browser.Container.RefreshKeepReferenced = &referenced
+
+	if got := NonReloadableChanges(base(), next); len(got) != 0 {
+		t.Errorf("a refresh change was refused: %v", got)
+	}
+
+	next.Browser.Container.Image = "localhost/other:1"
+
+	if got := NonReloadableChanges(base(), next); !reflect.DeepEqual(got, []string{"browser.container.image"}) {
+		t.Errorf("NonReloadableChanges() = %v, want only browser.container.image", got)
 	}
 }
 

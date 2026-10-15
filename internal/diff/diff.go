@@ -123,6 +123,72 @@ type Report struct {
 	Comparable bool `json:"comparable"`
 	// Reason explains an incomparable pair.
 	Reason string `json:"reason,omitempty"`
+
+	// BrowserChanged is set when the two scans were rendered by different
+	// browsers (Story 6.13, AC8). A new Chromium can load a page differently,
+	// so a change in such a comparison may be the browser's rather than the
+	// site's. It explains the changes; it does not remove or soften any of
+	// them (Tenet 5).
+	BrowserChanged *BrowserChange `json:"browserChanged,omitempty"`
+}
+
+// BrowserChange names the browser on each side of a comparison.
+type BrowserChange struct {
+	Before Browser `json:"before"`
+	After  Browser `json:"after"`
+}
+
+// Browser is what rendered one scan, as its result recorded it.
+type Browser struct {
+	Runtime string `json:"runtime,omitempty"`
+	Version string `json:"version"`
+	Image   string `json:"image,omitempty"`
+	ImageID string `json:"imageId,omitempty"`
+}
+
+// String renders the browser for a sentence: its version, and the image it
+// came from where there was one.
+func (b Browser) String() string {
+	s := b.Version
+	if s == "" {
+		s = "an unrecorded browser"
+	}
+
+	if b.Image != "" {
+		s += " (" + b.Image + ")"
+	}
+
+	return s
+}
+
+// browserChange compares what rendered two scans. The image ID decides only
+// where both sides recorded one: a result written before IDs were recorded
+// says nothing about its image's content, and calling that a change would
+// mark every comparison after an upgrade.
+func browserChange(baseline, current *model.Result) *BrowserChange {
+	if baseline == nil || current == nil {
+		return nil
+	}
+
+	before, after := browserOf(baseline), browserOf(current)
+
+	sameID := before.ImageID == "" || after.ImageID == "" || before.ImageID == after.ImageID
+	if before.Version == after.Version && before.Runtime == after.Runtime && sameID {
+		return nil
+	}
+
+	return &BrowserChange{Before: before, After: after}
+}
+
+func browserOf(res *model.Result) Browser {
+	env := res.Environment
+
+	return Browser{
+		Runtime: env.BrowserRuntime,
+		Version: env.ChromeVersion,
+		Image:   env.BrowserImage,
+		ImageID: env.BrowserImageID,
+	}
 }
 
 // MaxSeverity returns the highest severity present, or info when there are no
@@ -190,6 +256,8 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 	if baseline != nil {
 		rep.BaselineScanID = baseline.ScanID
 	}
+
+	rep.BrowserChanged = browserChange(baseline, current)
 
 	rules := opts.withDefaults()
 

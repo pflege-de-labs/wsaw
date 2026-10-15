@@ -193,6 +193,10 @@ type storageData struct {
 	LastPrune prunePanel `json:"lastPrune"`
 	LastSweep sweepPanel `json:"lastSweep"`
 
+	// BrowserImages is the browser images on the daemon's machine, as the
+	// last recorded inventory found them (Story 6.13, AC13).
+	BrowserImages browserImagesPanel `json:"browserImages"`
+
 	// SweepFoundExtra flags AC3's header note: the last sweep found
 	// protected or foreign objects the grand total above does not include,
 	// because the total is what the index knows is referenced, not what a
@@ -278,6 +282,7 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 	data.PruneBytesChart, data.PruneResultsChart = s.pruneChart(ctx)
 	data.LastPrune = s.prunePanel(ctx)
 	data.LastSweep = s.sweepPanel(ctx)
+	data.BrowserImages = s.browserImagesPanel(ctx)
 
 	data.SweepFoundExtra = data.LastSweep.Found &&
 		(data.LastSweep.ArtifactsProtected > 0 || data.LastSweep.ForeignObjects > 0)
@@ -462,6 +467,75 @@ func (s *Server) sweepPanel(ctx context.Context) sweepPanel {
 		ArtifactsProtected: stats.ArtifactsProtected, ArtifactsFailed: stats.ArtifactsFailed,
 		ForeignObjects: stats.ForeignObjects,
 	}
+}
+
+// browserImagesPanel is the browser images section (Story 6.13, AC13): one
+// row per image the last inventory found, and their total.
+type browserImagesPanel struct {
+	Available bool   `json:"available"`
+	Found     bool   `json:"found"`
+	Reason    string `json:"reason,omitempty"`
+
+	// TakenAt is when the inventory was taken, and Trigger what took it: the
+	// daemon's start, a refresh, or a prune. The sizes are never fetched
+	// while the page renders.
+	TakenAt time.Time `json:"takenAt,omitzero"`
+	Trigger string    `json:"trigger,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	Runtime string    `json:"runtime,omitempty"`
+	Rule    string    `json:"rule,omitempty"`
+
+	Images []store.BrowserImage `json:"images,omitempty"`
+	// TotalBytes adds every image's size. Layers images share are counted
+	// in each, so it can exceed what they occupy together, and the page says
+	// so. UnknownSizes counts images whose size the runtime did not report,
+	// which are not in it.
+	TotalBytes   int64 `json:"totalBytes"`
+	UnknownSizes int   `json:"unknownSizes,omitempty"`
+	// UnrecordedScans counts stored results that do not record their image.
+	UnrecordedScans int `json:"unrecordedScans,omitempty"`
+}
+
+// browserImagesPanel reads the newest recorded inventory. Without one the
+// section says why rather than showing an empty list as zero bytes.
+func (s *Server) browserImagesPanel(ctx context.Context) browserImagesPanel {
+	if s.deps.StorageIndex == nil {
+		return browserImagesPanel{Available: false}
+	}
+
+	run, found, err := s.deps.StorageIndex.LastMaintenanceRun(ctx, store.MaintenanceKindBrowserImages)
+	if err != nil {
+		return browserImagesPanel{Available: true, Reason: "the browser image inventory could not be read: " + err.Error()}
+	}
+
+	if !found {
+		return browserImagesPanel{Available: true,
+			Reason: "no browser image inventory has been recorded yet: the daemon records one when it starts " +
+				"with the browser in a container, and a browser on this host uses no image"}
+	}
+
+	inv, err := run.BrowserImages()
+	if err != nil {
+		return browserImagesPanel{Available: true, Reason: "the browser image inventory could not be decoded: " + err.Error()}
+	}
+
+	p := browserImagesPanel{
+		Available: true, Found: true,
+		TakenAt: run.StartedAt, Trigger: run.Trigger, Error: run.Error,
+		Runtime: inv.Runtime, Rule: inv.Rule, Images: inv.Images, UnrecordedScans: inv.UnrecordedScans,
+	}
+
+	for _, img := range inv.Images {
+		if img.Size < 0 {
+			p.UnknownSizes++
+
+			continue
+		}
+
+		p.TotalBytes += img.Size
+	}
+
+	return p
 }
 
 // handleUIStorage serves the dashboard (AC1), behind the same session as the

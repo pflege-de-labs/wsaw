@@ -1,6 +1,7 @@
 package container
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +50,16 @@ type BuildOptions struct {
 	// Output receives the runtime's own build output, so an operator can see
 	// what is being downloaded.
 	Output io.Writer
+
+	// Floor installs the newest Chromium the base's package branch holds
+	// that is at least ChromiumVersion, rather than exactly it, and builds
+	// without the layer cache so the package index is read afresh. It is how
+	// the browser image refresh picks up a newer Chromium (Story 6.13, AC2).
+	// Only the Alpine build file can express it.
+	Floor bool
+
+	// Tag names the image, in place of ImageTag(ChromiumVersion).
+	Tag string
 }
 
 // buildWaitDelay bounds how long a cancelled build may keep its output open
@@ -81,17 +93,25 @@ func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string
 		}
 	}()
 
+	if opts.Floor && opts.Base != browser.BaseAlpine {
+		return "", fmt.Errorf("the %s build pins its Chromium through a dated snapshot and cannot take a newer one", opts.Base)
+	}
+
 	if err := writeContext(dir, opts.Context); err != nil {
 		return "", err
 	}
 
-	tag = ImageTag(opts.ChromiumVersion)
+	tag = cmp.Or(opts.Tag, ImageTag(opts.ChromiumVersion))
+
+	args := buildArgs(dir, opts.Base.File(), tag, opts.ChromiumVersion)
+	if opts.Floor {
+		args = slices.Insert(args, 1, "--no-cache", "--build-arg", "CHROMIUM_CONSTRAINT=>=")
+	}
 
 	// #nosec G204 -- r.Path comes from exec.LookPath over a fixed runtime
 	// list, and the only operator values, base and version, were validated
 	// above.
-	cmd := exec.CommandContext(ctx, r.Path,
-		buildArgs(dir, opts.Base.File(), tag, opts.ChromiumVersion)...)
+	cmd := exec.CommandContext(ctx, r.Path, args...)
 	cmd.Stdout = opts.Output
 	cmd.Stderr = opts.Output
 	cmd.WaitDelay = buildWaitDelay
@@ -156,6 +176,13 @@ func (r *Runtime) FetchHint(image string) string {
 	v, ok := strings.CutPrefix(image, ImageName+":")
 	if !ok {
 		return fmt.Sprintf("fetch it with: %s pull %s", r.Kind, image)
+	}
+
+	if _, refreshed := ParseRefreshTag(image); refreshed {
+		// No command makes this exact image again: the refresh made it, and a
+		// later one has a name of its own.
+		return "it was made by the browser image refresh and is gone; leave browser.container.image unset " +
+			"to let the refresh choose, or build one with: wsaw browser build --runtime " + string(r.Kind)
 	}
 
 	cmd := "wsaw browser build --runtime " + string(r.Kind)

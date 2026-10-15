@@ -25,6 +25,13 @@ FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cab
 
 ARG CHROMIUM_VERSION=152.0.7977.82-r0
 
+# CHROMIUM_CONSTRAINT is "=" for the exact version above. The browser image
+# refresh (Story 6.13) builds with ">=", which installs the newest Chromium the
+# Alpine branch holds that is at least that version: the one way a rebuild of
+# this file takes a newer browser. The label below then names the floor, and a
+# result records the version Chromium itself reports.
+ARG CHROMIUM_CONSTRAINT="="
+
 # chromium-headless-shell is the old headless mode as its own binary, the one
 # chromedp's image ships too, without the desktop browser around it. socat
 # carries CDP from the published port to Chromium, which binds its debugging
@@ -32,7 +39,7 @@ ARG CHROMIUM_VERSION=152.0.7977.82-r0
 # differs enough that the element-visibility checks consent handling relies on
 # behave differently from a real browser.
 RUN apk add --no-cache \
-      "chromium-headless-shell=${CHROMIUM_VERSION}" \
+      "chromium-headless-shell${CHROMIUM_CONSTRAINT}${CHROMIUM_VERSION}" \
       socat \
       ca-certificates \
       font-noto \

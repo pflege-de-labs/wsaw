@@ -54,7 +54,7 @@ func (s *SQL) beginRebuild(ctx context.Context, run *rebuildRun) (func(), error)
 const rebuiltRowColumns = `started_at, duration_ns, termination, scan_error,
 	consent_outcome, consent_cmp, requests, third_party_domains,
 	pre_consent_domains, artifact_ref, document_size, document_digest,
-	confidence_score, confidence_band, consent_bot_detected, ` + refsIndexedColumn
+	confidence_score, confidence_band, consent_bot_detected, ` + browserImageIDColumn + `, ` + refsIndexedColumn
 
 // rebuiltRow is what a results row says about one scan, as the merge needs it.
 type rebuiltRow struct {
@@ -98,7 +98,8 @@ func (s *SQL) indexedRow(
 			&startedAt, &durationNS, &termination, &row.summary.Error,
 			&outcome, &row.summary.ConsentCMP, &row.summary.Requests,
 			&row.summary.ThirdPartyDomains, &row.summary.PreConsentDomains,
-			&row.ref.ref, &row.ref.size, &row.ref.digest, &score, &band, &bot, &row.refsIndexed,
+			&row.ref.ref, &row.ref.size, &row.ref.digest, &score, &band, &bot, &row.summary.BrowserImageID,
+			&row.refsIndexed,
 		)
 
 		switch {

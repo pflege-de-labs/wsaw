@@ -312,8 +312,9 @@ var (
 	// 12 creates it, long after the document migration ran.
 	resultConsentBot = []string{"consent_bot_detected"}
 
-	resultUpdate = append(append(append(append(append([]string{},
-		resultScanned...), resultDerived...), resultConfidence...), resultConsentBot...), resultReferenced...)
+	resultUpdate = append(append(append(append(append(append([]string{},
+		resultScanned...), resultDerived...), resultConfidence...), resultConsentBot...), resultImage...),
+		resultReferenced...)
 
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{scanIDColumn, "approved_at", "document"}

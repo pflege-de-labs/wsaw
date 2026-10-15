@@ -26,8 +26,43 @@ criteria, and any that are still open, are written down.
   2.2 documents still validate, and the store migrates to schema version 12,
   adding one column to the results table. Scans stored before the upgrade are
   not re-evaluated.
+- The daemon can keep its browser image current on its own, if you turn it
+  on (Story 6.13). `browser.container.refresh: build` rebuilds the image
+  `wsaw browser build` makes on a schedule (`refreshInterval`, a week by
+  default), taking the newest Chromium the Alpine branch holds at or above the
+  pinned version; `refresh: pull` pulls `browser.container.image`, which must
+  then be a registry tag. A new image is checked as startup checks one, used
+  only if it is a different browser, and switched to between scans: a scan in
+  flight finishes on the old browser. It is off by default, and with it off
+  nothing changes. Turning it on means the browser behind your results can
+  change without anyone acting; Tenet 14 now records this as its one exception.
+- A comparison across a change of browser is marked on the result page, on a
+  shared result, in the diff API (`browserChanged`) and in notifications,
+  naming both browsers. Its findings keep their severity (Story 6.13).
+- Results record the content ID of the browser image that rendered them as
+  `environment.browserImageId` (result schema 2.4, additive). The store
+  migrates to schema version 13 on first start, adding a `browser_image_id`
+  column; results stored before it record no image (Story 6.13).
+- Older refresh images are pruned after a switch by one of two rules:
+  `refreshKeep: N` keeps the newest N (2 by default), and
+  `refreshKeepReferenced: true` keeps every image a stored scan was rendered
+  with. Setting both is a configuration error. `wsaw browser prune` applies the
+  same rule on demand, with `--dry-run`, and `--keep` / `--keep-referenced` to
+  override it for one run. The image in service, the configured image and any
+  image the refresh did not make are never removed (Story 6.13).
+- The storage page and `/api/v1/storage` (API 1.2) list the browser images with
+  their state, sizes and a total, from an inventory the daemon records at
+  startup, after a refresh and after a prune (Story 6.13).
+- Metrics: `wsaw_browser_image_refreshes_total{outcome}`,
+  `wsaw_last_successful_browser_image_refresh_timestamp_seconds` and
+  `wsaw_browser_info{version,image}` (Story 6.13).
 
 ### Changed
+
+- A reload that changes a `browser.container` setting now names the setting,
+  such as `browser.container.shmSize`, rather than the whole section. The four
+  refresh settings are applied by `SIGHUP`; the others still need a restart
+  (Story 6.13).
 
 - The dashboard no longer merges a target's `none` and `reject` tiles into one
   "none / reject" tile when their last scans looked alike. The merge compared

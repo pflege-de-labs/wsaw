@@ -324,6 +324,15 @@ func (mysqlDialect) migrations() [][]string {
 			`alter table results
 				add column consent_bot_detected tinyint not null default 0`,
 		},
+
+		// Version 13 (Story 6.13): the image each scan was rendered with. The
+		// sqlite dialect carries the reasoning; an image ID is "sha256:" and
+		// 64 hex digits, so 80 holds it with room. A replay is
+		// errDupFieldName, which alreadyApplied absorbs.
+		{
+			`alter table results add column ` + browserImageIDColumn + ` varchar(80) not null default '` +
+				imageIDUnrecorded + `'`,
+		},
 	}
 }
 

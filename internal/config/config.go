@@ -233,6 +233,102 @@ type ContainerBrowser struct {
 	// browser's own command line.
 	ExtraArgs   []string `yaml:"extraArgs,omitempty"`
 	BrowserArgs []string `yaml:"browserArgs,omitempty"`
+
+	// Refresh has the daemon renew the browser image on its own and switch
+	// to the new one between scans (Story 6.13): "build" rebuilds the image
+	// `wsaw browser build` makes, "pull" pulls Image, a registry tag. Empty
+	// or "off" is the default and leaves the image to the operator.
+	Refresh string `yaml:"refresh,omitempty"`
+	// RefreshInterval is how often a refresh runs. Empty takes
+	// DefaultRefreshInterval.
+	RefreshInterval Duration `yaml:"refreshInterval,omitempty"`
+
+	// RefreshKeep and RefreshKeepReferenced are the two rules for which old
+	// refresh images survive a prune, and at most one of them may be set:
+	// the newest RefreshKeep images, or every image a stored scan was
+	// rendered with. With neither, DefaultRefreshKeep applies.
+	RefreshKeep           *int  `yaml:"refreshKeep,omitempty"`
+	RefreshKeepReferenced *bool `yaml:"refreshKeepReferenced,omitempty"`
+
+	// lines records which line each setting was written on, as Store's
+	// does, so the two keep rules can be named by line when both are set.
+	lines map[string]int
+}
+
+// UnmarshalYAML decodes the container section and records where each of its
+// settings was written, strictly, for the reasons Store.UnmarshalYAML gives.
+func (c *ContainerBrowser) UnmarshalYAML(node *yaml.Node) error {
+	type plain ContainerBrowser
+
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return fmt.Errorf("line %d: re-encoding the browser.container section: %w", node.Line, err)
+	}
+
+	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec.KnownFields(true)
+
+	var p plain
+
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("browser.container section starting at line %d: %w", node.Line, err)
+	}
+
+	*c = ContainerBrowser(p)
+	c.lines = keyLines(node)
+
+	return nil
+}
+
+// Line reports the line a container setting was written on, zero when the
+// configuration did not come from a file.
+func (c ContainerBrowser) Line(key string) int { return c.lines[key] }
+
+// Browser image refresh modes (Story 6.13).
+const (
+	RefreshOff   = "off"
+	RefreshBuild = "build"
+	RefreshPull  = "pull"
+)
+
+// Browser image refresh bounds (Story 6.13). A week is the default because
+// Chromium's stable channel ships a security release about weekly; an hour is
+// the floor because a refresh rebuilds or pulls hundreds of megabytes.
+const (
+	DefaultRefreshInterval = 7 * 24 * time.Hour
+	MinRefreshInterval     = time.Hour
+	// DefaultRefreshKeep keeps the image in service and the one before it,
+	// for a rollback.
+	DefaultRefreshKeep = 2
+)
+
+// RefreshMode returns the configured refresh mode, RefreshOff when unset.
+func (c ContainerBrowser) RefreshMode() string {
+	if c.Refresh == "" {
+		return RefreshOff
+	}
+
+	return strings.ToLower(c.Refresh)
+}
+
+// RefreshEvery returns how often a refresh runs, or the default.
+func (c ContainerBrowser) RefreshEvery() time.Duration {
+	return c.RefreshInterval.Or(DefaultRefreshInterval)
+}
+
+// KeepReferenced reports whether old refresh images are kept for as long as
+// a stored scan was rendered with them, rather than by count.
+func (c ContainerBrowser) KeepReferenced() bool {
+	return c.RefreshKeepReferenced != nil && *c.RefreshKeepReferenced
+}
+
+// KeepCount returns how many refresh images the count rule keeps.
+func (c ContainerBrowser) KeepCount() int {
+	if c.RefreshKeep == nil {
+		return DefaultRefreshKeep
+	}
+
+	return *c.RefreshKeep
 }
 
 // Store configures persistence.

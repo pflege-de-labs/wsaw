@@ -34,6 +34,10 @@ const (
 	argHelp     = "--help"
 )
 
+// cmdNamePrune is the name of three commands: retention's top-level one, and
+// the store's and the browser's own.
+const cmdNamePrune = "prune"
+
 // Exit codes are a documented interface, so they are named rather than
 // scattered as literals.
 const (
@@ -86,7 +90,7 @@ func run(ctx context.Context, args []string) int {
 	case "artifacts":
 		err = cmdArtifacts(ctx, rest)
 
-	case "prune":
+	case cmdNamePrune:
 		err = cmdPrune(ctx, rest)
 
 	case "share":

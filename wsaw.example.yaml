@@ -164,6 +164,29 @@ browser:
     # nothing is pulled. The locally built default is never checked. false
     # stops wsaw contacting the registry.
     checkForUpdates: true
+    # The daemon can renew the browser image on its own and switch to the
+    # new one between scans (Story 6.13). Off by default:
+    #   off    the image changes only when you change it
+    #   build  rebuild the image `wsaw browser build` makes, taking the newest
+    #          Chromium the Alpine branch holds; leave image empty for this,
+    #          since a configured image pins the browser
+    #   pull   pull image, which must then be a registry tag, not a digest
+    # A new image is checked like the one at startup before anything uses
+    # it; a scan in flight finishes on the old one. What turning it on gives
+    # up: the browser behind a run of results can change with no one acting,
+    # and a comparison across the change is marked, not prevented. A refresh
+    # downloads a base image or Chromium, hundreds of megabytes.
+    refresh: off
+    refreshInterval: 168h
+    # After a switch, older refresh images are pruned by one of two rules,
+    # never both (setting both keys is an error):
+    #   refreshKeep: 2              the newest N, counting the one in service
+    #   refreshKeepReferenced: true every image a stored scan was rendered
+    #                               with; images then follow retention
+    # The image in service, the one named in image, and any image the refresh
+    # did not make are never pruned. "wsaw browser prune" applies the same
+    # rule on demand. All four refresh settings are applied by SIGHUP.
+    refreshKeep: 2
     memory: 1g
     pidsLimit: 512
     startupTimeout: 90s
