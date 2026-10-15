@@ -18,6 +18,12 @@ criteria, and any that are still open, are written down.
   now keeps its own tile, and each tile sits under its own mode's column: a
   mode a target does not run shows as a "not configured" cell instead of
   shifting the target's other tiles under the wrong header (Story 5.38).
+- Built with `golang.org/x/net` v0.61.0 (with `x/crypto` v0.58.0, `x/sys`
+  v0.49.0, `x/text` v0.43.0 and `x/sync` v0.24.0) and on a refreshed
+  `golang:1.27.2-alpine` build image. These are routine updates, not security
+  releases: no Go advisory is fixed in them, and govulncheck reported no
+  vulnerabilities before the update. Nothing changes in configuration or
+  behaviour.
 
 ## [0.6.0] - 2026-10-12
 
