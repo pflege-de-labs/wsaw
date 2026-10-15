@@ -107,7 +107,8 @@ func TestDefaultStateDirHonoursXDGStateHome(t *testing.T) {
 func TestTargetByName(t *testing.T) {
 	t.Parallel()
 
-	a := &App{Targets: []config.Resolved{{Name: "site"}, {Name: "other"}}}
+	a := &App{}
+	a.Reload(config.New(), []config.Resolved{{Name: "site"}, {Name: "other"}})
 
 	got, ok := a.TargetByName("other")
 	if !ok || got.Name != "other" {
@@ -116,6 +117,49 @@ func TestTargetByName(t *testing.T) {
 
 	if _, ok := a.TargetByName("missing"); ok {
 		t.Error("TargetByName found a target that was never configured")
+	}
+}
+
+// An accepted reload reaches the scans somebody asks for, not only the
+// scheduler and the dashboard: "Scan now" went on scanning with the body
+// policy the process started with (#134, Story 3.4).
+func TestTargetByNameFollowsAReload(t *testing.T) {
+	t.Parallel()
+
+	bodies := func(ratio float64) *config.Bodies {
+		return &config.Bodies{Store: model.BodyStoreAll, Ratio: &ratio}
+	}
+
+	cfg := minimalConfig(t)
+	cfg.Targets[0].Bodies = bodies(0.05)
+
+	a, err := New(t.Context(), cfg, Options{Version: "test", LogOutput: discardWriter{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	t.Cleanup(func() { _ = a.Close() })
+
+	next := minimalConfig(t)
+	next.Targets[0].Bodies = bodies(1)
+	next.Targets = append(next.Targets, config.Target{
+		Name: "added", URL: "https://added.test/", ConsentModes: []model.ConsentMode{model.ConsentReject},
+	})
+
+	targets, err := next.ResolveTargets(a.Secrets)
+	if err != nil {
+		t.Fatalf("ResolveTargets: %v", err)
+	}
+
+	a.Reload(next, targets)
+
+	got, ok := a.TargetByName("site")
+	if !ok || got.Bodies.Ratio != 1 {
+		t.Errorf("TargetByName(site) = %+v, %v, want the reloaded body ratio 1", got.Bodies, ok)
+	}
+
+	if _, ok := a.TargetByName("added"); !ok {
+		t.Error("a target added by the reload is not found")
 	}
 }
 
@@ -318,7 +362,8 @@ func TestRunningScansWithNoScannerIsEmpty(t *testing.T) {
 func TestTriggerRejectsAnUnknownTarget(t *testing.T) {
 	t.Parallel()
 
-	a := &App{Targets: []config.Resolved{{Name: "site"}}}
+	a := &App{}
+	a.Reload(config.New(), []config.Resolved{{Name: "site"}})
 
 	_, err := a.Trigger(context.Background(), "ghost", model.ConsentReject)
 	if err == nil {
@@ -333,7 +378,8 @@ func TestTriggerRejectsAnUnknownTarget(t *testing.T) {
 func TestTriggerRefusesWithoutAScanner(t *testing.T) {
 	t.Parallel()
 
-	a := &App{Targets: []config.Resolved{{Name: "site"}}}
+	a := &App{}
+	a.Reload(config.New(), []config.Resolved{{Name: "site"}})
 
 	_, err := a.Trigger(context.Background(), "site", model.ConsentReject)
 	if err == nil {
@@ -622,8 +668,8 @@ func TestNewBuildsAnAppWithoutRequiringABrowser(t *testing.T) {
 		t.Error("New built a scanner with no browser pool")
 	}
 
-	if len(a.Targets) != 1 || a.Targets[0].Name != "site" {
-		t.Errorf("Targets = %+v, want the one configured target resolved", a.Targets)
+	if got := a.Targets(); len(got) != 1 || got[0].Name != "site" {
+		t.Errorf("Targets = %+v, want the one configured target resolved", got)
 	}
 }
 

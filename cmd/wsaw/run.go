@@ -89,27 +89,13 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		dispatcher.Start(runCtx)
 	}
 
-	// The target list is behind a mutex so a reload is visible to the HTTP
-	// server without restarting it.
-	var (
-		targetsMu sync.RWMutex
-		targets   = a.Targets
-	)
-
-	currentTargets := func() []config.Resolved {
-		targetsMu.RLock()
-		defer targetsMu.RUnlock()
-
-		return targets
-	}
-
 	sink := func(_ context.Context, out scanner.Outcome) {
 		if dispatcher != nil {
 			dispatcher.Publish(out.Result, out.Diff)
 		}
 	}
 
-	d, err := daemon.New(a.Scanner, sink, a.Targets, daemon.Options{
+	d, err := daemon.New(a.Scanner, sink, a.Targets(), daemon.Options{
 		Concurrency:          a.Config.Concurrency(),
 		PerOriginConcurrency: a.Config.Scheduler.PerOriginConcurrency,
 		CatchUp:              a.Config.Scheduler.CatchUp,
@@ -144,7 +130,7 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 	var srv *httpapi.Server
 
 	if a.Config.API.Enabled {
-		srv, err = buildServer(a, d, currentTargets)
+		srv, err = buildServer(a, d, a.Targets)
 		if err != nil {
 			return err
 		}
@@ -232,10 +218,7 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 				continue
 			}
 
-			targetsMu.Lock()
-			targets = next.targets
-			targetsMu.Unlock()
-
+			a.Reload(next.cfg, next.targets)
 			d.Reload(next.targets)
 			offerSchedule(sweeps, next.sweep)
 			offerSchedule(vacuums, next.vacuum)
@@ -279,6 +262,7 @@ func reloadCertificate(ctx context.Context, srv *httpapi.Server, p tlsPaths) {
 
 // reloaded is what an accepted reload hands the running daemon.
 type reloaded struct {
+	cfg       *config.Config
 	targets   []config.Resolved
 	sweep     app.SweepSchedule
 	vacuum    app.VacuumSchedule
@@ -346,6 +330,7 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 		"vacuum", vacuum.Enabled, "vacuum_interval", vacuum.Interval.String())
 
 	return reloaded{
+		cfg:       cfg,
 		targets:   targets,
 		sweep:     sweep,
 		vacuum:    vacuum,

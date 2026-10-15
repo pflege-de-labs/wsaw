@@ -19,6 +19,17 @@ criteria, and any that are still open, are written down.
   mode a target does not run shows as a "not configured" cell instead of
   shifting the target's other tiles under the wrong header (Story 5.38).
 
+### Fixed
+
+- Scans started by hand now use the configuration of the last accepted
+  reload. "Scan now" on the dashboard and `POST /api/v1/scan/{target}/{mode}`
+  went on scanning a target with the settings the daemon started with, so a
+  reloaded body policy, consent setting or host list was shown on the
+  dashboard but ignored by the scan. A scan of a typed URL likewise inherited
+  the startup `defaults`. Until this release, restart the daemon instead of
+  sending SIGHUP after a change you need ad-hoc scans to pick up (Story 3.4,
+  #134).
+
 ## [0.6.0] - 2026-10-12
 
 Consent rules reach into frames, so Sourcepoint and other CMPs that draw their

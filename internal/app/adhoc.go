@@ -9,6 +9,7 @@ package app
 // that is what the checks here are about.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -80,13 +81,24 @@ func (a *App) adHocTarget(ctx context.Context, rawURL string, mode model.Consent
 		return config.Resolved{}, err
 	}
 
-	t := a.Config.ResolveAdHocTarget(name, rawURL, mode)
+	t := a.resolveAdHocTarget(name, rawURL, mode)
 
 	if err := a.adHocCooldown(t, mode); err != nil {
 		return config.Resolved{}, err
 	}
 
 	return t, nil
+}
+
+// resolveAdHocTarget resolves a typed URL against the configuration of the
+// last accepted reload, so it inherits the same defaults a configured target
+// would be scanned with.
+func (a *App) resolveAdHocTarget(name, rawURL string, mode model.ConsentMode) config.Resolved {
+	a.reloadMu.RLock()
+	cfg := cmp.Or(a.resolvedFrom, a.Config)
+	a.reloadMu.RUnlock()
+
+	return cfg.ResolveAdHocTarget(name, rawURL, mode)
 }
 
 // adHocModeOffered reports whether the form offers this consent mode. A mode
