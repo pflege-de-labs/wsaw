@@ -9,6 +9,24 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A CMP that is on the page but never starts no longer reads as "no consent
+  management platform detected". Consent rules can name their vendor's loader
+  scripts (`loaders`) and the stubs the vendor serves in their place (`stubs`,
+  by SHA-256). When a scan finds no CMP but requested one of those loaders, the
+  consent outcome is `failed` with the vendor named, and `consent.loaderRequestId`
+  points at the request. When the loader came back as a known bot stub,
+  `consent.botDetected` is `true`, and the dashboard tile, scan page, shared page
+  and report mark the scan "blocked as bot". Like any failed consent, the scan
+  loses its high confidence and is not trusted by notifiers. The shipped CCM19
+  rule knows CCM19's loader and its "CCM19 disabled for bots" stub. The fix for
+  such a site is a per-target `proxy`; wsaw does not disguise itself (Story 2.11).
+  Result documents move to `schemaVersion` 2.3, an additive change against which
+  2.2 documents still validate, and the store migrates to schema version 12,
+  adding one column to the results table. Scans stored before the upgrade are
+  not re-evaluated.
+
 ### Changed
 
 - The dashboard no longer merges a target's `none` and `reject` tiles into one

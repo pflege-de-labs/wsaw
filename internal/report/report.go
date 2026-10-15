@@ -201,6 +201,13 @@ func writeConsent(b *strings.Builder, res *model.Result) {
 		b.WriteString("- **CMP:** none detected — no consent banner was found on the page\n")
 	}
 
+	if c.BotDetected {
+		// A CMP that never ran shows no banner, and a reader must not take
+		// the missing banner for a site without one (Story 2.11, AC5).
+		fmt.Fprintf(b, "- **Blocked as bot:** the CMP took this browser for a bot and never ran (loader request `%s`)\n",
+			c.LoaderRequestID)
+	}
+
 	if c.BannerHeading != "" {
 		fmt.Fprintf(b, "- **Banner:** %s\n", escapePipes(c.BannerHeading))
 	}

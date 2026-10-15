@@ -87,6 +87,7 @@
   <h2>Consent</h2>
   <dl>
     <dt>Outcome</dt><dd><span class="outcome outcome-{{$res.Consent.Outcome}}">{{$res.Consent.Outcome}}</span>
+      {{if $res.Consent.BotDetected}}<span class="badge badge-warn">blocked as bot — the CMP never ran for wsaw</span>{{end}}
       {{if $res.Consent.Reason}}<span class="reason">{{$res.Consent.Reason}}</span>{{end}}</dd>
     <dt>CMP</dt><dd>{{if $res.Consent.CMP}}{{$res.Consent.CMP}}{{if $res.Consent.CMPVersion}} ({{$res.Consent.CMPVersion}}){{end}}{{else}}<span class="muted">none detected</span>{{end}}</dd>
     {{if $res.Consent.Mechanism}}

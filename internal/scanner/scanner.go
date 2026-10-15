@@ -245,6 +245,10 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 		res = s.failedResult(scanID, target, mode, errorText(err))
 	}
 
+	// Before persist, so the confidence score and the stored document are
+	// both made from the corrected outcome.
+	s.checkLoaders(target, res, log)
+
 	res.ScanID = scanID
 	res.BodyCapture = mergeBodyCapture(bodies, res.BodyCapture)
 	out.Result = res
@@ -388,6 +392,30 @@ func (s *Scanner) consentHook(target config.Resolved, mode model.ConsentMode, lo
 		}
 
 		return c, err
+	}
+}
+
+// checkLoaders runs after capture because the consent handler reads the page
+// and cannot see that a CMP's loader was requested and never started; the
+// recorded requests can (Story 2.11).
+func (s *Scanner) checkLoaders(target config.Resolved, res *model.Result, log *slog.Logger) {
+	host, domain := hostAndDomain(target.URL)
+
+	before := res.Consent.Outcome
+	res.Consent = s.deps.Rules.CheckLoaders(res.Consent, host, domain, res.Requests)
+
+	if res.Consent.Outcome == before {
+		return
+	}
+
+	log.Warn("consent management platform loaded but never started",
+		"cmp", res.Consent.CMP, "bot_detected", res.Consent.BotDetected)
+
+	// The same warning the handler's own failure leaves under this policy, so
+	// the two kinds of consent failure read alike (consent.onFailure).
+	if s.opts.ConsentOnFailure == consent.FailScan {
+		res.Warnings = append(res.Warnings,
+			fmt.Sprintf("consent interaction: %v: %s", consent.ErrConsentFailed, res.Consent.Reason))
 	}
 }
 

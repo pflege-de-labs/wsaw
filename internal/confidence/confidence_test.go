@@ -371,3 +371,23 @@ func TestConsentCaveatIsEmptyForATrustworthyConsentState(t *testing.T) {
 		t.Errorf("a verified necessary-only in reject mode has caveat %q; Story 2.10 trusts it", caveat)
 	}
 }
+
+// Story 2.11, AC6: a CMP that refused to run for wsaw costs what any failed
+// consent costs, so the scan no longer reads high.
+func TestABotBlockedCMPCostsWhatAFailedConsentCosts(t *testing.T) {
+	t.Parallel()
+
+	res := clean(10)
+	res.ConsentMode = model.ConsentAccept
+	res.Consent = model.Consent{Outcome: model.OutcomeFailed, Kind: model.CMPKindVendor, BotDetected: true}
+
+	got := confidence.Score(res, steady(10, 10*time.Second), opts)
+
+	if r := reason(t, got, model.SignalConsent); r.Points != 40 {
+		t.Errorf("consent points = %d, want 40 (%s)", r.Points, r.Observed)
+	}
+
+	if got.Band == model.ConfidenceHigh {
+		t.Errorf("a bot-blocked scan scores %d, band high", got.Score)
+	}
+}

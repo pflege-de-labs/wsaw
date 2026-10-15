@@ -587,3 +587,29 @@ func TestDisabledFlapSuppressorPassesEverything(t *testing.T) {
 		}
 	}
 }
+
+// Story 2.11, AC6: a site that used to read as having no CMP and now reads as
+// a CMP that refused to run is a consent change, in both directions.
+func TestABotBlockedCMPTransitionIsAFinding(t *testing.T) {
+	t.Parallel()
+
+	noCMP := model.Consent{Outcome: model.OutcomeNotNeeded, Kind: model.CMPKindNone}
+	blocked := model.Consent{Outcome: model.OutcomeFailed, Kind: model.CMPKindVendor, CMP: "CCM19", BotDetected: true}
+
+	for name, tc := range map[string]struct{ was, now model.Consent }{
+		"blocked":   {noCMP, blocked},
+		"unblocked": {blocked, noCMP},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			a := result(model.ConsentAccept)
+			a.Consent = tc.was
+
+			b := result(model.ConsentAccept)
+			b.Consent = tc.now
+
+			find(t, diff.Compare(a, b, diff.Options{}), diff.ConsentChanged, string(tc.now.Outcome))
+		})
+	}
+}

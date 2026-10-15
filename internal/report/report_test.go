@@ -396,3 +396,30 @@ func TestReportsAreDeterministic(t *testing.T) {
 		t.Error("Markdown rendering is not deterministic")
 	}
 }
+
+// Story 2.11, AC5: a CMP that never ran shows no banner, and the report must
+// not let that read as a site without one.
+func TestWriteMarkdownFlagsABotBlockedCMP(t *testing.T) {
+	t.Parallel()
+
+	res := fixture()
+	res.Consent = model.Consent{
+		Outcome:         model.OutcomeFailed,
+		Reason:          "CCM19 disabled itself for this browser",
+		Kind:            model.CMPKindVendor,
+		CMP:             "CCM19",
+		Detection:       "loader",
+		LoaderRequestID: "7.2",
+		BotDetected:     true,
+	}
+
+	var b strings.Builder
+
+	if err := report.WriteMarkdown(&b, res, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(b.String(), "**Blocked as bot:**") || !strings.Contains(b.String(), "`7.2`") {
+		t.Errorf("the report does not say the CMP was blocked as bot, with its loader request:\n%s", b.String())
+	}
+}

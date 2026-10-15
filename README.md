@@ -225,12 +225,25 @@ The step runs in an isolated world inside the frame: it sees the frame's DOM, an
 
 `verify` proves the CMP recorded the choice; it does not prove the banner closed — a vendor API commonly records consent without ever running the banner's own dismiss handler. When `verify` passes but the banner is still on screen, wsaw retries the rule's click steps with a fuller pointer/mouse event sequence and, failing that, the generic label-matching fallback, before giving up and reporting `banner-visible` rather than `applied`. A rule can name its own banner-gone check with `dismissed`; left unset, wsaw falls back to the same "does anything banner-shaped remain" heuristic the label-matching fallback uses.
 
+A CMP can be on a page and never start. Its vendor may serve a client it takes for a bot a stub in place of the real script, the script may fail or be blocked, and in every case no banner appears and `detect` stays false. A rule can name the vendor's loader scripts, as URL prefixes, and the stubs it is known to serve, by the SHA-256 digest a scan records for every script:
+
+```yaml
+    loaders:
+      - https://cloud.ccm19.de/app.js
+    stubs:
+      - sha256: fb9d57d628d04d66afc5bc2e97347a904f46d3f0629daa79757ff17b8ab652ee
+        says: CCM19 disabled for bots   # quoted in the result's reason
+        means: bot                      # the only defined meaning
+```
+
+When a scan finds no CMP but its requests include one of a rule's loaders, the outcome is `failed`, not `not-needed`. `consent.loaderRequestId` names the loader's request. If that request returned a known bot stub, `consent.botDetected` is `true` and the scan is marked "blocked as bot" on the dashboard, the scan page, the shared page and the report. The CMP took the scanner for a bot, usually because of the egress address, so the remedy is a per-target `proxy` the vendor does not treat as one, or an allowlist agreed with the site owner. wsaw does not disguise itself. A loader that came back with anything else reads "loaded but the CMP never started", so a reworded stub still never reads as a page without a CMP. Stubs are matched only against a rule's loaders, so a rule with `stubs` must name its `loaders`, and a digest that is not 64 lowercase hex characters is refused when the rule file is loaded.
+
 ## Reading a result
 
 Two fields decide whether anything else on the page can be believed:
 
 - **`termination`** — `idle` means the page went quiet on its own. `timeout`, `request-cap` or `byte-cap` mean the list may be incomplete. `error` or `skipped` mean it is not a result at all.
-- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), `banner-visible` (the CMP recorded the choice, but the banner stayed on screen even after a fallback click), or `failed`.
+- **`consent.outcome`** — `applied` (verified), `unverified` (acted, unconfirmed), `not-needed` (no banner, which is common and legitimate), `banner-visible` (the CMP recorded the choice, but the banner stayed on screen even after a fallback click), or `failed`. A `failed` with `botDetected: true` means the site's CMP took wsaw for a bot and never ran.
 - **`consent.cmpKind`** — `vendor` (a CMP product was identified), `bespoke` (a consent UI is present and no vendor matched it: the site's own banner, as far as wsaw can tell) or `none` (no consent UI was found). Only `none` licenses reading a result as a page that never asks for consent. A banner wsaw could not drive is recorded as `bespoke` with a `diagnostic` naming the element, its text and the labels of the controls it offered — which is what writing the missing rule needs.
 
 Not every banner is rendered with the page. An application-rendered one is mounted after hydration or on an idle callback, so wsaw waits for one to appear before concluding there is none; `consent.bannerWait` sets that wait, and `consentBannerWait` overrides it per target.

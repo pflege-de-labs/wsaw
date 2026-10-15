@@ -317,6 +317,13 @@ func (mysqlDialect) migrations() [][]string {
 				measured_at  bigint       not null
 			) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_bin`,
 		},
+
+		// Version 12 (Story 2.11): the consent block's bot finding. The
+		// sqlite dialect carries the reasoning.
+		{
+			`alter table results
+				add column consent_bot_detected tinyint not null default 0`,
+		},
 	}
 }
 
