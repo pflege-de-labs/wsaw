@@ -19,7 +19,7 @@
 # precisely so that cross-compiling it is exact (Tenet 14), and `make release`
 # builds the released binaries the same way; emulating the compiler for arm64
 # would make a multi-arch build several times slower and buy nothing.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 
 # Set by BuildKit from --platform. Empty in a plain `docker build`, where the
 # target is the builder's own platform and go build's defaults are right.
