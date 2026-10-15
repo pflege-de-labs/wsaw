@@ -90,3 +90,17 @@ func (s *SQL) RecentCleanDurations(
 
 	return out, nil
 }
+
+// schemaConsentBot is the version that adds the results row's bot finding
+// column (Story 2.11).
+const schemaConsentBot = 12
+
+// consentBotArg binds resultConsentBot. An integer rather than a boolean,
+// because the three dialects agree on integers and not on booleans.
+func consentBotArg(sum Summary) int {
+	if sum.ConsentBotDetected {
+		return 1
+	}
+
+	return 0
+}

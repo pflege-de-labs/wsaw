@@ -305,6 +305,15 @@ rules:
     priority: 100
     detect: |
       !!(window.CCM || document.querySelector('#ccm-root, #ccm-widget, .ccm-modal'))
+    # CCM19's cloud loader. A client it takes for a bot gets a 54-byte stub
+    # in its place, so neither window.CCM nor the widget markup ever appear
+    # and detect alone would read the page as having no CMP (Story 2.11).
+    loaders:
+      - https://cloud.ccm19.de/app.js
+    stubs:
+      - sha256: fb9d57d628d04d66afc5bc2e97347a904f46d3f0629daa79757ff17b8ab652ee
+        says: CCM19 disabled for bots
+        means: bot
     accept:
       # An explicit false from eval is a step failure (rules.go convention),
       # which would otherwise abort the rule before the click fallback ever

@@ -399,6 +399,14 @@ func (sqliteDialect) migrations() [][]string {
 				measured_at  integer not null
 			) strict`,
 		},
+
+		// Version 12 (Story 2.11): whether the scan's CMP refused to run for
+		// a browser it took for a bot. A column so the dashboard can mark the
+		// tile from the row alone, as it does with the consent outcome. A row
+		// written before this version keeps 0, which is what wsaw knew then.
+		{
+			`alter table results add column consent_bot_detected integer not null default 0`,
+		},
 	}
 }
 

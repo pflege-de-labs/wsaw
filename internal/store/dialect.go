@@ -306,8 +306,14 @@ var (
 	// its pre-2.1 document says anyway.
 	resultConfidence = []string{"confidence_score", "confidence_band"}
 
-	resultUpdate = append(append(append(append([]string{},
-		resultScanned...), resultDerived...), resultConfidence...), resultReferenced...)
+	// resultConsentBot is the consent block's bot finding, copied out of the
+	// document so the dashboard can mark a tile without reading one (Story
+	// 2.11, AC5). Its own list for the reason resultConfidence gives: version
+	// 12 creates it, long after the document migration ran.
+	resultConsentBot = []string{"consent_bot_detected"}
+
+	resultUpdate = append(append(append(append(append([]string{},
+		resultScanned...), resultDerived...), resultConfidence...), resultConsentBot...), resultReferenced...)
 
 	baselineKey    = []string{"target", "consent_mode"}
 	baselineUpdate = []string{scanIDColumn, "approved_at", "document"}

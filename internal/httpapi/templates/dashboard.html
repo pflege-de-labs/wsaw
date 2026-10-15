@@ -126,6 +126,7 @@
             <div class="watch-tile-status">
               {{with .Series.LastScan}}
                 <span class="outcome-{{.ConsentOutcome}}">{{.ConsentOutcome}}</span>
+                {{if .ConsentBotDetected}}<span class="badge badge-warn" title="the site's CMP took wsaw for a bot and never ran">blocked as bot</span>{{end}}
                 <span class="term term-{{.Termination}}">{{.Termination}}</span>
                 {{/* How far the figures above can be trusted, with why in
                      the title and the accessible name (Story 5.35). */}}

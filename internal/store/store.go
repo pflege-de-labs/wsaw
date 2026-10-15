@@ -898,6 +898,7 @@ func resultUpdateArgs(sum Summary, ref resultRef) []any {
 		resultDerivedArgs(sum, ref)...,
 	)
 	args = append(args, confidenceArgs(sum)...)
+	args = append(args, consentBotArg(sum))
 
 	// resultReferenced, bound here rather than in resultDerivedArgs: a row
 	// this store writes has its artifact references recorded in the same
@@ -985,6 +986,9 @@ type Summary struct {
 
 	ConsentOutcome model.ConsentOutcome `json:"consentOutcome"`
 	ConsentCMP     string               `json:"consentCmp,omitempty"`
+	// ConsentBotDetected is true when the scan's CMP refused to run because it
+	// took the browser for a bot (Story 2.11).
+	ConsentBotDetected bool `json:"consentBotDetected,omitempty"`
 
 	Requests          int `json:"requests"`
 	ThirdPartyDomains int `json:"thirdPartyDomains"`
@@ -1044,18 +1048,19 @@ func Summarize(res *model.Result) Summary {
 
 func summarize(res *model.Result) Summary {
 	sum := Summary{
-		ScanID:            res.ScanID,
-		Target:            res.Target,
-		ConsentMode:       res.ConsentMode,
-		StartedAt:         res.StartedAt,
-		Duration:          res.Duration,
-		Termination:       res.Termination,
-		Error:             res.Error,
-		ConsentOutcome:    res.Consent.Outcome,
-		ConsentCMP:        res.Consent.CMP,
-		Requests:          len(res.Requests),
-		ThirdPartyDomains: len(res.ThirdPartyDomains("")),
-		PreConsentDomains: len(res.ThirdPartyDomains(model.PhasePre)),
+		ScanID:             res.ScanID,
+		Target:             res.Target,
+		ConsentMode:        res.ConsentMode,
+		StartedAt:          res.StartedAt,
+		Duration:           res.Duration,
+		Termination:        res.Termination,
+		Error:              res.Error,
+		ConsentOutcome:     res.Consent.Outcome,
+		ConsentCMP:         res.Consent.CMP,
+		ConsentBotDetected: res.Consent.BotDetected,
+		Requests:           len(res.Requests),
+		ThirdPartyDomains:  len(res.ThirdPartyDomains("")),
+		PreConsentDomains:  len(res.ThirdPartyDomains(model.PhasePre)),
 	}
 
 	if res.Confidence != nil {
@@ -1078,7 +1083,7 @@ var summaryColumns = []string{
 	scanIDColumn, "started_at", "duration_ns", "termination", "scan_error",
 	"consent_outcome", "consent_cmp", "requests", "third_party_domains",
 	"pre_consent_domains", artifactRefColumn, "document_size",
-	"confidence_score", "confidence_band",
+	"confidence_score", "confidence_band", "consent_bot_detected",
 }
 
 // underivedSummary explains a row that names no document. Reporting it beats
@@ -1207,18 +1212,19 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 		startedAt, durationNS int64
 		termination, outcome  string
 		ref, band             string
-		score                 int
+		score, bot            int
 		artifactRefs          int64
 	)
 
 	if err := rows.Scan(&sm.ScanID, &startedAt, &durationNS, &termination, &sm.Error,
 		&outcome, &sm.ConsentCMP, &sm.Requests, &sm.ThirdPartyDomains,
-		&sm.PreConsentDomains, &ref, &sm.DocumentBytes, &score, &band,
+		&sm.PreConsentDomains, &ref, &sm.DocumentBytes, &score, &band, &bot,
 		&artifactRefs, &sm.ArtifactBytes); err != nil {
 		return Summary{}, err
 	}
 
 	readConfidence(&sm, score, band)
+	sm.ConsentBotDetected = bot != 0
 
 	sm.Target = target
 	sm.ConsentMode = mode

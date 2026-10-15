@@ -185,3 +185,24 @@ func TestTeamsCardForANecessaryOnlyScanStatesTheOutcomeWithoutACaveat(t *testing
 		})
 	}
 }
+
+// Story 2.11, AC6: the diff of a scan nobody consented in is not posted as a
+// real finding just because the CMP never ran.
+func TestABotBlockedCMPIsNotTrustworthy(t *testing.T) {
+	t.Parallel()
+
+	ev := notify.NewScanEvent(teamsResult(func(r *model.Result) {
+		r.Consent = model.Consent{
+			Outcome: model.OutcomeFailed, Kind: model.CMPKindVendor, CMP: "CCM19", BotDetected: true,
+			Reason: "CCM19 disabled itself for this browser",
+		}
+	}), teamsReport())
+
+	if ev.Trustworthy {
+		t.Error("a scan whose CMP refused to run is reported as trustworthy")
+	}
+
+	if ev.Caveat == "" {
+		t.Error("an untrustworthy scan carries no caveat")
+	}
+}

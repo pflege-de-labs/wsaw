@@ -125,7 +125,31 @@ type Rule struct {
 	// results can flag it as less trustworthy.
 	Heuristic bool `yaml:"heuristic,omitempty"`
 
+	// Loaders are URL prefixes of the script the vendor serves to start its
+	// CMP. A recorded request for one of them on a page where no CMP was
+	// detected means the CMP was present and never started (Story 2.11).
+	Loaders []string `yaml:"loaders,omitempty"`
+
+	// Stubs are bodies the vendor is known to serve in place of a loader.
+	Stubs []Stub `yaml:"stubs,omitempty"`
+
 	hostPatterns []*regexp.Regexp
+}
+
+// StubBot is the meaning of a stub served to clients the vendor takes for
+// bots.
+const StubBot = "bot"
+
+// Stub is a body a vendor serves in place of its loader, recognised by its
+// digest because a scan keeps the digest of every script whether or not it
+// keeps the body (Story 1.6).
+type Stub struct {
+	// SHA256 is the hex digest of the stub's body.
+	SHA256 string `yaml:"sha256"`
+	// Says is what the stub tells the console, quoted in the result's reason.
+	Says string `yaml:"says,omitempty"`
+	// Means is why the vendor serves it; only StubBot is defined.
+	Means string `yaml:"means"`
 }
 
 // RuleFile is the on-disk format of a rule pack.
@@ -218,6 +242,10 @@ func parseRules(source string, b []byte) ([]Rule, error) {
 		}
 
 		if err := checkFrameSteps(file.Rules[i]); err != nil {
+			return nil, fmt.Errorf("rule file %s: rule %q: %w", source, file.Rules[i].Name, err)
+		}
+
+		if err := checkLoaders(file.Rules[i]); err != nil {
 			return nil, fmt.Errorf("rule file %s: rule %q: %w", source, file.Rules[i].Name, err)
 		}
 	}

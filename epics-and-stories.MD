@@ -371,7 +371,7 @@ A trustworthy result and a verified reject are different questions. A result is 
 - AC6: The public meaning changes on the record. The `trustworthy` field of a scan event means something different for `necessary-only`. The README's Teams section, which is where the scan-event payload's trust judgment is documented, states that a verified necessary-only outcome counts as trustworthy. No field is added, removed or renamed (Tenet 16). Metrics and the CLI exit code already base trust on termination and `Result.OK`, not on consent outcome, and this story leaves them as they are.
 - AC7: Regression coverage, all in the fast suite without Chrome (Tenet 13): a table-driven test of `trustworthiness` over every consent outcome in `reject` mode, showing only `necessary-only` moves and that a truncated or failed `necessary-only` scan stays untrustworthy; the AC2 case of `necessary-only` outside `reject` mode; `wantsScanEvent` staying silent for an unchanged `necessary-only` scan and posting for one with a finding over the threshold; the Teams card for such a scan carrying the outcome and no ⚠ caveat; and the AC5 transition finding in both directions.
 
-### Story 2.11 — Flag a CMP that loaded but refused to run, and say when it took wsaw for a bot
+### Story 2.11 — Flag a CMP that loaded but refused to run, and say when it took wsaw for a bot (partly implemented: the finding is derived when a scan is taken, and nothing yet re-applies a stub added to the rule pack later to already stored scans, AC4)
 
 *As a Compliance Officer, I want a scan to say so when a site's CMP was present but switched itself off for wsaw, so that a page whose banner never appeared to the scanner is not reported as a page that has no banner.*
 

@@ -239,6 +239,13 @@ func (postgresDialect) migrations() [][]string {
 				measured_at  bigint not null
 			)`,
 		},
+
+		// Version 12 (Story 2.11): the consent block's bot finding. The
+		// sqlite dialect carries the reasoning.
+		{
+			`alter table results
+				add column if not exists consent_bot_detected smallint not null default 0`,
+		},
 	}
 }
 

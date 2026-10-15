@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "2.2"
+const SchemaVersion = "2.3"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -302,6 +302,17 @@ type Consent struct {
 	// silence means the site changed, and silence is exactly how a rule stops
 	// working unnoticed (Story 2.9, AC6).
 	StaleHostRules []string `json:"staleHostRules,omitempty"`
+
+	// LoaderRequestID names the recorded request for a CMP's loader script
+	// when that loader is why the outcome is failed rather than not-needed:
+	// the vendor's script was on the page and the CMP never started (Story
+	// 2.11, AC4).
+	LoaderRequestID string `json:"loaderRequestId,omitempty"`
+
+	// BotDetected is true when that loader came back as a stub the vendor is
+	// known to serve to clients it takes for bots. The CMP switched itself off
+	// for this browser, so no banner was ever shown to it (Story 2.11, AC3).
+	BotDetected bool `json:"botDetected,omitempty"`
 }
 
 // CMPKind classifies what was found on the page, which is a different
