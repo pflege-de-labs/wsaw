@@ -61,6 +61,16 @@ var reloadableKeys = map[string]struct{}{
 	// NonReloadableChanges reports that separately.
 	"api.tlsCert": {},
 	"api.tlsKey":  {},
+
+	// The browser image refresh is read by its own loop on every accepted
+	// reload, and the image it switches to is one the running pool already
+	// knows how to take between scans (Story 6.13, AC11). Every other
+	// container setting shaped the pool at startup and stays here as a
+	// refusal.
+	"browser.container.refresh":               {},
+	"browser.container.refreshInterval":       {},
+	"browser.container.refreshKeep":           {},
+	"browser.container.refreshKeepReferenced": {},
 }
 
 // NonReloadableChanges returns the configuration keys that differ between the
@@ -144,12 +154,30 @@ func structChanges(prefix string, running, next reflect.Value) []string {
 			continue
 		}
 
+		// A section holding a reloadable key is descended into, so that key
+		// can be skipped and its siblings still named.
+		if field.Type.Kind() == reflect.Struct && holdsReloadableKey(key) {
+			changed = append(changed, structChanges(key, running.Field(i), next.Field(i))...)
+
+			continue
+		}
+
 		if !reflect.DeepEqual(running.Field(i).Interface(), next.Field(i).Interface()) {
 			changed = append(changed, key)
 		}
 	}
 
 	return changed
+}
+
+func holdsReloadableKey(prefix string) bool {
+	for key := range reloadableKeys {
+		if strings.HasPrefix(key, prefix+".") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // yamlName reads the field's name in the configuration file from its yaml

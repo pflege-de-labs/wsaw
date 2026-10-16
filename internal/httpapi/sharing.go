@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/share"
@@ -298,6 +299,9 @@ type diffView struct {
 	Reason     string
 	Changes    []sharedChange
 	Suppressed int
+	// BrowserChanged says the comparison spans a change of browser (Story
+	// 6.13, AC8).
+	BrowserChanged *diff.BrowserChange
 }
 
 type sharedChange struct {
@@ -326,9 +330,10 @@ func (s *Server) handleSharedResult(w http.ResponseWriter, r *http.Request) {
 
 	if rep := s.diffFor(res); rep != nil {
 		view := &diffView{
-			Comparable: rep.Comparable,
-			Reason:     rep.Reason,
-			Suppressed: rep.Suppressed,
+			Comparable:     rep.Comparable,
+			Reason:         rep.Reason,
+			Suppressed:     rep.Suppressed,
+			BrowserChanged: rep.BrowserChanged,
 		}
 
 		for _, c := range rep.Changes {

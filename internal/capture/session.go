@@ -1164,6 +1164,7 @@ func (o *Options) environment() model.Environment {
 		BrowserReused:  o.BrowserReused,
 		BrowserRuntime: o.BrowserRuntime,
 		BrowserImage:   o.BrowserImage,
+		BrowserImageID: o.BrowserImageID,
 		BrowserSandbox: o.BrowserSandbox,
 	}
 

@@ -407,6 +407,20 @@ func (sqliteDialect) migrations() [][]string {
 		{
 			`alter table results add column consent_bot_detected integer not null default 0`,
 		},
+
+		// Version 13 (Story 6.13): the image each scan was rendered with,
+		// copied out of the document, so a prune that keeps the images stored
+		// scans used can ask the index rather than read every document.
+		//
+		// A row written before this version defaults to imageIDUnrecorded:
+		// its document names no image ID, so it references no image, and the
+		// prune counts it rather than guessing (browserimages.go). A replay
+		// after a lost version record meets "duplicate column name", which
+		// alreadyApplied absorbs as it does for version 7.
+		{
+			`alter table results add column ` + browserImageIDColumn + ` text not null default '` +
+				imageIDUnrecorded + `'`,
+		},
 	}
 }
 

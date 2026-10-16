@@ -150,6 +150,7 @@ type Options struct {
 	// the page, and are recorded in the result.
 	BrowserRuntime string
 	BrowserImage   string
+	BrowserImageID string
 	BrowserSandbox bool
 
 	// WsawVersion and ChromeVersion are recorded for reproducibility.

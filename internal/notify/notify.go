@@ -44,6 +44,10 @@ type Event struct {
 	// (Story 5.37).
 	BelowConfidence bool `json:"belowConfidence,omitempty"`
 
+	// BrowserChanged is set when the scan was compared with one a different
+	// browser rendered (Story 6.13, AC8).
+	BrowserChanged *diff.BrowserChange `json:"browserChanged,omitempty"`
+
 	// observedNothing marks a change from a failed or skipped scan, which no
 	// confidence threshold may hold back.
 	observedNothing bool
@@ -547,6 +551,8 @@ func (d *Dispatcher) Publish(res *model.Result, rep *diff.Report) {
 				At:          res.StartedAt,
 				Change:      c,
 				Confidence:  confidence,
+
+				BrowserChanged: rep.BrowserChanged,
 
 				observedNothing: !res.OK(),
 			}

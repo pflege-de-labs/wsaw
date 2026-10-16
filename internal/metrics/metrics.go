@@ -96,6 +96,15 @@ type Registry struct {
 	tlsReloads map[string]int64
 	tlsExpiry  time.Time
 
+	// browserRefreshes counts browser image refreshes by outcome, and
+	// lastRefreshSuccess is when one last switched or found nothing newer.
+	// browserVersion and browserImage name the browser in service, as the
+	// labels of an info gauge (Story 6.13, AC10).
+	browserRefreshes   map[string]int64
+	lastRefreshSuccess time.Time
+	browserVersion     string
+	browserImage       string
+
 	durations map[labels]*histogram
 	requests  map[labels]*histogram
 
@@ -144,6 +153,8 @@ func New(version string) *Registry {
 		sweepRuns:       make(map[string]int64),
 		vacuumRuns:      make(map[string]int64),
 		tlsReloads:      make(map[string]int64),
+
+		browserRefreshes: make(map[string]int64),
 
 		bodiesStored:      make(map[string]int64),
 		bodyBytesStored:   make(map[string]int64),
@@ -400,6 +411,38 @@ func (r *Registry) VacuumRun(outcome string, reclaimed int64) {
 	}
 }
 
+// Browser image refresh outcomes, as BrowserImageRefreshed counts them (Story
+// 6.13, AC10). They are metric label values, and so a public interface.
+const (
+	RefreshSwitched  = "switched"
+	RefreshUnchanged = "unchanged"
+	RefreshFailed    = "failed"
+	RefreshSkipped   = "skipped"
+)
+
+// BrowserImageRefreshed counts one browser image refresh by outcome. A
+// refresh that switched or found nothing newer is a success for the
+// timestamp gauge: both mean the image in service is as current as the
+// refresh could make it.
+func (r *Registry) BrowserImageRefreshed(outcome string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.browserRefreshes[outcome]++
+
+	if outcome == RefreshSwitched || outcome == RefreshUnchanged {
+		r.lastRefreshSuccess = at
+	}
+}
+
+// SetBrowser names the browser in service.
+func (r *Registry) SetBrowser(version, image string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.browserVersion, r.browserImage = version, image
+}
+
 // VacuumSucceeded records the Unix time of a vacuum that rewrote the file or
 // found no need to. One that failed or was refused does not move it.
 func (r *Registry) VacuumSucceeded(at time.Time) {
@@ -599,6 +642,17 @@ func (r *Registry) WritePrometheus(w io.Writer) error {
 
 	fmt.Fprintf(&b, "# HELP wsaw_build_info Build information.\n# TYPE wsaw_build_info gauge\n")
 	fmt.Fprintf(&b, "wsaw_build_info{version=%q} 1\n", r.version)
+
+	writeOutcomes(&b, "wsaw_browser_image_refreshes_total",
+		"Browser image refreshes, by outcome: switched, unchanged, failed or skipped.", r.browserRefreshes)
+	writeGaugeValue(&b, "wsaw_last_successful_browser_image_refresh_timestamp_seconds",
+		"Unix time of the last browser image refresh that switched or found nothing newer, 0 if none has in this process.",
+		float64(unixOrZero(r.lastRefreshSuccess)))
+
+	if r.browserVersion != "" {
+		fmt.Fprintf(&b, "# HELP wsaw_browser_info The browser new scans run on.\n# TYPE wsaw_browser_info gauge\n")
+		fmt.Fprintf(&b, "wsaw_browser_info{version=%q,image=%q} 1\n", r.browserVersion, r.browserImage)
+	}
 
 	// The metric that makes a stalled watcher alertable.
 	b.WriteString("# HELP wsaw_last_successful_scan_timestamp_seconds Unix time of the last scan that produced a trustworthy asset list.\n")

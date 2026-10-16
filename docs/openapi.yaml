@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: wsaw API
-  version: "1.1"
+  version: "1.2"
   description: |
     wsaw's HTTP interface. The bundled web interface is a client of exactly
     these endpoints: it has no privileged path into the store.
@@ -789,8 +789,47 @@ components:
           items: {$ref: "#/components/schemas/StorageSeries"}
         lastPrune: {type: object, description: The last recorded prune run, or why there is none.}
         lastSweep: {type: object, description: The last recorded sweep run, or why there is none.}
+        browserImages:
+          type: object
+          description: >-
+            Added in 1.2 (Story 6.13). The browser images on the daemon's machine as the last recorded
+            inventory found them — taken at startup, after a refresh and after a prune, never while the
+            page renders. Without an inventory, found is false and reason says why.
+          properties:
+            available: {type: boolean}
+            found: {type: boolean}
+            reason: {type: string}
+            takenAt: {type: string, format: date-time}
+            trigger: {type: string, description: "startup, refresh, schedule or cli."}
+            error: {type: string}
+            runtime: {type: string}
+            rule: {type: string, description: The keep rule the states were decided by.}
+            totalBytes: {type: integer, description: The sum of every image's size. Shared layers are counted in each image, so it can exceed what the images occupy together.}
+            unknownSizes: {type: integer, description: Images whose size the runtime did not report, not in totalBytes.}
+            unrecordedScans: {type: integer, description: Stored results that do not record which image rendered them; they keep no image.}
+            images:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: {type: string}
+                  id: {type: string, description: The image's content ID.}
+                  chromium: {type: string}
+                  made: {type: string, format: date-time, description: When the refresh made it; absent for an image it did not.}
+                  size: {type: integer, description: Bytes as the runtime reports them; -1 when it did not.}
+                  state: {enum: [in-service, pinned, kept, referenced, prunable]}
+                  scans: {type: integer, description: Stored scans this image rendered.}
+                  newestScan: {type: string, format: date-time}
         sweepFoundExtra: {type: boolean}
         snapshotAt: {type: string, format: date-time}
+
+    DiffBrowser:
+      type: object
+      properties:
+        runtime: {type: string}
+        version: {type: string}
+        image: {type: string}
+        imageId: {type: string}
 
     DiffReport:
       type: object
@@ -802,6 +841,15 @@ components:
         comparable: {type: boolean}
         reason: {type: string}
         suppressed: {type: integer, description: Changes hidden by the allow list, so a quiet report is distinguishable from an over-configured one.}
+        browserChanged:
+          type: object
+          description: >-
+            Added in 1.2 (Story 6.13). Present when the two scans were rendered by different browsers — another
+            version, runtime or image — so a change may be the browser's rather than the site's. It removes and
+            softens no change.
+          properties:
+            before: {$ref: "#/components/schemas/DiffBrowser"}
+            after: {$ref: "#/components/schemas/DiffBrowser"}
         changes:
           type: array
           items:

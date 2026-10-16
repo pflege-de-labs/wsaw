@@ -899,6 +899,7 @@ func resultUpdateArgs(sum Summary, ref resultRef) []any {
 	)
 	args = append(args, confidenceArgs(sum)...)
 	args = append(args, consentBotArg(sum))
+	args = append(args, sum.BrowserImageID)
 
 	// resultReferenced, bound here rather than in resultDerivedArgs: a row
 	// this store writes has its artifact references recorded in the same
@@ -1035,6 +1036,12 @@ type Summary struct {
 	// reported as 0 or 100, either of which would be a claim nobody made.
 	ConfidenceScore *int                 `json:"confidenceScore,omitempty"`
 	ConfidenceBand  model.ConfidenceBand `json:"confidenceBand,omitempty"`
+
+	// BrowserImageID is the browser_image_id column (Story 6.13): the image
+	// the scan was rendered with, imageIDUnrecorded where the result does not
+	// say, or empty for a local browser. It is the index's own bookkeeping
+	// and not part of a listing's JSON; the result document carries the ID.
+	BrowserImageID string `json:"-"`
 }
 
 // Summarize derives a Summary from a result in memory, without going near
@@ -1069,6 +1076,8 @@ func summarize(res *model.Result) Summary {
 		sum.ConfidenceBand = res.Confidence.Band
 	}
 
+	sum.BrowserImageID = imageIDOf(res)
+
 	return sum
 }
 
@@ -1083,7 +1092,7 @@ var summaryColumns = []string{
 	scanIDColumn, "started_at", "duration_ns", "termination", "scan_error",
 	"consent_outcome", "consent_cmp", "requests", "third_party_domains",
 	"pre_consent_domains", artifactRefColumn, "document_size",
-	"confidence_score", "confidence_band", "consent_bot_detected",
+	"confidence_score", "confidence_band", "consent_bot_detected", browserImageIDColumn,
 }
 
 // underivedSummary explains a row that names no document. Reporting it beats
@@ -1218,7 +1227,7 @@ func scanSummary(rows *sql.Rows, target string, mode model.ConsentMode) (Summary
 
 	if err := rows.Scan(&sm.ScanID, &startedAt, &durationNS, &termination, &sm.Error,
 		&outcome, &sm.ConsentCMP, &sm.Requests, &sm.ThirdPartyDomains,
-		&sm.PreConsentDomains, &ref, &sm.DocumentBytes, &score, &band, &bot,
+		&sm.PreConsentDomains, &ref, &sm.DocumentBytes, &score, &band, &bot, &sm.BrowserImageID,
 		&artifactRefs, &sm.ArtifactBytes); err != nil {
 		return Summary{}, err
 	}

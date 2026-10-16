@@ -267,6 +267,12 @@ func (t *Teams) cardBody(ev ScanEvent, listed int) []any {
 
 	body = append(body, factSet(t.facts(ev)))
 
+	if note := browserChangeNote(ev); note != "" {
+		// Above the changes it may explain, and without changing a single one
+		// of them (Story 6.13, AC8).
+		body = append(body, wrapBlock(note, colourDefault, "Warning"))
+	}
+
 	body = append(body, t.changeBlocks(ev, listed)...)
 
 	note := "This is a summary of one scan, not the finding itself."
@@ -495,6 +501,18 @@ func factSet(facts [][2]string) map[string]any {
 // messageCard builds the retired connector format, for a tenant that still has
 // a working connector webhook (AC9). It is deliberately plainer: this path
 // exists to keep an existing integration alive, not to be developed.
+// browserChangeNote is the sentence both card formats carry when the
+// comparison spans a change of browser (Story 6.13, AC8), empty otherwise.
+func browserChangeNote(ev ScanEvent) string {
+	bc := ev.BrowserChanged
+	if bc == nil {
+		return ""
+	}
+
+	return "The browser changed between the two scans compared: " + bc.Before.String() + " → " +
+		bc.After.String() + ". A change below may be the browser's rather than the site's."
+}
+
 func (t *Teams) messageCard(ev ScanEvent, listed int) map[string]any {
 	shown := min(listed, len(ev.Changes))
 
@@ -502,6 +520,10 @@ func (t *Teams) messageCard(ev ScanEvent, listed int) map[string]any {
 
 	if !ev.Trustworthy {
 		text.WriteString("**⚠ " + ev.Caveat + "**\n\n")
+	}
+
+	if note := browserChangeNote(ev); note != "" {
+		text.WriteString(note + "\n\n")
 	}
 
 	for _, c := range ev.Changes[:shown] {

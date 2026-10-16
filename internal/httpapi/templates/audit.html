@@ -4,11 +4,12 @@
 <h1>Audit log</h1>
 
 <p class="lead">
-  Approvals are recorded because an approval is what silences future findings.
+  Approvals are recorded because an approval is what silences future findings. A change of browser is
+  recorded because it can change what the findings after it mean.
 </p>
 
 {{if not .Data}}
-  <p class="empty">No approvals or deletions have been recorded.</p>
+  <p class="empty">No approvals, deletions or changes of browser have been recorded.</p>
 {{end}}
 
 <table>

@@ -148,10 +148,69 @@
   </div>
 </div>
 
+<h2 id="browser-images">Browser images</h2>
+
+{{/* Story 6.13, AC13: from the inventory the daemon recorded, never from the runtime while the page renders. */}}
+{{with .BrowserImages}}
+{{if not .Available}}
+<p class="muted">This store cannot report browser image inventories.</p>
+{{else if not .Found}}
+<p class="muted">{{.Reason}}.</p>
+{{else}}
+<p>
+  Inventory taken {{time .TakenAt}} ({{.Trigger}}) on <code>{{.Runtime}}</code>; rule: {{.Rule}}.
+  {{if .Error}}<span class="error-detail">{{.Error}}</span>{{end}}
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Image</th>
+      <th>Chromium</th>
+      <th>Made</th>
+      <th class="num">Size</th>
+      <th>State</th>
+      <th class="num">Stored scans</th>
+      <th>Newest scan</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Images}}
+    <tr>
+      <td><code>{{.Name}}</code><br><span class="muted" title="{{.ID}}">{{.ID}}</span></td>
+      <td>{{if .Chromium}}{{.Chromium}}{{else}}<span class="muted">not recorded</span>{{end}}</td>
+      <td>{{if .Made.IsZero}}<span class="muted">not made by the refresh</span>{{else}}{{time .Made}}{{end}}</td>
+      <td class="num">{{if lt .Size 0}}<span class="muted">unknown</span>{{else}}{{bytes .Size}}{{end}}</td>
+      <td>{{if eq .State "prunable"}}due to be pruned at the next prune{{else if eq .State "in-service"}}in service{{else if eq .State "referenced"}}kept: used by stored scans{{else if eq .State "pinned"}}pinned by the configuration{{else}}kept{{end}}</td>
+      <td class="num">{{.Scans}}</td>
+      <td>{{if .NewestScan.IsZero}}<span class="muted">none</span>{{else}}{{time .NewestScan}}{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+  <tfoot>
+    <tr>
+      <th>Total</th>
+      <td></td>
+      <td></td>
+      <td class="num"><strong>{{bytes .TotalBytes}}</strong></td>
+      <td colspan="3"></td>
+    </tr>
+  </tfoot>
+</table>
+<p class="note">Each size is what the container runtime reports for that image. Images share layers, and a
+  shared layer is counted in every image that has it, so the total can be more than the images occupy
+  together.{{if .UnknownSizes}} {{.UnknownSizes}} image(s) reported no size and are not in it.{{end}}</p>
+{{if .UnrecordedScans}}
+<p class="note warn">{{.UnrecordedScans}} stored result(s) do not record which image rendered them; they keep
+  no image.</p>
+{{end}}
+{{end}}
+{{end}}
+
 {{/* AC11: no prune button, no sweep button. Evidence is deleted by a policy an operator versioned or a
      command they typed, not a click on the page that just told them how much it would free. */}}
-<p class="note">This page deletes nothing. Apply retention with <code>wsaw prune</code>, or collect
-  unreferenced evidence with <code>wsaw store sweep</code>.</p>
+<p class="note">This page deletes nothing. Apply retention with <code>wsaw prune</code>, collect
+  unreferenced evidence with <code>wsaw store sweep</code>, and see which browser images a prune would
+  remove with <code>wsaw browser prune --dry-run</code>.</p>
 
 {{end}}
 {{end}}

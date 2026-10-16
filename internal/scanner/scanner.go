@@ -323,10 +323,12 @@ func (s *Scanner) capture(
 	opts := s.captureOptions(target, mode)
 	applyBodyDecision(&opts, bodies)
 	opts.BrowserReused = reused
+	id := s.identity(lease.Browser.Identity())
 	opts.WsawVersion = s.opts.WsawVersion
-	opts.ChromeVersion = s.opts.ChromeVersion
+	opts.ChromeVersion = id.Version
 	opts.BrowserRuntime = s.opts.BrowserRuntime
-	opts.BrowserImage = s.opts.BrowserImage
+	opts.BrowserImage = id.Image
+	opts.BrowserImageID = id.ImageID
 	opts.BrowserSandbox = s.opts.BrowserSandbox
 	opts.Secrets = s.deps.Secrets
 
@@ -640,7 +642,7 @@ func (s *Scanner) failedResult(scanID string, target config.Resolved, mode model
 		Requests:      []model.Request{},
 		Environment: model.Environment{
 			WsawVersion:   s.opts.WsawVersion,
-			ChromeVersion: s.opts.ChromeVersion,
+			ChromeVersion: s.currentVersion(),
 		},
 	}
 }
@@ -663,9 +665,30 @@ func (s *Scanner) skippedResult(scanID string, target config.Resolved, mode mode
 		Requests:      []model.Request{},
 		Environment: model.Environment{
 			WsawVersion:   s.opts.WsawVersion,
-			ChromeVersion: s.opts.ChromeVersion,
+			ChromeVersion: s.currentVersion(),
 		},
 	}
+}
+
+// identity is what rendered a scan: the identity its browser was launched
+// with, which survives the pool switching to another image mid-scan (Story
+// 6.13, AC5), or the startup values for a browser that carries none.
+func (s *Scanner) identity(id browser.Identity) browser.Identity {
+	if id.Version == "" {
+		return browser.Identity{Version: s.opts.ChromeVersion, Image: s.opts.BrowserImage}
+	}
+
+	return id
+}
+
+// currentVersion is the browser a scan that never reached one would have run
+// on.
+func (s *Scanner) currentVersion() string {
+	if s.deps.Pool == nil {
+		return s.opts.ChromeVersion
+	}
+
+	return s.identity(s.deps.Pool.Identity()).Version
 }
 
 func (s *Scanner) scrub(text string) string {

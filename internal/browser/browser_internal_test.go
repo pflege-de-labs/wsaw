@@ -487,3 +487,75 @@ func TestPutIgnoresANilBrowser(t *testing.T) {
 		t.Errorf("%d slots free, want the slot returned", got)
 	}
 }
+
+// TestSwitchRetiresTheOldBrowsersWithoutStoppingAScan is Story 6.13, AC5: an
+// idle browser from before a switch is closed at once, one a scan is using
+// finishes that scan and is closed when it is released rather than reused,
+// neither counts as a restart, and the scan's browser still says what it was
+// launched from.
+func TestSwitchRetiresTheOldBrowsersWithoutStoppingAScan(t *testing.T) {
+	t.Parallel()
+
+	var restarts int32
+
+	before := Identity{Version: "Chromium 152", Image: "localhost/wsaw-browser:build-1", ImageID: "sha256:a"}
+	after := Identity{Version: "Chromium 153", Image: "localhost/wsaw-browser:build-2", ImageID: "sha256:b"}
+
+	p := NewPool(PoolOptions{
+		Size:      2,
+		Launch:    Options{Identity: before},
+		OnRestart: func(string) { restarts++ },
+	})
+	t.Cleanup(func() { _ = p.Close() })
+
+	// Two browsers from the first generation: one idle, one serving a scan.
+	<-p.slots
+	<-p.slots
+
+	p.mu.Lock()
+	p.live = 2
+	p.mu.Unlock()
+
+	idle, busy := stubBrowser(), stubBrowser()
+	idle.opts.Identity, busy.opts.Identity = before, before
+
+	(&Lease{Browser: idle, pool: p}).Release()
+
+	scan := &Lease{Browser: busy, pool: p}
+
+	p.Switch(nil, after)
+
+	if got := p.Identity(); got != after {
+		t.Errorf("Identity() after the switch = %+v, want %+v", got, after)
+	}
+
+	p.mu.Lock()
+	idleAfter, live := len(p.idle), p.live
+	p.mu.Unlock()
+
+	if idleAfter != 0 || live != 1 {
+		t.Errorf("after the switch: %d idle, %d live; want the idle browser closed and the busy one left alone", idleAfter, live)
+	}
+
+	if got := scan.Browser.Identity(); got != before {
+		t.Errorf("the running scan's browser now says %+v; it was launched as %+v", got, before)
+	}
+
+	scan.Release()
+
+	p.mu.Lock()
+	idleAfter, live = len(p.idle), p.live
+	p.mu.Unlock()
+
+	if idleAfter != 0 || live != 0 {
+		t.Errorf("after the scan: %d idle, %d live; an old browser was kept for the next scan", idleAfter, live)
+	}
+
+	if restarts != 0 {
+		t.Errorf("a switch counted %d restarts; retiring a browser is not one", restarts)
+	}
+
+	if got := len(p.slots); got != 2 {
+		t.Errorf("%d slots free, want both back", got)
+	}
+}

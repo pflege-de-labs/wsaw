@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "description": "Schema version, currently 2.3. 2.3 added consent.loaderRequestId and consent.botDetected, additively: a 2.2 document still validates. 2.2 added bodyCapture and the request payload fields (requestBodyRef and its siblings), additively: a 2.1 document still validates. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
+      "description": "Schema version, currently 2.4. 2.4 added environment.browserImageId, additively: a 2.3 document still validates. 2.3 added consent.loaderRequestId and consent.botDetected, additively: a 2.2 document still validates. 2.2 added bodyCapture and the request payload fields (requestBodyRef and its siblings), additively: a 2.1 document still validates. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
     },
     "scanId": {
       "type": "string"
@@ -406,6 +406,10 @@
         "browserImage": {
           "type": "string",
           "description": "Container image, pinned by digest, when the browser ran in a container."
+        },
+        "browserImageId": {
+          "type": "string",
+          "description": "The content ID of browserImage when it rendered the scan (sha256:...), as the container runtime reports it. A name can move to another image — a pulled tag does on every pull — so the ID is what says which browser a result came from. Added in 2.4 (Story 6.13); absent from a document written before it, and from a scan run by a browser on the host."
         },
         "browserSandbox": {
           "type": "boolean",

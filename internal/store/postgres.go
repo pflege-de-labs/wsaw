@@ -246,6 +246,13 @@ func (postgresDialect) migrations() [][]string {
 			`alter table results
 				add column if not exists consent_bot_detected smallint not null default 0`,
 		},
+
+		// Version 13 (Story 6.13): the image each scan was rendered with. The
+		// sqlite dialect carries the reasoning.
+		{
+			`alter table results add column if not exists ` + browserImageIDColumn + ` text not null default '` +
+				imageIDUnrecorded + `'`,
+		},
 	}
 }
 

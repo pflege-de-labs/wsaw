@@ -84,6 +84,7 @@ func (c *Config) Validate() error {
 	c.validateArtifacts(add)
 	c.validateSignedURLs(add)
 	c.validateSweep(add)
+	c.validateRefresh(add)
 	c.validateVacuum(add)
 	c.validateNormalize(add)
 	c.validateCapture(add)
@@ -889,6 +890,56 @@ func (c *Config) validateSweep(add addFunc) {
 			"%s is shorter than the %s minimum; nothing younger than a day is collected however often the bucket "+
 				"is walked, and every sweep is a full listing of it",
 			st.SweepInterval.Duration(), MinSweepInterval)
+	}
+}
+
+// validateRefresh refuses browser image refresh settings that cannot mean
+// what they say (Story 6.13).
+func (c *Config) validateRefresh(add addFunc) {
+	ct := c.Browser.Container
+
+	switch mode := ct.RefreshMode(); mode {
+	case RefreshOff, RefreshBuild:
+	case RefreshPull:
+		c.validateRefreshPull(add)
+	default:
+		add(ct.Line("refresh"), "browser.container.refresh", "%q is not valid; use off, build or pull", ct.Refresh)
+	}
+
+	if written := ct.Line("refreshInterval") > 0 || ct.RefreshInterval != 0; written &&
+		ct.RefreshInterval.Duration() < MinRefreshInterval {
+		add(ct.Line("refreshInterval"), "browser.container.refreshInterval",
+			"must be at least %s; leave it out for the default of %s", MinRefreshInterval, DefaultRefreshInterval)
+	}
+
+	// The two rules answer the same question differently, and a file setting
+	// both would leave the reader to guess which one wins.
+	if ct.RefreshKeep != nil && ct.RefreshKeepReferenced != nil {
+		add(ct.Line("refreshKeep"), "browser.container.refreshKeep",
+			"cannot be set together with browser.container.refreshKeepReferenced%s; keep one of the two",
+			atLine(ct.Line("refreshKeepReferenced")))
+	}
+
+	if ct.RefreshKeep != nil && *ct.RefreshKeep < 1 {
+		add(ct.Line("refreshKeep"), "browser.container.refreshKeep",
+			"must be at least 1; the image in service is always kept")
+	}
+}
+
+// validateRefreshPull refuses a pull that could never fetch anything new: a
+// digest names one image for ever, and the image wsaw builds is under a name
+// no registry serves.
+func (c *Config) validateRefreshPull(add addFunc) {
+	ct := c.Browser.Container
+	image := ct.Image
+
+	switch {
+	case image == "" || strings.HasPrefix(image, container.ImageName+":"):
+		add(ct.Line("refresh"), "browser.container.refresh",
+			"pull needs browser.container.image to name a registry tag; the image wsaw builds is refreshed with refresh: build")
+	case strings.Contains(image, "@"):
+		add(ct.Line("image"), "browser.container.image",
+			"%q is pinned by digest, which never names a newer image; refresh: pull needs a tag", image)
 	}
 }
 

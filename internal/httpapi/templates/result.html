@@ -153,6 +153,11 @@
     <p class="muted" id="compared-against">This scan is the baseline. Changes are shown against the previous scan,
       <a href="{{.ComparedLink}}"><code>{{.Diff.BaselineScanID}}</code></a>.</p>
   {{end}}
+  {{/* Above the changes it may explain; it hides none of them (Story 6.13, AC8). */}}
+  {{with .Diff.BrowserChanged}}
+    <div class="banner banner-warn" id="browser-changed">The browser changed between the two scans compared:
+      {{.Before}} → {{.After}}. A change below may be the browser's rather than the site's.</div>
+  {{end}}
   {{if not .Diff.Comparable}}
     <p class="empty">No comparison was possible: {{.Diff.Reason}}</p>
   {{else if not .Diff.Changes}}

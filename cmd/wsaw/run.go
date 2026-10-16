@@ -172,6 +172,19 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 		a.CheckBrowserImage(runCtx)
 	}()
 
+	// The browser image refresh, beside the scheduler for the same reason: a
+	// build or a pull must never be on a scan's path (Story 6.13, AC5). A
+	// reload hands it the new refresh settings.
+	refreshes := make(chan app.RefreshSchedule, 1)
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		a.RefreshLoop(runCtx, refreshes)
+	}()
+
 	// Where the certificate is read from, which a reload may move.
 	certPaths := tlsPaths{cert: a.Config.API.TLSCert, key: a.Config.API.TLSKey}
 
@@ -222,6 +235,7 @@ func supervise(ctx context.Context, a *app.App, cf configFlags) error {
 			d.Reload(next.targets)
 			offerSchedule(sweeps, next.sweep)
 			offerSchedule(vacuums, next.vacuum)
+			offerSchedule(refreshes, next.refresh)
 
 			certPaths = next.certPaths
 			reloadCertificate(runCtx, srv, certPaths)
@@ -266,6 +280,7 @@ type reloaded struct {
 	targets   []config.Resolved
 	sweep     app.SweepSchedule
 	vacuum    app.VacuumSchedule
+	refresh   app.RefreshSchedule
 	certPaths tlsPaths
 }
 
@@ -280,7 +295,8 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 	}
 
 	// A reload can only replace the target list, the sweep and vacuum
-	// schedules and where the certificate is read from.
+	// schedules, the browser image refresh and where the certificate is read
+	// from.
 	// Everything else became a browser pool, a normalizer, an HTTP server or
 	// a scheduler at startup, so a change to it cannot take effect in this
 	// process — and adopting the half that can while logging "configuration
@@ -324,16 +340,19 @@ func reload(a *app.App, cf configFlags) (reloaded, error) {
 
 	sweep := app.SweepScheduleFor(cfg)
 	vacuum := app.VacuumScheduleFor(cfg)
+	refresh := app.RefreshScheduleFor(cfg)
 
 	a.Logger.Info("configuration reloaded", "targets", len(targets),
 		"sweep", sweep.Enabled, "sweep_interval", sweep.Interval.String(),
-		"vacuum", vacuum.Enabled, "vacuum_interval", vacuum.Interval.String())
+		"vacuum", vacuum.Enabled, "vacuum_interval", vacuum.Interval.String(),
+		"browser_refresh", refresh.Mode, "browser_refresh_interval", refresh.Interval.String())
 
 	return reloaded{
 		cfg:       cfg,
 		targets:   targets,
 		sweep:     sweep,
 		vacuum:    vacuum,
+		refresh:   refresh,
 		certPaths: tlsPaths{cert: cfg.API.TLSCert, key: cfg.API.TLSKey},
 	}, nil
 }

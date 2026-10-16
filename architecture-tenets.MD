@@ -80,6 +80,8 @@ Most of wsaw's logic — normalization, diffing, severity, scheduling, retention
 
 Pure Go, CGo-free, cross-compiled for linux/darwin × amd64/arm64. No Node.js driver, no runtime browser downloads, and **no external database required**. The one external dependency is Chrome, and that is checked and reported at startup.
 
+One exception to "no runtime browser downloads" exists, decided in Story 6.13 and narrow on purpose: an operator may opt in to the daemon rebuilding or pulling its browser image on a schedule. It is off by default, runs beside the scheduler and never on a scan's path, switches only between scans to an image that passed the startup check, and never leaves the daemon without a browser. A comparison across the switch is marked as one. Nothing else may download a browser at runtime.
+
 A server database is an option, not a requirement (Story 4.7). The default deployment is still one binary and one file: PostgreSQL and MySQL exist for an organisation that would rather back up and replicate results the way it does everything else. What is absolute is the CGo-free part — every driver wsaw ships is pure Go, because a CGo driver would end cross-compilation to four platforms from one machine, which is the promise this tenet is really about.
 
 *Trade-off:* rules out some convenient libraries (notably CGo SQLite, Playwright). Deployment simplicity is worth more.

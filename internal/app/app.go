@@ -60,8 +60,12 @@ type App struct {
 	// Runtime is the container runtime the browser runs in, nil when it runs
 	// as a host process.
 	Runtime *container.Runtime
-	// BrowserImage is the container image in use, empty when local.
-	BrowserImage string
+	// BrowserImage is the container image the daemon started with, empty when
+	// local, and BrowserImageID its content ID. A refresh moves the pool to
+	// another image without changing either (Story 6.13); the pool's own
+	// Identity says what new browsers start from.
+	BrowserImage   string
+	BrowserImageID string
 	// ContainerSandbox is true when Chrome keeps its own sandbox inside the
 	// container: the image declares it (container.LabelSandbox) and the
 	// operator has not appended --no-sandbox. Meaningless without Runtime.
@@ -72,6 +76,10 @@ type App struct {
 	// fallback is set when startup found that scans cannot run in browser
 	// contexts of their own and overrode configuration to compensate.
 	fallback *isolationFallback
+
+	// launcher is how browsers are started in the container, kept so a
+	// refresh can start them from another image with everything else equal.
+	launcher *containerLauncher
 
 	closers []func() error
 
@@ -474,6 +482,9 @@ func (a *App) startBrowser(ctx context.Context) error {
 		return err
 	}
 
+	launch.Identity = browser.Identity{Version: a.Chrome.Version, Image: a.BrowserImage, ImageID: a.BrowserImageID}
+	a.Metrics.SetBrowser(a.Chrome.Version, a.BrowserImage)
+
 	a.Pool = browser.NewPool(browser.PoolOptions{
 		Size:               a.Config.PoolSize(),
 		MaxScansPerBrowser: a.Config.Browser.MaxScansPerBrowser,
@@ -527,6 +538,8 @@ func (a *App) resolveBrowser(ctx context.Context, launch *browser.Options) error
 		return a.resolveLocalBrowser(ctx, launch, kind, nil)
 	}
 
+	image = a.resumeImage(ctx, runtime, image)
+
 	// A runtime the operator named gets that runtime's image or an error, as
 	// Detect does for the runtime itself: rendering somewhere else instead
 	// would hide that what was asked for is not there. The check runs at
@@ -557,6 +570,8 @@ func (a *App) resolveAutoBrowser(ctx context.Context, launch *browser.Options, i
 
 			continue
 		}
+
+		image := a.resumeImage(ctx, runtime, image)
 
 		version, err := runtime.BrowserVersion(ctx, image)
 		if errors.Is(err, container.ErrImageMissing) {
@@ -615,12 +630,22 @@ func (a *App) useContainer(ctx context.Context, launch *browser.Options, runtime
 				`["--security-opt", "seccomp=/path/to/deploy/chromium-seccomp.json"], or run under rootless Podman`)
 	}
 
+	// Which image this is, by content rather than by name, so every result
+	// can say which browser rendered it once the name has moved (Story 6.13,
+	// AC9). An ID that cannot be read leaves results without one, which the
+	// prune counts rather than guesses about.
+	if img, err := runtime.InspectImage(ctx, image); err != nil {
+		a.Logger.Warn("could not read the browser image's ID; results will not record it", "image", image, "error", err)
+	} else {
+		a.BrowserImageID = img.ID
+	}
+
 	a.Runtime = runtime
 	a.BrowserImage = image
 	a.ContainerSandbox = keeps && !disablesSandbox(a.Config.Browser.Container.BrowserArgs)
 	a.Chrome = browser.Info{Version: version, Path: image}
 
-	launch.Container = &containerLauncher{
+	a.launcher = &containerLauncher{
 		runtime: runtime,
 		spec: container.Spec{
 			Image:           image,
@@ -634,6 +659,7 @@ func (a *App) useContainer(ctx context.Context, launch *browser.Options, runtime
 			Logger:          a.Logger,
 		},
 	}
+	launch.Container = a.launcher
 
 	a.Logger.Info(
 		"browser runs in a container",

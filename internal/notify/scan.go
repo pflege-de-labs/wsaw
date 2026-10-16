@@ -67,6 +67,10 @@ type ScanEvent struct {
 	// which is why a first scan reports no changes.
 	Comparable bool   `json:"comparable"`
 	Reason     string `json:"reason,omitempty"`
+
+	// BrowserChanged is set when the comparison spans a change of browser
+	// (Story 6.13, AC8), so the reader can weigh the changes accordingly.
+	BrowserChanged *diff.BrowserChange `json:"browserChanged,omitempty"`
 }
 
 // NewScanEvent folds a result and its diff into one event.
@@ -97,6 +101,7 @@ func NewScanEvent(res *model.Result, rep *diff.Report) ScanEvent {
 		ev.Suppressed = rep.Suppressed
 		ev.Comparable = rep.Comparable
 		ev.Reason = rep.Reason
+		ev.BrowserChanged = rep.BrowserChanged
 
 		for _, c := range rep.Changes {
 			if c.Severity.AtLeast(ev.Highest) {
