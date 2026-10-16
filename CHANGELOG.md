@@ -9,6 +9,23 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
+A CMP that is on the page but never starts — such as CCM19 serving a bot its
+"disabled" stub — is now reported as a failed consent instead of "no consent
+management platform detected". The daemon can keep its browser image current
+on its own, opt-in, and marks every comparison across a change of browser.
+Each consent mode keeps its own tile on the dashboard, and scans started by
+hand now honour a reloaded configuration.
+
+Upgrading: nothing to do by hand. The browser refresh is off by default, and
+with it off the browser changes only when you change it. The store migrates
+to schema version 13 on first start, adding one column to the results table
+(Story 2.11) and the `browser_image_id` column (Story 6.13). Result documents
+move to `schemaVersion` 2.4, an additive change against which 2.2 and 2.3
+documents still validate, and the storage API moves to 1.2. Scans stored
+before the upgrade are not re-evaluated and record no browser image.
+
 ### Added
 
 - A CMP that is on the page but never starts no longer reads as "no consent
@@ -67,7 +84,6 @@ criteria, and any that are still open, are written down.
   such as `browser.container.shmSize`, rather than the whole section. The four
   refresh settings are applied by `SIGHUP`; the others still need a restart
   (Story 6.13).
-
 - The dashboard no longer merges a target's `none` and `reject` tiles into one
   "none / reject" tile when their last scans looked alike. The merge compared
   request counts, not hosts or severity, so a critical `reject` finding could
@@ -1019,7 +1035,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.0
 [0.6.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.6.0
 [0.5.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.5.0
 [0.4.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.4.0
