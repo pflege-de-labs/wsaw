@@ -204,6 +204,23 @@ type fakeImageStore struct {
 	refsErr error
 	runs    []store.MaintenanceRun // newest first
 	nextID  int64
+	audit   []store.AuditEntry
+}
+
+func (s *fakeImageStore) RecordAudit(e store.AuditEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.audit = append(s.audit, e)
+
+	return nil
+}
+
+func (s *fakeImageStore) audited() []store.AuditEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.audit)
 }
 
 func (s *fakeImageStore) BrowserImageReferences(context.Context) (store.BrowserImageReferences, error) {
@@ -452,6 +469,79 @@ func TestAnImageThatFailsTheCheckIsNeverUsed(t *testing.T) {
 
 	if run := st.last(t, store.MaintenanceKindBrowserImages); run.Trigger != store.TriggerRefresh || run.Error == "" {
 		t.Errorf("the failed refresh was not recorded with its error: %+v", run)
+	}
+}
+
+// TestASwitchIsInTheAuditLog is AC16: a refresh that switched the pool says
+// so in the audit log, naming both browsers; one that found nothing newer
+// records nothing there.
+func TestASwitchIsInTheAuditLog(t *testing.T) {
+	t.Parallel()
+
+	a, rt, st, _ := refreshApp(t, nil)
+	rt.nextID, rt.nextVersion = "sha256:new", newBrowser
+
+	refresherFor(a, rt, newFakeClock(refreshStart)).refreshOnce(t.Context(), RefreshScheduleFor(a.Config))
+
+	entries := st.audited()
+	if len(entries) != 1 {
+		t.Fatalf("audit entries = %+v, want one", entries)
+	}
+
+	e := entries[0]
+	if e.Action != store.AuditBrowserSwitched || e.Subject != container.BuildRefreshTag(refreshStart) ||
+		!strings.Contains(e.Note, oldBrowser) || !strings.Contains(e.Note, newBrowser) {
+		t.Errorf("audit entry = %+v", e)
+	}
+
+	same, rt2, st2, _ := refreshApp(t, nil)
+	rt2.nextID, rt2.nextVersion = "sha256:rebuilt", oldBrowser
+
+	refresherFor(same, rt2, newFakeClock(refreshStart)).refreshOnce(t.Context(), RefreshScheduleFor(same.Config))
+
+	if got := st2.audited(); len(got) != 0 {
+		t.Errorf("an unchanged refresh was audited: %+v", got)
+	}
+}
+
+// TestStartingOnAnotherBrowserIsInTheAuditLog is AC16's other half: a daemon
+// that starts on a different browser than the one last recorded in service —
+// an operator changed the image and restarted — says so, and one that starts
+// on the same browser does not.
+func TestStartingOnAnotherBrowserIsInTheAuditLog(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		prev    store.BrowserImage
+		audited bool
+	}{
+		"another version": {store.BrowserImage{Name: "localhost/wsaw-browser:151.0.1.1-r0", ID: "sha256:older",
+			Chromium: "Chromium 151.0.1.1", State: ImageInService}, true},
+		"same browser": {store.BrowserImage{Name: "localhost/wsaw-browser:build-20261001T000000Z", ID: "sha256:old",
+			Chromium: oldBrowser, State: ImageInService}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			a, rt, st, _ := refreshApp(t, func(c *config.Config) { c.Browser.Container.Refresh = "" })
+
+			inv := store.BrowserImageInventory{Images: []store.BrowserImage{tc.prev}}
+			if err := st.RecordBrowserImages(t.Context(), store.TriggerStartup, refreshStart, inv, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			_, stop := runRefreshLoop(t, a, rt, newFakeClock(refreshStart))
+			stop()
+
+			entries := st.audited()
+			if (len(entries) == 1) != tc.audited {
+				t.Fatalf("audit entries = %+v, want audited=%v", entries, tc.audited)
+			}
+
+			if tc.audited && (entries[0].Action != store.AuditBrowserChanged || !strings.Contains(entries[0].Note, "Chromium 151.0.1.1")) {
+				t.Errorf("audit entry = %+v", entries[0])
+			}
+		})
 	}
 }
 

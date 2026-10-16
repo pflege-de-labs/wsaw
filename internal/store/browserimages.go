@@ -42,6 +42,14 @@ const (
 	MaintenanceKindBrowserImages = "browser-images"
 )
 
+// The audit actions a change of browser records (Story 6.13, AC16): a
+// refresh switching the pool, and a daemon starting on another browser than
+// the one last recorded in service.
+const (
+	AuditBrowserSwitched = "browser-switched"
+	AuditBrowserChanged  = "browser-changed"
+)
+
 // The triggers an inventory records besides TriggerSchedule and TriggerCLI:
 // the daemon's start, and a refresh. The refresh schedule is kept by the last
 // inventory a refresh recorded, so a restart does not rebuild at once.

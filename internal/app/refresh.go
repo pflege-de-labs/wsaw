@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -85,6 +86,13 @@ func (a *App) RefreshLoop(ctx context.Context, schedules <-chan RefreshSchedule)
 func (a *App) refreshLoop(ctx context.Context, rt refreshRuntime, schedules <-chan RefreshSchedule, clock maintenanceClock) {
 	r := &refresher{app: a, rt: rt, clock: clock}
 	sched := RefreshScheduleFor(a.Config)
+
+	// Read before the startup inventory replaces it: a browser other than the
+	// one last in service is one the results are about to change with.
+	if prev := InServiceImage(ctx, a.Store); prev.Image != "" && differentBrowser(prev, a.Pool.Identity()) {
+		a.auditBrowser(store.AuditBrowserChanged, prev, a.Pool.Identity(),
+			"found at startup: the daemon started on another browser than the one last in service")
+	}
 
 	// The storage page shows the image in service whether or not a refresh
 	// ever runs (AC13), and the prune command reads it from here (AC9).
@@ -268,6 +276,9 @@ func (r *refresher) refreshImage(ctx context.Context, sched RefreshSchedule, at 
 	}
 
 	r.app.switchBrowser(name, version, img.ID)
+	r.app.auditBrowser(store.AuditBrowserSwitched, current,
+		browser.Identity{Version: version, Image: name, ImageID: img.ID},
+		"switched by the "+sched.Mode+" refresh; scans in progress finished on the previous browser")
 
 	r.app.Logger.Info("switched to a refreshed browser image; scans in progress finish on the previous one",
 		"mode", sched.Mode,
@@ -461,6 +472,39 @@ func (r *refresher) store() browserImageStore {
 	}
 
 	return bs
+}
+
+// differentBrowser reports whether two identities name different browsers:
+// another version, or another image ID where both are known. A new name for
+// the same image is not one.
+func differentBrowser(a, b browser.Identity) bool {
+	if a.Version != b.Version {
+		return true
+	}
+
+	return a.ImageID != "" && b.ImageID != "" && a.ImageID != b.ImageID
+}
+
+// auditBrowser records a change of browser in the audit log (Story 6.13,
+// AC16), beside the approvals, because both change what the findings that
+// follow mean. A log that cannot take it is a warning, never a reason to
+// undo the change.
+func (a *App) auditBrowser(action string, before, after browser.Identity, note string) {
+	if a.Store == nil {
+		return
+	}
+
+	err := a.Store.RecordAudit(store.AuditEntry{
+		Actor:   "wsaw",
+		Action:  action,
+		Subject: after.Image,
+		Note: fmt.Sprintf("%s → %s (from %s, now %s); %s",
+			cmp.Or(before.Version, "unknown"), cmp.Or(after.Version, "unknown"),
+			cmp.Or(before.Image, "no image"), cmp.Or(after.ImageID, "no image ID"), note),
+	})
+	if err != nil {
+		a.Logger.Warn("could not record the change of browser in the audit log", "action", action, "error", err)
+	}
 }
 
 // switchBrowser makes every browser launched from now on come from image

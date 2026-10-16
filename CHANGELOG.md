@@ -53,6 +53,10 @@ criteria, and any that are still open, are written down.
 - The storage page and `/api/v1/storage` (API 1.2) list the browser images with
   their state, sizes and a total, from an inventory the daemon records at
   startup, after a refresh and after a prune (Story 6.13).
+- A new browser is recorded in the audit log: `browser-switched` when a
+  refresh switches to it, `browser-changed` when the daemon starts on another
+  browser than the one last in service. Each entry names both versions
+  (Story 6.13).
 - Metrics: `wsaw_browser_image_refreshes_total{outcome}`,
   `wsaw_last_successful_browser_image_refresh_timestamp_seconds` and
   `wsaw_browser_info{version,image}` (Story 6.13).
