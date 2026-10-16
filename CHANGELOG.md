@@ -9,6 +9,14 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- The daily Chromium check now fails while Alpine's x86_64 and aarch64
+  builds carry different Chromium versions, instead of passing with a notice.
+  In that window the image cannot be built for both architectures, as the
+  v0.7.0 image publish found out, so maintainers hear about it before a
+  release rather than from a failed release.
+
 ## [0.7.0] - 2026-10-16
 
 A CMP that is on the page but never starts — such as CCM19 serving a bot its
