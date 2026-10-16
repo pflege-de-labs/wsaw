@@ -20,6 +20,8 @@
 # for a few hours after a release one can carry the new version while the
 # other still has the old one. A bump is only proposed once both agree, since
 # an image pinned to a version one architecture lacks cannot be built at all.
+# Until then the check fails rather than passing quietly: the pin may already
+# be gone from one architecture, and a release built in that window fails.
 #
 # The pull request goes through ci.yaml like any other change; nothing here
 # builds or publishes an image. A pull request opened with the default
@@ -85,8 +87,8 @@ jobs:
             printf -v "V_$arch" '%s' "$v"
           done
           if [ "$V_x86_64" != "$V_aarch64" ]; then
-            echo "::notice::x86_64 has $V_x86_64 and aarch64 has $V_aarch64; waiting for both to carry the same build"
-            exit 0
+            echo "::error::x86_64 has $V_x86_64 and aarch64 has $V_aarch64; no single CHROMIUM_VERSION builds both, so the image cannot be built until they agree"
+            exit 1
           fi
           echo "LATEST=$V_x86_64" >> "$GITHUB_ENV"
 
