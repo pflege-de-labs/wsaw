@@ -23,7 +23,7 @@
 # chromium.yaml bumps both.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-ARG CHROMIUM_VERSION=152.0.7977.82-r0
+ARG CHROMIUM_VERSION=155.0.8059.39-r0
 
 # CHROMIUM_CONSTRAINT is "=" for the exact version above. The browser image
 # refresh (Story 6.13) builds with ">=", which installs the newest Chromium the
