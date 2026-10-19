@@ -9,6 +9,18 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-19
+
+The container image moves to Chromium 155, because Alpine stopped serving the
+Chromium 152 that 0.7.0 pinned. The 0.7.0 image could not be built for that
+reason and was never published; 0.7.1 is the first image carrying the 0.7.0
+features. The wsaw binary itself is unchanged from 0.7.0.
+
+Upgrading: nothing to do by hand. If you run the published image, or the
+per-scan browser image built from `deploy/browser/Dockerfile`, scans move to
+Chromium 155, and the first comparison after the switch is marked as crossing
+a browser change.
+
 ### Changed
 
 - The published image and the per-scan browser image move from Chromium
@@ -1048,7 +1060,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.1
 [0.7.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.0
 [0.6.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.6.0
 [0.5.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.5.0
