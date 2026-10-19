@@ -70,7 +70,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags
 # Dependabot moves both digests.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-ARG CHROMIUM_VERSION=152.0.7977.82-r0
+ARG CHROMIUM_VERSION=155.0.8059.39-r0
 
 # Chromium and the fonts a page needs to render text at all. Without fonts,
 # layout differs enough that element-visibility checks — which is how consent

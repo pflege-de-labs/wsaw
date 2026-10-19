@@ -11,6 +11,11 @@ criteria, and any that are still open, are written down.
 
 ### Changed
 
+- The published image and the per-scan browser image move from Chromium
+  152.0.7977.82-r0 to 155.0.8059.39-r0. Alpine v3.24 no longer serves 152,
+  so neither image could be built until this change. Comparisons between a
+  scan taken with 152 and one taken with 155 are marked as crossing a
+  browser change (Story 6.13).
 - The daily Chromium check now fails while Alpine's x86_64 and aarch64
   builds carry different Chromium versions, instead of passing with a notice.
   In that window the image cannot be built for both architectures, as the
