@@ -25,9 +25,10 @@
 #
 # The pull request goes through ci.yaml like any other change; nothing here
 # builds or publishes an image. A pull request opened with the default
-# GITHUB_TOKEN does not trigger other workflows, so set the
-# CHROMIUM_BUMP_TOKEN secret (a fine-grained token or GitHub App token with
-# contents and pull-requests write) for CI to run on it without a manual push.
+# GITHUB_TOKEN does not trigger other workflows, so the job opens it with a
+# short-lived GitHub App token instead: set the BOT_APP_CLIENT_ID variable and
+# the BOT_APP_PRIVATE_KEY secret for an app installed on this repository with
+# contents and pull-requests write (docs/github-app.md).
 
 name: Chromium
 
@@ -51,10 +52,23 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # A short-lived installation token for the wsaw bot GitHub App, scoped to
+      # this repository and the two permissions the bump needs. Unconfigured,
+      # the job falls back to GITHUB_TOKEN and CI must be started by hand.
+      - name: Mint a GitHub App token
+        id: app
+        if: vars.BOT_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+          token: ${{ steps.app.outputs.token || github.token }}
 
       # The Alpine branch comes from the Dockerfile's runtime FROM line, so a
       # move to a new Alpine release is picked up here without editing this
@@ -95,7 +109,7 @@ jobs:
       - name: Open a pull request for the new version
         if: env.LATEST != '' && env.LATEST != env.PINNED
         env:
-          GH_TOKEN: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
         run: |
           head="deps/chromium-$LATEST"
           # A branch left behind without a pull request means an earlier run
