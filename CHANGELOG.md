@@ -9,6 +9,16 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- Built with Go 1.27.3, both the released binaries and the container image
+  (`golang:1.27.3-alpine`). It is a security release fixing CVE-2026-111943
+  in `crypto/x509`: certificate verification now distrusts a handful of
+  intermediate CAs, so a webhook, notifier or other HTTPS endpoint whose chain
+  runs through one of them now fails TLS verification instead of being
+  trusted. The minimum Go version for building from source stays 1.26, and
+  nothing changes in configuration.
+
 ## [0.7.1] - 2026-10-19
 
 The container image moves to Chromium 155, because Alpine stopped serving the
