@@ -9,6 +9,19 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-20
+
+A security release: wsaw is now built with Go 1.27.3, which fixes
+CVE-2026-111943 in `crypto/x509`. The release changes no wsaw code; both the
+binaries and the container image carry the fixed standard library.
+
+Upgrading: nothing to do by hand. The fix makes Go distrust a handful of
+intermediate CAs. If a webhook, notifier or other HTTPS endpoint that wsaw
+itself connects to has a certificate chain through one of them, those
+deliveries now fail TLS verification and need the endpoint's certificate
+reissued. Pages under scan are unaffected, since Chrome verifies their
+certificates, not Go.
+
 ### Changed
 
 - The scheduled Chromium bump workflows open their pull requests with a
@@ -1075,7 +1088,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.2
 [0.7.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.1
 [0.7.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.0
 [0.6.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.6.0
