@@ -26,7 +26,7 @@
 # The pull request goes through ci.yaml like any other change, but ci.yaml
 # does not build this image, so the pull request asks for it to be built and
 # checked by hand. A pull request opened with the default GITHUB_TOKEN does
-# not trigger other workflows; set CHROMIUM_BUMP_TOKEN, as for chromium.yaml,
+# not trigger other workflows; set up the GitHub App, as for chromium.yaml,
 # for CI to run on it without a manual push.
 
 name: Chromium (Debian)
@@ -54,10 +54,23 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # A short-lived installation token for the wsaw bot GitHub App, scoped to
+      # this repository and the two permissions the bump needs. Unconfigured,
+      # the job falls back to GITHUB_TOKEN and CI must be started by hand.
+      - name: Mint a GitHub App token
+        id: app
+        if: vars.BOT_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+          token: ${{ steps.app.outputs.token || github.token }}
 
       # The suite comes from the Containerfile's sources stanza, so a move to
       # another Debian suite is picked up here without editing this file.
@@ -102,7 +115,7 @@ jobs:
       - name: Open a pull request for the new version
         if: env.LATEST != '' && env.LATEST != env.PINNED
         env:
-          GH_TOKEN: ${{ secrets.CHROMIUM_BUMP_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
         run: |
           head="deps/chromium-debian-$LATEST"
           # A branch left behind without a pull request means an earlier run

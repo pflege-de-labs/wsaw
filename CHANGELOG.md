@@ -9,6 +9,14 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- The scheduled Chromium bump workflows open their pull requests with a
+  short-lived GitHub App token instead of the `CHROMIUM_BUMP_TOKEN` personal
+  access token, so CI still runs on them and no long-lived credential is
+  stored. Setup is in `docs/github-app.md`. Until the app is configured, the
+  pull requests are opened with `GITHUB_TOKEN` and CI has to be started by hand.
+
 ## [0.7.1] - 2026-10-19
 
 The container image moves to Chromium 155, because Alpine stopped serving the
