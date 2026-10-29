@@ -263,7 +263,15 @@ func (s *session) execute(afterLoad func(Context) (model.Consent, error)) error 
 		return err
 	}
 
+	if err := s.logIn(); err != nil {
+		return err
+	}
+
 	if err := s.navigate(); err != nil {
+		return err
+	}
+
+	if err := s.checkLoggedIn(); err != nil {
 		return err
 	}
 
@@ -1160,6 +1168,7 @@ func (o *Options) environment() model.Environment {
 		Latitude:       o.Latitude,
 		Longitude:      o.Longitude,
 		BasicAuth:      o.BasicAuthUser.IsSet(),
+		FormLoginURL:   formLoginURL(o.FormLogin),
 		Proxy:          secret.RedactURL(o.Proxy),
 		BrowserReused:  o.BrowserReused,
 		BrowserRuntime: o.BrowserRuntime,

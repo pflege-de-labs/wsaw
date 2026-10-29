@@ -77,6 +77,8 @@ type Resolved struct {
 	BasicAuthUser     secret.Value
 	BasicAuthPassword secret.Value
 
+	FormLogin *capture.FormLogin
+
 	Proxy string
 
 	Screenshots bool
@@ -160,7 +162,33 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 		return Resolved{}, err
 	}
 
+	r.FormLogin, err = resolveFormLogin(t.FormLogin, reg)
+	if err != nil {
+		return Resolved{}, err
+	}
+
 	return r, nil
+}
+
+// resolveFormLogin resolves every field as a secret, since which of a form's
+// fields is the password is the form's business, not wsaw's.
+func resolveFormLogin(l *FormLogin, reg *secret.Registry) (*capture.FormLogin, error) {
+	if l == nil {
+		return nil, nil
+	}
+
+	fields := make(map[string]secret.Value, len(l.Fields))
+
+	for name, ref := range l.Fields {
+		v, err := resolveSecret(ref, "formLogin.fields."+name, reg)
+		if err != nil {
+			return nil, err
+		}
+
+		fields[name] = v
+	}
+
+	return &capture.FormLogin{URL: l.URL, Fields: fields}, nil
 }
 
 // resolveTargetFields applies defaults to everything that is not a credential.

@@ -139,6 +139,10 @@ type Options struct {
 	BasicAuthUser     secret.Value
 	BasicAuthPassword secret.Value
 
+	// FormLogin, when set, is posted before navigating and the cookies it
+	// sets are handed to the browser.
+	FormLogin *FormLogin
+
 	// Proxy is recorded, with credentials stripped. The browser is configured
 	// with it at launch, not here.
 	Proxy string

@@ -144,6 +144,7 @@ func (c *Config) validateTargets(add addFunc) {
 		validateSeverityRules(t.Severity, t.line, field+".severity", add)
 		validateBeacons(t.Beacons, t.line, field+".beacons", add)
 		validateBodies(t, field, add)
+		validateFormLogin(t, field, add)
 		validateBodyPolicy(c.bodyPolicy(t), c.resolveTargetFields(t).Interval, t.line, field, add)
 	}
 
@@ -153,6 +154,12 @@ func (c *Config) validateTargets(add addFunc) {
 	c.validateTargetBudget(&c.Defaults, "defaults", add)
 	validateBeacons(c.Defaults.Beacons, c.Defaults.line, "defaults.beacons", add)
 	validateBodies(&c.Defaults, "defaults", add)
+
+	if c.Defaults.FormLogin != nil {
+		// A login form belongs to one site; posting it to every target would
+		// send its password to all of them.
+		add(c.Defaults.line, "defaults.formLogin", "is not allowed in defaults; set it on the target it logs in to")
+	}
 
 	if c.Defaults.Robots != "" && c.Defaults.Robots != RobotsIgnore && c.Defaults.Robots != RobotsRespect {
 		add(c.Defaults.line, "defaults.robots", "%q is not a valid policy; use \"ignore\" or \"respect\"", c.Defaults.Robots)
@@ -269,6 +276,30 @@ func (c *Config) validateTargetBudget(t *Target, field string, add addFunc) {
 		// a clean idle termination.
 		add(t.line, field, "idleQuiet (%s) must be shorter than hardTimeout (%s)",
 			t.IdleQuiet.Duration(), t.HardTimeout.Duration())
+	}
+}
+
+// validateFormLogin refuses a login form wsaw could not post.
+func validateFormLogin(t *Target, field string, add addFunc) {
+	if t.FormLogin == nil {
+		return
+	}
+
+	field += ".formLogin"
+
+	u, err := url.Parse(t.FormLogin.URL)
+
+	switch {
+	case err != nil:
+		add(t.line, field+".url", "%q is not a valid URL: %v", t.FormLogin.URL, err)
+	case u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS || u.Host == "":
+		add(t.line, field+".url", "%q must be an absolute http or https URL", t.FormLogin.URL)
+	case u.User != nil:
+		add(t.line, field+".url", "URL contains embedded credentials; put them in fields instead")
+	}
+
+	if len(t.FormLogin.Fields) == 0 {
+		add(t.line, field+".fields", "must name at least one field")
 	}
 }
 

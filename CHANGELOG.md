@@ -9,6 +9,16 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A target can sit behind a login form (Story 3.9). The new `formLogin`
+  setting holds the URL the form posts to and its fields, each of which may be
+  a secret reference. wsaw posts the form before every scan and gives the
+  browser the session cookie, scoped to that host, so it can watch a site such
+  as a Shopify staging shop with a storefront password. A login that does not
+  hold fails the scan with "login was not accepted" instead of recording the
+  password page. Results gain `environment.formLoginUrl`, an additive field.
+
 ## [0.7.2] - 2026-10-20
 
 A security release: wsaw is now built with Go 1.27.3, which fixes

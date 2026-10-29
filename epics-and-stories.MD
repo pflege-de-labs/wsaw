@@ -491,6 +491,19 @@ The distinction that makes this story tractable is between a failure and a findi
 - AC11: One-shot mode retries too, and the exit-code contract reports the final outcome (Story 5.5). A CI gate that failed because of one dropped connection teaches people to re-run it until it passes, which is the opposite of a gate.
 - AC12: This is not the store's retry (Story 4.7). That one retries a database operation inside a scan; this one retries the scan. They are configured separately, and neither implies the other — the documentation says so, because "wsaw retries" would otherwise mean two different things.
 
+### Story 3.9 — Scan a page behind a login form
+
+*As a Site Owner, I want wsaw to scan a site that sits behind a password page, so that a staging shop is watched before it goes live rather than after.*
+
+`https://shop.staging.p4e.io/` is the case that surfaced this. A Shopify storefront with a password set redirects every page to `/password`, and the form there sets an opaque, per-login `_shopify_essential` session cookie. Basic auth (Story 1.7) cannot express this, a pasted cookie goes stale, and an `extraHeaders` `Cookie` would be sent to every third party the page loads. A refused password answers `200` and sets cookies too, so the response to the post cannot tell success from failure. Only where the browser ends up can.
+
+- AC1: A target can name a `formLogin`: the URL the form posts to and its fields. Every field value is a secret reference, resolved at load, registered for scrubbing and never written to a result or log (Story 3.6).
+- AC2: Before navigating, wsaw posts the form outside the browser, using the target's headers, user agent and proxy, and hands the cookies the response set to the scan's browser context, scoped to the login URL's host. The login exchange is not part of the observation: the login page's own requests, cookies and storage are not recorded as the protected page's.
+- AC3: **A login that did not hold fails the scan.** If navigation ends on the login URL, the scan ends `error` with the reason "login was not accepted". A result of the login page never stands in for the page behind it (Tenet 5).
+- AC4: The result records the login URL (`environment.formLoginUrl`), never the field values (Tenet 16, additive).
+- AC5: `formLogin` is per target only and refused in `defaults`, because posting one site's password to every target would leak it. Typed ad-hoc URLs never carry it (Story 5.27 AC4).
+- AC6: Fixture coverage uses a local server shaped like a Shopify password page, covering an accepted login, a refused one, and a session cookie that must not reach a third party. No test touches the live shop (Tenet 13).
+
 ---
 
 # Epic 4 — Storage, Baselines & Change Detection

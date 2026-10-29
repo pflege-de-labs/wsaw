@@ -98,6 +98,20 @@ targets:
     basicAuthUser: "${env:CHECKOUT_USER}"
     basicAuthPassword: "${file:/run/secrets/checkout-password}"
 
+  - name: shop-staging
+    url: https://staging-shop.example.com/
+    # A site behind a password page rather than basic auth, such as a Shopify
+    # storefront password. wsaw posts this form before every scan and carries
+    # the session cookie into the browser, scoped to the shop's host. Every
+    # field value may be a secret reference. A scan that still ends on the
+    # login page fails with "login was not accepted" rather than recording the
+    # password page (Story 3.9). Per target only; refused in defaults.
+    formLogin:
+      url: https://staging-shop.example.com/password
+      fields:
+        form_type: storefront_password
+        password: "${file:/run/secrets/shop-staging-password}"
+
   - name: legacy-microsite
     url: https://legacy.example.org/
     # Kept for its history and baseline rather than deleted.
