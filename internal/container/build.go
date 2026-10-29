@@ -60,6 +60,12 @@ type BuildOptions struct {
 
 	// Tag names the image, in place of ImageTag(ChromiumVersion).
 	Tag string
+
+	// TempDir is where the temporary build context is made, os.TempDir when
+	// empty. Rootless podman reads the context from inside its pause
+	// process's mount namespace, so a service with systemd's PrivateTmp has
+	// to name a directory outside its private /tmp.
+	TempDir string
 }
 
 // buildWaitDelay bounds how long a cancelled build may keep its output open
@@ -82,7 +88,7 @@ func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string
 			opts.ChromiumVersion, opts.Base, browser.ChromiumVersion(opts.Base))
 	}
 
-	dir, err := os.MkdirTemp("", "wsaw-browser-build-")
+	dir, err := os.MkdirTemp(opts.TempDir, "wsaw-browser-build-")
 	if err != nil {
 		return "", fmt.Errorf("creating the build context: %w", err)
 	}

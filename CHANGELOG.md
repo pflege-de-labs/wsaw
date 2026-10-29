@@ -20,6 +20,15 @@ criteria, and any that are still open, are written down.
   These are the settings existing instances carry as a hand-made drop-in
   (`/etc/systemd/system/wsaw.service.d/hotfix-runtime-dir.conf`), which can
   be removed once the instance runs the new unit.
+- `browser.container.refresh: build` no longer fails with `context must be a
+  directory` under the systemd unit from `deploy/terraform`. The daemon wrote
+  the build context to its `/tmp`, which `PrivateTmp=yes` makes private to the
+  service, and rootless Podman reads the context from its pause process's
+  view of the filesystem, where that directory does not exist. The context
+  now goes in wsaw's state directory, beside the SQLite database (or the
+  platform state directory with a server store), and is removed after the
+  build as before. `wsaw browser build` still uses the system temporary
+  directory (Story 6.13).
 
 ## [0.7.2] - 2026-10-20
 
