@@ -771,7 +771,7 @@ func (b *lagBucket) checkRewrite(key string, body []byte) {
 }
 
 // Delete removes one object.
-func (b *lagBucket) Delete(ctx context.Context, key string) error {
+func (b *lagBucket) Delete(ctx context.Context, key string, _ *driver.DeleteOptions) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("deleting %s from the test bucket: %w", key, err)
 	}
