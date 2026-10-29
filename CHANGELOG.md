@@ -9,6 +9,19 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-29
+
+wsaw can now scan sites behind a login form, such as a password-protected
+Shopify staging shop, and export any scan as a PDF report. The container
+image moves to Chromium 155.0.8059.84, and two fixes let the `deploy/terraform`
+systemd unit run rootless Podman, so the browser container starts and
+`refresh: build` works.
+
+Upgrading: nothing is required, and the result schema changes only by
+adding fields. Instances that carry the hand-made
+`/etc/systemd/system/wsaw.service.d/hotfix-runtime-dir.conf` drop-in can
+remove it once they run the new unit.
+
 ### Added
 
 - A target can sit behind a login form (Story 3.9). The new `formLogin`
@@ -33,6 +46,8 @@ criteria, and any that are still open, are written down.
 
 ### Changed
 
+- The container image runs Chromium 155.0.8059.84 (Alpine `-r0`), the latest
+  patch release of 155, up from 155.0.8059.39.
 - The Markdown report gains a Confidence section with the score, band and
   every signal behind it. The report now states up front when a completed
   scan's consent was not confirmed or its confidence is low. The scan page
@@ -1142,7 +1157,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.0
 [0.7.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.2
 [0.7.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.1
 [0.7.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.0
