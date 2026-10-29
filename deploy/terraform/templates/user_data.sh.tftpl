@@ -65,11 +65,19 @@ WSAW_UNIT_EOF
 loginctl enable-linger wsaw
 systemctl start "user@$(id -u wsaw).service"
 
-# Rootless podman's first invocation configures its per-user storage; do
-# that once here, up front, so wsaw's first scan isn't also podman's first
-# run.
+# The browser image wsaw launches per scan, made present before wsaw starts,
+# since wsaw never fetches one during a scan. With browser_image unset, the
+# instance builds localhost/wsaw-browser:latest from the files embedded in the
+# wsaw binary, with the newest Chromium Alpine holds; otherwise it pulls the
+# image the operator pinned. Either is rootless podman's first invocation,
+# which also configures its per-user storage.
+%{ if browser_image == "" ~}
+runuser -u wsaw -- env XDG_RUNTIME_DIR="/run/user/$(id -u wsaw)" \
+  /usr/local/bin/wsaw browser build --runtime podman
+%{ else ~}
 runuser -u wsaw -- env XDG_RUNTIME_DIR="/run/user/$(id -u wsaw)" \
   podman pull "${browser_image}"
+%{ endif ~}
 
 systemctl daemon-reload
 systemctl enable --now wsaw.service

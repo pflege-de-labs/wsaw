@@ -109,9 +109,9 @@ variable "wsaw_artifact_s3_uri" {
 }
 
 variable "browser_image" {
-  description = "Container image wsaw launches per scan, pinned by digest so capture behaviour doesn't drift under a moving tag (see wsaw.example.yaml)."
+  description = "Empty (the default) builds the browser image on the instance with `wsaw browser build`, as localhost/wsaw-browser:latest, wsaw's default. To pin a browser instead, set a registry image, ideally by digest, and name the same image in browser.container.image in wsaw_config_yaml; the instance then pulls it (see wsaw.example.yaml)."
   type        = string
-  default     = "ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b"
+  default     = ""
 }
 
 variable "wsaw_config_yaml" {

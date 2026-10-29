@@ -7,24 +7,22 @@ import (
 	"github.com/pflege-de-labs/wsaw/deploy/browser"
 )
 
-// TestChromiumVersionIsTheBuildFiles guards the image names derived from it
-// (Story 6.12, AC3): a build file that lost or reshaped the argument would
-// otherwise leave the binary naming an image nobody can build.
-func TestChromiumVersionIsTheBuildFiles(t *testing.T) {
+// TestBuildFilesDoNotPinChromium: the distributions keep only their newest
+// Chromium, so a pinned version stops resolving with the next security
+// release, and the image could then not be built at all.
+func TestBuildFilesDoNotPinChromium(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		base  browser.Base
-		shape string
-	}{
-		{browser.BaseAlpine, `^[0-9]+(\.[0-9]+)*-r[0-9]+$`},
-		{browser.BaseDebian, `^[0-9]+(\.[0-9]+)*-[0-9]+$`},
-	}
+	pinned := regexp.MustCompile(`CHROMIUM_VERSION|chromium(-headless-shell|-common)?[=<>~]|snapshot\.debian\.org`)
 
-	for _, tt := range tests {
-		v := browser.ChromiumVersion(tt.base)
-		if !regexp.MustCompile(tt.shape).MatchString(v) {
-			t.Errorf("ChromiumVersion(%s) = %q, want a package version matching %s", tt.base, v, tt.shape)
+	for _, b := range []browser.Base{browser.BaseAlpine, browser.BaseDebian} {
+		data, err := browser.Context.ReadFile(b.File())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if m := pinned.Find(data); m != nil {
+			t.Errorf("%s pins Chromium: %q", b.File(), m)
 		}
 	}
 }

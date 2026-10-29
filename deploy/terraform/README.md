@@ -4,9 +4,10 @@ Runs wsaw natively on one `t4g.nano` or `t4g.micro` instance via the systemd
 unit in `templates/wsaw.service.tftpl` (the same shape as `deploy/wsaw.service`,
 adjusted for a rootless-Podman host). wsaw itself is not containerized: per
 `browser.runtime: podman` in its config, wsaw launches the browser
-(`ghcr.io/pflege-de-labs/wsaw-browser`, pinned by digest, with Chrome's own
-sandbox on — rootless Podman's default seccomp profile allows it) in a
-rootless Podman container per scan and removes it on exit — this is wsaw's
+(`localhost/wsaw-browser:latest`, which the instance builds with
+`wsaw browser build` at first boot, with Chrome's own sandbox on — rootless
+Podman's default seccomp profile allows it) in a rootless Podman container
+per scan and removes it on exit — this is wsaw's
 own documented container story (see the repo's top-level README, "Where the browser runs"),
 not something this stack builds on top of it.
 
@@ -62,9 +63,10 @@ it whole as `wsaw_config_yaml`. At minimum:
 browser:
   runtime: podman
   container:
-    image: "" # empty uses wsaw's own built-in default, the same digest this
-              # stack's browser_image pre-pulls — override both together, or
-              # neither
+    image: "" # empty uses wsaw's default, localhost/wsaw-browser:latest,
+              # which the instance builds while browser_image is empty. To
+              # pin a browser, set both to the same registry image, ideally
+              # by digest. Set refresh: build to rebuild it on a schedule.
 api:
   # Keep this on loopback. Either reach it through the
   # webui_port_forward_command output, or put Caddy in front of it by

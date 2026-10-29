@@ -144,15 +144,16 @@ browser:
   runtime: auto
 
   container:
-    # Empty means localhost/wsaw-browser:<the Chromium this release pins>,
-    # which wsaw does not distribute: build it once on this machine with
+    # Empty means localhost/wsaw-browser:latest, which wsaw does not
+    # distribute: build it on this machine with
     #   wsaw browser build
-    # A different Chromium is a different image, built with
-    #   wsaw browser build --base debian      (newer, from a Debian snapshot)
-    #   wsaw browser build --chromium-version <package version>
-    # and named here. A moving tag would change capture behaviour between
-    # scans and a diff would report it as the site's change, so name an image
-    # from a registry by digest. wsaw never pulls during a scan.
+    # which installs the newest Chromium Alpine holds that day. Rebuilding it
+    # takes effect at the next start; results record the Chrome version and
+    # image ID either way. Other images are built with
+    #   wsaw browser build --base debian      (newer, from Debian testing)
+    #   wsaw browser build --tag <name>       (a browser later builds leave alone)
+    # and named here. A registry image should be named by digest, so that it
+    # cannot move under you. wsaw never pulls during a scan.
     # The default image, built from deploy/browser, keeps Chrome's own sandbox
     # on. Rootless Podman needs nothing extra; under Docker it also needs
     #   extraArgs: ["--security-opt", "seccomp=deploy/chromium-seccomp.json"]

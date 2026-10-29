@@ -21,10 +21,10 @@ func TestBrowserBuildRefusesBadFlags(t *testing.T) {
 		{"local runtime", []string{"--runtime", "local"}, "--runtime must be auto, podman or docker"},
 		{"unknown runtime", []string{"--runtime", "lxc"}, "--runtime must be auto, podman or docker"},
 		{"unknown base", []string{"--base", "ubuntu"}, "--base must be alpine or debian"},
-		{"floating version", []string{"--chromium-version", "latest"}, "not a package version of the alpine build"},
-		{"injected version", []string{"--chromium-version", "1-r0; id"}, "not a package version of the alpine build"},
-		{"debian version on alpine", []string{"--chromium-version", "154.0-1"}, "not a package version of the alpine build"},
-		{"alpine version on debian", []string{"--base", "debian", "--chromium-version", "152.0-r0"}, "not a package version of the debian build"},
+		{"injected tag", []string{"--tag", "x; id"}, "is not an image name"},
+		{"flag as tag", []string{"--tag", "--network=host"}, "is not an image name"},
+		{"digest as tag", []string{"--tag", "localhost/wsaw-browser@sha256:abc"}, "is not an image name"},
+		{"removed version flag", []string{"--chromium-version", "155.0-r0"}, "flag provided but not defined"},
 		{"stray argument", []string{"now"}, "unexpected argument"},
 	}
 

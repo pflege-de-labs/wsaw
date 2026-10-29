@@ -40,11 +40,11 @@ wsaw scan --url https://example.com/          # uses the container automatically
 wsaw scan --url https://example.com/ --browser-runtime local
 ```
 
-- **wsaw does not distribute Chromium.** `wsaw browser build` builds the browser image locally from the [`deploy/browser`](deploy/browser/Dockerfile) Dockerfile embedded in the binary: the container runtime downloads Alpine and its Chromium package then, because you asked, and never during a scan. It tags the image `localhost/wsaw-browser:<chromium version>` — with the version the Dockerfile pins, the default image, which `wsaw browser help` names — a name no registry serves, so nothing can be pulled in its place. `--runtime podman|docker` picks the runtime (use the one scans run with). `--base debian` builds from [`deploy/browser/Containerfile`](deploy/browser/Containerfile) instead, a newer Chromium from a dated Debian snapshot, for as long as Alpine lags Chrome stable. `--chromium-version` builds another `chromium-headless-shell` package version, for instance when Alpine has replaced the pinned one with a security release. For anything but the default, the command prints the `browser.container.image` setting that selects it. After building, it checks that the image runs and declares the sandbox, and fails if not.
-- The image is **named by the Chromium it holds** and never pulled during a scan. A moving image would change capture behaviour between scans, and the diff would report it as the site's change; here the browser changes only when you build another version and configure it.
+- **wsaw does not distribute Chromium.** `wsaw browser build` builds the browser image locally from the [`deploy/browser`](deploy/browser/Dockerfile) Dockerfile embedded in the binary: the container runtime downloads Alpine and its Chromium package then, because you asked, and never during a scan. Each build installs the newest Chromium the distribution holds that day, without the layer cache, and tags the image `localhost/wsaw-browser:latest`, the default image — a name no registry serves, so nothing can be pulled in its place. `--runtime podman|docker` picks the runtime (use the one scans run with). `--base debian` builds from [`deploy/browser/Containerfile`](deploy/browser/Containerfile) instead, a newer Chromium from Debian testing, for when Alpine lags Chrome stable, tagged `localhost/wsaw-browser:debian`. `--tag NAME` names the image anything else: a registry name to push from CI, or a name of your own for a browser a later build will not move. For anything but the default, the command prints the `browser.container.image` setting that selects it. After building, it checks that the image runs and declares the sandbox, and fails if not.
+- **The browser moves only when you build, and never under a running daemon.** wsaw does not pin a Chromium version: Alpine and Debian keep only the newest build of a package, so a pinned version stopped building with every Chromium security release. Instead the image is built, not pulled, and only when you ask; a running daemon starts every browser from the image ID the name had when it started (or its refresh switched), so rebuilding `latest` takes effect at the next start, where it is recorded. Every result records the Chrome version and the image ID it was rendered with, and a comparison across a change of browser is marked (see the refresh below). To keep a browser that never moves, build it under a name of your own with `--tag`, or pin a registry image by digest, and name it in `browser.container.image`.
 - **The image is checked at startup, never pulled.** With `--browser-runtime auto`, a runtime whose store lacks the image is passed over with a warning naming the command that fetches it — `wsaw browser build` for the built image, a `pull` for one from a registry — Docker is tried after Podman, and when neither has it wsaw falls back to Chrome on the host and logs that pages render without the container's boundary; results then record `browserRuntime: local`. A runtime named with `--browser-runtime podman` or `docker` that lacks the image fails startup with that command instead.
 - **For an image you pin by digest, the daemon says when a newer one is out.** Once at startup, `wsaw run` asks that image's registry which digest its `latest` tag points at, and when that is not the pinned one — and, for an image that declares its Chromium version as wsaw's does, not merely a rebuild of the same Chromium — it logs a warning with the `podman pull` (or `docker pull`) command and the digest to pin. It reads manifests and image configuration anonymously, never a layer, and changes nothing. A registry it cannot reach is logged as a check that failed, not as an image that is current. `browser.container.checkForUpdates: false` stops wsaw contacting the registry at all. The locally built default is not checked: no registry serves it.
-- **Or let the daemon keep the image current itself — off by default.** `browser.container.refresh: build` rebuilds the image `wsaw browser build` makes every `refreshInterval` (a week by default), installing the newest Chromium the Alpine branch holds at or above the pinned version; `refresh: pull` pulls `browser.container.image`, which must then be a registry tag. The new image is tagged `localhost/wsaw-browser:build-<time>` or `pull-<source>-<time>`, checked the way startup checks an image (it must run and declare the sandbox), and used only if it is a different browser. The pool switches between scans: a scan in flight finishes on the old browser, every later one starts on the new, and a restart resumes on the refreshed image. What you give up: the browser behind a run of results can change with nobody acting. Every result records the image's content ID as `browserImageId`, and a comparison across a change of browser says so on the result page, in the API's diff (`browserChanged`) and in notifications — the changes in it keep their severity. After a switch, older refresh images are pruned by **one** of two rules: `refreshKeep: N` keeps the newest N (2 by default), `refreshKeepReferenced: true` keeps every image a stored scan was rendered with, so image disk use follows retention; setting both is an error. The image in service, the one `browser.container.image` names and any image the refresh did not make are never removed, and the runtime refuses to remove one a container is running. `wsaw browser prune` applies the same rule on demand, and the storage page lists the images with their sizes. Results stored before image IDs were recorded keep no image. A switch, and a daemon starting on another browser than the one last in service, is recorded in the audit log (`browser-switched`, `browser-changed`) with both versions. Each refresh is logged and counted (`wsaw_browser_image_refreshes_total{outcome}`, `wsaw_last_successful_browser_image_refresh_timestamp_seconds`, `wsaw_browser_info{version,image}`).
+- **Or let the daemon keep the image current itself — off by default.** `browser.container.refresh: build` rebuilds the image `wsaw browser build` makes every `refreshInterval` (a week by default), installing the newest Chromium the Alpine branch holds; `refresh: pull` pulls `browser.container.image`, which must then be a registry tag. The new image is tagged `localhost/wsaw-browser:build-<time>` or `pull-<source>-<time>`, checked the way startup checks an image (it must run and declare the sandbox), and used only if it is a different browser. The pool switches between scans: a scan in flight finishes on the old browser, every later one starts on the new, and a restart resumes on the refreshed image. What you give up: the browser behind a run of results can change with nobody acting. Every result records the image's content ID as `browserImageId`, and a comparison across a change of browser says so on the result page, in the API's diff (`browserChanged`) and in notifications — the changes in it keep their severity. After a switch, older refresh images are pruned by **one** of two rules: `refreshKeep: N` keeps the newest N (2 by default), `refreshKeepReferenced: true` keeps every image a stored scan was rendered with, so image disk use follows retention; setting both is an error. The image in service, the one `browser.container.image` names and any image the refresh did not make are never removed, and the runtime refuses to remove one a container is running. `wsaw browser prune` applies the same rule on demand, and the storage page lists the images with their sizes. Results stored before image IDs were recorded keep no image. A switch, and a daemon starting on another browser than the one last in service, is recorded in the audit log (`browser-switched`, `browser-changed`) with both versions. Each refresh is logged and counted (`wsaw_browser_image_refreshes_total{outcome}`, `wsaw_last_successful_browser_image_refresh_timestamp_seconds`, `wsaw_browser_info{version,image}`).
 - Every result records `browserRuntime`, `browserImage` and `browserSandbox`, because a result is only comparable with another if you can see what rendered it.
 - One container per scan, removed on every exit path, and orphans from an unclean shutdown are reaped at startup.
 - **A containerised browser cannot reach this machine's `localhost`** — it has its own network namespace. Scanning a local service fails with that explanation; use `--browser-runtime local` for it.
@@ -53,12 +53,12 @@ wsaw scan --url https://example.com/ --browser-runtime local
 
 ### Keeping Chrome's sandbox inside the container
 
-`deploy/browser` builds Alpine's `chromium-headless-shell`, the same Chromium the wsaw image bundles, with its namespace sandbox on and running as an unprivileged user. `wsaw browser build` builds it, and it is the default image. Releases up to 0.5.0 also published it as `ghcr.io/pflege-de-labs/wsaw-browser`; those images stay where they are, so an installation pinned to one by digest keeps working, but no newer one is published. To run another Chromium version than the one built in, build it and name it:
+`deploy/browser` builds Alpine's `chromium-headless-shell`, from the same Alpine as the wsaw image, with its namespace sandbox on and running as an unprivileged user. `wsaw browser build` builds it, and it is the default image. Releases up to 0.5.0 also published it as `ghcr.io/pflege-de-labs/wsaw-browser`; those images stay where they are, so an installation pinned to one by digest keeps working, but no newer one is published. To keep a browser of your own, build it under its own name and name it:
 
 ```yaml
 browser:
   container:
-    image: "localhost/wsaw-browser:153.0.7999.1-r0"   # from wsaw browser build --chromium-version 153.0.7999.1-r0
+    image: "localhost/wsaw-browser:2026-10-29"   # from wsaw browser build --tag localhost/wsaw-browser:2026-10-29
     # Docker only: its default seccomp profile refuses the sandbox. Rootless
     # Podman's default allows it and needs nothing here.
     extraArgs: ["--security-opt", "seccomp=/path/to/deploy/chromium-seccomp.json"]
@@ -93,6 +93,41 @@ docker run --rm \
 `make docker` builds the same image from a checkout.
 
 The seccomp profile is what lets Chromium keep its own sandbox in the container, and under Docker it is not optional: Docker's default profile refuses the `clone`, `unshare` and `setns` calls the sandbox is built from, so without it the browser cannot start. [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) is Docker's default with those three and `chroot` allowed and nothing else changed — `make seccomp-profile` derives it from a pinned upstream, and CI checks both that the committed file is what that produces and that the sandbox starts under it. Podman's default profile already allows user namespaces, so under Podman the flag is harmless but not needed. Do not reach for `--privileged`, `--cap-add SYS_ADMIN` or `browser.noSandbox` instead: each one makes the browser start by giving up more isolation than the profile does.
+
+### Running wsaw itself in a container
+
+The wsaw image carries the Chromium Alpine held when it was built, and a Podman client. Which browser a containerised wsaw uses depends on what you give it, and `browser.runtime: auto` (the default) picks it up by itself.
+
+**With the host's Podman socket** — the same as wsaw on a host: wsaw builds the browser image and starts one browser container per scan beside itself, so pages render behind the container boundary with a browser you build when you choose. Mount the rootless socket at `/run/podman/podman.sock`, map your user to the container's `wsaw` user so it may use the socket, and share the host's network, because wsaw reaches each browser on a port published on the host's `127.0.0.1`:
+
+```sh
+IMAGE=ghcr.io/pflege-de-labs/wsaw:latest   # pin the digest for a deployment
+WSAW="podman run --rm --network host --userns keep-id:uid=10001,gid=10001 --security-opt label=disable
+  -v /run/user/$(id -u)/podman/podman.sock:/run/podman/podman.sock"
+
+$WSAW $IMAGE browser build      # once, and whenever you want a newer Chromium
+$WSAW -v "$PWD/wsaw.yaml:/etc/wsaw/wsaw.yaml:ro" $IMAGE
+```
+
+`systemctl --user enable --now podman.socket` starts the socket if it is not running. `label=disable` lets the container use the socket on an SELinux host. The socket is the host user's whole Podman: anything that can talk to it can run containers as that user, so give it only to wsaw. Results record `browserRuntime: podman` and the image's ID, as on a host.
+
+**Without the socket, with the bundled Chromium** — mount only the configuration, as in the `docker run` example above. wsaw finds no Podman service, says so at startup, and renders with the Chromium inside its own image: the wsaw container is then the only boundary around the renderer, and results record `browserRuntime: local`. The browser moves when you move to a newer wsaw image.
+
+**Without the socket, with a browser image built elsewhere** — build the browser image in CI, or in a separate one-off call on a machine that has a runtime, push it under a name you choose, and run it beside wsaw:
+
+```sh
+wsaw browser build --tag registry.example.com/ops/wsaw-browser:latest     # in CI, or once by hand
+podman push registry.example.com/ops/wsaw-browser:latest
+```
+
+Run it as a long-lived container next to wsaw (a pod, a compose service or a Kubernetes sidecar), with `--shm-size 1g` and, under Docker, the seccomp profile, and point wsaw at it:
+
+```yaml
+browser:
+  remoteUrl: http://wsaw-browser:9222   # the browser container's name on the shared network
+```
+
+What this gives up: one browser serves every scan rather than one container per scan, so scans are separated by browser contexts only, and wsaw cannot see which image it is. Results record `browserRuntime: local`, no Chrome version and no image ID, so a change of browser is not marked in a comparison, and `browserSandbox` is not verified for a browser wsaw did not start; pin the image by digest and move it deliberately.
 
 ## Quick start
 
@@ -988,7 +1023,7 @@ increase(wsaw_tls_certificate_reloads_total{outcome="failure"}[1h]) > 0
 
 - **systemd**: [`deploy/wsaw.service`](deploy/wsaw.service), hardened for a process that renders hostile pages. `RestrictNamespaces` is deliberately off: the Chrome sandbox depends on unprivileged user namespaces, and disabling them would push operators to turn off the sandbox instead — trading a real boundary for a nominal one.
 - **launchd**: [`deploy/de.pflege.wsaw.plist`](deploy/de.pflege.wsaw.plist).
-- **Container**: multi-arch, Chromium bundled and pinned, runs as a non-root user, sandbox enabled — under Docker, with [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) (see [Install](#install)).
+- **Container**: multi-arch, Chromium bundled (the version Alpine held when the image was built), runs as a non-root user, sandbox enabled — under Docker, with [`deploy/chromium-seccomp.json`](deploy/chromium-seccomp.json) (see [Install](#install)).
 
 ### Where results are stored
 

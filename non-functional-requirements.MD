@@ -38,7 +38,7 @@
 - Captured data may itself be personal data: URLs and cookies can contain identifiers. Retention is bounded, and stored artifacts are written with restrictive file permissions (0600/0700).
 - The HTTP API binds to localhost by default; remote exposure requires explicitly enabling it, and supports bearer-token auth and TLS.
 - Outbound scanning is constrained: SSRF-style abuse is mitigated by an optional deny list for private/link-local address ranges, off only by deliberate configuration.
-- CI runs `govulncheck` and dependency scanning; no known critical CVEs in a release. Chrome version pinning in the container image is tracked and updated.
+- CI runs `govulncheck` and dependency scanning; no known critical CVEs in a release. Container images build Chromium from the distribution's current package rather than a pinned version, so a Chromium security release reaches the next build without a manual bump; base images are pinned by digest and kept current by Dependabot (Story 6.14).
 
 ## 5. Maintainability & Testability
 
@@ -59,7 +59,7 @@
 ## 7. Installability & Operability
 
 - Single static Go binary per platform, plus the documented Chrome dependency. No runtime downloads, no Node.js, no CGo requirement — which is why the SQLite driver must be a CGo-free one.
-- Multi-arch container image with Chrome bundled and pinned.
+- Multi-arch container image with Chrome bundled — the version the distribution held at build time, which every result records.
 - Ships a systemd unit and a launchd plist; documented XDG-compliant paths on Linux and `~/Library/Application Support` on macOS.
 - Configurable via a YAML config file, with flags and environment variables overriding it. One-shot CLI mode works with no config file at all.
 - Config errors are caught at load time with line-referencing messages; the daemon refuses to start on invalid config, and refuses to *apply* invalid config on reload while keeping the previous one active.

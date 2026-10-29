@@ -92,22 +92,20 @@ func TestParseInspect(t *testing.T) {
 	}
 }
 
-// TestFloorBuildTakesANewerChromium is AC2: a refresh build passes the
-// constraint that lets apk choose a newer package, skips the layer cache, and
-// is tagged with the name it was given.
-func TestFloorBuildTakesANewerChromium(t *testing.T) {
+// TestRefreshBuildTakesANewerChromium is AC2: a refresh build skips the layer
+// cache, so apk reads the package index afresh and installs the Chromium the
+// branch holds now, and is tagged with the name it was given.
+func TestRefreshBuildTakesANewerChromium(t *testing.T) {
 	t.Parallel()
 
 	rt, argsFile := fakeRuntime(t, 0)
 	tag := BuildRefreshTag(time.Now())
 
 	got, err := rt.BuildImage(context.Background(), BuildOptions{
-		Context:         browser.Context,
-		Base:            browser.BaseAlpine,
-		ChromiumVersion: browser.ChromiumVersion(browser.BaseAlpine),
-		Output:          &bytes.Buffer{},
-		Floor:           true,
-		Tag:             tag,
+		Context: browser.Context,
+		Base:    browser.BaseAlpine,
+		Output:  &bytes.Buffer{},
+		Tag:     tag,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,34 +120,9 @@ func TestFloorBuildTakesANewerChromium(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, want := range []string{"--no-cache\n", "CHROMIUM_CONSTRAINT=>=\n", "--tag\n" + tag + "\n"} {
+	for _, want := range []string{"--no-cache\n", "--tag\n" + tag + "\n"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("the build was not given %q: %s", want, args)
-		}
-	}
-
-	if _, err := rt.BuildImage(context.Background(), BuildOptions{
-		Context: browser.Context, Base: browser.BaseDebian, ChromiumVersion: browser.ChromiumVersion(browser.BaseDebian),
-		Output: &bytes.Buffer{}, Floor: true,
-	}); err == nil {
-		t.Error("a floor build of the Debian snapshot was accepted")
-	}
-}
-
-// TestTheBuildFileTakesTheConstraint keeps the build file and the argument
-// BuildImage passes in step: a file that lost it would rebuild the same
-// Chromium for ever and report every refresh as unchanged.
-func TestTheBuildFileTakesTheConstraint(t *testing.T) {
-	t.Parallel()
-
-	data, err := browser.Context.ReadFile(browser.BaseAlpine.File())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, want := range []string{`ARG CHROMIUM_CONSTRAINT="="`, `chromium-headless-shell${CHROMIUM_CONSTRAINT}${CHROMIUM_VERSION}`} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("%s does not contain %s", browser.BaseAlpine.File(), want)
 		}
 	}
 }

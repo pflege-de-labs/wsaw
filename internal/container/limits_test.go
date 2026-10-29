@@ -104,3 +104,19 @@ func TestBrowserArgsComeAfterTheImage(t *testing.T) {
 		t.Error("browserArgs landed before the image, where the runtime would read them")
 	}
 }
+
+// TestContainersStartFromTheImageID: a floating name such as DefaultImage
+// moves when the operator rebuilds it, and the browser behind a running
+// daemon's results must not move with it unrecorded.
+func TestContainersStartFromTheImageID(t *testing.T) {
+	t.Parallel()
+
+	args := runArgs("wsaw-test", Spec{Image: DefaultImage, ImageID: "0123abcd"})
+	if slices.Contains(args, DefaultImage) || !slices.Contains(args, "0123abcd") {
+		t.Errorf("with an image ID, the container starts from the name: %s", strings.Join(args, " "))
+	}
+
+	if args := runArgs("wsaw-test", Spec{Image: DefaultImage}); !slices.Contains(args, DefaultImage) {
+		t.Errorf("without an image ID, the container does not start from the name: %s", strings.Join(args, " "))
+	}
+}

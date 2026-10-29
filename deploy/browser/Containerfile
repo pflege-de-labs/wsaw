@@ -1,9 +1,10 @@
-# The per-scan browser image (Story 1.8) on Chromium 154, built from Debian.
+# The per-scan browser image (Story 1.8), built from Debian.
 #
 # deploy/browser/Dockerfile builds the same image from Alpine, and Alpine
-# packages Chromium late: on 2026-10-01 both v3.24 and edge still carry 152
-# while Chrome stable is 154. Debian testing (forky) ships 154 for amd64 and
-# arm64, so this file builds the image from there for as long as Alpine lags.
+# packages Chromium late: on 2026-10-01 both v3.24 and edge still carried 152
+# while Chrome stable was 154. Debian testing (forky) follows Chrome stable
+# more closely for amd64 and arm64, so this file builds the image from there
+# for when Alpine lags.
 # Chromium rather than Google Chrome, because Chromium is the one that may be
 # redistributed (NFR §9); compiling it here instead would take hours and over
 # 100 GB of disk per architecture, for the same source Debian has built.
@@ -18,28 +19,12 @@
 # profile already allows the sandbox's user namespaces.
 #
 # Build it with
-#   podman build -f deploy/browser/Containerfile -t wsaw-browser:154 deploy/browser
+#   wsaw browser build --base debian
 #
-# Everything is pinned, for the reason the Alpine images pin theirs (Story
-# 6.3, AC1): the browser renders every result, so two builds of the same file
-# must install the same Chromium. The base image is pinned by digest, and apt
-# reads a dated snapshot of the archive rather than the moving forky branch.
-# To move to a newer Chromium, set SNAPSHOT to a timestamp at which
-# https://snapshot.debian.org/archive/debian/<SNAPSHOT>/dists/forky/ carries
-# it for both architectures, and CHROMIUM_VERSION to that version; a version
-# the snapshot lacks fails the build rather than installing something else.
-# .github/workflows/chromium-debian.yaml checks daily and opens a pull
-# request making that change, since a snapshot pin never breaks and so
-# never says it is stale.
-FROM debian:forky-slim@sha256:3c80e257eff6274d593eb33a94bda5174ccd619836e6a728a73e11c97f2213e3
-
-ARG SNAPSHOT=20261004T000000Z
-ARG CHROMIUM_VERSION=154.0.8037.92-1
-
-# A Release file is valid for a week after Debian signs it, and a snapshot
-# keeps serving it long after, which is why Check-Valid-Until is off; the
-# signatures are still checked against the keyring in the base image. Plain HTTP is enough for the same reason, and
-# avoids needing CA certificates before apt has installed them.
+# The base image is pinned by digest, which Dependabot moves. Chromium is not
+# pinned: apt installs what forky holds on the day of the build, as the
+# Alpine build does, and a result records the version Chromium itself
+# reports (Story 1.8, AC7).
 #
 # chromium-headless-shell is the old headless mode as its own binary, the one
 # the Alpine image ships too. socat carries CDP from the published port to
@@ -47,19 +32,11 @@ ARG CHROMIUM_VERSION=154.0.8037.92-1
 # Alpine images' set: without them layout differs enough that the
 # element-visibility checks consent handling relies on behave differently
 # from a real browser.
-RUN rm -f /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list \
-    && printf '%s\n' \
-      'Types: deb' \
-      "URIs: http://snapshot.debian.org/archive/debian/${SNAPSHOT}" \
-      'Suites: forky' \
-      'Components: main' \
-      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
-      'Check-Valid-Until: no' \
-      > /etc/apt/sources.list.d/snapshot.sources \
-    && apt-get update \
+FROM debian:forky-slim@sha256:3c80e257eff6274d593eb33a94bda5174ccd619836e6a728a73e11c97f2213e3
+
+RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      "chromium-headless-shell=${CHROMIUM_VERSION}" \
-      "chromium-common=${CHROMIUM_VERSION}" \
+      chromium-headless-shell \
       socat \
       ca-certificates \
       fonts-noto-core \
@@ -87,8 +64,7 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/wsaw-browser
 # sandbox, so a result's browserSandbox reports it instead of assuming every
 # container disables it (AC7). It is a promise the entrypoint keeps: it never
 # passes --no-sandbox.
-LABEL de.pflege.wsaw.browser.sandbox="enabled" \
-      de.pflege.wsaw.chromium.version="${CHROMIUM_VERSION}"
+LABEL de.pflege.wsaw.browser.sandbox="enabled"
 
 USER chrome
 

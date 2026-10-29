@@ -371,8 +371,8 @@ func TestABuildWithANewerChromiumSwitchesThePool(t *testing.T) {
 
 	want := container.BuildRefreshTag(refreshStart)
 
-	if len(rt.buildOpts) != 1 || !rt.buildOpts[0].Floor || rt.buildOpts[0].Tag != want {
-		t.Fatalf("builds = %+v, want one floor build tagged %s", rt.buildOpts, want)
+	if len(rt.buildOpts) != 1 || rt.buildOpts[0].Tag != want {
+		t.Fatalf("builds = %+v, want one build tagged %s", rt.buildOpts, want)
 	}
 
 	if got := a.Pool.Identity(); got != (browser.Identity{Version: newBrowser, Image: want, ImageID: "sha256:new"}) {

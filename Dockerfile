@@ -52,37 +52,39 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags
     -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/wsaw ./cmd/wsaw
 
-# By digest, and Chromium by exact package version (Story 6.3, AC1). The
-# browser is what renders every result, so an image whose Chromium moved
-# between two builds of the same release would produce results that are not
-# comparable, and nothing in the image would say so. A tag pins neither: the
-# base tag is re-pushed with every Alpine point release, and apk installs
-# whatever the branch holds on the day of the build.
-#
-# The cost is deliberate. Alpine keeps only the newest build of a package in a
-# stable branch, and Chromium's security releases replace it every week or
-# two, so this build — and with it ci.yaml's container-sandbox job — stops
-# resolving CHROMIUM_VERSION the day the branch moves on, failing with apk's
-# "unable to select packages". That is the signal to bump it: to the version
-# `apk policy chromium` reports in a fresh alpine:3.24 container, in the same
-# change as whatever else that release needs. .github/workflows/chromium.yaml
-# checks the branch daily and opens that pull request before the build breaks.
-# Dependabot moves both digests.
+# The base by digest, which Dependabot moves. Chromium is whatever the Alpine
+# branch holds on the day of the build (Story 6.3, AC1): Alpine keeps only the
+# newest build of a package in a stable branch, so a pinned version stopped
+# resolving with every Chromium security release. Results stay comparable
+# because each one records the version Chromium reports (Story 1.8, AC7).
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-
-ARG CHROMIUM_VERSION=155.0.8059.84-r0
 
 # Chromium and the fonts a page needs to render text at all. Without fonts,
 # layout differs enough that element-visibility checks — which is how consent
 # banners are found — behave differently from a real browser.
 RUN apk add --no-cache \
-      "chromium=${CHROMIUM_VERSION}" \
+      chromium \
       ca-certificates \
       font-noto \
       font-noto-emoji \
       ttf-freefont \
       tzdata \
     && rm -rf /var/cache/apk/*
+
+# A Podman client, so that a wsaw container given the host's Podman socket at
+# /run/podman/podman.sock can build the browser image and start a browser
+# container per scan, as wsaw does on a host. Without the socket the client
+# finds no service, browser.runtime auto passes it over, and the bundled
+# Chromium above renders instead. Named podman because that is the name wsaw
+# looks for. A remote build sends the path of the first seccomp profile it
+# finds on the client, and the host's service opens that path on the host;
+# Alpine's /etc/containers/seccomp.json is not where other distributions keep
+# theirs. With no profile on the client, the host uses its own default.
+RUN apk add --no-cache podman-remote \
+    && ln -s /usr/bin/podman-remote /usr/local/bin/podman \
+    && rm -f /etc/containers/seccomp.json /usr/share/containers/seccomp.json \
+    && rm -rf /var/cache/apk/*
+ENV CONTAINER_HOST=unix:///run/podman/podman.sock
 
 # A dedicated unprivileged user: wsaw never needs root (NFR §4).
 RUN addgroup -g 10001 -S wsaw \
@@ -96,8 +98,7 @@ RUN addgroup -g 10001 -S wsaw \
 # able to answer the question itself — the two differ by that same 28 MB of
 # cloud SDK, and by which URL schemes the binary can reach (Story 8.8, AC3).
 ARG BUILD_TAGS=""
-LABEL org.opencontainers.image.variant="${BUILD_TAGS:-default}" \
-      de.pflege.wsaw.chromium.version="${CHROMIUM_VERSION}"
+LABEL org.opencontainers.image.variant="${BUILD_TAGS:-default}"
 
 COPY --from=build /out/wsaw /usr/local/bin/wsaw
 

@@ -9,6 +9,50 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+Upgrading: the default browser image is now `localhost/wsaw-browser:latest`.
+Run `wsaw browser build` once (with `--runtime` as before) before starting the
+new version, or startup fails (an explicit `browser.runtime`) or falls back to
+the host's Chrome (`auto`) with that command in the log. An installation that
+names its image in `browser.container.image` is unaffected.
+
+### Added
+
+- `wsaw browser build --tag NAME` builds the browser image under a name of
+  your choosing: a registry name to push from CI, or a browser of your own
+  that later builds leave alone (Story 6.14).
+- The wsaw container image carries a Podman client. Given the host's rootless
+  Podman socket and network, a containerised wsaw builds the browser image
+  and runs a browser container per scan as it does on a host; without the
+  socket it uses its bundled Chromium as before. The README gives the
+  commands, and describes running a separately built browser image beside
+  wsaw through `browser.remoteUrl` (Story 6.14).
+
+### Changed
+
+- Chromium is no longer pinned. `wsaw browser build`, the browser image
+  refresh and the wsaw image install the Chromium Alpine (or, for
+  `--base debian`, Debian testing) holds on the day of the build, so a
+  Chromium security release no longer breaks the build until someone bumps
+  a version. Every build skips the layer cache. The browser still moves only
+  when you build: a running daemon starts every browser from the image ID it
+  started with, so a rebuild takes effect at the next start or refresh
+  switch, and every result records the Chrome version and image ID
+  (Story 6.14).
+- The default browser image is `localhost/wsaw-browser:latest` instead of
+  `localhost/wsaw-browser:<chromium version>`; `--base debian` builds
+  `localhost/wsaw-browser:debian` (Story 6.14).
+- The Terraform example builds the browser image on the instance at first
+  boot when `browser_image` is empty, its new default, instead of pulling the
+  last published `ghcr.io/pflege-de-labs/wsaw-browser` digest. Set
+  `browser_image` to pull and pin a registry image as before (Story 6.14).
+
+### Removed
+
+- `wsaw browser build --chromium-version`. Use `--tag` to keep a browser of
+  your own (Story 6.14).
+- The daily Chromium bump workflows (`chromium.yaml`, `chromium-debian.yaml`)
+  and `docs/github-app.md`, which only they used (Story 6.14).
+
 ### Fixed
 
 - The systemd unit from `deploy/terraform` now lets rootless Podman run. It

@@ -649,6 +649,7 @@ func (a *App) useContainer(ctx context.Context, launch *browser.Options, runtime
 		runtime: runtime,
 		spec: container.Spec{
 			Image:           image,
+			ImageID:         a.BrowserImageID,
 			Memory:          a.Config.Browser.Container.Memory,
 			PidsLimit:       a.Config.Browser.Container.PidsLimit,
 			SHMSize:         a.Config.Browser.Container.SHMSize,

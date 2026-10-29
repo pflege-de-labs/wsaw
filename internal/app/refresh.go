@@ -330,13 +330,11 @@ func (r *refresher) make(ctx context.Context, sched RefreshSchedule, at time.Tim
 		}
 
 		_, err = r.rt.BuildImage(ctx, container.BuildOptions{
-			Context:         deploybrowser.Context,
-			Base:            deploybrowser.BaseAlpine,
-			ChromiumVersion: deploybrowser.ChromiumVersion(deploybrowser.BaseAlpine),
-			Output:          &out,
-			Floor:           true,
-			Tag:             name,
-			TempDir:         dir,
+			Context: deploybrowser.Context,
+			Base:    deploybrowser.BaseAlpine,
+			Output:  &out,
+			Tag:     name,
+			TempDir: dir,
 		})
 		if err != nil {
 			return "", out.wrap(err)
@@ -519,6 +517,7 @@ func (a *App) auditBrowser(action string, before, after browser.Identity, note s
 func (a *App) switchBrowser(image, version, id string) {
 	launcher := *a.launcher
 	launcher.spec.Image = image
+	launcher.spec.ImageID = id
 
 	a.Pool.Switch(&launcher, browser.Identity{Version: version, Image: image, ImageID: id})
 	a.Metrics.SetBrowser(version, image)

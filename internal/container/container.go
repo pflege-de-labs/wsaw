@@ -13,6 +13,7 @@
 package container
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,22 +37,30 @@ import (
 const ImageName = "localhost/wsaw-browser"
 
 // DefaultImage is the browser image wsaw runs unless configured otherwise:
-// the one deploy/browser builds, tagged with the Chromium package it installs.
+// the one `wsaw browser build` builds from deploy/browser's Dockerfile.
 //
-// The tag names the browser rather than floating because the browser is part
-// of what a result means (Tenet 6): only the operator moves it, by building
-// another version and naming it in browser.container.image, and the version
-// Chrome reports is recorded in every result (Story 1.8, AC7).
+// The tag floats: each build installs the Chromium Alpine holds that day.
+// Only the operator moves it, by building, and the browser is still part of
+// what a result means (Tenet 6): every result records the version Chrome
+// reports and the image's content ID (Story 1.8, AC7), and containers start
+// from the ID the name had at startup (Spec.ImageID). An operator who wants
+// a browser that never moves names an image of their own, or one by digest,
+// in browser.container.image.
 //
 // It keeps Chrome's own sandbox on (Story 1.8, AC5), which rootless Podman's
 // default seccomp profile allows and Docker's refuses: under Docker it needs
 // deploy/chromium-seccomp.json passed through Spec.ExtraArgs.
-var DefaultImage = ImageTag(browser.ChromiumVersion(browser.BaseAlpine))
+const DefaultImage = ImageName + ":latest"
 
-// ImageTag is the name `wsaw browser build` gives the image holding the
-// given chromium-headless-shell package version.
-func ImageTag(chromiumVersion string) string {
-	return ImageName + ":" + chromiumVersion
+// BuildTag is the name `wsaw browser build` gives an image built from b when
+// it is not told one: DefaultImage for Alpine, and a name of its own for
+// Debian, so that building it never replaces the default by surprise.
+func BuildTag(b browser.Base) string {
+	if b == browser.BaseDebian {
+		return ImageName + ":debian"
+	}
+
+	return DefaultImage
 }
 
 // LabelSandbox is the image label with which a browser image declares that
@@ -64,10 +73,11 @@ const LabelSandbox = "de.pflege.wsaw.browser.sandbox"
 // sandbox. Any other value, or none, means it does not.
 const SandboxEnabled = "enabled"
 
-// LabelChromiumVersion is the image label with which deploy/browser declares
-// the Chromium package it installs, e.g. 152.0.7977.82-r0. The update check
-// reads it so that a rebuild of the same browser, whose digest moves with
-// every release, is not reported as a newer one (Story 6.11).
+// LabelChromiumVersion is the image label with which a published browser
+// image declares the Chromium package it installs, e.g. 152.0.7977.82-r0, as
+// the wsaw-browser images up to 0.5.0 did. The update check reads it so that a
+// rebuild of the same browser, whose digest moves with every release, is not
+// reported as a newer one (Story 6.11).
 const LabelChromiumVersion = "de.pflege.wsaw.chromium.version"
 
 // cdpPort is the port the browser image listens on inside the container.
@@ -202,8 +212,13 @@ func probe(ctx context.Context, kind Kind) (*Runtime, error) {
 
 // Spec describes the container to start.
 type Spec struct {
-	// Image is the browser image, pinned by digest.
+	// Image is the browser image's name.
 	Image string
+	// ImageID, when set, is what containers start from: the content ID Image
+	// had when the browser came into service. A name such as DefaultImage
+	// moves whenever the operator rebuilds it, and the browser behind a
+	// running daemon's results must not move with it unrecorded (Tenet 5).
+	ImageID string
 
 	// Memory caps the container, e.g. "1g". Empty leaves it to the runtime.
 	Memory string
@@ -347,7 +362,7 @@ func runArgs(name string, spec Spec) []string {
 	}
 
 	args = append(args, spec.ExtraArgs...)
-	args = append(args, spec.image())
+	args = append(args, cmp.Or(spec.ImageID, spec.image()))
 	args = append(args, spec.BrowserArgs...)
 
 	return args

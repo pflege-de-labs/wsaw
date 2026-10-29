@@ -13,60 +13,62 @@ import (
 	"github.com/pflege-de-labs/wsaw/deploy/browser"
 )
 
-func TestValidChromiumVersion(t *testing.T) {
+func TestValidBuildTag(t *testing.T) {
 	t.Parallel()
 
-	alpine, debian := browser.BaseAlpine, browser.BaseDebian
-
 	tests := []struct {
-		base browser.Base
-		v    string
+		name string
 		want bool
 	}{
-		{alpine, "152.0.7977.82-r0", true},
-		{alpine, "153.0.1-r12", true},
-		{alpine, "154.0.8037.57-1", false},
-		{debian, "154.0.8037.57-1", true},
-		{debian, "152.0.7977.82-r0", false},
-		{alpine, "152.0.7977.82", false},
-		{debian, "152.0.7977.82", false},
-		{alpine, "latest", false},
-		{alpine, "", false},
-		{alpine, `152.0-r0"; rm -rf /; "`, false},
-		{debian, "154.0-1 --network=host", false},
-		{alpine, "-r0", false},
-		{"ubuntu", "154.0-1", false},
+		{"localhost/wsaw-browser:latest", true},
+		{"localhost/wsaw-browser:debian", true},
+		{"registry.example.com:5000/ops/wsaw-browser:2026-10-29", true},
+		{"ghcr.io/org/wsaw-browser", true},
+		{"wsaw-browser", true},
+		{"", false},
+		{"--network=host", false},
+		{"-t", false},
+		{"Localhost/Wsaw", false},
+		{"localhost/wsaw-browser:latest --pull", false},
+		{"localhost/wsaw-browser@sha256:abc", false},
+		{"localhost/wsaw-browser:", false},
+		{"localhost//wsaw", false},
+		{`x"; rm -rf /; "`, false},
 	}
 
 	for _, tt := range tests {
-		if got := ValidChromiumVersion(tt.base, tt.v); got != tt.want {
-			t.Errorf("ValidChromiumVersion(%s, %q) = %v, want %v", tt.base, tt.v, got, tt.want)
+		if got := ValidBuildTag(tt.name); got != tt.want {
+			t.Errorf("ValidBuildTag(%q) = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }
 
-// TestDefaultImageFollowsTheDockerfile is Story 6.12, AC3: the default is the
-// image the embedded Dockerfile builds, under a name no registry serves.
-func TestDefaultImageFollowsTheDockerfile(t *testing.T) {
+// TestDefaultImage is Story 6.12, AC3: the default is the image the embedded
+// Dockerfile builds, under a name no registry serves, and building Debian
+// never takes that name by default.
+func TestDefaultImage(t *testing.T) {
 	t.Parallel()
 
-	want := "localhost/wsaw-browser:" + browser.ChromiumVersion(browser.BaseAlpine)
-	if DefaultImage != want {
-		t.Errorf("DefaultImage = %q, want %q", DefaultImage, want)
+	if DefaultImage != "localhost/wsaw-browser:latest" {
+		t.Errorf("DefaultImage = %q", DefaultImage)
 	}
 
-	for _, base := range []browser.Base{browser.BaseAlpine, browser.BaseDebian} {
-		if v := browser.ChromiumVersion(base); !ValidChromiumVersion(base, v) {
-			t.Errorf("%s's CHROMIUM_VERSION %q would not be accepted by BuildImage", base.File(), v)
-		}
+	if got := BuildTag(browser.BaseAlpine); got != DefaultImage {
+		t.Errorf("BuildTag(alpine) = %q, want %q", got, DefaultImage)
+	}
+
+	if got := BuildTag(browser.BaseDebian); got == DefaultImage || !ValidBuildTag(got) {
+		t.Errorf("BuildTag(debian) = %q, want a valid name other than the default", got)
 	}
 }
 
+// TestBuildArgs: every build skips the layer cache, since the build files do
+// not pin Chromium and a cached layer would keep the old one.
 func TestBuildArgs(t *testing.T) {
 	t.Parallel()
 
-	got := strings.Join(buildArgs("/ctx", "Containerfile", "localhost/wsaw-browser:1.2-3", "1.2-3"), " ")
-	want := "build --tag localhost/wsaw-browser:1.2-3 --build-arg CHROMIUM_VERSION=1.2-3 --file /ctx/Containerfile /ctx"
+	got := strings.Join(buildArgs("/ctx", "Containerfile", "localhost/wsaw-browser:debian"), " ")
+	want := "build --no-cache --tag localhost/wsaw-browser:debian --file /ctx/Containerfile /ctx"
 
 	if got != want {
 		t.Errorf("buildArgs = %q, want %q", got, want)
@@ -84,9 +86,10 @@ func TestFetchHint(t *testing.T) {
 		image, want string
 	}{
 		{DefaultImage, "build it with: wsaw browser build --runtime docker"},
-		{"localhost/wsaw-browser:160.1-r0", "build it with: wsaw browser build --runtime docker --chromium-version 160.1-r0"},
-		{ImageTag(browser.ChromiumVersion(browser.BaseDebian)), "build it with: wsaw browser build --runtime docker --base debian"},
-		{"localhost/wsaw-browser:160.1-2", "build it with: wsaw browser build --runtime docker --base debian --chromium-version 160.1-2"},
+		{BuildTag(browser.BaseDebian), "build it with: wsaw browser build --runtime docker --base debian"},
+		{"localhost/wsaw-browser:pinned", "build it with: wsaw browser build --runtime docker --tag localhost/wsaw-browser:pinned"},
+		{"localhost/wsaw-browser:155.0.8059.84-r0",
+			"build it with: wsaw browser build --runtime docker --tag localhost/wsaw-browser:155.0.8059.84-r0"},
 		{"ghcr.io/pflege-de-labs/wsaw-browser@sha256:abc", "fetch it with: docker pull ghcr.io/pflege-de-labs/wsaw-browser@sha256:abc"},
 	}
 
@@ -109,7 +112,7 @@ func fakeRuntime(t *testing.T, code int) (rt *Runtime, argsFile string) {
 		"printf '%s\\n' \"$@\" > '" + argsFile + "'\n" +
 		"prev=; file=\n" +
 		"for a; do [ \"$prev\" = --file ] && file=$a; prev=$a; done\n" +
-		"grep -q 'ARG CHROMIUM_VERSION' \"$file\" || exit 9\n" +
+		"grep -q 'chromium-headless-shell' \"$file\" || exit 9\n" +
 		"test -f \"$prev/entrypoint.sh\" || exit 9\n" +
 		"echo 'STEP 1/2: FROM alpine'\n" +
 		"exit " + strconv.Itoa(code) + "\n"
@@ -138,7 +141,7 @@ func recordedContext(t *testing.T, argsFile string) string {
 }
 
 // TestBuildImage is AC7 and AC10: the runtime is handed the embedded context
-// and the version, its output reaches the operator, and the temporary context
+// and the name, its output reaches the operator, and the temporary context
 // is gone afterwards whether the build succeeded or not.
 func TestBuildImage(t *testing.T) {
 	t.Parallel()
@@ -146,14 +149,17 @@ func TestBuildImage(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		base    browser.Base
-		version string
+		tag     string
+		want    string
 		file    string
 		code    int
 		wantErr bool
 	}{
-		{"alpine succeeds", browser.BaseAlpine, "160.1-r2", "Dockerfile", 0, false},
-		{"debian succeeds", browser.BaseDebian, "160.1-2", "Containerfile", 0, false},
-		{"fails", browser.BaseAlpine, "160.1-r2", "Dockerfile", 1, true},
+		{"alpine succeeds", browser.BaseAlpine, "", DefaultImage, "Dockerfile", 0, false},
+		{"debian succeeds", browser.BaseDebian, "", "localhost/wsaw-browser:debian", "Containerfile", 0, false},
+		{"named", browser.BaseAlpine, "registry.example.com/ops/wsaw-browser:latest",
+			"registry.example.com/ops/wsaw-browser:latest", "Dockerfile", 0, false},
+		{"fails", browser.BaseAlpine, "", DefaultImage, "Dockerfile", 1, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -163,18 +169,18 @@ func TestBuildImage(t *testing.T) {
 			var out bytes.Buffer
 
 			tag, err := rt.BuildImage(context.Background(), BuildOptions{
-				Context:         browser.Context,
-				Base:            tt.base,
-				ChromiumVersion: tt.version,
-				Output:          &out,
+				Context: browser.Context,
+				Base:    tt.base,
+				Output:  &out,
+				Tag:     tt.tag,
 			})
 
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("BuildImage error = %v, wantErr %v", err, tt.wantErr)
 			}
 
-			if !tt.wantErr && tag != "localhost/wsaw-browser:"+tt.version {
-				t.Errorf("tag = %q", tag)
+			if !tt.wantErr && tag != tt.want {
+				t.Errorf("tag = %q, want %q", tag, tt.want)
 			}
 
 			if !strings.Contains(out.String(), "STEP 1/2") {
@@ -186,8 +192,8 @@ func TestBuildImage(t *testing.T) {
 				t.Fatalf("the runtime was not run: %v", err)
 			}
 
-			if !strings.Contains(string(args), "CHROMIUM_VERSION="+tt.version+"\n") {
-				t.Errorf("the version was not passed as a build argument: %s", args)
+			if !strings.Contains(string(args), "--tag\n"+tt.want+"\n") {
+				t.Errorf("the build was not tagged %s: %s", tt.want, args)
 			}
 
 			if !strings.Contains(string(args), "/"+tt.file+"\n") {
@@ -201,25 +207,25 @@ func TestBuildImage(t *testing.T) {
 	}
 }
 
-// TestBuildImageRefusesAnInvalidVersion is AC4: an invalid version never
-// reaches the runtime.
-func TestBuildImageRefusesAnInvalidVersion(t *testing.T) {
+// TestBuildImageRefusesAnInvalidTag is AC4: a name that is not one never
+// reaches the runtime's command line.
+func TestBuildImageRefusesAnInvalidTag(t *testing.T) {
 	t.Parallel()
 
 	rt, argsFile := fakeRuntime(t, 0)
 
 	_, err := rt.BuildImage(context.Background(), BuildOptions{
-		Context:         fstest.MapFS{"Dockerfile": {Data: []byte("FROM scratch\n")}},
-		Base:            browser.BaseAlpine,
-		ChromiumVersion: "latest",
-		Output:          &bytes.Buffer{},
+		Context: fstest.MapFS{"Dockerfile": {Data: []byte("FROM scratch\n")}},
+		Base:    browser.BaseAlpine,
+		Output:  &bytes.Buffer{},
+		Tag:     "--network=host",
 	})
 	if err == nil {
-		t.Fatal("BuildImage accepted the version \"latest\"")
+		t.Fatal("BuildImage accepted the tag \"--network=host\"")
 	}
 
 	if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-		t.Error("the runtime was run with an invalid version")
+		t.Error("the runtime was run with an invalid tag")
 	}
 }
 
@@ -233,11 +239,10 @@ func TestBuildImagePutsTheContextInTempDir(t *testing.T) {
 	parent := t.TempDir()
 
 	_, err := rt.BuildImage(context.Background(), BuildOptions{
-		Context:         browser.Context,
-		Base:            browser.BaseAlpine,
-		ChromiumVersion: "160.1-r2",
-		Output:          &bytes.Buffer{},
-		TempDir:         parent,
+		Context: browser.Context,
+		Base:    browser.BaseAlpine,
+		Output:  &bytes.Buffer{},
+		TempDir: parent,
 	})
 	if err != nil {
 		t.Fatal(err)

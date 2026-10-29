@@ -25,7 +25,7 @@ locals {
     aws_region           = "eu-central-1"
     wsaw_config_yaml     = local.wsaw_config_yaml
     wsaw_artifact_s3_uri = "s3://smoketest-bucket/wsaw_linux_arm64"
-    browser_image        = "ghcr.io/pflege-de-labs/wsaw-browser@sha256:cdc2555a1bcd5d962343aefc6be766808c0ba592826aca7c3f6cb5f6a7eda32b"
+    browser_image        = ""
     enable_swap          = true
     swap_size_mb         = 1024
     secret_param_names   = { WSAW_API_TOKEN = "/wsaw/WSAW_API_TOKEN" }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -51,7 +52,7 @@ func browserUsage(w *os.File) {
 
 Usage:
   wsaw browser build [--runtime auto|podman|docker] [--base alpine|debian]
-                     [--chromium-version V] [--timeout D]
+                     [--tag NAME] [--timeout D]
                      Build the per-scan browser image on this machine
   wsaw browser prune [--runtime auto|podman|docker] [--keep N | --keep-referenced]
                      [--dry-run] [--timeout D] [-config FILE]
@@ -60,20 +61,24 @@ Usage:
 wsaw does not distribute Chromium. "build" makes the browser image locally,
 from the build files embedded in this binary, downloading the base image and
 its Chromium package now, while you watch, rather than with a wsaw release.
-The image is tagged %s:<chromium version>, a name no registry
-serves, so nothing is ever pulled in its place.
+Each build installs the newest Chromium the distribution holds that day.
 
   --base alpine   builds %s, the image wsaw uses by default
-  --base debian   builds %s, a newer Chromium from a dated
-                  Debian snapshot; name it in browser.container.image to use it
+  --base debian   builds %s, a newer Chromium from Debian
+                  testing; name it in browser.container.image to use it
+  --tag NAME      names the image NAME instead, e.g. to push it to a registry
+                  from CI or to keep a browser that a later build will not move
+
+A localhost/ name is one no registry serves, so nothing is ever pulled in its
+place. A daemon keeps the browser it started with until it restarts or its
+browser image refresh switches.
 
 "prune" applies the rule browser.container.refreshKeep or refreshKeepReferenced
 sets — or --keep / --keep-referenced for this run — to the images the browser
 image refresh made. It never removes the image in service, the one the
 configuration names, the newest one the refresh made, or any image the refresh
 did not make, and the runtime refuses to remove one a container is running.
-`, container.ImageName, container.DefaultImage,
-		container.ImageTag(browser.ChromiumVersion(browser.BaseDebian)))
+`, container.DefaultImage, container.BuildTag(browser.BaseDebian))
 }
 
 // cmdBrowserBuild builds the browser image (Story 6.12).
@@ -85,9 +90,10 @@ func cmdBrowserBuild(ctx context.Context, args []string, stdout, stderr io.Write
 		"container runtime to build with: auto, podman or docker; use the one browser.runtime runs scans with")
 	baseName := fs.String("base", string(browser.BaseAlpine),
 		"distribution to build from: alpine (deploy/browser/Dockerfile, the default image) "+
-			"or debian (deploy/browser/Containerfile, a newer Chromium from a dated snapshot)")
-	chromiumVersion := fs.String("chromium-version", "",
-		"chromium-headless-shell package version to install (default: the one the build file pins)")
+			"or debian (deploy/browser/Containerfile, a newer Chromium from Debian testing)")
+	tagName := fs.String("tag", "",
+		"name to give the image (default: "+container.DefaultImage+", or "+
+			container.BuildTag(browser.BaseDebian)+" with --base debian)")
 	timeout := fs.Duration("timeout", defaultBuildTimeout, "give up on the build after this long")
 
 	if err := fs.Parse(args); err != nil {
@@ -108,13 +114,9 @@ func cmdBrowserBuild(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("browser build: --base must be alpine or debian, not %q", *baseName)
 	}
 
-	if *chromiumVersion == "" {
-		*chromiumVersion = browser.ChromiumVersion(base)
-	}
-
-	if !container.ValidChromiumVersion(base, *chromiumVersion) {
-		return fmt.Errorf("browser build: --chromium-version %q is not a package version of the %s build, such as %s",
-			*chromiumVersion, base, browser.ChromiumVersion(base))
+	tag := cmp.Or(*tagName, container.BuildTag(base))
+	if !container.ValidBuildTag(tag) {
+		return fmt.Errorf("browser build: --tag %q is not an image name, such as %s", tag, container.DefaultImage)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
@@ -129,24 +131,17 @@ func cmdBrowserBuild(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("browser build: no working podman or docker found; %w", container.ErrNoRuntime)
 	}
 
-	if _, err := fmt.Fprintf(stderr, "building %s with %s\n",
-		container.ImageTag(*chromiumVersion), rt); err != nil {
+	if _, err := fmt.Fprintf(stderr, "building %s with %s\n", tag, rt); err != nil {
 		return err
 	}
 
-	tag, err := rt.BuildImage(ctx, container.BuildOptions{
-		Context:         browser.Context,
-		Base:            base,
-		ChromiumVersion: *chromiumVersion,
-		Output:          stderr,
+	tag, err = rt.BuildImage(ctx, container.BuildOptions{
+		Context: browser.Context,
+		Base:    base,
+		Output:  stderr,
+		Tag:     tag,
 	})
 	if err != nil {
-		if base == browser.BaseAlpine && ctx.Err() == nil {
-			return fmt.Errorf("browser build: %w; Alpine keeps only the newest Chromium in a branch, "+
-				"so if apk cannot select the package, pass the current version with --chromium-version "+
-				"or build from a Debian snapshot with --base debian", err)
-		}
-
 		return fmt.Errorf("browser build: %w", err)
 	}
 

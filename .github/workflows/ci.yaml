@@ -422,26 +422,23 @@ jobs:
 
   # The per-scan browser image (deploy/browser, Story 1.8 AC5): it must keep
   # Chromium's sandbox, speak the contract internal/container expects, and
-  # carry the same Alpine and Chromium as the wsaw image. Checked on Docker
-  # for the same reason as container-sandbox above.
+  # build from the same Alpine as the wsaw image. Checked on Docker for the
+  # same reason as container-sandbox above.
   browser-image:
     name: browser image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # One browser for both images: a containerised scan and a scan inside
-      # the wsaw image should be rendered by the same Chromium, and
-      # chromium.yaml bumps both files together only if they start equal.
+      # One Alpine for both images, so a containerised scan and a scan inside
+      # the wsaw image built the same day get the same Chromium package.
       - name: The browser image moves with the wsaw image
         run: |
-          for pattern in '^FROM alpine:' '^ARG CHROMIUM_VERSION='; do
-            top=$(grep -E "$pattern" Dockerfile)
-            browser=$(grep -E "$pattern" deploy/browser/Dockerfile)
-            if [ "$top" != "$browser" ]; then
-              echo "::error::Dockerfile has '$top' but deploy/browser/Dockerfile has '$browser'"
-              exit 1
-            fi
-          done
+          top=$(grep -E '^FROM alpine:' Dockerfile)
+          browser=$(grep -E '^FROM alpine:' deploy/browser/Dockerfile)
+          if [ "$top" != "$browser" ]; then
+            echo "::error::Dockerfile has '$top' but deploy/browser/Dockerfile has '$browser'"
+            exit 1
+          fi
       - name: Build the image
         run: docker build -t wsaw-browser:probe deploy/browser
       - name: The image declares that it keeps the sandbox
@@ -452,13 +449,12 @@ jobs:
             exit 1
           fi
       # internal/container reads the last line of `<image> --version`.
-      - name: --version reports the pinned Chromium
+      - name: --version reports a Chromium
         run: |
-          want=$(sed -n 's/^ARG CHROMIUM_VERSION=//p' deploy/browser/Dockerfile)
           got=$(docker run --rm wsaw-browser:probe --version | tail -n 1)
           case "$got" in
-            "Chromium ${want%-r*}"*) echo "$got" ;;
-            *) echo "::error::--version reports '$got', want Chromium ${want%-r*}"; exit 1 ;;
+            "Chromium "[0-9]*) echo "$got" ;;
+            *) echo "::error::--version reports '$got', want a Chromium version"; exit 1 ;;
           esac
       # The same probe, and the same pair of runs, as container-sandbox.
       - name: The sandbox starts under deploy/chromium-seccomp.json

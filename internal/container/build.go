@@ -11,28 +11,23 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/deploy/browser"
 )
 
-// packageVersions are the shapes of a Chromium package version per base,
-// e.g. 152.0.7977.82-r0 on Alpine and 154.0.8037.57-1 on Debian. The value
-// ends up inside the build file's RUN line and in the image's tag, so
-// anything else is refused before it reaches the build.
-var packageVersions = map[browser.Base]*regexp.Regexp{
-	browser.BaseAlpine: regexp.MustCompile(`^[0-9]+(\.[0-9]+)*-r[0-9]+$`),
-	browser.BaseDebian: regexp.MustCompile(`^[0-9]+(\.[0-9]+)*-[0-9]+$`),
-}
+// buildTag is the shape of a name BuildImage tags an image with: a
+// repository, optionally behind a registry host and port, and an optional
+// tag, in the lowercase form the runtimes accept. It is passed to the runtime
+// as an argument, so it must not start with a dash or carry anything else.
+var buildTag = regexp.MustCompile(
+	`^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
 
-// ValidChromiumVersion reports whether v is a package version of base that
-// BuildImage will accept.
-func ValidChromiumVersion(base browser.Base, v string) bool {
-	shape, ok := packageVersions[base]
-
-	return ok && shape.MatchString(v)
+// ValidBuildTag reports whether name is an image name BuildImage will tag a
+// build with.
+func ValidBuildTag(name string) bool {
+	return buildTag.MatchString(name)
 }
 
 // BuildOptions says what BuildImage builds.
@@ -43,22 +38,11 @@ type BuildOptions struct {
 	// Base selects the build file.
 	Base browser.Base
 
-	// ChromiumVersion is the chromium-headless-shell package to install. The
-	// image is tagged ImageTag(ChromiumVersion).
-	ChromiumVersion string
-
 	// Output receives the runtime's own build output, so an operator can see
 	// what is being downloaded.
 	Output io.Writer
 
-	// Floor installs the newest Chromium the base's package branch holds
-	// that is at least ChromiumVersion, rather than exactly it, and builds
-	// without the layer cache so the package index is read afresh. It is how
-	// the browser image refresh picks up a newer Chromium (Story 6.13, AC2).
-	// Only the Alpine build file can express it.
-	Floor bool
-
-	// Tag names the image, in place of ImageTag(ChromiumVersion).
+	// Tag names the image, in place of BuildTag(Base).
 	Tag string
 
 	// TempDir is where the temporary build context is made, os.TempDir when
@@ -76,6 +60,10 @@ const buildWaitDelay = 10 * time.Second
 // (Story 6.12). The base image and Chromium are fetched by the runtime now,
 // because the operator asked, and never during a scan.
 //
+// It always builds without the layer cache: the build files do not pin
+// Chromium, so a cached package layer would hand back yesterday's browser
+// under today's name.
+//
 // The build context is written to a temporary directory that is removed
 // however the build ends, cancellation included.
 func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string, err error) {
@@ -83,9 +71,9 @@ func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string
 		return "", fmt.Errorf("unknown browser image base %q", opts.Base)
 	}
 
-	if !ValidChromiumVersion(opts.Base, opts.ChromiumVersion) {
-		return "", fmt.Errorf("chromium version %q is not a package version of the %s build, such as %s",
-			opts.ChromiumVersion, opts.Base, browser.ChromiumVersion(opts.Base))
+	tag = cmp.Or(opts.Tag, BuildTag(opts.Base))
+	if !ValidBuildTag(tag) {
+		return "", fmt.Errorf("%q is not an image name to build, such as %s", tag, DefaultImage)
 	}
 
 	dir, err := os.MkdirTemp(opts.TempDir, "wsaw-browser-build-")
@@ -99,25 +87,13 @@ func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string
 		}
 	}()
 
-	if opts.Floor && opts.Base != browser.BaseAlpine {
-		return "", fmt.Errorf("the %s build pins its Chromium through a dated snapshot and cannot take a newer one", opts.Base)
-	}
-
 	if err := writeContext(dir, opts.Context); err != nil {
 		return "", err
 	}
 
-	tag = cmp.Or(opts.Tag, ImageTag(opts.ChromiumVersion))
-
-	args := buildArgs(dir, opts.Base.File(), tag, opts.ChromiumVersion)
-	if opts.Floor {
-		args = slices.Insert(args, 1, "--no-cache", "--build-arg", "CHROMIUM_CONSTRAINT=>=")
-	}
-
 	// #nosec G204 -- r.Path comes from exec.LookPath over a fixed runtime
-	// list, and the only operator values, base and version, were validated
-	// above.
-	cmd := exec.CommandContext(ctx, r.Path, args...)
+	// list, and the only operator values, base and tag, were validated above.
+	cmd := exec.CommandContext(ctx, r.Path, buildArgs(dir, opts.Base.File(), tag)...)
 	cmd.Stdout = opts.Output
 	cmd.Stderr = opts.Output
 	cmd.WaitDelay = buildWaitDelay
@@ -136,11 +112,11 @@ func (r *Runtime) BuildImage(ctx context.Context, opts BuildOptions) (tag string
 // buildArgs is the runtime's command line. Podman and Docker accept the same
 // one; Docker needs BuildKit for the build files' COPY --chmod, which is its
 // default builder.
-func buildArgs(dir, file, tag, chromiumVersion string) []string {
+func buildArgs(dir, file, tag string) []string {
 	return []string{
 		"build",
+		"--no-cache",
 		"--tag", tag,
-		"--build-arg", "CHROMIUM_VERSION=" + chromiumVersion,
 		"--file", filepath.Join(dir, file),
 		dir,
 	}
@@ -179,8 +155,7 @@ func writeContext(dir string, src fs.FS) error {
 // `wsaw browser build` names, the build that makes it, since no registry
 // serves it; for any other, a pull.
 func (r *Runtime) FetchHint(image string) string {
-	v, ok := strings.CutPrefix(image, ImageName+":")
-	if !ok {
+	if !strings.HasPrefix(image, ImageName+":") {
 		return fmt.Sprintf("fetch it with: %s pull %s", r.Kind, image)
 	}
 
@@ -193,14 +168,12 @@ func (r *Runtime) FetchHint(image string) string {
 
 	cmd := "wsaw browser build --runtime " + string(r.Kind)
 
-	switch {
-	case image == DefaultImage:
-	case v == browser.ChromiumVersion(browser.BaseDebian):
+	switch image {
+	case DefaultImage:
+	case BuildTag(browser.BaseDebian):
 		cmd += " --base debian"
-	case ValidChromiumVersion(browser.BaseDebian, v):
-		cmd += " --base debian --chromium-version " + v
 	default:
-		cmd += " --chromium-version " + v
+		cmd += " --tag " + image
 	}
 
 	return "build it with: " + cmd

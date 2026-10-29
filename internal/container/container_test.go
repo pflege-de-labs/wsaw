@@ -221,12 +221,14 @@ func TestMissingImageFailsWithThePullCommand(t *testing.T) {
 
 	// An image of the name `wsaw browser build` gives is not served by any
 	// registry, so the way to fetch it is to build it (Story 6.12, AC5).
-	_, err = rt.BrowserVersion(ctx, container.ImageTag("0.0.1-r0"))
+	const built = container.ImageName + ":does-not-exist"
+
+	_, err = rt.BrowserVersion(ctx, built)
 	if err == nil {
 		t.Fatal("a missing built image was accepted")
 	}
 
-	if !strings.Contains(err.Error(), "wsaw browser build --runtime "+string(rt.Kind)+" --chromium-version 0.0.1-r0") {
+	if !strings.Contains(err.Error(), "wsaw browser build --runtime "+string(rt.Kind)+" --tag "+built) {
 		t.Errorf("error does not tell the operator how to build the image: %v", err)
 	}
 }

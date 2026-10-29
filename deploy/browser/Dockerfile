@@ -16,21 +16,13 @@
 # CDP on port 9222, arguments after the image name appended to Chromium's
 # command line, and `--version` printing the version as its last line.
 #
-# Base image and Chromium version move in lockstep with the wsaw image in the
-# repository's top-level Dockerfile: the same Alpine digest and the same
-# CHROMIUM_VERSION, so the browser a containerised scan uses is the one the
-# wsaw image bundles. ci.yaml refuses a change that lets the two drift, and
-# chromium.yaml bumps both.
+# The base image is the wsaw image's, by the same digest, which Dependabot
+# moves; ci.yaml refuses a change that lets the two drift. Chromium is not
+# pinned: Alpine keeps only the newest build of a package in a stable branch,
+# so every build — `wsaw browser build` and the refresh (Story 6.13) alike, both
+# without the layer cache — installs the Chromium the branch holds that day,
+# and a result records the version Chromium itself reports (Story 1.8, AC7).
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-
-ARG CHROMIUM_VERSION=155.0.8059.84-r0
-
-# CHROMIUM_CONSTRAINT is "=" for the exact version above. The browser image
-# refresh (Story 6.13) builds with ">=", which installs the newest Chromium the
-# Alpine branch holds that is at least that version: the one way a rebuild of
-# this file takes a newer browser. The label below then names the floor, and a
-# result records the version Chromium itself reports.
-ARG CHROMIUM_CONSTRAINT="="
 
 # chromium-headless-shell is the old headless mode as its own binary, the one
 # chromedp's image ships too, without the desktop browser around it. socat
@@ -39,7 +31,7 @@ ARG CHROMIUM_CONSTRAINT="="
 # differs enough that the element-visibility checks consent handling relies on
 # behave differently from a real browser.
 RUN apk add --no-cache \
-      "chromium-headless-shell${CHROMIUM_CONSTRAINT}${CHROMIUM_VERSION}" \
+      chromium-headless-shell \
       socat \
       ca-certificates \
       font-noto \
@@ -60,8 +52,7 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/wsaw-browser
 # sandbox, so a result's browserSandbox reports it instead of assuming every
 # container disables it (AC7). It is a promise the entrypoint keeps: it never
 # passes --no-sandbox.
-LABEL de.pflege.wsaw.browser.sandbox="enabled" \
-      de.pflege.wsaw.chromium.version="${CHROMIUM_VERSION}"
+LABEL de.pflege.wsaw.browser.sandbox="enabled"
 
 USER chrome
 
