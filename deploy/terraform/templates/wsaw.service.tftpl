@@ -30,19 +30,23 @@ WorkingDirectory=/var/lib/wsaw
 # Hardened like deploy/wsaw.service, minus the assumptions that don't hold
 # here: the browser runs in a rootless Podman container (browser.runtime:
 # podman in wsaw.yaml), not as a local process, so wsaw itself needs no
-# device or namespace access of its own beyond what talking to the rootless
-# podman socket requires.
+# device or namespace access of its own beyond what running rootless podman
+# requires: its runtime directory under /run/user, which ProtectHome=yes would
+# hide and ProtectSystem=strict would make read-only, the mount calls it sets
+# up its namespaces with, and setting the container's hostname.
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=tmpfs
+BindPaths=/run/user/10001
+ReadWritePaths=/run/user/10001
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
-ProtectHostname=yes
+ProtectHostname=no
 ProtectProc=invisible
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
@@ -51,7 +55,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LockPersonality=yes
 MemoryDenyWriteExecute=no
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service @mount sethostname
 SystemCallErrorNumber=EPERM
 
 LimitNOFILE=8192

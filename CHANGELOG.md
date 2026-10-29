@@ -9,6 +9,18 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Fixed
+
+- The systemd unit from `deploy/terraform` now lets rootless Podman run. It
+  hid `/run/user/10001` (`ProtectHome=yes`), kept it read-only
+  (`ProtectSystem=strict`), and refused the mount and `sethostname` calls
+  Podman makes, so a fresh install could not start a browser container. The
+  unit now uses `ProtectHome=tmpfs` with `/run/user/10001` bound in and
+  writable, allows `@mount` and `sethostname`, and sets `ProtectHostname=no`.
+  These are the settings existing instances carry as a hand-made drop-in
+  (`/etc/systemd/system/wsaw.service.d/hotfix-runtime-dir.conf`), which can
+  be removed once the instance runs the new unit.
+
 ## [0.7.2] - 2026-10-20
 
 A security release: wsaw is now built with Go 1.27.3, which fixes
