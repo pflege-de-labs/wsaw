@@ -93,6 +93,7 @@ func (c *Config) Validate() error {
 	c.validateAPI(add)
 	c.validateAdHocURLs(add)
 	c.validateAPIRefresh(add)
+	c.validateBaseURL(add)
 	c.validateShare(add)
 	c.validateNotifiers(add)
 	c.validateLogging(add)
@@ -1081,6 +1082,18 @@ func (c *Config) validateShare(add addFunc) {
 		if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
 			add(0, "api.share.baseUrl",
 				"%q is not an absolute http or https URL such as \"https://wsaw.example.com\"", sh.BaseURL)
+		}
+	}
+}
+
+// validateBaseURL refuses a web interface address nothing could link to
+// (Story 5.39, AC16).
+func (c *Config) validateBaseURL(add addFunc) {
+	if base := c.API.BaseURL; base != "" {
+		u, err := url.Parse(base)
+		if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+			add(0, "api.baseUrl",
+				"%q is not an absolute http or https URL such as \"https://wsaw.example.com\"", base)
 		}
 	}
 }

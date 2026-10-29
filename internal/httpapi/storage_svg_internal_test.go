@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/pflege-de-labs/wsaw/internal/report"
 )
 
 // svgSizeRe reads the width attribute and the viewBox width off a chart's
@@ -45,7 +47,7 @@ func TestSeriesBarSVGIsDrawnAtNaturalSize(t *testing.T) {
 func TestVBarChartIsDrawnAtNaturalSize(t *testing.T) {
 	t.Parallel()
 
-	svg := vBarChart("t", []string{"Sep", "Oct"}, []int64{284_100_000, 63_500_000}, FormatBytes)
+	svg := vBarChart("t", []string{"Sep", "Oct"}, []int64{284_100_000, 63_500_000}, report.FormatBytes)
 
 	assertDrawnAtNaturalSize(t, string(svg))
 }
@@ -66,7 +68,7 @@ func TestVBarChartSlotFitsItsLabels(t *testing.T) {
 		values[i] = 888_800_000 + int64(i)
 	}
 
-	svg := string(vBarChart("t", labels, values, FormatBytes))
+	svg := string(vBarChart("t", labels, values, report.FormatBytes))
 
 	xs := rectXRe.FindAllStringSubmatch(svg, 2)
 	if len(xs) != 2 {
@@ -90,7 +92,7 @@ func TestVBarChartSlotFitsItsLabels(t *testing.T) {
 	// to spare rather than exactly.
 	const glyphEm = 0.6
 
-	for _, s := range []string{FormatBytes(values[0]), labels[0]} {
+	for _, s := range []string{report.FormatBytes(values[0]), labels[0]} {
 		need := float64(utf8.RuneCountInString(s)) * glyphEm * chartFontSize
 		if slot < need {
 			t.Errorf("slot %.1f units, label %q needs about %.1f: neighbouring labels overlap", slot, s, need)

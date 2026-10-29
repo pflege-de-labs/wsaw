@@ -327,6 +327,17 @@ func bodyLoader(a *app.App) report.BodyLoader {
 	}
 }
 
+// resultURL is the scan's page for a PDF to link to, when there is one: a
+// scan that exists only in the output directory has no page (Story 5.39,
+// AC16).
+func resultURL(a *app.App, res *model.Result) string {
+	if a.Store == nil {
+		return ""
+	}
+
+	return report.ResultURL(a.Config.API.BaseURL, res)
+}
+
 // formatPDF is the one format written only to the output directory.
 const formatPDF = "pdf"
 
@@ -393,7 +404,7 @@ func emit(ctx context.Context, a *app.App, outcomes []scanner.Outcome, format st
 		if format == formatPDF {
 			if err := writeAtomic(base+".pdf", func(f *os.File) error {
 				return report.WritePDF(ctx, f, a.Printer(), out.Result, out.Diff,
-					report.PDFOptions{Basis: report.BasisUnknown, Version: a.Version})
+					report.PDFOptions{Basis: report.BasisUnknown, Version: a.Version, ResultURL: resultURL(a, out.Result)})
 			}); err != nil {
 				return err
 			}

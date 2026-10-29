@@ -208,3 +208,36 @@ func TestSharedPDFStaysWithinTheSharedResult(t *testing.T) {
 		t.Error("a share link opened another scan's PDF")
 	}
 }
+
+// The scan ID links to the signed-in result page, from a shared view too,
+// and only with a configured address (Story 5.39, AC16).
+func TestPDFLinksTheScanIDToItsPage(t *testing.T) {
+	t.Parallel()
+
+	const page = `<a href="https://wsaw.example.com/results/site/reject/scan-1">`
+
+	signer := shareSigner(t)
+	f := newFixtureWith(t, httpapi.Options{
+		WebUI: true, Share: signer, BaseURL: "https://wsaw.example.com/",
+	}, nil, nil, withPrinter(&echoPrinter{}))
+	seedComparedPair(t, f)
+
+	if got := body(t, f.get("/api/v1/results/site/reject/scan-1/pdf")); !strings.Contains(got, page) {
+		t.Error("the PDF does not link the scan ID to its page")
+	}
+
+	link := linkFor(t, signer, "site", "reject", "scan-1")
+	path, token, _ := strings.Cut(link, "?t=")
+
+	shared := body(t, f.get(path+"/pdf?t="+token))
+	if !strings.Contains(shared, page) || strings.Contains(shared, token) {
+		t.Error("the shared PDF does not link to the signed-in page, or carries the share token")
+	}
+
+	plain := newFixtureWith(t, httpapi.Options{}, nil, nil, withPrinter(&echoPrinter{}))
+	seedComparedPair(t, plain)
+
+	if got := body(t, plain.get("/api/v1/results/site/reject/scan-1/pdf")); strings.Contains(got, "<a href") {
+		t.Error("the PDF links somewhere without api.baseUrl")
+	}
+}

@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
-	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -69,7 +69,7 @@ func cmdArtifactsCompress(ctx context.Context, args []string) error {
 
 	if *verbose {
 		opts.OnArtifact = func(ref string, original, stored int64) {
-			fmt.Printf("%s  %s -> %s\n", ref, httpapi.FormatBytes(original), httpapi.FormatBytes(stored))
+			fmt.Printf("%s  %s -> %s\n", ref, report.FormatBytes(original), report.FormatBytes(stored))
 		}
 	}
 
@@ -101,7 +101,7 @@ func printCompactStats(stats store.CompactStats, dryRun bool) {
 	}
 
 	fmt.Printf("%s -> %s, saving %s (%.0f%%)\n",
-		httpapi.FormatBytes(stats.BytesBefore), httpapi.FormatBytes(stats.BytesAfter),
-		httpapi.FormatBytes(stats.Saved()),
+		report.FormatBytes(stats.BytesBefore), report.FormatBytes(stats.BytesAfter),
+		report.FormatBytes(stats.Saved()),
 		100*float64(stats.Saved())/float64(stats.BytesBefore))
 }

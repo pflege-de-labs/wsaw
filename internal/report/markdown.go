@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -41,7 +42,7 @@ func build(res *model.Result, rep *diff.Report, basis Basis) *document {
 	header = append(header,
 		[]span{bold("Scanned:"), text(" " + res.StartedAt.UTC().Format(time.RFC3339))},
 		[]span{bold("Duration:"), text(" " + res.Duration.Round(time.Millisecond).String())},
-		[]span{bold("Scan ID:"), text(" "), code(res.ScanID)},
+		[]span{bold("Scan ID:"), text(" "), span{Text: res.ScanID, Code: true, Exact: true}},
 	)
 
 	d.lines(header...)
@@ -50,6 +51,9 @@ func build(res *model.Result, rep *diff.Report, basis Basis) *document {
 	buildConsent(d, res)
 	buildPreConsent(d, res)
 	buildCounts(d, res)
+	// The data tables need the width, and they are consecutive, so the PDF
+	// turns landscape once and stays there (Story 5.39, AC15).
+	d.landscape()
 	buildHosts(d, res)
 	buildCookies(d, res)
 	buildStorage(d, res)
@@ -153,7 +157,7 @@ func buildConfidence(d *document, c *model.Confidence) {
 		rows = append(rows, [][]span{{text(string(r.Signal))}, {untrusted(r.Observed)}, {against}, {points}})
 	}
 
-	d.table([]string{"Signal", "Observed", "Compared against", "Points"}, []bool{false, false, false, true}, rows)
+	d.table([]column{narrow("Signal"), wide("Observed"), wide("Compared against"), figure("Points")}, rows)
 }
 
 func buildConsent(d *document, res *model.Result) {
@@ -343,7 +347,7 @@ func buildCounts(d *document, res *model.Result) {
 	rows = append(rows, [][]span{{bold("total")}, {bold(fmt.Sprint(len(res.Requests)))}})
 
 	d.heading(2, "Requests by resource type")
-	d.table([]string{"Type", "Count"}, []bool{false, true}, rows)
+	d.table([]column{narrow("Type"), figure("Count")}, rows)
 }
 
 func buildHosts(d *document, res *model.Result) {
@@ -366,16 +370,16 @@ func buildHosts(d *document, res *model.Result) {
 	for _, h := range summaries {
 		rows = append(rows, [][]span{
 			{code(h.Domain)}, {text(string(h.Party))},
-			{textf("%d", h.Requests)}, {textf("%d", h.PreConsent)}, {textf("%d", h.Bytes)}, {textf("%d", h.Failed)},
+			{textf("%d", h.Requests)}, {textf("%d", h.PreConsent)},
+			{span{Text: fmt.Sprint(h.Bytes), PDFText: FormatBytes(h.Bytes)}}, {textf("%d", h.Failed)},
 			{text(strings.Join(h.ResourceTypes, ", "))},
 		})
 	}
 
-	d.table(
-		[]string{"Domain", colParty, "Requests", "Pre-consent", "Bytes", "Failed", "Types"},
-		[]bool{false, false, true, true, true, true, false},
-		rows,
-	)
+	d.table([]column{
+		wide("Domain"), narrow(colParty), figure("Requests"), figure("Pre-consent"), figure("Bytes"), figure("Failed"),
+		wide("Types"),
+	}, rows)
 }
 
 func buildCookies(d *document, res *model.Result) {
@@ -383,16 +387,30 @@ func buildCookies(d *document, res *model.Result) {
 		return
 	}
 
-	rows := make([][][]span, 0, len(res.Cookies))
-	for _, c := range res.Cookies {
+	cookies, counts := merged(res.Cookies)
+	collides := collisions(cookies, func(c model.Cookie) string {
+		return strings.Join([]string{c.Name, c.Domain, string(c.Party), c.SameSite,
+			fmt.Sprint(c.Session, c.Secure, c.HTTPOnly)}, "\x00")
+	})
+
+	rows := make([][][]span, 0, len(cookies))
+	for i, c := range cookies {
+		name := append([]span{code(c.Name)}, repeats(counts[i])...)
+		if collides[i] {
+			name = append(name, textf(" (path %s, value %s)", c.Path, digestPrefix(c.ValueSHA256)))
+		}
+
 		rows = append(rows, [][]span{
-			{code(c.Name)}, {code(c.Domain)}, {text(string(c.Party))},
+			name, {code(c.Domain)}, {text(string(c.Party))},
 			{textf("%t", c.Session)}, {textf("%t", c.Secure)}, {textf("%t", c.HTTPOnly)}, {text(c.SameSite)},
 		})
 	}
 
 	d.heading(2, "Cookies")
-	d.table([]string{"Name", "Domain", colParty, "Session", "Secure", "HttpOnly", "SameSite"}, nil, rows)
+	d.table([]column{
+		wide("Name"), wide("Domain"), narrow(colParty),
+		narrow("Session"), narrow("Secure"), narrow("HttpOnly"), narrow("SameSite"),
+	}, rows)
 	d.para(text("Cookie values are not stored; only a digest and length are kept."))
 }
 
@@ -401,16 +419,25 @@ func buildStorage(d *document, res *model.Result) {
 		return
 	}
 
-	rows := make([][][]span, 0, len(res.Storage))
-	for _, e := range res.Storage {
+	entries, counts := merged(res.Storage)
+	collides := collisions(entries, func(e model.StorageEntry) string {
+		return strings.Join([]string{e.Origin, string(e.Area), e.Key, string(e.Party), fmt.Sprint(e.ValueLength)}, "\x00")
+	})
+
+	rows := make([][][]span, 0, len(entries))
+	for i, e := range entries {
+		key := append([]span{{Text: e.Key, Code: true, Untrusted: true}}, repeats(counts[i])...)
+		if collides[i] {
+			key = append(key, textf(" (value %s)", digestPrefix(e.ValueSHA256)))
+		}
+
 		rows = append(rows, [][]span{
-			{code(e.Origin)}, {text(string(e.Area))}, {span{Text: e.Key, Code: true, Untrusted: true}},
-			{text(string(e.Party))}, {textf("%d", e.ValueLength)},
+			{code(e.Origin)}, {text(string(e.Area))}, key, {text(string(e.Party))}, {textf("%d", e.ValueLength)},
 		})
 	}
 
 	d.heading(2, "Web storage")
-	d.table([]string{"Origin", "Area", "Key", colParty, "Value length"}, nil, rows)
+	d.table([]column{wide("Origin"), narrow("Area"), wide("Key"), narrow(colParty), narrow("Value length")}, rows)
 	d.para(text("Storage values are not stored; only a digest and length are kept."))
 }
 
@@ -495,7 +522,12 @@ func buildDiff(d *document, rep *diff.Report, basis Basis) {
 		})
 	}
 
-	d.table([]string{"Severity", "Change", "Subject", "Detail"}, nil, rows)
+	// The PDF stacks detail over subject in one cell, so neither is squeezed
+	// into a column one word wide (Story 5.39, AC11).
+	detail := wide("Detail")
+	detail.Lead = true
+
+	d.table([]column{narrow("Severity"), narrow("Change"), wide("Subject"), detail}, rows)
 
 	if rep.Suppressed > 0 {
 		d.para(textf("%d further change(s) were suppressed by the allow list.", rep.Suppressed))
@@ -543,6 +575,70 @@ func buildEnvironment(d *document, res *model.Result) {
 
 	d.heading(2, "Scan environment")
 	d.list(items...)
+}
+
+// merged lists items identical in every stored field once, in first-seen
+// order, with how often each occurred. The result keeps every entry; this is
+// only how the report shows them (Story 5.39, AC14).
+func merged[T any](items []T) ([]T, []int) {
+	out := make([]T, 0, len(items))
+	counts := make([]int, 0, len(items))
+	at := make(map[string]int, len(items))
+
+	for i, it := range items {
+		b, err := json.Marshal(it)
+
+		key := string(b)
+		if err != nil {
+			// Not expected for result types; an item that cannot be keyed
+			// is shown on its own rather than merged with anything.
+			key = fmt.Sprintf("\x00%d", i)
+		}
+
+		if j, ok := at[key]; ok {
+			counts[j]++
+
+			continue
+		}
+
+		at[key] = len(out)
+		out = append(out, it)
+		counts = append(counts, 1)
+	}
+
+	return out, counts
+}
+
+// collisions marks the items that share what the table shows with another
+// item, so their rows can name what tells them apart.
+func collisions[T any](items []T, shown func(T) string) []bool {
+	seen := make(map[string]int, len(items))
+	for _, it := range items {
+		seen[shown(it)]++
+	}
+
+	out := make([]bool, len(items))
+	for i, it := range items {
+		out[i] = seen[shown(it)] > 1
+	}
+
+	return out
+}
+
+func repeats(n int) []span {
+	if n < 2 {
+		return nil
+	}
+
+	return []span{textf(" ×%d", n)}
+}
+
+func digestPrefix(sha string) string {
+	if len(sha) < 8 {
+		return orNone(sha)
+	}
+
+	return sha[:8]
 }
 
 func orNone(s string) string {

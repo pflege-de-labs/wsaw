@@ -8,6 +8,9 @@
 <title>{{.Title}}</title>
 <style>
   @page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+  /* The data tables need the width (Story 5.39, AC15). */
+  @page landscape { size: A4 landscape; }
+  .landscape { page: landscape; }
   body { font: 9.5pt/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #1a1a1a; margin: 0; }
   h1 { font-size: 16pt; margin: 0 0 6pt; }
   h2 { font-size: 12pt; margin: 14pt 0 5pt; border-bottom: 0.5pt solid #999; padding-bottom: 2pt; break-after: avoid; }
@@ -19,29 +22,38 @@
   ul { margin: 0 0 6pt; padding-left: 14pt; }
   li { margin-bottom: 1pt; }
   table { border-collapse: collapse; width: 100%; margin: 0 0 8pt; }
-  th, td { border: 0.5pt solid #bbb; padding: 2pt 4pt; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  th, td { border: 0.5pt solid #bbb; padding: 2pt 4pt; text-align: left; vertical-align: top; }
+  /* A short word is never split into letters; long values take the width
+     that is left, and break at the <wbr> after a separator first (AC10). */
+  .compact { white-space: nowrap; width: 1%; }
+  .wide { overflow-wrap: anywhere; }
+  .clipped { color: #555; font-style: italic; }
   th { background: #eee; }
   tr { break-inside: avoid; }
-  .num { text-align: right; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
   figure { margin: 0 0 10pt; break-inside: avoid; }
   img { max-width: 100%; border: 0.5pt solid #bbb; }
   figcaption { font-size: 8.5pt; color: #555; }
 </style>
 </head>
 <body>
-{{range .Blocks}}{{template "block" .}}
-{{end}}
+{{range $i, $b := .Blocks}}{{if and $.Landscape (eq $i $.Landscape)}}<div class="landscape">{{end}}{{template "block" $b}}
+{{end}}{{if .Landscape}}</div>{{end}}
 </body>
 </html>
-{{define "spans"}}{{range .}}{{if .Bold}}<strong>{{.Text}}</strong>{{else if .Code}}<code>{{.Text}}</code>{{else}}{{.Text}}{{end}}{{end}}{{end}}
+{{define "spans"}}{{range .}}{{template "span" .}}{{end}}{{end}}
+{{define "span"}}{{$c := clip .}}{{if .Href}}<a href="{{.Href}}">{{end}}
+{{- if .Bold}}<strong>{{template "text" $c.Parts}}</strong>{{else if .Code}}<code>{{template "text" $c.Parts}}</code>{{else}}{{template "text" $c.Parts}}{{end}}
+{{- if .Href}}</a>{{end}}{{with $c.Note}}<span class="clipped">{{.}}</span>{{end}}{{end}}
+{{define "text"}}{{range $i, $p := .}}{{if $i}}<wbr>{{end}}{{$p}}{{end}}{{end}}
 {{define "block"}}
 {{- if eq .Kind "heading"}}{{if eq .Level 1}}<h1>{{template "spans" index .Lines 0}}</h1>{{else if eq .Level 2}}<h2>{{template "spans" index .Lines 0}}</h2>{{else}}<h3>{{template "spans" index .Lines 0}}</h3>{{end}}
 {{- else if eq .Kind "para"}}<p>{{template "spans" index .Lines 0}}</p>
 {{- else if eq .Kind "lines"}}<p class="lines">{{range $i, $l := .Lines}}{{if $i}}<br>{{end}}{{template "spans" $l}}{{end}}</p>
 {{- else if eq .Kind "quote"}}<blockquote>{{range $i, $l := .Lines}}{{if $i}} {{end}}{{template "spans" $l}}{{end}}</blockquote>
 {{- else if eq .Kind "list"}}<ul>{{range .Items}}<li>{{template "spans" .Spans}}{{with .Sub}}<ul>{{range .}}<li>{{template "spans" .}}</li>{{end}}</ul>{{end}}</li>{{end}}</ul>
-{{- else if eq .Kind "table"}}{{$right := .Right}}<table><thead><tr>{{range $i, $h := .Head}}<th{{if right $right $i}} class="num"{{end}}>{{$h}}</th>{{end}}</tr></thead><tbody>
-{{- range .Rows}}<tr>{{range $i, $c := .}}<td{{if right $right $i}} class="num"{{end}}>{{template "spans" $c}}</td>{{end}}</tr>{{end}}</tbody></table>
+{{- else if eq .Kind "table"}}{{$t := layout .}}<table><thead><tr>{{range $t.Cols}}<th class="{{.Class}}">{{.Head}}</th>{{end}}</tr></thead><tbody>
+{{- range $t.Rows}}<tr>{{range .}}<td class="{{.Class}}">{{range $i, $l := .Lines}}{{if $i}}<br>{{end}}{{template "spans" $l}}{{end}}</td>{{end}}</tr>{{end}}</tbody></table>
 {{- else if eq .Kind "image"}}<figure><img src="{{.Src}}" alt="{{.Alt}}"><figcaption>{{.Alt}}</figcaption></figure>
 {{- end}}
 {{- end}}

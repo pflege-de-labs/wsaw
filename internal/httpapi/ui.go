@@ -18,6 +18,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
@@ -46,28 +47,6 @@ func newUIRenderer() (*uiRenderer, error) {
 // contextual escaping must stay in force (Story 5.11).
 // neverRendered is what an unset time.Time shows as everywhere on the page.
 const neverRendered = "never"
-
-// FormatBytes is the human units every size wsaw shows uses — the
-// interface's template func, the storage dashboard's inline SVG (Story 5.32,
-// AC9) and the CLI's own reports all call it, so no two can disagree. The
-// units are binary and say so, as the configuration reference's are.
-func FormatBytes(n int64) string {
-	const unit = 1024
-
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-
-	div, exp := int64(unit), 0
-
-	// Capped at TiB: anything larger is still shown, as thousands of TiB.
-	for n/div >= unit && exp < 3 {
-		div *= unit
-		exp++
-	}
-
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
-}
 
 func uiFuncs() template.FuncMap {
 	return template.FuncMap{
@@ -115,7 +94,7 @@ func uiFuncs() template.FuncMap {
 		"since": func(t time.Time) string {
 			return time.Since(t).Round(time.Second).String()
 		},
-		"bytes": FormatBytes,
+		"bytes": report.FormatBytes,
 		"sevclass": func(s diff.Severity) string {
 			return "sev-" + string(s)
 		},

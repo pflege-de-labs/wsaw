@@ -1193,3 +1193,44 @@ normalize:
 		}
 	}
 }
+
+// Story 5.39, AC16: api.baseUrl is the one address share links and Teams
+// cards fall back to, and their own settings still win.
+func TestAPIBaseURL(t *testing.T) {
+	t.Parallel()
+
+	mustReject(t, `
+api:
+  baseUrl: wsaw.example.com
+`)
+
+	cfg := parse(t, `
+api:
+  baseUrl: https://wsaw.example.com
+notify:
+  - name: own
+    kind: teams
+    url: https://example.com/hook
+    baseUrl: https://teams.example.com
+  - name: fallback
+    kind: teams
+    url: https://example.com/hook
+`)
+
+	if got := cfg.API.ShareBaseURL(); got != "https://wsaw.example.com" {
+		t.Errorf("share base = %q, want api.baseUrl", got)
+	}
+
+	if got := cfg.API.NotifierBaseURL(cfg.Notify[0]); got != "https://teams.example.com" {
+		t.Errorf("own notifier base = %q, want its own", got)
+	}
+
+	if got := cfg.API.NotifierBaseURL(cfg.Notify[1]); got != "https://wsaw.example.com" {
+		t.Errorf("fallback notifier base = %q, want api.baseUrl", got)
+	}
+
+	cfg.API.Share.BaseURL = "https://share.example.com"
+	if got := cfg.API.ShareBaseURL(); got != "https://share.example.com" {
+		t.Errorf("share base = %q, want api.share.baseUrl", got)
+	}
+}

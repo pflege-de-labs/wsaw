@@ -89,7 +89,7 @@ func cmdShare(ctx context.Context, args []string) error {
 
 	link := share.Path(res.Target, string(res.ConsentMode), res.ScanID) + "?t=" + token
 
-	if base := cfg.API.Share.BaseURL; base != "" {
+	if base := cfg.API.ShareBaseURL(); base != "" {
 		link = strings.TrimRight(base, "/") + link
 	}
 
@@ -104,9 +104,9 @@ func cmdShare(ctx context.Context, args []string) error {
 		res.Target, res.ConsentMode, res.ScanID,
 		claims.Expiry().Format(time.RFC3339), time.Until(claims.Expiry()).Round(time.Minute))
 
-	if cfg.API.Share.BaseURL == "" {
+	if cfg.API.ShareBaseURL() == "" {
 		_, _ = fmt.Fprintln(os.Stderr,
-			"this is a path, not a URL: set api.share.baseUrl to have wsaw print a sendable link")
+			"this is a path, not a URL: set api.baseUrl or api.share.baseUrl to have wsaw print a sendable link")
 	}
 
 	_, _ = fmt.Fprintln(os.Stderr,

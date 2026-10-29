@@ -76,6 +76,11 @@ func (s *Server) writePDF(w http.ResponseWriter, r *http.Request, res *model.Res
 
 	opts := report.PDFOptions{Basis: basis, Version: s.opts.Version, JSONPath: jsonPath}
 
+	// The signed-in page, from a shared view too: a PDF is forwarded and
+	// outlives a share token, and the token is a credential (AC16). The
+	// address is configured, never read from this request's headers.
+	opts.ResultURL = report.ResultURL(s.opts.BaseURL, res)
+
 	if r.URL.Query().Get("screenshots") == "true" {
 		opts.Screenshots = s.deps.Store.GetArtifact
 	}

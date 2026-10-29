@@ -89,6 +89,10 @@ type Options struct {
 	// ShareBaseURL is where this wsaw is reachable from, so a minted link is
 	// something an operator can copy and send rather than assemble.
 	ShareBaseURL string
+	// BaseURL is where the web interface is reachable from (api.baseUrl). A
+	// PDF report links its scan ID to the scan's page with it (Story 5.39,
+	// AC16); empty means no link.
+	BaseURL string
 
 	// SignedArtifactURLs lets an artifact request be answered with a redirect
 	// to the bucket rather than with the bytes. Off unless an operator asked
