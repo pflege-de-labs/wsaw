@@ -225,7 +225,7 @@ func TestEmitWritesTheOutputDirectory(t *testing.T) {
 
 	a := &app.App{Config: cfg}
 
-	if err := emit(a, []scanner.Outcome{outcome("a b", model.ConsentReject)}, "json"); err != nil {
+	if err := emit(t.Context(), a, []scanner.Outcome{outcome("a b", model.ConsentReject)}, "json"); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestEmitWritesOnlyWhatIsEnabled(t *testing.T) {
 
 	a := &app.App{Config: cfg}
 
-	if err := emit(a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "json"); err != nil {
+	if err := emit(t.Context(), a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "json"); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestEmitFallsBackToStdout(t *testing.T) {
 	var err error
 
 	stdout, _ := capture(t, func() {
-		err = emit(a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "csv")
+		err = emit(t.Context(), a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "csv")
 	})
 
 	if err != nil {
@@ -303,7 +303,7 @@ func TestEmitReportsAnUnwritableOutputDirectory(t *testing.T) {
 
 	a := &app.App{Config: cfg}
 
-	err := emit(a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "json")
+	err := emit(t.Context(), a, []scanner.Outcome{outcome("a", model.ConsentReject)}, "json")
 	if err == nil {
 		t.Fatal("emit accepted an output directory it could not create")
 	}
@@ -430,5 +430,40 @@ func TestBodyLoaderResolvesStoredBodies(t *testing.T) {
 
 	if string(body) != "console.log(1)" {
 		t.Errorf("body = %q", body)
+	}
+}
+
+// A PDF has nowhere to go without an output directory, and the run is
+// refused before it scans rather than after (Story 5.39, AC7).
+func TestPDFNeedsAnOutputDirectory(t *testing.T) {
+	t.Parallel()
+
+	err := checkPDFOutput("pdf", "")
+	if err == nil || !strings.Contains(err.Error(), "--output-dir") {
+		t.Errorf("checkPDFOutput(pdf, \"\") = %v, want an error naming --output-dir", err)
+	}
+
+	for _, ok := range [][2]string{{"pdf", "out"}, {"markdown", ""}, {"json", ""}} {
+		if err := checkPDFOutput(ok[0], ok[1]); err != nil {
+			t.Errorf("checkPDFOutput(%q, %q) = %v", ok[0], ok[1], err)
+		}
+	}
+}
+
+func TestEmitPDFWithoutABrowserWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "out")
+
+	cfg := config.New()
+	cfg.Store.OutputDir = dir
+
+	err := emit(t.Context(), &app.App{Config: cfg}, []scanner.Outcome{outcome("a", model.ConsentReject)}, "pdf")
+	if err == nil {
+		t.Fatal("emit wrote a PDF with no browser to print it")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "a-reject.pdf")); err == nil {
+		t.Error("a PDF file exists after the print was refused")
 	}
 }

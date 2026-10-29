@@ -600,6 +600,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		Targets:          targets,
 		Retention:        a.Retention,
 		Running:          a.RunningScans,
+		Printer:          a.Printer(),
 		ConfigPath:       a.Config.Path(),
 		ArtifactLocation: artifactLocation(a),
 		StorageIndex:     storageIndex(a.Store),

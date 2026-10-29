@@ -28,6 +28,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/share"
@@ -175,6 +176,10 @@ type Deps struct {
 	// the same rules a scan's own diff used. Nil compares stored keys.
 	Normalizer *normalize.Normalizer
 	Logger     *slog.Logger
+
+	// Printer renders PDF reports (Story 5.39). Nil, and the PDF endpoints
+	// answer that they are unavailable.
+	Printer report.Printer
 
 	// Targets returns the current target list. It is a function so a config
 	// reload is reflected without restarting the server.

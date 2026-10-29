@@ -231,7 +231,7 @@ func TestBespokeBannerIsHandledAndRecordedAsItsOwnKind(t *testing.T) {
 	}
 
 	var md strings.Builder
-	if err := report.WriteMarkdown(&md, res, nil); err != nil {
+	if err := report.WriteMarkdown(&md, res, nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 

@@ -806,6 +806,42 @@ browser:
 Both are defaults now, and both are limits rather than allocations, so they
 cost nothing until they are needed.
 
+## A PDF report of one scan
+
+For evidence that has to be filed, attached to a ticket or sent to someone
+who will never open wsaw, every scan can be downloaded as a PDF:
+
+- the **PDF** link on a scan's page, or
+  `GET /api/v1/results/{target}/{mode}/{scan}/pdf` (`?screenshots=true` embeds
+  the screenshots, which are left out by default for size);
+- the **PDF** link on a shared view, which holds nothing the shared page does
+  not show;
+- `wsaw scan --format pdf --output-dir out/`, which writes
+  `out/<target>-<mode>.pdf` per scan. Without an output directory the run is
+  refused before it starts, because a PDF does not belong on a terminal.
+
+The PDF has the Markdown report's sections in the same order, and it starts
+with whether the scan can be trusted. A failed or skipped scan says so in its
+title block. A truncated scan, one whose consent was not verified, and one
+with low confidence carry the caveat before the first finding. Every page
+footer names the target, consent mode, scan ID, scan time and the wsaw
+version that printed it. The first page carries the SHA-256 of the result
+document, so a PDF can be checked against the store:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8712/api/v1/results/shop/reject/<scan-id>?bodies=false" | shasum -a 256
+```
+
+The daemon prints the PDF with the Chrome it already runs, and adds no
+dependency. The report contains text the scanned page chose, so it is
+printed in a browser context of its own, with JavaScript disabled and every
+request the document makes failed before it leaves the browser. A print takes
+a browser from the scan pool, at most two print at once, and each has 30
+seconds. A request that cannot get a browser within that time gets `503` with
+`Retry-After`. PDFs are generated on demand and never stored, so retention
+has nothing new to manage.
+
 ## Sharing one result
 
 Sending somebody the API token gives them every result, every target and

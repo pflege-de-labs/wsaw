@@ -72,6 +72,7 @@
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/har">HAR</a>
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/csv">CSV</a>
     <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/report">report</a>
+    <a href="/api/v1/results/{{$res.Target}}/{{$res.ConsentMode}}/{{$res.ScanID}}/pdf">PDF</a>
     {{if $page.ShareEnabled}}
     {{/* A link somebody else can open, instead of handing them this token
          (Story 5.19). A POST because it mints a credential. */}}

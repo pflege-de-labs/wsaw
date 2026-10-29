@@ -17,7 +17,7 @@ func markdown(t *testing.T, res *model.Result) string {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, res, nil); err != nil {
+	if err := report.WriteMarkdown(&b, res, nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 

@@ -29,6 +29,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/robots"
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
@@ -54,6 +55,10 @@ type App struct {
 	Pool    *browser.Pool
 	Scanner *scanner.Scanner
 	Rules   *consent.RuleSet
+
+	// printer prints PDF reports in Pool's browsers (Story 5.39). One per
+	// app, because it is what bounds how many prints run at once.
+	printer *browser.Printer
 
 	Chrome browser.Info
 
@@ -493,6 +498,7 @@ func (a *App) startBrowser(ctx context.Context) error {
 	})
 
 	a.closers = append(a.closers, a.Pool.Close)
+	a.printer = browser.NewPrinter(a.Pool, 0)
 
 	// Decided before the first scan rather than discovered by it: a scan that
 	// found out mid-flight could only fail, and the settings it would need
@@ -980,6 +986,17 @@ func (a *App) LastScan(target string, mode model.ConsentMode) (time.Time, bool) 
 	}
 
 	return summaries[0].StartedAt, true
+}
+
+// Printer prints PDF reports, or is nil when the app started no browser. A
+// nil interface, not a nil *browser.Printer inside one, so a caller's nil
+// check holds.
+func (a *App) Printer() report.Printer {
+	if a.printer == nil {
+		return nil
+	}
+
+	return a.printer
 }
 
 // RunningScans lists the scans in flight, for the API and the web interface.
