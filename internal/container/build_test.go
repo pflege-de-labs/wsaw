@@ -222,3 +222,28 @@ func TestBuildImageRefusesAnInvalidVersion(t *testing.T) {
 		t.Error("the runtime was run with an invalid version")
 	}
 }
+
+// TestBuildImagePutsTheContextInTempDir: a service with a private /tmp has to
+// hand rootless podman a path its pause process can see, so the context goes
+// where the caller says rather than into os.TempDir.
+func TestBuildImagePutsTheContextInTempDir(t *testing.T) {
+	t.Parallel()
+
+	rt, argsFile := fakeRuntime(t, 0)
+	parent := t.TempDir()
+
+	_, err := rt.BuildImage(context.Background(), BuildOptions{
+		Context:         browser.Context,
+		Base:            browser.BaseAlpine,
+		ChromiumVersion: "160.1-r2",
+		Output:          &bytes.Buffer{},
+		TempDir:         parent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := filepath.Dir(recordedContext(t, argsFile)); got != parent {
+		t.Errorf("the build context was made in %s, want %s", got, parent)
+	}
+}

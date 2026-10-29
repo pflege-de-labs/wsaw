@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -302,6 +303,8 @@ func refreshApp(t *testing.T, mutate func(*config.Config)) (*App, *fakeImageRunt
 
 	cfg := config.New()
 	cfg.Browser.Container.Refresh = config.RefreshBuild
+	// A build makes its context here; the platform default is the real home.
+	cfg.Store.Path = filepath.Join(t.TempDir(), "wsaw.db")
 
 	if mutate != nil {
 		mutate(cfg)
@@ -336,6 +339,22 @@ func refresherFor(a *App, rt *fakeImageRuntime, clock *fakeClock) *refresher {
 }
 
 var refreshStart = time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+
+// TestABuildPutsItsContextInTheStateDirectory: under systemd's PrivateTmp the
+// service's /tmp is not the one rootless podman's pause process sees, and a
+// build context there fails with "context must be a directory".
+func TestABuildPutsItsContextInTheStateDirectory(t *testing.T) {
+	t.Parallel()
+
+	a, rt, _, _ := refreshApp(t, nil)
+	rt.nextID, rt.nextVersion = "sha256:new", newBrowser
+
+	refresherFor(a, rt, newFakeClock(refreshStart)).refreshOnce(t.Context(), RefreshScheduleFor(a.Config))
+
+	if dir := filepath.Dir(a.Config.Store.Path); len(rt.buildOpts) != 1 || rt.buildOpts[0].TempDir != dir {
+		t.Fatalf("builds = %+v, want one with its context in %s", rt.buildOpts, dir)
+	}
+}
 
 // TestABuildWithANewerChromiumSwitchesThePool is AC2, AC4, AC5 and AC10: the
 // build takes a newer Chromium, passes the checks, becomes what every new

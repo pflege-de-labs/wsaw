@@ -1051,6 +1051,16 @@ func (a *App) Close() error {
 	return errors.Join(errs...)
 }
 
+// stateDir is the directory wsaw keeps its state in: the SQLite database's,
+// or the platform default when the store names no file.
+func stateDir(cfg *config.Config) (string, error) {
+	if !cfg.Store.IsServerStore() && cfg.Store.Path != "" {
+		return filepath.Dir(cfg.Store.Path), nil
+	}
+
+	return defaultStateDir()
+}
+
 // defaultStateDir returns the platform-appropriate state directory: XDG on
 // Linux, Application Support on macOS (Story 6.2).
 func defaultStateDir() (string, error) {
