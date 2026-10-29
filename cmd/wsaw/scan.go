@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func cmdScan(ctx context.Context, args []string) int {
 
 	cf.register(fs)
 
-	format := fs.String("format", "markdown", "output format: json, jsonl, markdown or csv")
+	format := fs.String("format", "markdown", "output format: json, jsonl, markdown, csv, or pdf (needs --output-dir)")
 	failOn := fs.String("fail-on", "high", "exit 1 when a finding reaches this severity: info, low, medium, high, critical")
 	target := fs.String("target", "", "scan only this target")
 	bodies := fs.String("bodies", "",
@@ -57,6 +58,14 @@ func cmdScan(ctx context.Context, args []string) int {
 
 	cfg, err := cf.load()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "wsaw: %v\n", err)
+
+		return exitOperational
+	}
+
+	// Refused before scanning, not after: finding out at the end of a run
+	// costs the whole run.
+	if err := checkPDFOutput(*format, cfg.Store.OutputDir); err != nil {
 		fmt.Fprintf(os.Stderr, "wsaw: %v\n", err)
 
 		return exitOperational
@@ -90,7 +99,7 @@ func cmdScan(ctx context.Context, args []string) int {
 
 	outcomes, failures := runOnce(scanner.WithForcedBodies(ctx, forced), a, targets)
 
-	if err := emit(a, outcomes, *format); err != nil {
+	if err := emit(ctx, a, outcomes, *format); err != nil {
 		fmt.Fprintf(os.Stderr, "wsaw: %v\n", err)
 
 		return exitOperational
@@ -318,13 +327,30 @@ func bodyLoader(a *app.App) report.BodyLoader {
 	}
 }
 
+// formatPDF is the one format written only to the output directory.
+const formatPDF = "pdf"
+
+// checkPDFOutput refuses a PDF with nowhere to put it: a PDF is binary, and
+// a terminal is no place for it (Story 5.39, AC7).
+func checkPDFOutput(format, outputDir string) error {
+	if format == formatPDF && outputDir == "" {
+		return errors.New("--format pdf writes one file per scan: name a directory with --output-dir or store.outputDir")
+	}
+
+	return nil
+}
+
 // emit writes results in the requested format, to stdout or to the output
 // directory.
-func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
+func emit(ctx context.Context, a *app.App, outcomes []scanner.Outcome, format string) error {
 	dir := a.Config.Store.OutputDir
 
 	if dir == "" {
 		return emitStdout(outcomes, format, bodyLoader(a))
+	}
+
+	if format == formatPDF && a.Printer() == nil {
+		return errors.New("--format pdf needs a browser to print with, and none was started")
 	}
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -342,7 +368,7 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 
 		if a.Config.Store.WriteReport {
 			if err := writeAtomic(base+".md", func(f *os.File) error {
-				return report.WriteMarkdown(f, out.Result, out.Diff)
+				return report.WriteMarkdown(f, out.Result, out.Diff, report.BasisUnknown)
 			}); err != nil {
 				return err
 			}
@@ -359,6 +385,15 @@ func emit(a *app.App, outcomes []scanner.Outcome, format string) error {
 		if a.Config.Store.WriteJSONL {
 			if err := writeAtomic(base+".jsonl", func(f *os.File) error {
 				return report.WriteJSONL(f, bodyLoader(a), out.Result)
+			}); err != nil {
+				return err
+			}
+		}
+
+		if format == formatPDF {
+			if err := writeAtomic(base+".pdf", func(f *os.File) error {
+				return report.WritePDF(ctx, f, a.Printer(), out.Result, out.Diff,
+					report.PDFOptions{Basis: report.BasisUnknown, Version: a.Version})
 			}); err != nil {
 				return err
 			}
@@ -398,7 +433,7 @@ func emitStdout(outcomes []scanner.Outcome, format string, load report.BodyLoade
 				fmt.Print("\n---\n\n")
 			}
 
-			if err := report.WriteMarkdown(os.Stdout, out.Result, out.Diff); err != nil {
+			if err := report.WriteMarkdown(os.Stdout, out.Result, out.Diff, report.BasisUnknown); err != nil {
 				return err
 			}
 		}

@@ -53,6 +53,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/scan-url", s.handleScanURL)
 
 	s.shareRoutes()
+	s.pdfRoutes()
 
 	if s.opts.MetricsEnabled && s.deps.Metrics != nil {
 		s.mux.HandleFunc("GET "+s.opts.MetricsPath, s.handleMetrics)
@@ -605,15 +606,28 @@ func (s *Server) handleResultMarkdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rep := s.diffFor(res)
+	c := s.comparisonFor(res)
 
 	// text/plain, not text/markdown: the content embeds page-controlled text,
 	// and nosniff plus a non-renderable type keeps a browser from doing
 	// anything with it.
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-	if err := report.WriteMarkdown(w, res, rep); err != nil {
+	if err := report.WriteMarkdown(w, res, c.Report, c.basis()); err != nil {
 		s.deps.Logger.Error("writing Markdown report", "error", err)
+	}
+}
+
+// basis names what the comparison was made against, for the report's
+// sentence about it.
+func (c comparison) basis() report.Basis {
+	switch {
+	case c.OwnBaseline:
+		return report.BasisOwnBaseline
+	case c.Baseline != nil:
+		return report.BasisBaseline
+	default:
+		return report.BasisPrevious
 	}
 }
 

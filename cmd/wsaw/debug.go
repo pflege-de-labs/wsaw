@@ -98,7 +98,7 @@ func cmdDebug(ctx context.Context, args []string) error {
 		return scanErr
 	}
 
-	if err := report.WriteMarkdown(os.Stdout, out.Result, out.Diff); err != nil {
+	if err := report.WriteMarkdown(os.Stdout, out.Result, out.Diff, report.BasisUnknown); err != nil {
 		return err
 	}
 

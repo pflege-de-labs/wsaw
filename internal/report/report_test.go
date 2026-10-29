@@ -154,7 +154,7 @@ func TestWriteMarkdownLeadsWithTrustworthiness(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, res, nil); err != nil {
+	if err := report.WriteMarkdown(&b, res, nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +183,7 @@ func TestWriteMarkdownFlagsHeuristicConsent(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, res, nil); err != nil {
+	if err := report.WriteMarkdown(&b, res, nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -197,7 +197,7 @@ func TestWriteMarkdownSeparatesPreConsentTraffic(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, fixture(), nil); err != nil {
+	if err := report.WriteMarkdown(&b, fixture(), nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,7 +230,7 @@ func TestWriteMarkdownIncludesDiff(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, fixture(), rep); err != nil {
+	if err := report.WriteMarkdown(&b, fixture(), rep, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,7 +260,7 @@ func TestMarkdownEscapesUntrustedDetail(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, fixture(), rep); err != nil {
+	if err := report.WriteMarkdown(&b, fixture(), rep, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +280,7 @@ func TestMarkdownNeverShowsHeaderValues(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, fixture(), nil); err != nil {
+	if err := report.WriteMarkdown(&b, fixture(), nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 
@@ -380,7 +380,7 @@ func TestReportsAreDeterministic(t *testing.T) {
 	render := func() string {
 		var b strings.Builder
 
-		if err := report.WriteMarkdown(&b, fixture(), nil); err != nil {
+		if err := report.WriteMarkdown(&b, fixture(), nil, report.BasisUnknown); err != nil {
 			t.Fatal(err)
 		}
 
@@ -415,7 +415,7 @@ func TestWriteMarkdownFlagsABotBlockedCMP(t *testing.T) {
 
 	var b strings.Builder
 
-	if err := report.WriteMarkdown(&b, res, nil); err != nil {
+	if err := report.WriteMarkdown(&b, res, nil, report.BasisUnknown); err != nil {
 		t.Fatal(err)
 	}
 

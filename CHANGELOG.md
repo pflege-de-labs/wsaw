@@ -18,6 +18,29 @@ criteria, and any that are still open, are written down.
   as a Shopify staging shop with a storefront password. A login that does not
   hold fails the scan with "login was not accepted" instead of recording the
   password page. Results gain `environment.formLoginUrl`, an additive field.
+- Any scan can be downloaded as a PDF report, so evidence can be filed or
+  sent to someone without wsaw access (Story 5.39). Use the **PDF** link on a
+  scan's page or shared view, `GET /api/v1/results/{target}/{mode}/{scan}/pdf`
+  (`?screenshots=true` embeds the screenshots), or
+  `wsaw scan --format pdf --output-dir <dir>`. The PDF has the Markdown
+  report's sections and puts any reason not to trust the scan first. Every
+  page footer names the scan, and the first page carries the SHA-256 of the
+  result document as `?bodies=false` returns it. The daemon prints the PDF
+  with its own Chrome, with JavaScript off and every request blocked. At most
+  two print at once, each takes a browser from the scan pool for up to 30
+  seconds, and a busy daemon answers `503` with `Retry-After`. No new
+  dependency.
+
+### Changed
+
+- The Markdown report gains a Confidence section with the score, band and
+  every signal behind it. The report now states up front when a completed
+  scan's consent was not confirmed or its confidence is low. The scan page
+  already showed these, and the PDF report shares the Markdown report's
+  layout (Story 5.39). The `/report` endpoint now names what the changes were
+  compared against: the approved baseline, the previous scan, or, for a
+  baseline, the scan before it. A report with no comparison still has a
+  Changes section, and it says so.
 
 ### Fixed
 

@@ -307,6 +307,46 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "410": {$ref: "#/components/responses/EvidenceGone"}
 
+  /api/v1/results/{target}/{mode}/{scan}/pdf:
+    get:
+      tags: [results]
+      summary: The human-readable report as a PDF
+      description: >-
+        The Markdown report's sections, in its order, printed by the daemon's
+        Chrome with JavaScript disabled and every request the document makes
+        blocked. Every page footer names the target, consent mode, scan ID,
+        scan time and wsaw version. The first page carries the SHA-256 of the
+        result document exactly as GET .../{scan}?bodies=false returns it, so
+        the PDF can be checked against the store. Rendered on demand, never
+        stored. At most two render at once, each within 30 seconds.
+      parameters:
+        - {$ref: "#/components/parameters/target"}
+        - {$ref: "#/components/parameters/mode"}
+        - {$ref: "#/components/parameters/scan"}
+        - name: screenshots
+          in: query
+          description: true embeds the scan's screenshots. Off by default, for size.
+          schema: {type: boolean, default: false}
+      responses:
+        "200":
+          description: PDF report, as an attachment.
+          content:
+            application/pdf: {}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/EvidenceGone"}
+        "500":
+          description: The report could not be rendered. Nothing partial is served.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "503":
+          description: >-
+            Every print slot or browser stayed busy until the deadline
+            (Retry-After is set), or the server has no browser to print with.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
   /api/v1/diff/{target}/{mode}/{scan}:
     get:
       tags: [results]
