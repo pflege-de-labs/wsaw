@@ -857,6 +857,24 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "http://127.0.0.1:8712/api/v1/results/shop/reject/<scan-id>?bodies=false" | shasum -a 256
 ```
 
+With `api.baseUrl` set, the scan ID on the first page links to the scan's
+page in the web interface, and the address is printed beside it for a paper
+copy. A PDF from a shared view links to the signed-in page, never to the
+share link, whose token is a credential. Without `api.baseUrl` there is no
+link; wsaw never guesses its own address from a request.
+
+```yaml
+api:
+  baseUrl: https://wsaw.example.com   # also the default for share links and Teams cards
+```
+
+The first page is portrait; from the Hosts table on, the report is printed
+landscape so the tables have room. Short values (party, counts, flags) never
+wrap, and sizes read as `2.2 MiB`. A value longer than 200 characters, such
+as a URL with a token in its query, is shortened in the middle on paper and
+says how long it is; the Markdown and JSON keep it whole. Rows that are
+identical in every stored field are listed once with a count, such as `×2`.
+
 The daemon prints the PDF with the Chrome it already runs, and adds no
 dependency. The report contains text the scanned page chose, so it is
 printed in a browser context of its own, with JavaScript disabled and every

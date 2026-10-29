@@ -35,6 +35,17 @@ type span struct {
 	// Untrusted text gets its pipes and newlines escaped in Markdown, where
 	// they would otherwise break the table or list it sits in.
 	Untrusted bool
+
+	// Exact text is never shortened in the PDF: a scan ID, a digest or a
+	// path the reader has to type back is useless cut (Story 5.39, AC12).
+	Exact bool
+
+	// PDFText, when set, is what the PDF shows instead of Text, e.g. a byte
+	// count in human units where the Markdown keeps the exact figure.
+	PDFText string
+
+	// Href makes the span a link in the PDF.
+	Href string
 }
 
 // item is a list entry, with an optional nested list.
@@ -56,17 +67,42 @@ type block struct {
 
 	Items []item
 
-	Head  []string
-	Right []bool // per column: right-aligned
-	Rows  [][][]span
+	Cols []column
+	Rows [][][]span
 
 	Src template.URL
 	Alt string
 }
 
+// column is one table column.
+type column struct {
+	Head string
+
+	// Right aligns the column to the right, for figures.
+	Right bool
+
+	// Wide columns hold long, free-form text and take the width the PDF has
+	// left; the others are sized to their content and never wrap, so a short
+	// word is never split into letters (Story 5.39, AC10).
+	Wide bool
+
+	// Lead puts this column, in the PDF, at the top of the cell of the column
+	// before it rather than in a cell of its own (AC11).
+	Lead bool
+}
+
+func narrow(head string) column { return column{Head: head} }
+func wide(head string) column   { return column{Head: head, Wide: true} }
+func figure(head string) column { return column{Head: head, Right: true} }
+
 // document is a report as blocks.
 type document struct {
 	Blocks []block
+
+	// Landscape is the index of the first block the PDF prints on landscape
+	// pages, through to the end; zero means none, as the title never is
+	// (Story 5.39, AC15).
+	Landscape int
 }
 
 func text(s string) span { return span{Text: s} }
@@ -113,9 +149,12 @@ func (d *document) codeList(values []string) {
 	d.list(items...)
 }
 
-func (d *document) table(head []string, right []bool, rows [][][]span) {
-	d.Blocks = append(d.Blocks, block{Kind: kindTable, Head: head, Right: right, Rows: rows})
+func (d *document) table(cols []column, rows [][][]span) {
+	d.Blocks = append(d.Blocks, block{Kind: kindTable, Cols: cols, Rows: rows})
 }
+
+// landscape starts the PDF's landscape pages at the next block.
+func (d *document) landscape() { d.Landscape = len(d.Blocks) }
 
 func spansText(spans []span) string {
 	var b strings.Builder
@@ -164,10 +203,15 @@ func (d *document) markdown() string {
 }
 
 func mdTable(b *strings.Builder, blk block) {
-	b.WriteString("| " + strings.Join(blk.Head, " | ") + " |\n|")
+	heads := make([]string, len(blk.Cols))
+	for i, c := range blk.Cols {
+		heads[i] = c.Head
+	}
 
-	for i := range blk.Head {
-		if i < len(blk.Right) && blk.Right[i] {
+	b.WriteString("| " + strings.Join(heads, " | ") + " |\n|")
+
+	for _, c := range blk.Cols {
+		if c.Right {
 			b.WriteString("---:|")
 		} else {
 			b.WriteString("---|")

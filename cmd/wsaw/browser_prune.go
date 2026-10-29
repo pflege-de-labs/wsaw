@@ -12,7 +12,7 @@ import (
 
 	"github.com/pflege-de-labs/wsaw/internal/app"
 	"github.com/pflege-de-labs/wsaw/internal/container"
-	"github.com/pflege-de-labs/wsaw/internal/httpapi"
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
 
@@ -215,12 +215,12 @@ func printBrowserImagePlan(w io.Writer, plan store.BrowserImageInventory) error 
 	return tw.Flush()
 }
 
-// humanBytes is httpapi.FormatBytes, with a negative size — one the runtime
+// humanBytes is report.FormatBytes, with a negative size — one the runtime
 // could not report — said as such rather than shown as a number.
 func humanBytes(n int64) string {
 	if n < 0 {
 		return "unknown"
 	}
 
-	return httpapi.FormatBytes(n)
+	return report.FormatBytes(n)
 }

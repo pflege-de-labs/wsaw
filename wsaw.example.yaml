@@ -607,6 +607,11 @@ api:
   # validation refuses to start without one.
   listen: 127.0.0.1:8712
   token: "${env:WSAW_API_TOKEN}"
+  # Where this wsaw's web interface is reachable from. A PDF report links its
+  # scan ID to the scan's page with it, and share links and Teams cards use it
+  # when they have no baseUrl of their own. It is never guessed from a
+  # request; without it the PDF has no link rather than an invented one.
+  # baseUrl: https://wsaw.example.com
   # HTTPS: a PEM certificate and key, set together. Both files are read again
   # when their contents change, so a renewed certificate is served without a
   # restart; SIGHUP loads them at once. A renewal that cannot be loaded leaves

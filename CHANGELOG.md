@@ -9,6 +9,28 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- `api.baseUrl` names where the web interface is reachable from (Story 5.39,
+  AC16). With it, the PDF report's scan ID links to the scan's page, and the
+  address is printed beside it. A PDF from a shared view links to the
+  signed-in page, never to a token-bearing share link. `api.share.baseUrl` and
+  a Teams notifier's `baseUrl` fall back to it when unset, so the address is
+  configured once. It is never taken from request headers.
+
+### Changed
+
+- The PDF report is readable (Story 5.39, AC10–AC15). Column headers and
+  short values no longer break into stacks of letters. The Changes table puts
+  each change's detail above its subject in one wide cell. A value longer than
+  200 characters, such as a login callback URL with a token in its query, is
+  shortened in the middle on paper and says how long it is. Byte counts read
+  as `2.2 MiB`, and from the Hosts table on the pages are landscape. The
+  Markdown and JSON are unchanged, apart from one thing that applies to both
+  reports: cookies and storage entries that are identical in every stored
+  field are listed once with a count (`×2`), and two that differ only in an
+  unshown field name their value digest.
+
 ## [0.8.1] - 2026-10-29
 
 A dependency release: newer Go modules and a refreshed Alpine base image. No

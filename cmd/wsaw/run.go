@@ -383,7 +383,7 @@ func buildDispatcher(a *app.App) (*notify.Dispatcher, error) {
 				Targets:     n.Targets,
 				Labels:      n.Labels,
 				Legacy:      n.TeamsFormat() == config.TeamsMessageCard,
-				BaseURL:     n.BaseURL,
+				BaseURL:     a.Config.API.NotifierBaseURL(n),
 				MaxChanges:  n.MaxChanges,
 				Confidence:  common.confidence,
 				Headers:     common.headers,
@@ -525,7 +525,7 @@ func buildShareSigner(a *app.App) (*share.Signer, error) {
 	a.Logger.Info("result sharing enabled",
 		"validity", sh.ShareValidity().String(),
 		"max_validity", sh.ShareMaxValidity().String(),
-		"base_url", sh.BaseURL)
+		"base_url", a.Config.API.ShareBaseURL())
 
 	return signer, nil
 }
@@ -579,7 +579,8 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		URLScanPerHour:      adHoc.Limit(),
 		URLScanPrivateHosts: adHoc.AllowPrivateHosts,
 		Share:               signer,
-		ShareBaseURL:        a.Config.API.Share.BaseURL,
+		ShareBaseURL:        a.Config.API.ShareBaseURL(),
+		BaseURL:             a.Config.API.BaseURL,
 		// Where the evidence is kept is a store setting, and so is whether a
 		// reader is sent to it directly (Story 8.7, AC3).
 		SignedArtifactURLs:   a.Config.Store.ArtifactSignedURLs,

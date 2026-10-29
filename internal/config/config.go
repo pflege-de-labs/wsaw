@@ -896,6 +896,12 @@ type API struct {
 	// WebUI serves the browser interface.
 	WebUI *bool `yaml:"webui,omitempty"`
 
+	// BaseURL is where this wsaw's web interface is reachable from. A PDF
+	// report links its scan ID to the scan's page with it, and share links
+	// and Teams cards fall back to it when their own is unset (Story 5.39,
+	// AC16). It is never taken from a request, whose headers a client sets.
+	BaseURL string `yaml:"baseUrl,omitempty"`
+
 	// Share configures the expiring links that let somebody read one result
 	// without this token (Story 5.19).
 	Share Share `yaml:"share,omitempty"`
@@ -938,6 +944,18 @@ func (a API) TLSEnabled() bool {
 // default.
 func (a API) TLSReloadEvery() time.Duration {
 	return a.TLSReloadInterval.Or(DefaultTLSReloadInterval)
+}
+
+// ShareBaseURL is the address share links are built on: api.share.baseUrl,
+// or api.baseUrl when that is unset.
+func (a API) ShareBaseURL() string {
+	return cmp.Or(a.Share.BaseURL, a.BaseURL)
+}
+
+// NotifierBaseURL is the address a Teams card links back to: the notifier's
+// own baseUrl, or api.baseUrl when that is unset.
+func (a API) NotifierBaseURL(n Notifier) string {
+	return cmp.Or(n.BaseURL, a.BaseURL)
 }
 
 // AdHocURLs configures scanning a URL that nobody put in the configuration

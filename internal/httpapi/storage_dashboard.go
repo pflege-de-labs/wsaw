@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pflege-de-labs/wsaw/internal/report"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
@@ -223,21 +224,21 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		ArtifactLocation: secret.RedactURL(s.deps.ArtifactLocation),
 	}
 
-	report, err := s.deps.StorageIndex.Storage(ctx)
+	usage, err := s.deps.StorageIndex.Storage(ctx)
 	if err != nil {
 		return storageData{}, fmt.Errorf("reading storage by series: %w", err)
 	}
 
-	series := report.Series
+	series := usage.Series
 
 	// The page ranks by what is on disk; the API 1.0 figures ride along.
 	sort.Slice(series, func(i, j int) bool { return series[i].StoredTotalBytes() > series[j].StoredTotalBytes() })
 
-	data.GrandTotalBytes = report.TotalBytes
-	data.StoredTotalBytes = report.StoredTotalBytes
-	data.StoredSharedBytes = report.StoredSharedBytes
-	data.StoredSharedPercent = sharePercent(report.StoredSharedBytes, report.StoredTotalBytes)
-	data.UnmeasuredObjects = report.Unmeasured
+	data.GrandTotalBytes = usage.TotalBytes
+	data.StoredTotalBytes = usage.StoredTotalBytes
+	data.StoredSharedBytes = usage.StoredSharedBytes
+	data.StoredSharedPercent = sharePercent(usage.StoredSharedBytes, usage.StoredTotalBytes)
+	data.UnmeasuredObjects = usage.Unmeasured
 
 	data.Rows = make([]storageRow, 0, len(series))
 
@@ -247,10 +248,10 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		data.Rows = append(data.Rows, storageRow{
 			Series: sd.Series, Count: sd.Count,
 			DocumentBytes: sd.DocumentBytes, ArtifactBytes: sd.ArtifactBytes,
-			SharePercent:        sharePercent(sd.TotalBytes(), report.TotalBytes),
+			SharePercent:        sharePercent(sd.TotalBytes(), usage.TotalBytes),
 			StoredDocumentBytes: sd.StoredDocumentBytes, StoredArtifactBytes: sd.StoredArtifactBytes,
 			StoredSharedBytes:  sd.StoredSharedBytes,
-			StoredSharePercent: sharePercent(sd.StoredTotalBytes(), report.StoredTotalBytes),
+			StoredSharePercent: sharePercent(sd.StoredTotalBytes(), usage.StoredTotalBytes),
 			UnmeasuredObjects:  sd.Unmeasured,
 			Oldest:             sd.Oldest, Newest: sd.Newest,
 		})
@@ -259,7 +260,7 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 		barRows = append(barRows, hBarRow{
 			Label: label,
 			Detail: fmt.Sprintf("%s: document %s, artifacts %s",
-				label, FormatBytes(sd.StoredDocumentBytes), FormatBytes(sd.StoredArtifactBytes)),
+				label, report.FormatBytes(sd.StoredDocumentBytes), report.FormatBytes(sd.StoredArtifactBytes)),
 			Segments: []hBarSegment{
 				{Bytes: sd.StoredDocumentBytes, Fill: "var(--accent)"},
 				{Bytes: sd.StoredArtifactBytes, Fill: "var(--ok-partial)"},
@@ -269,11 +270,11 @@ func (s *Server) computeStorageData(ctx context.Context) (storageData, error) {
 
 	// Drawn last, as the table's last row: it is not a series, and ranking it
 	// among them would read as one.
-	if report.StoredSharedBytes > 0 {
+	if usage.StoredSharedBytes > 0 {
 		barRows = append(barRows, hBarRow{
 			Label:    sharedRowLabel,
-			Detail:   fmt.Sprintf("%s: %s", sharedRowLabel, FormatBytes(report.StoredSharedBytes)),
-			Segments: []hBarSegment{{Bytes: report.StoredSharedBytes, Fill: "var(--muted)"}},
+			Detail:   fmt.Sprintf("%s: %s", sharedRowLabel, report.FormatBytes(usage.StoredSharedBytes)),
+			Segments: []hBarSegment{{Bytes: usage.StoredSharedBytes, Fill: "var(--muted)"}},
 		})
 	}
 
@@ -328,7 +329,7 @@ func (s *Server) growthChart(ctx context.Context) template.HTML {
 	}
 
 	return vBarChart("Stored bytes by month — what is still stored, each object in the month first stored",
-		labels, values, FormatBytes)
+		labels, values, report.FormatBytes)
 }
 
 // pruneRunsChartLimit is how many of the newest prune runs the chart shows.
@@ -377,7 +378,7 @@ func (s *Server) pruneChart(ctx context.Context) (bytesChart, resultsChart templ
 		resultsV[i] = int64(stats.ResultsDeleted)
 	}
 
-	bytesChart = vBarChart("Bytes freed by prune run, newest last", labels, bytesV, FormatBytes)
+	bytesChart = vBarChart("Bytes freed by prune run, newest last", labels, bytesV, report.FormatBytes)
 	resultsChart = vBarChart("Results deleted by prune run, newest last", labels, resultsV,
 		func(n int64) string { return fmt.Sprintf("%d", n) })
 
