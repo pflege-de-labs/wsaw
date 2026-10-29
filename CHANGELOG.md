@@ -9,6 +9,21 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-29
+
+A dependency release: newer Go modules and a refreshed Alpine base image. No
+wsaw behaviour changes.
+
+Upgrading: nothing to do by hand.
+
+### Changed
+
+- Go dependencies updated: `github.com/chromedp/cdproto` 0.158.5,
+  `gocloud.dev` 0.47.0, `modernc.org/sqlite` 1.61.0, and the cloud SDKs they
+  pull in for the `cloudblob` build.
+- The wsaw image and the browser image (`deploy/browser`) move to the latest
+  `alpine:3.24` digest. Chromium stays at 155.0.8059.84.
+
 ## [0.8.0] - 2026-10-29
 
 wsaw can now scan sites behind a login form, such as a password-protected
@@ -1157,7 +1172,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.1
 [0.8.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.0
 [0.7.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.2
 [0.7.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.1
