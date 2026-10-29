@@ -19,6 +19,27 @@ criteria, and any that are still open, are written down.
   hold fails the scan with "login was not accepted" instead of recording the
   password page. Results gain `environment.formLoginUrl`, an additive field.
 
+### Fixed
+
+- The systemd unit from `deploy/terraform` now lets rootless Podman run. It
+  hid `/run/user/10001` (`ProtectHome=yes`), kept it read-only
+  (`ProtectSystem=strict`), and refused the mount and `sethostname` calls
+  Podman makes, so a fresh install could not start a browser container. The
+  unit now uses `ProtectHome=tmpfs` with `/run/user/10001` bound in and
+  writable, allows `@mount` and `sethostname`, and sets `ProtectHostname=no`.
+  These are the settings existing instances carry as a hand-made drop-in
+  (`/etc/systemd/system/wsaw.service.d/hotfix-runtime-dir.conf`), which can
+  be removed once the instance runs the new unit.
+- `browser.container.refresh: build` no longer fails with `context must be a
+  directory` under the systemd unit from `deploy/terraform`. The daemon wrote
+  the build context to its `/tmp`, which `PrivateTmp=yes` makes private to the
+  service, and rootless Podman reads the context from its pause process's
+  view of the filesystem, where that directory does not exist. The context
+  now goes in wsaw's state directory, beside the SQLite database (or the
+  platform state directory with a server store), and is removed after the
+  build as before. `wsaw browser build` still uses the system temporary
+  directory (Story 6.13).
+
 ## [0.7.2] - 2026-10-20
 
 A security release: wsaw is now built with Go 1.27.3, which fixes

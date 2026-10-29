@@ -323,13 +323,20 @@ func (r *refresher) make(ctx context.Context, sched RefreshSchedule, at time.Tim
 	case config.RefreshBuild:
 		name := container.BuildRefreshTag(at)
 
-		_, err := r.rt.BuildImage(ctx, container.BuildOptions{
+		// The daemon's /tmp may be a PrivateTmp that rootless podman cannot see.
+		dir, err := stateDir(r.app.Config)
+		if err != nil {
+			return "", err
+		}
+
+		_, err = r.rt.BuildImage(ctx, container.BuildOptions{
 			Context:         deploybrowser.Context,
 			Base:            deploybrowser.BaseAlpine,
 			ChromiumVersion: deploybrowser.ChromiumVersion(deploybrowser.BaseAlpine),
 			Output:          &out,
 			Floor:           true,
 			Tag:             name,
+			TempDir:         dir,
 		})
 		if err != nil {
 			return "", out.wrap(err)
