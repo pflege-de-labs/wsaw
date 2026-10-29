@@ -11,6 +11,15 @@ criteria, and any that are still open, are written down.
 
 ### Fixed
 
+- The systemd unit from `deploy/terraform` now lets rootless Podman run. It
+  hid `/run/user/10001` (`ProtectHome=yes`), kept it read-only
+  (`ProtectSystem=strict`), and refused the mount and `sethostname` calls
+  Podman makes, so a fresh install could not start a browser container. The
+  unit now uses `ProtectHome=tmpfs` with `/run/user/10001` bound in and
+  writable, allows `@mount` and `sethostname`, and sets `ProtectHostname=no`.
+  These are the settings existing instances carry as a hand-made drop-in
+  (`/etc/systemd/system/wsaw.service.d/hotfix-runtime-dir.conf`), which can
+  be removed once the instance runs the new unit.
 - `browser.container.refresh: build` no longer fails with `context must be a
   directory` under the systemd unit from `deploy/terraform`. The daemon wrote
   the build context to its `/tmp`, which `PrivateTmp=yes` makes private to the
