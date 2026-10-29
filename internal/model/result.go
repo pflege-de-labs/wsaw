@@ -215,6 +215,9 @@ type Environment struct {
 	ExtraHeaders []string `json:"extraHeaderNames,omitempty"`
 	// BasicAuth reports whether basic auth was used, never the credentials.
 	BasicAuth bool `json:"basicAuth"`
+	// FormLoginURL is where a login form was posted before navigating, so a
+	// reader knows the page was seen logged in. Field values never appear.
+	FormLoginURL string `json:"formLoginUrl,omitempty"`
 	// Proxy is the proxy host, with any credentials stripped.
 	Proxy string `json:"proxy,omitempty"`
 

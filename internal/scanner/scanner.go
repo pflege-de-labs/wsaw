@@ -453,6 +453,7 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		ExtraHeaders:      target.ExtraHeaders,
 		BasicAuthUser:     target.BasicAuthUser,
 		BasicAuthPassword: target.BasicAuthPassword,
+		FormLogin:         target.FormLogin,
 		Proxy:             target.Proxy,
 	}
 }

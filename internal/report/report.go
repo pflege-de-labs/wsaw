@@ -475,6 +475,10 @@ func writeEnvironment(b *strings.Builder, res *model.Result) {
 		b.WriteString("- Basic authentication was used\n")
 	}
 
+	if e.FormLoginURL != "" {
+		fmt.Fprintf(b, "- Logged in through the form at `%s`\n", e.FormLoginURL)
+	}
+
 	if e.Proxy != "" {
 		fmt.Fprintf(b, "- Proxy: `%s`\n", e.Proxy)
 	}

@@ -395,6 +395,10 @@
         "basicAuth": {
           "type": "boolean"
         },
+        "formLoginUrl": {
+          "type": "string",
+          "description": "Where a login form was posted before navigating (target formLogin). Field values are credentials and are never serialized."
+        },
         "proxy": {
           "type": "string",
           "description": "Proxy host with credentials stripped."
