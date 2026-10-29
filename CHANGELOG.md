@@ -11,6 +11,13 @@ criteria, and any that are still open, are written down.
 
 ### Added
 
+- A target can sit behind a login form (Story 3.9). The new `formLogin`
+  setting holds the URL the form posts to and its fields, each of which may be
+  a secret reference. wsaw posts the form before every scan and gives the
+  browser the session cookie, scoped to that host, so it can watch a site such
+  as a Shopify staging shop with a storefront password. A login that does not
+  hold fails the scan with "login was not accepted" instead of recording the
+  password page. Results gain `environment.formLoginUrl`, an additive field.
 - Any scan can be downloaded as a PDF report, so evidence can be filed or
   sent to someone without wsaw access (Story 5.39). Use the **PDF** link on a
   scan's page or shared view, `GET /api/v1/results/{target}/{mode}/{scan}/pdf`

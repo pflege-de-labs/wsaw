@@ -51,6 +51,13 @@ type Config struct {
 	legacyRetention []string
 }
 
+// FormLogin is a form wsaw posts before navigating, such as a Shopify
+// storefront password page. Field values may be secret references.
+type FormLogin struct {
+	URL    string            `yaml:"url"`
+	Fields map[string]string `yaml:"fields"`
+}
+
 // Target is one URL to watch, or the set of defaults for all of them.
 type Target struct {
 	Name   string            `yaml:"name"`
@@ -111,6 +118,10 @@ type Target struct {
 
 	BasicAuthUser     string `yaml:"basicAuthUser,omitempty"`
 	BasicAuthPassword string `yaml:"basicAuthPassword,omitempty"`
+
+	// FormLogin is a login form posted before every scan, for a site behind
+	// a password page rather than HTTP authentication.
+	FormLogin *FormLogin `yaml:"formLogin,omitempty"`
 
 	Proxy string `yaml:"proxy,omitempty"`
 

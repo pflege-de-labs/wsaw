@@ -185,6 +185,30 @@ is on at all. Everything else needs a restart. A setting added to wsaw later is
 non-reloadable until someone deliberately says otherwise, so the failure mode
 for new configuration is a loud refusal rather than a silent no-op.
 
+### Sites behind a password page
+
+A site behind HTTP authentication takes `basicAuthUser` and
+`basicAuthPassword`. A site behind a login *form*, such as a Shopify
+storefront with a password set, takes `formLogin` instead:
+
+```yaml
+  - name: shop-staging
+    url: https://shop.staging.p4e.io/
+    formLogin:
+      url: https://shop.staging.p4e.io/password
+      fields:
+        form_type: storefront_password
+        password: "${file:/run/secrets/shop-staging-password}"
+```
+
+Before each scan, wsaw posts the form and gives the browser the cookies it
+set, scoped to the login URL's host so no third party receives them. The
+login page itself is not part of the result. If the browser still ends up on
+the login URL, the scan fails with "login was not accepted", so a wrong or
+changed password shows up as a failed scan rather than a clean scan of the
+password page. The result records `environment.formLoginUrl`, never the field
+values. `formLogin` is per target only and is refused in `defaults`.
+
 ## Consent handling
 
 wsaw prefers documented interfaces over guessing, and always records which mechanism it used so a reviewer can weigh the evidence:

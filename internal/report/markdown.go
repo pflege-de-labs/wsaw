@@ -533,6 +533,10 @@ func buildEnvironment(d *document, res *model.Result) {
 		items = append(items, item{Spans: []span{text("Basic authentication was used")}})
 	}
 
+	if e.FormLoginURL != "" {
+		items = append(items, item{Spans: []span{text("Logged in through the form at "), code(e.FormLoginURL)}})
+	}
+
 	if e.Proxy != "" {
 		items = append(items, item{Spans: []span{text("Proxy: "), code(e.Proxy)}})
 	}
