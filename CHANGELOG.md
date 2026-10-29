@@ -9,6 +9,19 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-29
+
+The PDF report becomes readable: column headers and short values no longer
+break into letters, the data tables print landscape, and a long URL no longer
+fills half a page. With the new `api.baseUrl`, the scan ID on its first page
+links back to the scan in the web interface. A go-jose security fix is pulled
+in through the cloud storage dependencies.
+
+Upgrading: nothing is required. Set `api.baseUrl` to the address readers use
+for the web interface if PDF reports should link back to it; until then they
+carry no link. An instance that already sets `api.share.baseUrl` keeps it, but
+note that the PDF reads only `api.baseUrl`.
+
 ### Added
 
 - `api.baseUrl` names where the web interface is reachable from (Story 5.39,
@@ -30,6 +43,13 @@ criteria, and any that are still open, are written down.
   reports: cookies and storage entries that are identical in every stored
   field are listed once with a count (`×2`), and two that differ only in an
   unshown field name their value digest.
+
+### Security
+
+- `github.com/go-jose/go-jose/v4` 4.1.6 fixes GHSA-mgcc-cww5-fp2q by capping
+  the RSA key size it accepts when parsing a JWK at 4096 bits. wsaw does not
+  call go-jose itself; it arrives through the Google Cloud Storage driver of
+  the `cloudblob` build.
 
 ## [0.8.1] - 2026-10-29
 
@@ -1194,7 +1214,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.2
 [0.8.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.1
 [0.8.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.0
 [0.7.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.7.2
