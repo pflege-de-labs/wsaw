@@ -9,6 +9,16 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Fixed
+
+- A notification now compares a scan with the same scan its page does: the
+  approved baseline, or the previous scan while none is approved. Before, the
+  notification followed `detection.baseline` (by default the previous scan)
+  while the page used the approved baseline. The two could then list different
+  changes and different severities, for example a notification saying CRITICAL
+  for hosts that the linked page did not list as new. `detection.baseline` is
+  still accepted but no longer has any effect.
+
 ## [0.8.2] - 2026-10-29
 
 The PDF report becomes readable: column headers and short values no longer

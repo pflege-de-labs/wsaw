@@ -559,9 +559,9 @@ normalize:
   useDefaultVolatileBodies: true
 
 detection:
-  # "previous" compares each scan with the one before it; "approved" compares
-  # against a baseline someone signed off on.
-  baseline: previous
+  # Each scan is compared with the series' approved baseline, or with the scan
+  # before it while none is approved. `baseline` is still accepted but no
+  # longer changes that.
   # Collapse a change and its reverse inside this window, so a rotating CDN
   # host does not alert every scan.
   flapWindow: 6h
