@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/capture"
@@ -118,6 +119,29 @@ func (c *Config) ResolveTargets(reg *secret.Registry) ([]Resolved, error) {
 	}
 
 	return out, nil
+}
+
+// DiffOptions returns the settings a scan of the named target is compared
+// with: its own allow and deny lists and severity rules over the defaults, and
+// the configured degraded-scan ratio. A name outside the target list is an
+// ad-hoc scan, which inherits the defaults alone. Every reader of a comparison
+// — the notification, the web interface, the MCP server — takes it from here,
+// so the same pair of scans is ranked the same way everywhere. It reads no
+// secret, so it needs no resolved targets.
+func (c *Config) DiffOptions(name string) diff.Options {
+	t := &Target{Name: name}
+	if i := slices.IndexFunc(c.Targets, func(t Target) bool { return t.Name == name }); i >= 0 {
+		t = &c.Targets[i]
+	}
+
+	r := c.resolveTargetFields(t)
+
+	return diff.Options{
+		Allow:                r.Allow,
+		Deny:                 r.Deny,
+		Severity:             r.Severity,
+		DegradedFailureRatio: c.Detection.DegradedFailureRatio,
+	}
 }
 
 // ResolveAdHocTarget resolves a target that is not in the configuration file:

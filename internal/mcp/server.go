@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
 )
 
@@ -83,11 +84,15 @@ type Server struct {
 
 // New creates a server that answers from st. n keys assets for comparison
 // under the configured normalization rules, as a scan does; nil compares the
-// keys stored at capture. version is wsaw's own build version, reported to
-// the client as the server's.
-func New(st Store, n *normalize.Normalizer, version string, log *slog.Logger) *Server {
+// keys stored at capture. opts returns a target's own comparison settings
+// (config.Config.DiffOptions), so a diff ranks changes as the scan's
+// notification did; nil compares with the defaults. version is wsaw's own
+// build version, reported to the client as the server's.
+func New(
+	st Store, n *normalize.Normalizer, opts func(target string) diff.Options, version string, log *slog.Logger,
+) *Server {
 	s := &Server{version: version, log: log}
-	s.tools = newTools(st, n)
+	s.tools = newTools(st, n, opts)
 	s.byName = make(map[string]tool, len(s.tools))
 
 	for _, t := range s.tools {

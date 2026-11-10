@@ -18,6 +18,13 @@ criteria, and any that are still open, are written down.
   changes and different severities, for example a notification saying CRITICAL
   for hosts that the linked page did not list as new. `detection.baseline` is
   still accepted but no longer has any effect.
+- A scan's page, the dashboard, the PDF report, `GET /api/v1/diff` and the MCP
+  `diff_scans` tool now rank changes with the target's own `allowHosts`,
+  `denyHosts` and `severity` settings and the configured
+  `degradedFailureRatio`, as the notification always did. Before, they used only
+  the built-in defaults, so a target with its own severity rules or a denied
+  host could show one severity on the page and another in the notification. `diff_scans` answers `"rules": "target"` instead
+  of `"default"`.
 
 ## [0.8.2] - 2026-10-29
 

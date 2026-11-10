@@ -25,6 +25,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/consent"
 	"github.com/pflege-de-labs/wsaw/internal/daemon"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/normalize"
@@ -179,7 +180,12 @@ type Deps struct {
 	// Normalizer keys assets for the comparisons the interface shows, under
 	// the same rules a scan's own diff used. Nil compares stored keys.
 	Normalizer *normalize.Normalizer
-	Logger     *slog.Logger
+	// DiffOptions returns the target's own comparison settings — allow and
+	// deny lists, severity rules, degraded-scan ratio — so a scan's page ranks
+	// its changes as the notification for that scan did. Nil compares with
+	// the defaults. Normalizer is set by the server, not by this.
+	DiffOptions func(target string) diff.Options
+	Logger      *slog.Logger
 
 	// Printer renders PDF reports (Story 5.39). Nil, and the PDF endpoints
 	// answer that they are unavailable.
