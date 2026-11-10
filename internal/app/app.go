@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -142,6 +143,13 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (*App, error) {
 		"requested", cmp.Or(cfg.Logging.Format, "auto"),
 		"level", cmp.Or(cfg.Logging.Level, "info"),
 	)
+	// Warn, because a deprecated setting still loads but does nothing, and
+	// an operator who set it believes it works.
+	deprecated := cfg.DeprecatedKeys()
+	for _, key := range slices.Sorted(maps.Keys(deprecated)) {
+		logger.Warn("deprecated setting is ignored", "setting", key, "advice", deprecated[key])
+	}
+
 	a.Metrics = metrics.New(opts.Version)
 
 	targets, err := cfg.ResolveTargets(a.Secrets)

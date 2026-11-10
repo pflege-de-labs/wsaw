@@ -30,3 +30,19 @@ func TestDiffOptionsAreTheTargetsOwn(t *testing.T) {
 		}
 	}
 }
+
+// detection.baseline is ignored, so setting it is reported; leaving it unset,
+// as the defaults now do, is not.
+func TestDetectionBaselineIsDeprecated(t *testing.T) {
+	t.Parallel()
+
+	c := New()
+	if got := c.DeprecatedKeys(); len(got) != 0 {
+		t.Errorf("defaults report deprecated settings: %v", got)
+	}
+
+	c.Detection.Baseline = BaselinePrevious
+	if _, ok := c.DeprecatedKeys()["detection.baseline"]; !ok {
+		t.Errorf("detection.baseline set but not reported: %v", c.DeprecatedKeys())
+	}
+}

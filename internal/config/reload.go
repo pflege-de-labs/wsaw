@@ -34,6 +34,10 @@ var reloadableKeys = map[string]struct{}{
 	"detection.allowHosts": {},
 	"detection.denyHosts":  {},
 
+	// Deprecated and read by nothing, so removing it — what the startup
+	// warning asks for — must not be refused.
+	"detection.baseline": {},
+
 	// Schedule shape is resolved per target too.
 	"scheduler.interval":    {},
 	"scheduler.cron":        {},
