@@ -832,6 +832,8 @@ type Detection struct {
 	// longer decides anything: every scan, its notification and its page are
 	// compared against the approved baseline, else the previous scan
 	// (store.ComparisonFor).
+	//
+	// Deprecated: setting it only logs a warning (see DeprecatedKeys).
 	Baseline BaselineMode `yaml:"baseline,omitempty"`
 	// FlapWindow collapses a change and its reverse inside this window.
 	FlapWindow Duration `yaml:"flapWindow,omitempty"`
@@ -848,6 +850,20 @@ type Detection struct {
 	DenyHosts  []string `yaml:"denyHosts,omitempty"`
 
 	Severity diff.SeverityRules `yaml:"severity,omitempty"`
+}
+
+// DeprecatedKeys names the settings this configuration sets that wsaw still
+// accepts but no longer acts on, each with what to do about it, so an
+// operator is told rather than left believing the setting works.
+func (c *Config) DeprecatedKeys() map[string]string {
+	keys := map[string]string{}
+
+	if c.Detection.Baseline != "" {
+		keys["detection.baseline"] = "scans are always compared with the approved baseline, " +
+			"or the previous scan while none is approved; remove the setting"
+	}
+
+	return keys
 }
 
 // BaselineMode selects the comparison target.
@@ -1351,7 +1367,6 @@ func New() *Config {
 			ShutdownGrace: Duration(30 * time.Second),
 		},
 		Detection: Detection{
-			Baseline:   BaselinePrevious,
 			FlapWindow: Duration(6 * time.Hour),
 		},
 		API: API{

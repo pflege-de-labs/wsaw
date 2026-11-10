@@ -46,6 +46,7 @@ func TestTargetAndDefaultChangesAreReloadable(t *testing.T) {
 		},
 		"detection allowHosts": func(c *Config) { c.Detection.AllowHosts = []string{"fonts.gstatic.com"} },
 		"detection denyHosts":  func(c *Config) { c.Detection.DenyHosts = []string{"doubleclick.net"} },
+		"detection baseline":   func(c *Config) { c.Detection.Baseline = BaselineApproved },
 		"scheduler interval":   func(c *Config) { c.Scheduler.Interval = Duration(2 * time.Hour) },
 		"scheduler jitter":     func(c *Config) { c.Scheduler.Jitter = Duration(time.Minute) },
 		"scheduler minInterval": func(c *Config) {
@@ -102,7 +103,6 @@ func TestStartupOnlySettingsAreRefusedByName(t *testing.T) {
 		"detection.degradedFailureRatio": func(c *Config) {
 			c.Detection.DegradedFailureRatio = 0.02
 		},
-		"detection.baseline":   func(c *Config) { c.Detection.Baseline = BaselineApproved },
 		"detection.flapWindow": func(c *Config) { c.Detection.FlapWindow = Duration(time.Hour) },
 		"detection.hashResourceTypes": func(c *Config) {
 			c.Detection.HashResourceTypes = []string{"script", "stylesheet"}

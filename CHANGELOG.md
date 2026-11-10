@@ -16,8 +16,7 @@ criteria, and any that are still open, are written down.
   notification followed `detection.baseline` (by default the previous scan)
   while the page used the approved baseline. The two could then list different
   changes and different severities, for example a notification saying CRITICAL
-  for hosts that the linked page did not list as new. `detection.baseline` is
-  still accepted but no longer has any effect.
+  for hosts that the linked page did not list as new.
 - A scan's page, the dashboard, the PDF report, `GET /api/v1/diff` and the MCP
   `diff_scans` tool now rank changes with the target's own `allowHosts`,
   `denyHosts` and `severity` settings and the configured
@@ -25,6 +24,14 @@ criteria, and any that are still open, are written down.
   the built-in defaults, so a target with its own severity rules or a denied
   host could show one severity on the page and another in the notification. `diff_scans` answers `"rules": "target"` instead
   of `"default"`.
+
+### Deprecated
+
+- `detection.baseline` does nothing any more, because every comparison now
+  uses the approved baseline, or the previous scan while none is approved. The
+  setting is still accepted so existing configurations load, but wsaw logs a
+  warning at startup while it is set. Remove it; a reload accepts the removal
+  without a restart.
 
 ## [0.8.2] - 2026-10-29
 

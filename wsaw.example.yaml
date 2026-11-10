@@ -560,8 +560,8 @@ normalize:
 
 detection:
   # Each scan is compared with the series' approved baseline, or with the scan
-  # before it while none is approved. `baseline` is still accepted but no
-  # longer changes that.
+  # before it while none is approved. `baseline` is deprecated: it is still
+  # accepted, does nothing, and logs a warning at startup.
   # Collapse a change and its reverse inside this window, so a rotating CDN
   # host does not alert every scan.
   flapWindow: 6h
