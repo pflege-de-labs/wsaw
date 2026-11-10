@@ -3,16 +3,16 @@ module github.com/pflege-de-labs/wsaw
 go 1.26.0
 
 require (
-	github.com/chromedp/cdproto v0.158.5
+	github.com/chromedp/cdproto v0.159.2
 	github.com/chromedp/chromedp v0.20.1
 	github.com/chromedp/chromedp/remote v0.2.0
 	github.com/go-sql-driver/mysql v1.10.1
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/robfig/cron/v3 v3.0.1
 	gocloud.dev v0.47.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -73,7 +73,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.24.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -105,7 +105,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260904194346-d0f1323225a4 // indirect
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
