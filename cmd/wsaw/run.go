@@ -597,6 +597,7 @@ func buildServer(a *app.App, d *daemon.Daemon, targets func() []config.Resolved)
 		URLScanner:       a,
 		Rules:            a.Rules,
 		Normalizer:       normalizer,
+		DiffOptions:      a.DiffOptions,
 		Logger:           a.Logger,
 		Targets:          targets,
 		Retention:        a.Retention,

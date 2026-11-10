@@ -87,7 +87,7 @@ func serveMCP(ctx context.Context, args []string, in io.Reader, out, errOut io.W
 		return fmt.Errorf("compiling normalization rules: %w", err)
 	}
 
-	return mcp.New(st, normalizer, version, logger).Serve(ctx, in, out)
+	return mcp.New(st, normalizer, cfg.DiffOptions, version, logger).Serve(ctx, in, out)
 }
 
 // requireExistingStore refuses a local store that is not there. Opening one

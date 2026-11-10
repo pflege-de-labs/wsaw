@@ -178,13 +178,13 @@ func seriesSchema(extra map[string]property) inputSchema {
 	return objectSchema([]string{argTarget, argMode}, props)
 }
 
-func newTools(st Store, n *normalize.Normalizer) []tool {
+func newTools(st Store, n *normalize.Normalizer, opts func(string) diff.Options) []tool {
 	return []tool{
 		listSeriesTool(st),
 		listScansTool(st),
 		getScanTool(st),
 		listRequestsTool(st),
-		diffScansTool(st, n),
+		diffScansTool(st, n, opts),
 		getArtifactTool(st),
 	}
 }
@@ -571,14 +571,14 @@ func pageRequests(res *model.Result, f requestFilter, offset, limit int) request
 
 // --- diff_scans ---
 
-func diffScansTool(st Store, n *normalize.Normalizer) tool {
+func diffScansTool(st Store, n *normalize.Normalizer, opts func(string) diff.Options) tool {
 	return tool{
 		def: toolDef{
 			Name:  "diff_scans",
 			Title: "Compare two scans",
 			Description: "Compare one scan against the approved baseline, the previous scan, or another scan of the " +
 				"same target and consent mode, and list what changed with a severity per change: new or removed " +
-				"hosts, assets, script content and cookies. Uses wsaw's default severity rules, as the web interface does. " +
+				"hosts, assets, script content and cookies. Uses the target's own severity rules and allow and deny lists, as the scan's notification and the web interface do. " +
 				`With "against" omitted, compares against the baseline if there is one and the previous scan otherwise, ` +
 				`and the baseline itself against the scan before it.`,
 			InputSchema: seriesSchema(map[string]property{
@@ -611,11 +611,18 @@ func diffScansTool(st Store, n *normalize.Normalizer) tool {
 				return nil, err
 			}
 
+			var o diff.Options
+			if opts != nil {
+				o = opts(cur.Target)
+			}
+
+			o.Normalizer = n
+
 			return jsonResult(map[string]any{
 				"against":   basis,
-				"rules":     "default",
+				"rules":     "target",
 				"untrusted": untrustedNote,
-				"report":    c.Report(cur, diff.Options{Normalizer: n}),
+				"report":    c.Report(cur, o),
 			})
 		},
 	}

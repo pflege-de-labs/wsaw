@@ -420,7 +420,7 @@ func (s *Server) lastScanSeverity(
 		baseRes, base = prev, BasePrevious
 	}
 
-	rep := diff.Compare(baseRes, res, diff.Options{Normalizer: s.deps.Normalizer})
+	rep := diff.Compare(baseRes, res, s.diffOptions(target))
 
 	var cmp *ComparisonView
 
@@ -651,6 +651,20 @@ type comparison struct {
 	OwnBaseline bool
 }
 
+// diffOptions is how a scan of target is compared: with its own settings, as
+// the scanner compared it for the notification, under the interface's
+// normalizer.
+func (s *Server) diffOptions(target string) diff.Options {
+	var o diff.Options
+	if s.deps.DiffOptions != nil {
+		o = s.deps.DiffOptions(target)
+	}
+
+	o.Normalizer = s.deps.Normalizer
+
+	return o
+}
+
 // comparisonFor compares a result against what store.ComparisonFor picks.
 //
 // A previous result whose document has left the bucket is not shrugged off:
@@ -670,7 +684,7 @@ func (s *Server) comparisonFor(res *model.Result) comparison {
 	}
 
 	return comparison{
-		Report:      c.Report(res, diff.Options{Normalizer: s.deps.Normalizer}),
+		Report:      c.Report(res, s.diffOptions(res.Target)),
 		Baseline:    c.Baseline,
 		OwnBaseline: c.OwnBaseline,
 	}

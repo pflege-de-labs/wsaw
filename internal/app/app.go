@@ -25,6 +25,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/config"
 	"github.com/pflege-de-labs/wsaw/internal/consent"
 	"github.com/pflege-de-labs/wsaw/internal/container"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/logging"
 	"github.com/pflege-de-labs/wsaw/internal/metrics"
 	"github.com/pflege-de-labs/wsaw/internal/model"
@@ -903,6 +904,18 @@ func (a *App) Normalizer() (*normalize.Normalizer, error) {
 	rules := a.Config.NormalizeRules()
 
 	return normalize.New(rules)
+}
+
+// DiffOptions returns the settings a scan of target is compared with — the
+// same ones the scanner passes for its notification — so the web interface
+// ranks a scan's changes as the notification did. A name outside the target
+// list is an ad-hoc scan, which inherits the configured defaults.
+func (a *App) DiffOptions(target string) diff.Options {
+	a.reloadMu.RLock()
+	cfg := cmp.Or(a.resolvedFrom, a.Config)
+	a.reloadMu.RUnlock()
+
+	return cfg.DiffOptions(target)
 }
 
 // Targets returns the resolved targets, as of the last accepted reload.
