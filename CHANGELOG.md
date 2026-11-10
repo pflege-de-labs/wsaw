@@ -9,6 +9,22 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-10
+
+A notification and the scan page it links to now always agree. Before, a
+notification could say CRITICAL while its page said high, because the two
+compared the scan with different earlier scans and ranked changes with
+different settings. Now every place that compares scans (notifications, the
+scan page, the PDF report, the dashboard, the diff API and the MCP server)
+uses the approved baseline, or the previous scan while none is approved, and
+each target's own severity rules and allow and deny lists.
+
+Upgrading: if your configuration sets `detection.baseline`, wsaw logs a warning
+at startup. Remove the setting; a reload accepts that without a restart. If you
+use `baseline: previous` and have approved baselines, notifications are now
+measured against the baseline, as the scan pages already were, so the first
+notifications after upgrading may report different changes than before.
+
 ### Fixed
 
 - A notification now compares a scan with the same scan its page does: the
@@ -1238,7 +1254,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.9.0
 [0.8.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.2
 [0.8.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.1
 [0.8.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.0
