@@ -9,6 +9,12 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Fixed
+
+- The wetter.com consent-wall test now serves its fixture over HTTPS. Chrome
+  157 upgrades plain-HTTP navigations to public hostnames and blocks them when
+  the upgrade fails, which failed the test on macOS. No change to scanning.
+
 ## [0.9.0] - 2026-11-10
 
 A notification and the scan page it links to now always agree. Before, a

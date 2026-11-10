@@ -17,7 +17,9 @@ import (
 // as served on 2026-10-08: the TCF API answers getTCData synchronously with
 // eventStatus "cmpuishown" and no TC string until "Akzeptieren und weiter" is
 // clicked, which stores the choice and reloads the page. The wall offers no
-// reject. The site's hosts are mapped to a local server.
+// reject. The site's hosts are mapped to a local server, over TLS because
+// Chrome 157 upgrades plain-HTTP navigations to public hostnames and blocks
+// them when the upgrade fails.
 
 const (
 	wetterSiteHost  = "www.wetter.com"
@@ -44,7 +46,7 @@ func wetterFixtureHTML() string {
   };
   if (stored) {
     var s = document.createElement('script');
-    s.src = 'http://%s/tag.js';
+    s.src = 'https://%s/tag.js';
     document.head.appendChild(s);
   }
 })();
@@ -87,7 +89,7 @@ func TestWetterComContentpassWall(t *testing.T) {
 		{model.ConsentReject, model.OutcomeFailed, false},
 	} {
 		t.Run(string(tc.mode), func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/favicon.ico":
 					w.Header().Set("Content-Type", "image/x-icon")
@@ -102,9 +104,10 @@ func TestWetterComContentpassWall(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			addr := strings.TrimPrefix(srv.URL, "http://")
+			addr := strings.TrimPrefix(srv.URL, "https://")
 
-			s, closePool := newScannerFor(t, info, fmt.Sprintf("MAP %s %s, MAP %s %s", wetterSiteHost, addr, wetterThirdHost, addr))
+			resolver := fmt.Sprintf("MAP %s %s, MAP %s %s", wetterSiteHost, addr, wetterThirdHost, addr)
+			s, closePool := newScannerForArgs(t, info, "host-resolver-rules="+resolver, "ignore-certificate-errors")
 			defer closePool()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -112,7 +115,7 @@ func TestWetterComContentpassWall(t *testing.T) {
 
 			target := config.Resolved{
 				Name:         "wetter-fixture",
-				URL:          "http://" + wetterSiteHost + "/",
+				URL:          "https://" + wetterSiteHost + "/",
 				ConsentModes: []model.ConsentMode{tc.mode},
 				IdleQuiet:    1500 * time.Millisecond,
 				HardTimeout:  40 * time.Second,
