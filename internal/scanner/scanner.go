@@ -80,9 +80,6 @@ type Deps struct {
 type Options struct {
 	Normalizer *normalize.Normalizer
 
-	// Baseline selects what a result is compared against.
-	Baseline config.BaselineMode
-
 	// HashResourceTypes selects which bodies are fingerprinted.
 	HashResourceTypes []string
 
@@ -566,57 +563,36 @@ func (s *Scanner) history(res *model.Result, log *slog.Logger) confidence.Histor
 	return confidence.History{Durations: durations}
 }
 
-// compare diffs the result against its baseline. A comparison failure is not
-// fatal: the result is already stored and remains useful on its own.
+// compare diffs the result against what store.ComparisonFor picks — the
+// approved baseline, else the previous scan — which is what the scan's own page
+// compares it against, so a notification never reports changes or severities
+// the page it links to does not show. A comparison failure is not fatal: the
+// result is already stored and remains useful on its own.
 func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.Logger) *diff.Report {
 	if s.deps.Store == nil {
 		return nil
 	}
 
-	baseline, err := s.baselineFor(target, res)
-
-	// Evidence that has gone missing is called by its name. Without this the
-	// report would be the one a first-ever scan produces — not comparable,
-	// nothing changed, "no baseline to compare against" — and a tracker added
-	// between the two scans would go unreported with nothing in the record
-	// saying why (Story 8.2, AC5; Tenet 5).
-	gone := errors.Is(err, store.ErrEvidenceGone)
-
-	switch {
-	case gone:
-		log.Error("the result this scan should be compared against names evidence the artifact bucket no longer holds",
-			"error", err)
-
-	case err != nil && !errors.Is(err, store.ErrNotFound):
-		log.Warn("reading baseline failed", "error", err)
+	c, err := store.ComparisonFor(s.deps.Store, res)
+	if err != nil {
+		log.Warn("reading what the scan is compared against failed", "error", err)
 	}
 
-	rep := diff.Compare(baseline, res, diff.Options{
+	// Evidence that has gone missing is called by its name, which
+	// Comparison.Report does. Without it the report would be the one a
+	// first-ever scan produces and a tracker added between the two scans
+	// would go unreported with nothing saying why (Story 8.2, AC5; Tenet 5).
+	if c.EvidenceGone {
+		log.Error("the result this scan should be compared against names evidence the artifact bucket no longer holds")
+	}
+
+	return c.Report(res, diff.Options{
 		Allow:                target.Allow,
 		Deny:                 target.Deny,
 		Severity:             target.Severity,
 		DegradedFailureRatio: s.opts.DegradedFailureRatio,
 		Normalizer:           s.opts.Normalizer,
 	})
-
-	if gone && rep != nil {
-		rep.Reason = diff.ReasonEvidenceGone
-	}
-
-	return rep
-}
-
-func (s *Scanner) baselineFor(target config.Resolved, res *model.Result) (*model.Result, error) {
-	if s.opts.Baseline == config.BaselineApproved {
-		b, err := s.deps.Store.GetBaseline(target.Name, res.ConsentMode)
-		if err != nil {
-			return nil, err
-		}
-
-		return b.Result, nil
-	}
-
-	return s.deps.Store.PreviousResult(target.Name, res.ConsentMode, res.ScanID)
 }
 
 func (s *Scanner) recordFailure(target string, mode model.ConsentMode, reason string) {

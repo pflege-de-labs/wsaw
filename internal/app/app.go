@@ -857,7 +857,6 @@ func (a *App) buildScanner() error {
 		},
 	}, scanner.Options{
 		Normalizer:            normalizer,
-		Baseline:              a.Config.Detection.Baseline,
 		HashResourceTypes:     a.Config.Detection.HashResourceTypes,
 		DegradedFailureRatio:  a.Config.Detection.DegradedFailureRatio,
 		ConsentStepTimeout:    a.Config.Consent.StepTimeout.Or(consent.DefaultStepTimeout),

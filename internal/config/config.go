@@ -828,7 +828,10 @@ type Replacement struct {
 
 // Detection configures change detection.
 type Detection struct {
-	// Baseline selects what a scan is compared against.
+	// Baseline is still accepted so existing configurations load, but no
+	// longer decides anything: every scan, its notification and its page are
+	// compared against the approved baseline, else the previous scan
+	// (store.ComparisonFor).
 	Baseline BaselineMode `yaml:"baseline,omitempty"`
 	// FlapWindow collapses a change and its reverse inside this window.
 	FlapWindow Duration `yaml:"flapWindow,omitempty"`
