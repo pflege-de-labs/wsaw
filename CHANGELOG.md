@@ -17,6 +17,11 @@ criteria, and any that are still open, are written down.
 
 ### Fixed
 
+- A 204 No Content response is reported as `no body: status 204` again
+  under Chrome 157 and later, where scans that store bodies recorded it as a
+  stored empty body instead. wsaw no longer asks Chrome for the body of a
+  204, so the result is the same whichever Chrome version ran the scan
+  (Story 1.11).
 - The wetter.com consent-wall test now serves its fixture over HTTPS. Chrome
   157 upgrades plain-HTTP navigations to public hostnames and blocks them when
   the upgrade fails, which failed the test on macOS. No change to scanning.

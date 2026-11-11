@@ -66,6 +66,22 @@ func TestStoreAllQueuesEveryBodyButHashesOnlyScripts(t *testing.T) {
 	}
 }
 
+// A 204 is never read: Chrome 157 hands back an empty body where older
+// versions failed the read, and what a scan records must not depend on which
+// one ran it. A 304 still is, since Chrome answers it from its cache.
+func TestA204IsNotRead(t *testing.T) {
+	t.Parallel()
+
+	r := storingRecorder(t, bodyStorage{mode: model.BodyStoreAll}, nil)
+
+	finished(r, "204", "https://example.com/204", network.ResourceTypeFetch, 204)
+	finished(r, "304", "https://example.com/a.js", network.ResourceTypeScript, 304)
+
+	if got := queued(r); len(got) != 1 || got[0] != "304" {
+		t.Fatalf("queued %v, want only the 304", got)
+	}
+}
+
 // store: hashed keeps exactly what storeBodies always kept.
 func TestStoreHashedStoresOnlyFingerprintedTypes(t *testing.T) {
 	t.Parallel()

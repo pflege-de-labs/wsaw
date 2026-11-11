@@ -463,7 +463,9 @@ func (r *recorder) loadingFinished(ev *network.EventLoadingFinished) {
 		r.exceeded = capBytes
 	}
 
-	wantBody := rec.wantBody
+	// A 204 has no body by definition; finishBodies records that. Reading it
+	// anyway stores an empty body on Chrome 157 and fails on older versions.
+	wantBody := rec.wantBody && rec.req.Status != 204
 
 	if !rec.req.Beacon {
 		r.inflightDoneLocked()
