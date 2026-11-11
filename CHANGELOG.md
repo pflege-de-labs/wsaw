@@ -9,6 +9,12 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Security
+
+- wsaw is now built with Go 1.27.4, which fixes GO-2026-6859: a race in the
+  standard library's HTTP/1 server that can crash it. wsaw's dashboard, API
+  and metrics endpoints use that server.
+
 ### Fixed
 
 - The wetter.com consent-wall test now serves its fixture over HTTPS. Chrome
