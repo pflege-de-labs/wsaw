@@ -9,6 +9,23 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-11
+
+A security and compatibility release. wsaw is built with Go 1.27.4, which
+fixes a crash in the HTTP server behind the dashboard, API and metrics. The
+container images ship Chromium 156. A 204 response is recorded the same way
+under Chrome 157 as under earlier versions.
+
+Upgrading: nothing is required. Instances that scan with Chrome 157 and store
+bodies may see 204 responses change from a stored empty body back to
+`no body: status 204` in their first scan after upgrading.
+
+### Changed
+
+- The container images ship Chromium 156.0.8078.79: `r0` on Alpine and `-1`
+  on Debian. Alpine had withdrawn the Chromium 155 package the images were
+  pinned to, so images could no longer be built.
+
 ### Security
 
 - wsaw is now built with Go 1.27.4, which fixes GO-2026-6859: a race in the
@@ -1271,7 +1288,8 @@ store, and the receipts already recorded survive the rename. There is nothing
 to do by hand. No MySQL store could have got that far, since the migration that
 added the column never applied there.
 
-[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/pflege-de-labs/wsaw/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.9.1
 [0.9.0]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.9.0
 [0.8.2]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.2
 [0.8.1]: https://github.com/pflege-de-labs/wsaw/releases/tag/v0.8.1
