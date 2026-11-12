@@ -68,7 +68,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -tags
 # change as whatever else that release needs. .github/workflows/chromium.yaml
 # checks the branch daily and opens that pull request before the build breaks.
 # Dependabot moves both digests.
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 ARG CHROMIUM_VERSION=156.0.8078.79-r0
 
