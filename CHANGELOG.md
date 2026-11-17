@@ -9,6 +9,17 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Fixed
+
+- A scan that ends before the consent step runs — most often because the page
+  did not finish loading within `navTimeout` — now records `consent.outcome:
+  failed` with a reason, instead of `not-needed` with no reason. The old value
+  said the site never asked for consent when the banner could have been on
+  screen the whole time, and the CMP rule had simply never been tried. Scans
+  in consent mode `none` still record `not-needed`. Expect such scans to show
+  up as consent failures, and their diffs as a consent outcome change, where
+  they previously looked clean.
+
 ## [0.9.1] - 2026-11-11
 
 A security and compatibility release. wsaw is built with Go 1.27.4, which

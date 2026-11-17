@@ -86,7 +86,7 @@ func Run(ctx context.Context, scanCtx context.Context, rawOpts Options, afterLoa
 		ConsentMode:   opts.ConsentMode,
 		StartedAt:     start,
 		Environment:   opts.environment(),
-		Consent:       model.Consent{Outcome: model.OutcomeNotNeeded},
+		Consent:       consentNotAttempted(opts.ConsentMode),
 		Requests:      []model.Request{},
 	}
 
@@ -253,6 +253,25 @@ func (s *session) dismissDialog(ev *page.EventJavascriptDialogOpening) {
 	_, err := chromedp.Call(ctx, page.HandleJavaScriptDialog, page.HandleJavaScriptDialogParams{Accept: accept})
 	if err != nil {
 		s.rec.addWarning("could not dismiss a JavaScript dialog: " + s.scrub(err.Error()))
+	}
+}
+
+// consentNotAttempted is the consent outcome a result carries until the hook
+// replaces it. A scan that ends before the hook runs — navigation timed out,
+// login failed — keeps it, so it must not read as a page that never asked for
+// consent: the banner may have been on screen the whole time (Tenet 5).
+func consentNotAttempted(mode model.ConsentMode) model.Consent {
+	if mode == model.ConsentNone {
+		return model.Consent{
+			Outcome: model.OutcomeNotNeeded,
+			Reason:  "consent mode is none; the page was not interacted with",
+		}
+	}
+
+	return model.Consent{
+		Outcome: model.OutcomeFailed,
+		Reason: "the scan ended before the consent step ran, usually because the page did not finish loading in time; " +
+			"the recorded traffic is pre-consent traffic, whatever mode was requested",
 	}
 }
 
