@@ -27,7 +27,8 @@ If a requested change is not covered by any story, say so before implementing it
 - **Language:** Go. Latest stable release. Standard library first (Tenet 18).
 - **Platforms:** Linux and macOS, amd64 and arm64. No Windows.
 - **Constraint:** pure Go, CGo-free, cross-compilable, single static binary. A dependency that breaks this is not an option, no matter how convenient.
-- **External runtime dependency:** exactly one — a Chrome/Chromium binary. Do not add a second.
+- **External runtime dependency:** exactly one required — a Chrome/Chromium binary. Do not add a second.
+  One optional exception, decided for Story 4.16 (D2): a model API that reads page text for the prompt checks of Stories 4.16 and 4.17. It is off unless configured, and every other part of wsaw works the same without it. It does not open the door to further services.
 - **Domain:** wsaw drives headless Chrome against *untrusted, third-party websites* and reports what they load. Every page is hostile input.
 
 ---
