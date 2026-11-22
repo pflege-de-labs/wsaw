@@ -30,6 +30,7 @@ type Store interface {
 	HasBaseline(target string, mode model.ConsentMode) (bool, error)
 	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
 	OpenArtifact(ctx context.Context, ref string) (*store.ArtifactReader, error)
+	GetArtifact(ref string) ([]byte, error)
 }
 
 // Limits on what one call returns. Each is a cap on the size of an answer a
@@ -578,7 +579,7 @@ func diffScansTool(st Store, n *normalize.Normalizer, opts func(string) diff.Opt
 			Title: "Compare two scans",
 			Description: "Compare one scan against the approved baseline, the previous scan, or another scan of the " +
 				"same target and consent mode, and list what changed with a severity per change: new or removed " +
-				"hosts, assets, script content and cookies. Uses the target's own severity rules and allow and deny lists, as the scan's notification and the web interface do. " +
+				"hosts, assets, script content and cookies, and for a target that watches a page text, a changed or incomplete text. Uses the target's own severity rules and allow and deny lists, as the scan's notification and the web interface do. " +
 				`With "against" omitted, compares against the baseline if there is one and the previous scan otherwise, ` +
 				`and the baseline itself against the scan before it.`,
 			InputSchema: seriesSchema(map[string]property{
@@ -610,6 +611,10 @@ func diffScansTool(st Store, n *normalize.Normalizer, opts func(string) diff.Opt
 			if err != nil {
 				return nil, err
 			}
+
+			// The watched texts live in artifacts of their own (Story 4.15).
+			store.LoadText(st, cur)
+			store.LoadText(st, c.Base)
 
 			var o diff.Options
 			if opts != nil {

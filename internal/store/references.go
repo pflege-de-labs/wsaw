@@ -26,7 +26,7 @@ import (
 // for listings (AC2).
 
 // artifactRefsOf lists every artifact a result names: its document, its
-// screenshots, and every stored response body.
+// screenshots, every stored response body, and its watched text.
 //
 // The document's reference is included even though the results row carries it
 // in artifact_ref as well. One table that answers "what does this result name"
@@ -81,6 +81,10 @@ func artifactRefsOf(res *model.Result, documentRef string) []artifactRefSize {
 		// AC15): referenced here, it is kept while a result names it and
 		// collected once none does.
 		add(res.Requests[i].RequestBodyRef, res.Requests[i].RequestBodySize)
+	}
+
+	if res.Text != nil {
+		add(res.Text.Ref, res.Text.Bytes)
 	}
 
 	refs := make([]artifactRefSize, 0, len(seen))

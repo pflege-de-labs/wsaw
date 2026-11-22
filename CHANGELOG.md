@@ -9,6 +9,26 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Added
+
+- A target can watch the text of one region of its page, for pages that
+  matter for what they say: a privacy statement, an imprint, an
+  accessibility declaration (Story 4.15). Set `text.selector`, and
+  optionally `mustContain`, `minLength`, `checkAnchors` and `maxBytes`. wsaw
+  reads the region's rendered text and links after the page has settled and
+  consent handling has finished, stores them verbatim as a content-addressed
+  artifact of kind `text` that the result names under `text` (result schema
+  2.5, additive), and reports two new change types:
+  `text-changed` (medium) when the wording or a link target changes, with a
+  line diff on the scan page, and `text-incomplete` (high) on every scan
+  where the text misses a required string, is too short, has in-page links
+  to nothing, or could not be read. The incomplete check needs no baseline,
+  so a page that is already cut is reported on its first scan. A text that
+  could not be read lowers the scan's confidence (new signal `text`).
+  Severities are configurable per target as `textChanged` and
+  `textIncomplete`. Off unless configured; nothing changes for existing
+  targets.
+
 ## [0.9.1] - 2026-11-11
 
 A security and compatibility release. wsaw is built with Go 1.27.4, which

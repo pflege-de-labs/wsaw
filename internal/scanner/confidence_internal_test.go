@@ -1,7 +1,9 @@
 package scanner
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -22,10 +24,28 @@ type durationStore struct {
 		before time.Time
 		limit  int
 	}
-	stored *model.Result
+	stored    *model.Result
+	artifacts map[string][]byte
 }
 
-func (d *durationStore) PutArtifact(string, []byte) (string, error) { return "", nil }
+func (d *durationStore) PutArtifact(kind string, data []byte) (string, error) {
+	if d.artifacts == nil {
+		d.artifacts = map[string][]byte{}
+	}
+
+	ref := fmt.Sprintf("%s/%x", kind, sha256.Sum256(data))
+	d.artifacts[ref] = data
+
+	return ref, nil
+}
+
+func (d *durationStore) GetArtifact(ref string) ([]byte, error) {
+	if data, ok := d.artifacts[ref]; ok {
+		return data, nil
+	}
+
+	return nil, store.ErrNotFound
+}
 
 func (d *durationStore) PutResult(res *model.Result) error {
 	d.stored = res

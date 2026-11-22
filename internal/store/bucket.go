@@ -17,6 +17,7 @@ import (
 	"gocloud.dev/blob/fileblob"
 	"gocloud.dev/gcerrors"
 
+	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 )
 
@@ -83,6 +84,8 @@ const (
 	// capture writes, "screenshot-before-consent" and
 	// "screenshot-after-consent".
 	artifactKindScreenshot = "screenshot"
+	// artifactKindText is a watched page text and its links (Story 4.15).
+	artifactKindText = model.TextArtifactKind
 	// kindSuffixSeparator joins a screenshot to the moment it was taken.
 	kindSuffixSeparator = "-"
 
@@ -1247,7 +1250,7 @@ func validKind(kind string) bool {
 	}
 
 	switch kind {
-	case artifactKindBody, artifactKindResult, artifactKindProbe, artifactKindScreenshot:
+	case artifactKindBody, artifactKindResult, artifactKindProbe, artifactKindScreenshot, artifactKindText:
 		return true
 	}
 

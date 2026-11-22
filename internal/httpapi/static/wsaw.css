@@ -946,3 +946,9 @@ button:hover { border-color: var(--accent); }
    and .watch-outcome rules and the `:has(a.watch-age)` selector; these are
    their replacements. */
 .watch-tile:has(a.watch-scan) { cursor: pointer; }
+
+/* Watched text line diff (Story 4.15). */
+.text-diff { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.text-diff .td-add { color: var(--ok); }
+.text-diff .td-del { color: var(--bad); text-decoration: line-through; }
+.text-diff .td-skip { color: var(--muted); font-style: italic; }

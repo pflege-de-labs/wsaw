@@ -206,6 +206,15 @@
     </table>
     {{if .Diff.Suppressed}}<p class="muted">{{.Diff.Suppressed}} further change(s) suppressed by the allow list.</p>{{end}}
   {{end}}
+  {{if .TextDiff}}
+    {{/* The watched text against the compared scan's (Story 4.15, AC7).
+         Page text, escaped by the template like every other page string. */}}
+    <h3>Watched text</h3>
+    <pre class="text-diff" aria-label="Line diff of the watched text">
+      {{- range .TextDiff}}<span class="td-{{.Class}}">{{.Mark}} {{.Text}}</span>
+{{end -}}
+    </pre>
+  {{end}}
 </section>
 {{end}}
 

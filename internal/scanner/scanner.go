@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,6 +51,8 @@ type ResultStore interface {
 	PutResult(res *model.Result) error
 	GetBaseline(target string, mode model.ConsentMode) (*store.Baseline, error)
 	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	// GetArtifact reads back the base's watched text (Story 4.15, AC4).
+	GetArtifact(ref string) ([]byte, error)
 	// RecentCleanDurations is what a scan's duration is judged against
 	// (Story 5.35, AC5): a number per earlier scan, never a document.
 	RecentCleanDurations(target string, mode model.ConsentMode, before time.Time, limit int) ([]time.Duration, error)
@@ -452,6 +455,7 @@ func (s *Scanner) captureOptions(target config.Resolved, mode model.ConsentMode)
 		BasicAuthPassword: target.BasicAuthPassword,
 		FormLogin:         target.FormLogin,
 		Proxy:             target.Proxy,
+		Text:              target.Text,
 	}
 }
 
@@ -510,6 +514,7 @@ func (s *Scanner) persist(ctx context.Context, log *slog.Logger, res *model.Resu
 	// with nowhere to be stored still reports how far it can be trusted, and
 	// a stored one is written with its score rather than amended later
 	// (Story 5.35, AC7).
+	s.storeText(res, log)
 	res.Confidence = s.confidence(res, log)
 
 	if s.deps.Store == nil {
@@ -525,6 +530,34 @@ func (s *Scanner) persist(ctx context.Context, log *slog.Logger, res *model.Resu
 	if err := s.deps.Store.PutResult(res); err != nil {
 		log.Error("storing result failed", "error", err)
 	}
+}
+
+// storeText writes the watched text and its links to a content-addressed
+// artifact and names it in the result (Story 4.15, AC4). It runs before the
+// score, because a text that could not be stored is one the history will not
+// have, and that is recorded as unavailable with the reason (Tenet 5). With
+// no store at all the text stays in memory only, as every other artifact does.
+func (s *Scanner) storeText(res *model.Result, log *slog.Logger) {
+	tc := res.Text
+	if s.deps.Store == nil || tc == nil || tc.Unavailable != "" || tc.Ref != "" {
+		return
+	}
+
+	data, err := json.Marshal(model.TextArtifact{Text: tc.Text, Links: tc.Links})
+	if err == nil {
+		tc.Ref, err = s.deps.Store.PutArtifact(model.TextArtifactKind, data)
+	}
+
+	if err != nil {
+		log.Warn("storing the watched text failed", "error", err)
+
+		tc.Unavailable = "the text could not be stored: " + err.Error()
+		tc.Ref = ""
+
+		return
+	}
+
+	tc.Bytes = int64(len(data))
 }
 
 // confidence scores a result against the series' earlier clean scans.
@@ -592,6 +625,7 @@ func (s *Scanner) compare(target config.Resolved, res *model.Result, log *slog.L
 		Severity:             target.Severity,
 		DegradedFailureRatio: s.opts.DegradedFailureRatio,
 		Normalizer:           s.opts.Normalizer,
+		Text:                 target.TextChecks,
 	})
 }
 

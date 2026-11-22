@@ -391,3 +391,31 @@ func TestABotBlockedCMPCostsWhatAFailedConsentCosts(t *testing.T) {
 		t.Errorf("a bot-blocked scan scores %d, band high", got.Score)
 	}
 }
+
+// Story 4.15, AC10: a watched text that could not be read takes the scan out
+// of band high; one that was read costs nothing; a target that watches no
+// text lists no text signal at all.
+func TestAnUnreadTextLowersConfidence(t *testing.T) {
+	t.Parallel()
+
+	read := clean(100)
+	read.Text = &model.TextCapture{Selector: "main", Text: "Impressum", Length: 9}
+
+	if c := confidence.Score(read, steady(10, 10*time.Second), opts); c.Score != 100 || reason(t, c, model.SignalText).Points != 0 {
+		t.Errorf("read text: score %d, reasons %+v", c.Score, c.Reasons)
+	}
+
+	unread := clean(100)
+	unread.Text = &model.TextCapture{Selector: "main", Unavailable: "the selector matched nothing"}
+
+	c := confidence.Score(unread, steady(10, 10*time.Second), opts)
+	if c.Band == model.ConfidenceHigh || reason(t, c, model.SignalText).Observed != "not read: the selector matched nothing" {
+		t.Errorf("unread text: score %d %s, reasons %+v", c.Score, c.Band, c.Reasons)
+	}
+
+	for _, r := range confidence.Score(clean(100), steady(10, 10*time.Second), opts).Reasons {
+		if r.Signal == model.SignalText {
+			t.Errorf("a target without text lists %+v", r)
+		}
+	}
+}

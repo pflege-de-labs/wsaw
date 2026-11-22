@@ -1,9 +1,11 @@
 package scanner
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/pflege-de-labs/wsaw/internal/config"
+	"github.com/pflege-de-labs/wsaw/internal/diff"
 	"github.com/pflege-de-labs/wsaw/internal/model"
 	"github.com/pflege-de-labs/wsaw/internal/store"
 )
@@ -88,5 +90,49 @@ func TestCompareUsesTheSameBaseAsTheScanPage(t *testing.T) {
 				t.Errorf("compared against %q, want %q", rep.BaselineScanID, tt.wantBase)
 			}
 		})
+	}
+}
+
+// Story 4.15, AC4 and AC8: the scan stores its watched text as an artifact,
+// the comparison behind the notification reads the base's back from there,
+// and it applies the target's own text checks — so text-incomplete and
+// text-changed reach the notifier, not only the scan page.
+func TestTheNotificationComparesTheStoredText(t *testing.T) {
+	t.Parallel()
+
+	st := &comparisonStore{}
+	s := &Scanner{deps: Deps{Store: st}}
+	target := config.Resolved{Name: "site", TextChecks: &diff.TextChecks{MustContain: []string{"HRB 12345"}}}
+
+	withText := func(id, text string) *model.Result {
+		res := cleanResult()
+		res.ScanID = id
+		res.Text = &model.TextCapture{Selector: "main", Text: text, Length: len(text), SHA256: id}
+		s.storeText(res, quiet())
+
+		return res
+	}
+
+	before := withText("scan-0", "Impressum\nHRB 12345")
+	if before.Text.Ref == "" || before.Text.Bytes == 0 || before.Text.Unavailable != "" {
+		t.Fatalf("text not stored: %+v", before.Text)
+	}
+
+	// The base comes back the way the store hands it out: without the text.
+	stored := *before.Text
+	stored.Text, stored.Links = "", nil
+	base := *before
+	base.Text = &stored
+	st.previous = &base
+
+	rep := s.compare(target, withText("scan-1", "Impressum"), quiet())
+
+	var types []diff.ChangeType
+	for _, c := range rep.Changes {
+		types = append(types, c.Type)
+	}
+
+	if !slices.Contains(types, diff.TextChanged) || !slices.Contains(types, diff.TextIncomplete) {
+		t.Errorf("changes = %v; want text-changed and text-incomplete", types)
 	}
 }

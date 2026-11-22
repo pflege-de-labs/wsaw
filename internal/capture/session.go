@@ -1021,11 +1021,16 @@ func (s *session) finish(runErr error) {
 	s.collectStorage()
 	s.collectFinalURL()
 
+	mainDocFailed, mainDocFailure := s.rec.mainDocumentFailure()
+
+	// A page that never loaded has no text to read, and "the selector matched
+	// nothing" would be the wrong reason.
+	s.collectText(mainDocFailed || runErr != nil && !errors.Is(runErr, context.DeadlineExceeded))
+
 	s.res.FinishedAt = time.Now()
 	s.res.Duration = s.res.FinishedAt.Sub(s.res.StartedAt)
 
 	_, exceeded := s.rec.snapshot()
-	mainDocFailed, mainDocFailure := s.rec.mainDocumentFailure()
 
 	switch {
 	case runErr != nil && !errors.Is(runErr, context.DeadlineExceeded):

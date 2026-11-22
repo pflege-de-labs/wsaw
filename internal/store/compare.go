@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -13,6 +14,7 @@ import (
 type ComparisonReader interface {
 	GetBaseline(target string, mode model.ConsentMode) (*Baseline, error)
 	PreviousResult(target string, mode model.ConsentMode, scanID string) (*model.Result, error)
+	GetArtifact(ref string) ([]byte, error)
 }
 
 // Comparison is what a scan is measured against by default.
@@ -41,7 +43,21 @@ type Comparison struct {
 // falling back to the previous scan — and to the previous scan also when res
 // is itself the baseline. Only a read failure other than "not found" or
 // "evidence gone" is an error.
+//
+// The watched text of both res and the base is loaded from its artifact
+// (Story 4.15, AC4), so the comparison and the scan page have it. A text that
+// cannot be loaded is marked unavailable on that copy and the comparison goes
+// ahead: the text checks report it, and nothing else depends on it.
 func ComparisonFor(src ComparisonReader, res *model.Result) (Comparison, error) {
+	LoadText(src, res)
+
+	c, err := comparisonFor(src, res)
+	LoadText(src, c.Base)
+
+	return c, err
+}
+
+func comparisonFor(src ComparisonReader, res *model.Result) (Comparison, error) {
 	var c Comparison
 
 	b, err := src.GetBaseline(res.Target, res.ConsentMode)
@@ -93,4 +109,33 @@ func (c Comparison) Report(res *model.Result, opts diff.Options) *diff.Report {
 	}
 
 	return rep
+}
+
+// LoadText fills res.Text.Text and res.Text.Links from the artifact the result
+// names, unless they are already there. A text that cannot be read back is
+// recorded as unavailable, with the reason, rather than left empty (Tenet 5).
+func LoadText(src interface {
+	GetArtifact(ref string) ([]byte, error)
+}, res *model.Result) {
+	if res == nil || res.Text == nil || res.Text.Ref == "" || res.Text.Text != "" {
+		return
+	}
+
+	tc := res.Text
+
+	data, err := src.GetArtifact(tc.Ref)
+	if err != nil {
+		tc.Unavailable = "the stored text could not be read: " + err.Error()
+
+		return
+	}
+
+	var a model.TextArtifact
+	if err := json.Unmarshal(data, &a); err != nil {
+		tc.Unavailable = "the stored text could not be decoded: " + err.Error()
+
+		return
+	}
+
+	tc.Text, tc.Links = a.Text, a.Links
 }

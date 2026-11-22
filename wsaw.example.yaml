@@ -112,6 +112,50 @@ targets:
         form_type: storefront_password
         password: "${file:/run/secrets/shop-staging-password}"
 
+  # Watching what a page says, not only what it loads (Story 4.15). wsaw
+  # reads the rendered text and links of the first element text.selector
+  # matches, after the page settled and consent handling finished, and
+  # reports text-changed (medium) when the wording or a link target changes
+  # and text-incomplete (high) on every scan where the text fails a check.
+  # Per target only; refused in defaults. What each page must contain is
+  # yours to write down: wsaw ships no list of what a privacy statement or
+  # an imprint has to say.
+  - name: privacy-statement
+    url: https://www.example.com/datenschutz/
+    interval: 24h
+    text:
+      selector: main
+      # The last heading is the cheapest end-of-document marker there is.
+      mustContain:
+        - "Ihre Rechte"
+        - "Automatisierte Entscheidungsfindung"
+      minLength: 20000
+      # In-page links whose target is missing are reported by default; that
+      # alone finds a statement whose table of contents outlives its end.
+      # checkAnchors: false   # for a page whose fragment links are script-driven
+
+  - name: imprint
+    url: https://www.example.com/impressum/
+    interval: 24h
+    text:
+      selector: "#imprint"
+      # An imprint is short and has no contents list: the mandatory lines
+      # themselves are the check.
+      mustContain:
+        - "Example GmbH"
+        - "HRB 123456"
+        - "DE123456789"
+
+  - name: accessibility-statement
+    url: https://www.example.com/barrierefreiheit/
+    interval: 24h
+    text:
+      selector: article
+      mustContain:
+        - "barrierefreiheit@example.com"
+        - "Marktüberwachungsstelle"
+      # maxBytes: 1048576     # wsaw cuts a longer text here and says it did
+
   - name: legacy-microsite
     url: https://legacy.example.org/
     # Kept for its history and baseline rather than deleted.

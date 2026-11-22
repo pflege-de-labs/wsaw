@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the result schema produced by this build.
 // Additive changes do not bump the major version.
-const SchemaVersion = "2.4"
+const SchemaVersion = "2.5"
 
 // ConsentMode is the consent state a scan was performed in. It is part of a
 // result's identity: results are never compared across modes.
@@ -191,6 +191,12 @@ type Result struct {
 	// sampled (Story 1.11). Nil when the scan never reached capture, and on a
 	// document written before schema 2.2.
 	BodyCapture *BodyCapture `json:"bodyCapture,omitempty"`
+
+	// Text is the rendered text of the region the target configures, read
+	// after the page settled and consent handling finished (Story 4.15). Nil
+	// when the target watches no text, and on a document written before
+	// schema 2.5.
+	Text *TextCapture `json:"text,omitempty"`
 }
 
 // Environment records everything needed to reproduce a scan, including the

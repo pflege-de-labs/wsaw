@@ -146,6 +146,7 @@ func (c *Config) validateTargets(add addFunc) {
 		validateBeacons(t.Beacons, t.line, field+".beacons", add)
 		validateBodies(t, field, add)
 		validateFormLogin(t, field, add)
+		validateText(t, field, add)
 		validateBodyPolicy(c.bodyPolicy(t), c.resolveTargetFields(t).Interval, t.line, field, add)
 	}
 
@@ -160,6 +161,11 @@ func (c *Config) validateTargets(add addFunc) {
 		// A login form belongs to one site; posting it to every target would
 		// send its password to all of them.
 		add(c.Defaults.line, "defaults.formLogin", "is not allowed in defaults; set it on the target it logs in to")
+	}
+
+	if c.Defaults.Text != nil {
+		// A region and the lines it must contain belong to one page.
+		add(c.Defaults.line, "defaults.text", "is not allowed in defaults; set it on the target whose page it reads")
 	}
 
 	if c.Defaults.Robots != "" && c.Defaults.Robots != RobotsIgnore && c.Defaults.Robots != RobotsRespect {
