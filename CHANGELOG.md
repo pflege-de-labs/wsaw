@@ -28,6 +28,21 @@ criteria, and any that are still open, are written down.
   Severities are configurable per target as `textChanged` and
   `textIncomplete`. Off unless configured; nothing changes for existing
   targets.
+- A watched text can be read by a model against a prompt you write (Story
+  4.16): `text.check.prompt` names the prompt file, and a new global `model`
+  section names a server speaking the Anthropic Messages API — Anthropic's,
+  or a local one such as Ollama, which keeps the page text in your network.
+  The prompt, the text with its link targets and the scan date are sent,
+  nothing else. The scan waits for the answer and records it under
+  `text.check`: a verdict (`passed`, `failed`, `uncertain`) with findings
+  marked deciding or informative, or, when there is none, `notChecked` with
+  the reason, which lowers the scan's confidence and is never read as a pass.
+  `failed` reports `text-check-failed` (high) and `uncertain`
+  `text-check-uncertain` (low), labelled as model output everywhere. An
+  unchanged text is not sent again; its earlier findings are reused. Requests
+  are bounded by a timeout, retries, `maxInputTokens` and a daily cap. Off
+  unless configured. The scan page's text diff now writes each link as
+  `[text](target)`, so a retargeted link shows as a changed line.
 
 ## [0.9.1] - 2026-11-11
 

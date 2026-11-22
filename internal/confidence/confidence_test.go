@@ -413,6 +413,22 @@ func TestAnUnreadTextLowersConfidence(t *testing.T) {
 		t.Errorf("unread text: score %d %s, reasons %+v", c.Score, c.Band, c.Reasons)
 	}
 
+	// Story 4.16, AC5: read but not checked is not clean either.
+	unchecked := clean(100)
+	unchecked.Text = &model.TextCapture{Selector: "main", Length: 9, Check: &model.TextCheck{NotChecked: "the model did not answer within 1m30s"}}
+
+	c = confidence.Score(unchecked, steady(10, 10*time.Second), opts)
+	if c.Band == model.ConfidenceHigh || reason(t, c, model.SignalText).Observed != "read, 9 characters; not checked: the model did not answer within 1m30s" {
+		t.Errorf("unchecked text: score %d %s, reasons %+v", c.Score, c.Band, c.Reasons)
+	}
+
+	checked := clean(100)
+	checked.Text = &model.TextCapture{Selector: "main", Length: 9, Check: &model.TextCheck{Verdict: model.VerdictFailed}}
+
+	if c := confidence.Score(checked, steady(10, 10*time.Second), opts); c.Score != 100 {
+		t.Errorf("a failed verdict is an observation, not a gap: score %d", c.Score)
+	}
+
 	for _, r := range confidence.Score(clean(100), steady(10, 10*time.Second), opts).Reasons {
 		if r.Signal == model.SignalText {
 			t.Errorf("a target without text lists %+v", r)

@@ -749,7 +749,7 @@ A second gap makes any rule change expensive. The normalized key is computed at 
 - AC5: Fixture coverage, without Chrome: two scans that differ only in a beacon's per-visit parameters compare with no asset change; the same pair keyed under older rules compares with no asset change; a beacon whose `id` changes still reports `asset-added` and `asset-removed`; a `data:` request compares on its stored key; each shipped rule collapses two realistic visits and keeps its identity parameter; a shipped rule leaves `gtm.js`, reCAPTCHA and an unrelated `/collect` path untouched; and `diff_scans` reports no change for a beacon-only difference.
 - AC6: Known consequence, recorded rather than hidden: once two visits share a key, the differ compares their bodies. A script whose bytes change on every fetch then reports `script-changed` where it used to report an added and a removed asset. For the gtag loader and consentmanager's `cmp.php` the example configuration ships `bodyIdentity` rules (Story 1.6) that compare the version each declares. Google Ads' `viewthroughconversion` answers with a per-visit script that declares no version; for responses like it, `normalize.volatileBodies` names URL patterns whose digest is not compared at all, while their key still is, so a new conversion ID is still `asset-added`. It is applied at comparison time, so it reaches history too. `viewthroughconversion` is shipped (`normalize.DefaultVolatileBodies`), opt-out with `normalize.useDefaultVolatileBodies: false`; an empty or invalid pattern is rejected at load, because an empty one would exempt every script from the supply-chain check.
 
-### Story 4.15 — Watch a page's text, and say when it is cut short (not implemented)
+### Story 4.15 — Watch a page's text, and say when it is cut short
 
 *As a Compliance Officer, I want wsaw to tell me when the text of a page I am accountable for — a privacy statement, an imprint, an accessibility declaration under the BFSG, or any other page whose wording is an obligation — changes, loses a part, or stops before its end, so that the defect is found by a scan and not by a regulator or a reader.*
 
@@ -782,7 +782,7 @@ Two different questions hide in "watch the text", and they need different answer
 
 Deliberately left out: a built-in catalogue of what an imprint or a declaration must say, applied without the operator choosing it (that is legal judgment, and it differs by company form; the templates of Story 4.16, D4 are starting points an operator reviews), checking that the page is still linked from the site's footer, watching more than one region per target, ignore patterns for volatile text, fuzzy or semantic comparison, following the links a text contains, and any check of what a privacy statement ought to say. Each is a separate story if a scan ever shows the need.
 
-### Story 4.16 — Have a changed page text checked against a written prompt (not implemented)
+### Story 4.16 — Have a changed page text checked against a written prompt (partly implemented: the template reference of AC2 comes with Story 4.17)
 
 *As a Compliance Officer, I want a page text that changed (Story 4.15) to be read against a check I wrote in plain language, with a verdict and findings I can act on, so that a defect a string list cannot express — a value under the wrong label, a contact that points somewhere else, a declaration that contradicts itself — is raised by the scan that saw it.*
 

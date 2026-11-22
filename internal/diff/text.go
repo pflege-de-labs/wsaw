@@ -111,6 +111,81 @@ func countLinkChanges(before, after []model.TextLink) int {
 	return max(changed, gone)
 }
 
+// TextWithLinks is the text as a reader with the link targets would see it:
+// the rendered text, then every link written as [text](target), one per
+// line, in document order (Story 4.15, AC14). It is what the scan page's diff
+// shows and what a check sends to a model (Story 4.16, AC3), so a retargeted
+// link is a changed line and a model reads where each link really points.
+func TextWithLinks(tc *model.TextCapture) string {
+	if tc == nil || len(tc.Links) == 0 {
+		if tc == nil {
+			return ""
+		}
+
+		return tc.Text
+	}
+
+	var b strings.Builder
+
+	b.WriteString(tc.Text)
+	b.WriteString("\n\nLinks:\n")
+
+	for _, l := range tc.Links {
+		fmt.Fprintf(&b, "[%s](%s)\n", strings.Join(strings.Fields(l.Text), " "), l.Target)
+	}
+
+	return b.String()
+}
+
+// textFindings is what a watched text reports on every scan, whatever it is
+// compared against: an incomplete text and a model's verdict on it.
+func textFindings(current *model.Result, rules Options) []Change {
+	var out []Change
+
+	if c, ok := textIncomplete(current, rules); ok {
+		out = append(out, c)
+	}
+
+	if c, ok := textCheckVerdict(current, rules); ok {
+		out = append(out, c)
+	}
+
+	return out
+}
+
+// textCheckVerdict reports a model's failed or uncertain verdict (Story
+// 4.16, AC6). The detail says it is model output and carries the verdict and
+// the number of deciding findings, never the findings: they are a model's
+// rewording of page text and reach notifiers and logs (AC4, Tenet 9). A
+// check that did not run reports nothing here; it lowers the confidence
+// instead (AC5).
+func textCheckVerdict(current *model.Result, rules Options) (Change, bool) {
+	if current.Text == nil || current.Text.Check == nil {
+		return Change{}, false
+	}
+
+	chk := current.Text.Check
+
+	c := Change{
+		Target:      current.Target,
+		ConsentMode: current.ConsentMode,
+		Subject:     current.Text.Selector,
+		Detail: fmt.Sprintf("model output (%s), not a compliance result: verdict %s, %d deciding finding(s)",
+			chk.Model, chk.Verdict, chk.Deciding()),
+	}
+
+	switch chk.Verdict {
+	case model.VerdictFailed:
+		c.Type, c.Severity = TextCheckFailed, rules.Severity.TextCheckFailed
+	case model.VerdictUncertain:
+		c.Type, c.Severity = TextCheckUncertain, rules.Severity.TextCheckUncertain
+	default:
+		return Change{}, false
+	}
+
+	return c, true
+}
+
 // textIncomplete checks the current text against what the target says it
 // must be, on every scan and with no baseline (Story 4.15, AC8). It reports
 // once per scan, with every reason, until the text passes; approving a

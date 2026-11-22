@@ -267,6 +267,71 @@ and what it means is yours to decide. Load-time validation of `selector`
 checks its shape (brackets, quotes, combinators); a selector the browser still
 rejects is recorded on every scan as unreadable, with the browser's reason.
 
+#### Having a model check the text
+
+A string list cannot say whether an imprint names its register court under
+"Registergericht" or a register type, or whether a declaration's feedback
+link points where its text says. A target can have a model read its text
+against a prompt you wrote (Story 4.16):
+
+```yaml
+model:
+  model: claude-opus-5-5
+  apiKey: ${env:ANTHROPIC_API_KEY}     # a reference, never the key itself
+  # baseURL: https://api.anthropic.com  # or http://localhost:11434 for Ollama
+  # auth: x-api-key                     # bearer for Ollama's cloud
+  # timeout: 90s                        # one check, retries included
+  # retries: 2
+  # dailyRequests: 200                  # across all targets, per UTC day
+
+targets:
+  - name: imprint
+    url: https://www.example.com/impressum/
+    text:
+      selector: main
+      mustContain: ["HRB 12345"]
+      check:
+        prompt: /etc/wsaw/prompts/impressum.txt
+        # maxInputTokens: 50000
+```
+
+**What is sent where.** The prompt, the region's text with every link
+written as `[text](target)`, and the scan date go to the configured server,
+and nothing else from the scan: no cookies, headers or requests. The text sits
+between two marker lines carrying a random token, and wsaw's own instruction
+tells the model that anything inside them is data, never an order. With
+`baseURL` pointing at a local server that speaks the Messages API, such as
+Ollama, the page text never leaves your network; plain `http://` is refused
+for any host but this one, because the key and the text would cross the
+network unencrypted.
+
+**When.** Right after the scan that read the text, and the scan's result and
+notification wait for it; `model.timeout` is part of that scan's time. A text
+whose digest was already checked with the same prompt and model is not sent
+again: the scan carries the earlier findings, marked `reused` with when they
+were made. A new prompt, a new model or a changed text is sent.
+
+**What comes back.** The model must answer with a verdict — `passed`,
+`failed` or `uncertain` — and findings, each marked deciding or informative.
+Anything else is recorded under `text.check` as `notChecked` with the reply
+kept, never as `passed`. So is every other way a check can end without a
+verdict: no model configured, no text, a timeout, a refusal, the daily cap, or
+a text over `maxInputTokens` by wsaw's own conservative estimate, refused
+before sending. A text that was not checked lowers the scan's confidence.
+`failed` reports `text-check-failed` (default high) and `uncertain`
+`text-check-uncertain` (default low), on every scan until the verdict changes;
+re-rank them as `textCheckFailed` and `textCheckUncertain`. Notifications
+carry the verdict and the number of deciding findings, not the findings; the
+scan page shows them, escaped.
+
+**What it is not.** The verdict is a model's reading of the text, labelled as
+model output wherever it appears. It is not a compliance result or legal
+advice, it never changes what wsaw measured, and two runs on the same text
+can disagree; that is why an unchanged text keeps its first findings rather
+than being asked again. **What it costs:** a 15,000-token privacy statement is
+roughly ten US cents per check on Claude Opus 5.5 and well under a cent on
+Haiku 5.5, at list prices, and a page that does not change is checked once.
+
 ## Consent handling
 
 wsaw prefers documented interfaces over guessing, and always records which mechanism it used so a reviewer can weigh the evidence:

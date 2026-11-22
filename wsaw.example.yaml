@@ -155,6 +155,11 @@ targets:
         - "barrierefreiheit@example.com"
         - "Marktüberwachungsstelle"
       # maxBytes: 1048576     # wsaw cuts a longer text here and says it did
+      # Have a model read the text against your own prompt (Story 4.16).
+      # Needs the model section below; see the README for what is sent.
+      # check:
+      #   prompt: /etc/wsaw/prompts/barrierefreiheit.txt
+      #   maxInputTokens: 50000
 
   - name: legacy-microsite
     url: https://legacy.example.org/
@@ -773,6 +778,20 @@ notify:
     # belowConfidence: caveat   # or drop
     # format: messagecard  # deprecated; only for a tenant still on a
     #                      # connector webhook
+
+# The model API for text checks (Story 4.16), off unless a target has a
+# text.check. The prompt, the watched text with its link targets and the scan
+# date are sent; nothing else. Its verdict is model output, not a compliance
+# result, and two runs can disagree.
+# model:
+#   model: claude-opus-5-5
+#   apiKey: ${env:ANTHROPIC_API_KEY}
+#   baseURL: https://api.anthropic.com   # http://localhost:11434 for Ollama
+#   auth: x-api-key                      # bearer for Ollama's cloud
+#   timeout: 90s                         # part of the scan's own time
+#   retries: 2
+#   maxOutputTokens: 4096
+#   dailyRequests: 200                   # across all targets, per UTC day
 
 logging:
   level: info

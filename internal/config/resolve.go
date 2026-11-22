@@ -102,6 +102,10 @@ type Resolved struct {
 
 	// TextChecks is what makes that text complete, or nil (Story 4.15, AC8).
 	TextChecks *diff.TextChecks
+
+	// ModelCheck is the prompt a model reads the text against, or nil
+	// (Story 4.16).
+	ModelCheck *ModelCheck
 }
 
 // ResolveTargets applies defaults to every enabled target and resolves secret
@@ -196,6 +200,15 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 	r.FormLogin, err = resolveFormLogin(t.FormLogin, reg)
 	if err != nil {
 		return Resolved{}, err
+	}
+
+	if t.Text != nil && t.Text.Check != nil {
+		prompt, err := readPrompt(t.Text.Check.Prompt)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("text.check.prompt: %w", err)
+		}
+
+		r.ModelCheck = &ModelCheck{Prompt: prompt, MaxInputTokens: t.Text.Check.MaxInputTokens}
 	}
 
 	return r, nil

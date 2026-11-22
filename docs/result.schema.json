@@ -885,6 +885,95 @@
           "items": {
             "$ref": "#/$defs/textFragment"
           }
+        },
+        "check": {
+          "$ref": "#/$defs/textCheck",
+          "description": "A model's reading of the text against the target's prompt (Story 4.16). Added in 2.5; absent when the target has no check. Model output, not a compliance result."
+        }
+      }
+    },
+    "textCheck": {
+      "type": "object",
+      "required": [
+        "model",
+        "server",
+        "promptSha256",
+        "textSha256",
+        "checkedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "The model ID the request named."
+        },
+        "server": {
+          "type": "string",
+          "description": "Host of the Messages API that answered; token counts from a compatible server may be approximate."
+        },
+        "promptSha256": {
+          "type": "string",
+          "description": "Hex SHA-256 of the prompt as sent, wsaw's own instruction included."
+        },
+        "textSha256": {
+          "type": "string",
+          "description": "The sha256 of the text that was read."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the model answered, or when the check was given up."
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "The findings were made for an earlier scan of the same text, prompt and model, at checkedAt; nothing was sent for this scan."
+        },
+        "notChecked": {
+          "type": "string",
+          "description": "Why there is no verdict: no model configured, no text, a timeout, a refusal, the daily cap, a text over the limit, or a reply that did not parse. Never read as passed."
+        },
+        "verdict": {
+          "enum": [
+            "passed",
+            "failed",
+            "uncertain"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textFinding"
+          }
+        },
+        "reply": {
+          "type": "string",
+          "description": "The model's answer, kept when it did not parse."
+        },
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "textFinding": {
+      "type": "object",
+      "required": [
+        "text",
+        "deciding"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Model output derived from page text: render escaped."
+        },
+        "deciding": {
+          "type": "boolean",
+          "description": "The finding leads to the verdict on its own; false means informative."
         }
       }
     },

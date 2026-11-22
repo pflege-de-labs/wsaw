@@ -183,6 +183,10 @@ type SeverityRules struct {
 	// A watched page text (Story 4.15).
 	TextChanged    Severity `yaml:"textChanged,omitempty"`
 	TextIncomplete Severity `yaml:"textIncomplete,omitempty"`
+
+	// A model's reading of a watched text (Story 4.16).
+	TextCheckFailed    Severity `yaml:"textCheckFailed,omitempty"`
+	TextCheckUncertain Severity `yaml:"textCheckUncertain,omitempty"`
 }
 
 // DefaultSeverityRules encodes the product's judgement about what matters.
@@ -233,6 +237,11 @@ func DefaultSeverityRules() SeverityRules {
 		// something to read; a cut one is a defect (Story 4.15, AC9).
 		TextChanged:    SeverityMedium,
 		TextIncomplete: SeverityHigh,
+
+		// A model's "failed" is worth a human's look the same day; its
+		// "uncertain" is worth one eventually (Story 4.16, AC6).
+		TextCheckFailed:    SeverityHigh,
+		TextCheckUncertain: SeverityLow,
 	}
 }
 
@@ -296,6 +305,8 @@ func (s *SeverityRules) named() []namedSeverity {
 		{"scanDegraded", &s.ScanDegraded},
 		{"textChanged", &s.TextChanged},
 		{"textIncomplete", &s.TextIncomplete},
+		{"textCheckFailed", &s.TextCheckFailed},
+		{"textCheckUncertain", &s.TextCheckUncertain},
 	}
 }
 

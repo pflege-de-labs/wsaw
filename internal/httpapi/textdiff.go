@@ -30,7 +30,7 @@ func textDiffFor(rep *diff.Report, base, cur *model.Result) []textDiffLine {
 		return nil
 	}
 
-	lines := diff.TextDiff(base.Text.Text, cur.Text.Text)
+	lines := diff.TextDiff(diff.TextWithLinks(base.Text), diff.TextWithLinks(cur.Text))
 
 	keep := make([]bool, len(lines))
 

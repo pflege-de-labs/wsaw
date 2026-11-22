@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"unicode"
 
@@ -32,6 +34,38 @@ type Text struct {
 	CheckAnchors *bool `yaml:"checkAnchors,omitempty"`
 	// MaxBytes is where wsaw cuts the text, and says it did.
 	MaxBytes int `yaml:"maxBytes,omitempty"`
+	// Check has a model read the text against a prompt (Story 4.16).
+	Check *TextCheck `yaml:"check,omitempty"`
+}
+
+// TextCheck is a target's prompt check (Story 4.16, AC2).
+type TextCheck struct {
+	// Prompt is the path of the prompt file, read at load.
+	Prompt string `yaml:"prompt"`
+	// MaxInputTokens refuses a larger request before it is sent.
+	MaxInputTokens int `yaml:"maxInputTokens,omitempty"`
+}
+
+// ModelCheck is a target's check as a scan runs it: the prompt's text, not
+// its path, so a prompt file changed on disk takes effect on reload and not
+// halfway through a day (Tenet 10).
+type ModelCheck struct {
+	Prompt         string
+	MaxInputTokens int
+}
+
+// readPrompt reads a check's prompt file; missing or empty is an error.
+func readPrompt(path string) (string, error) {
+	b, err := os.ReadFile(path) //nolint:gosec // operator configuration names the file, never a page
+	if err != nil {
+		return "", fmt.Errorf("reading the prompt: %w", err)
+	}
+
+	if strings.TrimSpace(string(b)) == "" {
+		return "", fmt.Errorf("the prompt file %s is empty", path)
+	}
+
+	return string(b), nil
 }
 
 // textRegion is what capture needs to read the text.
@@ -84,6 +118,18 @@ func validateText(t *Target, field string, add addFunc) {
 
 	if t.Text.MaxBytes > 0 && t.Text.MinLength > t.Text.MaxBytes {
 		add(t.line, field+".minLength", "is larger than maxBytes, so every text would be reported incomplete")
+	}
+
+	if chk := t.Text.Check; chk != nil {
+		if strings.TrimSpace(chk.Prompt) == "" {
+			add(t.line, field+".check.prompt", "names no file; write the prompt to a file and give its path")
+		} else if _, err := readPrompt(chk.Prompt); err != nil {
+			add(t.line, field+".check.prompt", "%v", err)
+		}
+
+		if chk.MaxInputTokens < 0 {
+			add(t.line, field+".check.maxInputTokens", "must not be negative")
+		}
 	}
 }
 

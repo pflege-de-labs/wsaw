@@ -317,5 +317,13 @@ func text(tc *model.TextCapture) model.ConfidenceReason {
 
 	r.Observed = fmt.Sprintf("read, %d characters", tc.Length)
 
+	// A check that did not run leaves the scan saying nothing about what the
+	// text says, which a notifier with a minimum confidence must not read as
+	// clean (Story 4.16, AC5).
+	if tc.Check != nil && tc.Check.NotChecked != "" {
+		r.Points = penaltyText
+		r.Observed += "; not checked: " + tc.Check.NotChecked
+	}
+
 	return r
 }

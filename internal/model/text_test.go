@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/pflege-de-labs/wsaw/internal/model"
 )
@@ -30,11 +31,16 @@ func TestTheSchemaDeclaresEverythingATextCaptureWrites(t *testing.T) {
 	full := model.TextCapture{
 		Selector: "main", Unavailable: "x", Ref: "text/ab", Bytes: 3, Length: 1, SHA256: "s", TruncatedFrom: 2,
 		Fragments: []model.TextFragment{{Href: "#a", Found: true}},
+		Check: &model.TextCheck{
+			Model: "m", Server: "s", PromptSHA256: "p", TextSHA256: "t", CheckedAt: time.Now(), Reused: true,
+			NotChecked: "x", Verdict: "failed", Findings: []model.TextFinding{{Text: "f", Deciding: true}},
+			Reply: "r", InputTokens: 1, OutputTokens: 1,
+		},
 	}
 	stored := model.TextArtifact{Text: "t", Links: []model.TextLink{{Text: "a", Href: "/a", Target: "https://site.test/a"}}}
 
 	for def, v := range map[string]any{
-		"textCapture": full, "textArtifact": stored, "textLink": stored.Links[0], "textFragment": full.Fragments[0],
+		"textCapture": full, "textArtifact": stored, "textCheck": *full.Check, "textFinding": full.Check.Findings[0], "textLink": stored.Links[0], "textFragment": full.Fragments[0],
 	} {
 		node, ok := root.Defs[def]
 		if !ok {

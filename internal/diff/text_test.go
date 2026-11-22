@@ -296,3 +296,81 @@ func TestTextDiff(t *testing.T) {
 		t.Errorf("large diff: %d lines, first %c, last %c", len(big), big[0].Op, big[len(big)-1].Op)
 	}
 }
+
+// Story 4.16, AC6: a model's failed verdict is text-check-failed at high, an
+// uncertain one text-check-uncertain at low, on every scan and without a
+// baseline; passed and not-checked report nothing here. The detail says it is
+// model output and never carries a finding (AC4).
+func TestAModelVerdictIsReportedAsModelOutput(t *testing.T) {
+	t.Parallel()
+
+	findings := []model.TextFinding{{Text: "Registergericht fehlt", Deciding: true}, {Text: "Datum alt", Deciding: false}}
+
+	tests := []struct {
+		name     string
+		check    model.TextCheck
+		typ      diff.ChangeType
+		severity diff.Severity
+	}{
+		{"failed", model.TextCheck{Model: "m", Verdict: model.VerdictFailed, Findings: findings}, diff.TextCheckFailed, diff.SeverityHigh},
+		{"uncertain", model.TextCheck{Model: "m", Verdict: model.VerdictUncertain, Findings: findings}, diff.TextCheckUncertain, diff.SeverityLow},
+		{"passed", model.TextCheck{Model: "m", Verdict: model.VerdictPassed}, "", ""},
+		{"not checked", model.TextCheck{Model: "m", NotChecked: "timeout"}, "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			chk := tt.check
+			cur := withText(result(model.ConsentNone), model.TextCapture{Text: "Impressum", Check: &chk})
+
+			// The same answer with and without a baseline.
+			for _, base := range []*model.Result{nil, withText(result(model.ConsentNone), model.TextCapture{Text: "Impressum"})} {
+				var got []diff.Change
+
+				for _, c := range diff.Compare(base, cur, diff.Options{}).Changes {
+					if c.Type == diff.TextCheckFailed || c.Type == diff.TextCheckUncertain {
+						got = append(got, c)
+					}
+				}
+
+				if tt.typ == "" {
+					if len(got) != 0 {
+						t.Fatalf("reported %+v", got)
+					}
+
+					continue
+				}
+
+				if len(got) != 1 || got[0].Type != tt.typ || got[0].Severity != tt.severity ||
+					got[0].Detail != "model output (m), not a compliance result: verdict "+chk.Verdict+", 1 deciding finding(s)" {
+					t.Fatalf("baseline %v: %+v", base != nil, got)
+				}
+			}
+		})
+	}
+}
+
+// Story 4.15, AC14: the diff and the check see each link as [text](target).
+func TestTextWithLinksWritesEachTarget(t *testing.T) {
+	t.Parallel()
+
+	tc := &model.TextCapture{Text: "Kontakt", Links: []model.TextLink{
+		{Text: "E-Mail\n schreiben", Href: "mailto:a@b.test", Target: "mailto:a@b.test"},
+		{Text: "OS-Plattform", Href: "https://ec.europa.eu/odr", Target: "https://ec.europa.eu/consumers/odr"},
+	}}
+
+	want := "Kontakt\n\nLinks:\n[E-Mail schreiben](mailto:a@b.test)\n[OS-Plattform](https://ec.europa.eu/consumers/odr)\n"
+	if got := diff.TextWithLinks(tc); got != want {
+		t.Errorf("got %q", got)
+	}
+
+	if got := diff.TextWithLinks(&model.TextCapture{Text: "x"}); got != "x" {
+		t.Errorf("no links: %q", got)
+	}
+
+	if diff.TextWithLinks(nil) != "" {
+		t.Error("nil capture")
+	}
+}

@@ -38,6 +38,10 @@ const (
 	// 4.15).
 	TextChanged    ChangeType = "text-changed"
 	TextIncomplete ChangeType = "text-incomplete"
+	// TextCheckFailed and TextCheckUncertain are a model's verdict on a
+	// watched text against the target's prompt (Story 4.16, AC6).
+	TextCheckFailed    ChangeType = "text-check-failed"
+	TextCheckUncertain ChangeType = "text-check-uncertain"
 )
 
 // Severity ranks a change for routing and for the CI exit-code contract.
@@ -281,10 +285,10 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 			})
 		}
 
-		// Completeness needs no baseline: a text cut before the first scan
-		// is still cut (Story 4.15, AC8).
-		if c, ok := textIncomplete(current, rules); ok {
-			rep.Changes = append(rep.Changes, c)
+		// Completeness and the model's verdict need no baseline: a text cut
+		// before the first scan is still cut (Story 4.15, AC8; Story 4.16).
+		if current != nil {
+			rep.Changes = append(rep.Changes, textFindings(current, rules)...)
 		}
 
 		return rep
@@ -316,9 +320,7 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 	d.flagDegradation()
 	d.compareText()
 
-	if c, ok := textIncomplete(current, rules); ok {
-		rep.Changes = append(rep.Changes, c)
-	}
+	rep.Changes = append(rep.Changes, textFindings(current, rules)...)
 
 	sortChanges(rep.Changes)
 

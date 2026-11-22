@@ -97,6 +97,7 @@ func (c *Config) Validate() error {
 	c.validateShare(add)
 	c.validateNotifiers(add)
 	c.validateLogging(add)
+	c.validateModel(add)
 
 	if len(errs) > 0 {
 		return errs

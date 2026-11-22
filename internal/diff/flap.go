@@ -62,9 +62,10 @@ func (f *FlapSuppressor) Filter(now time.Time, changes []Change) (emit []Change,
 	emit = make([]Change, 0, len(changes))
 
 	for _, c := range changes {
-		// An incomplete text is reported on every scan until it is fixed
-		// (Story 4.15, AC8); it does not flap, it persists.
-		if c.Type == TextIncomplete {
+		// An incomplete text, or one a model failed, is reported on every
+		// scan until it is fixed (Story 4.15, AC8); it does not flap, it
+		// persists.
+		if c.Type == TextIncomplete || c.Type == TextCheckFailed || c.Type == TextCheckUncertain {
 			emit = append(emit, c)
 
 			continue

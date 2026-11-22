@@ -30,6 +30,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/robots"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/textcheck"
 )
 
 // Metrics receives the counters a scan produces. Every field is optional, so
@@ -77,6 +78,16 @@ type Deps struct {
 	Secrets *secret.Registry
 	Logger  *slog.Logger
 	Metrics Metrics
+	// TextChecker has a model read a watched text (Story 4.16). Nil means no
+	// model API is configured; a target with a check then records that.
+	TextChecker TextChecker
+}
+
+// TextChecker is the model API seam (Tenet 12): Anthropic's or a compatible
+// server, or a fake in tests.
+type TextChecker interface {
+	Model() string
+	Check(ctx context.Context, req textcheck.Request) model.TextCheck
 }
 
 // Options configures a Scanner.
@@ -252,6 +263,11 @@ func (s *Scanner) Scan(ctx context.Context, target config.Resolved, mode model.C
 	res.ScanID = scanID
 	res.BodyCapture = mergeBodyCapture(bodies, res.BodyCapture)
 	out.Result = res
+
+	// The check runs before the result is stored, and the scan is complete
+	// only with its findings or the reason there are none (Story 4.16, D1).
+	s.storeText(res, log)
+	s.checkText(ctx, target, res, log)
 
 	s.persist(ctx, log, res)
 	s.settleBodies(ctx, res, target, log)
@@ -558,6 +574,75 @@ func (s *Scanner) storeText(res *model.Result, log *slog.Logger) {
 	}
 
 	tc.Bytes = int64(len(data))
+}
+
+// checkText has the model read the watched text against the target's prompt
+// (Story 4.16), or carries over the findings an earlier scan got for the same
+// text, prompt and model, so an unchanged page is never sent again (AC3).
+func (s *Scanner) checkText(ctx context.Context, target config.Resolved, res *model.Result, log *slog.Logger) {
+	tc := res.Text
+	if target.ModelCheck == nil || tc == nil || !res.OK() {
+		return
+	}
+
+	notChecked := func(reason string) {
+		tc.Check = &model.TextCheck{NotChecked: reason, TextSHA256: tc.SHA256, CheckedAt: time.Now().UTC()}
+	}
+
+	switch {
+	case tc.Unavailable != "":
+		notChecked("no text was read: " + tc.Unavailable)
+
+		return
+	case s.deps.TextChecker == nil:
+		notChecked("no model API is configured; set model.model")
+
+		return
+	}
+
+	modelID, prompt := s.deps.TextChecker.Model(), target.ModelCheck.Prompt
+	if prev := s.earlierCheck(res); textcheck.Reusable(prev, modelID, textcheck.PromptDigest(prompt), tc.SHA256) {
+		reused := *prev
+		reused.Reused = true
+		tc.Check = &reused
+
+		return
+	}
+
+	chk := s.deps.TextChecker.Check(ctx, textcheck.Request{
+		Prompt:         prompt,
+		Text:           diff.TextWithLinks(tc),
+		TextSHA256:     tc.SHA256,
+		Date:           res.StartedAt,
+		MaxInputTokens: target.ModelCheck.MaxInputTokens,
+	})
+	tc.Check = &chk
+
+	// The reason is wsaw's own wording; the findings, page-derived model
+	// output, are never logged (AC4).
+	if chk.NotChecked != "" {
+		log.Warn("the text was not checked", "reason", chk.NotChecked)
+	} else {
+		log.Info("text checked", "model", chk.Model, "verdict", chk.Verdict,
+			"input_tokens", chk.InputTokens, "output_tokens", chk.OutputTokens)
+	}
+}
+
+// earlierCheck is the check the series' latest stored scan carries.
+//
+// shortcut: only the previous scan is consulted, so a text that changes and
+// changes back is sent again; look further back if pages are seen to flip.
+func (s *Scanner) earlierCheck(res *model.Result) *model.TextCheck {
+	if s.deps.Store == nil {
+		return nil
+	}
+
+	prev, err := s.deps.Store.PreviousResult(res.Target, res.ConsentMode, res.ScanID)
+	if err != nil || prev.Text == nil {
+		return nil
+	}
+
+	return prev.Text.Check
 }
 
 // confidence scores a result against the series' earlier clean scans.

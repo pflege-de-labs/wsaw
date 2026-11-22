@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // TextCapture is what a scan read from the region a target's text.selector
 // names (Story 4.15). The text and its links are stored verbatim as one
 // content-addressed artifact (TextArtifact) named by Ref, and the result
@@ -48,6 +50,73 @@ type TextCapture struct {
 	// Fragments are the region's in-page links (href="#x") and whether the
 	// document had an element with that id or name when the text was read.
 	Fragments []TextFragment `json:"fragments,omitempty"`
+
+	// Check is what a model made of the text against the target's prompt
+	// (Story 4.16), or nil when the target has no check. It is model output,
+	// derived from the text, and never part of what makes two scans equal.
+	Check *TextCheck `json:"check,omitempty"`
+}
+
+// The verdicts a text check can reach (Story 4.16, AC4).
+const (
+	VerdictPassed    = "passed"
+	VerdictFailed    = "failed"
+	VerdictUncertain = "uncertain"
+)
+
+// TextCheck is one model's reading of a watched text against a written
+// prompt (Story 4.16, AC5). Either Verdict is set, or NotChecked says why
+// there is none: no answer is never a pass (Tenet 5).
+type TextCheck struct {
+	// Model is the model ID the request named.
+	Model string `json:"model"`
+	// Server is the host of the Messages API that answered, so token counts
+	// from a compatible server are not mistaken for Anthropic's (AC10).
+	Server string `json:"server"`
+	// PromptSHA256 and TextSHA256 identify what was read; together with
+	// Model they decide whether an earlier check can be reused (AC3).
+	PromptSHA256 string `json:"promptSha256"`
+	TextSHA256   string `json:"textSha256"`
+	// CheckedAt is when the model answered, or when the check was given up.
+	CheckedAt time.Time `json:"checkedAt"`
+	// Reused says the findings were made for an earlier scan of the same
+	// text, prompt and model, at CheckedAt, and nothing was sent this time.
+	Reused bool `json:"reused,omitempty"`
+
+	// NotChecked says why there is no verdict: no key, a timeout, a refusal,
+	// the daily cap, a text over the size limit, or a reply that did not
+	// parse.
+	NotChecked string `json:"notChecked,omitempty"`
+	// Verdict is passed, failed or uncertain.
+	Verdict string `json:"verdict,omitempty"`
+	// Findings are the model's, each marked as deciding the verdict or
+	// informative. Page-derived model output: render it escaped.
+	Findings []TextFinding `json:"findings,omitempty"`
+	// Reply is the model's raw answer, kept when it did not parse (AC4).
+	Reply string `json:"reply,omitempty"`
+
+	// InputTokens and OutputTokens are the server's own counts.
+	InputTokens  int `json:"inputTokens,omitempty"`
+	OutputTokens int `json:"outputTokens,omitempty"`
+}
+
+// Deciding counts the findings that decide the verdict.
+func (c *TextCheck) Deciding() int {
+	n := 0
+
+	for _, f := range c.Findings {
+		if f.Deciding {
+			n++
+		}
+	}
+
+	return n
+}
+
+// TextFinding is one finding of a text check.
+type TextFinding struct {
+	Text     string `json:"text"`
+	Deciding bool   `json:"deciding"`
 }
 
 // TextArtifactKind is the artifact kind a TextArtifact is stored under.

@@ -41,6 +41,9 @@ type Config struct {
 	Logging   Logging    `yaml:"logging"`
 	Metrics   Metrics    `yaml:"metrics"`
 
+	// Model is the optional model API for text checks (Story 4.16).
+	Model ModelAPI `yaml:"model,omitempty"`
+
 	// path records where the config came from, for reload and error messages.
 	path string
 
