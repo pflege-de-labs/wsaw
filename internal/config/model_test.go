@@ -127,3 +127,27 @@ func TestALocalModelServerIsAllowed(t *testing.T) {
 		t.Error("UsesModel = true with no check")
 	}
 }
+
+// The mistral API resolves with its own server and refuses what it cannot
+// carry.
+func TestTheMistralAPIIsConfigurable(t *testing.T) {
+	t.Parallel()
+
+	good := writePrompt(t, "Prüfe.")
+
+	cfg := parse(t, checkedTarget(good, "  api: mistral\n  model: mistral-small-latest\n  apiKey: ${file:"+good+"}"))
+
+	s, err := cfg.TextCheckSettings(nil)
+	if err != nil || s.API != textcheck.APIMistral || s.Model != "mistral-small-latest" {
+		t.Errorf("settings = %+v, %v", s, err)
+	}
+
+	for body, want := range map[string]string{
+		checkedTarget(good, "  api: openai\n  model: m"):                     "model.api",
+		checkedTarget(good, "  api: mistral\n  model: m\n  auth: x-api-key"): "bearer token",
+	} {
+		if err := parseErr(t, body); !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}

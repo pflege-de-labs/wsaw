@@ -786,6 +786,7 @@ notify:
 # model:
 #   model: claude-opus-5-5
 #   apiKey: ${env:ANTHROPIC_API_KEY}
+#   api: anthropic                       # or mistral (https://api.mistral.ai)
 #   baseURL: https://api.anthropic.com   # http://localhost:11434 for Ollama
 #   auth: x-api-key                      # bearer for Ollama's cloud
 #   timeout: 90s                         # part of the scan's own time

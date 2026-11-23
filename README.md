@@ -278,6 +278,7 @@ against a prompt you wrote (Story 4.16):
 model:
   model: claude-opus-5-5
   apiKey: ${env:ANTHROPIC_API_KEY}     # a reference, never the key itself
+  # api: anthropic                      # or mistral, for Mistral AI's own API
   # baseURL: https://api.anthropic.com  # or http://localhost:11434 for Ollama
   # auth: x-api-key                     # bearer for Ollama's cloud
   # timeout: 90s                        # one check, retries included
@@ -318,6 +319,14 @@ item for `qwen3.8` and `gemma4` models, which break JSON strings with German
 quotes or reason past their output limit when asked for JSON. The
 adapter follows the model ID; a new one is a small parser in
 `internal/textcheck`.
+
+**Mistral AI.** Mistral has no Messages-compatible endpoint, so `api:
+mistral` sends checks through its own chat completions API at
+`https://api.mistral.ai`, with the key as a bearer token and Mistral's JSON
+mode on, which keeps the answer parseable. Name a dated model ID such as
+`mistral-large-4-0` rather than a `-latest` alias, since an earlier check is
+reused only for the same ID. `docs/testplan-mistral.md` says which models
+have been tried and how.
 Anything else is recorded under `text.check` as `notChecked` with the reply
 kept, never as `passed`. So is every other way a check can end without a
 verdict: no model configured, no text, a timeout, a refusal, the daily cap, or

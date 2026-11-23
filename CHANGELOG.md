@@ -44,6 +44,10 @@ criteria, and any that are still open, are written down.
   are bounded by a timeout, retries, `maxInputTokens` and a daily cap. Off
   unless configured. The scan page's text diff now writes each link as
   `[text](target)`, so a retargeted link shows as a changed line.
+- Text checks can go to Mistral AI (`model.api: mistral`), through Mistral's
+  own chat completions API with its JSON mode, since Mistral offers no
+  Messages-compatible endpoint. `docs/testplan-mistral.md` is the plan for
+  choosing a Mistral model, with the first results.
 
 ## [0.9.1] - 2026-11-11
 

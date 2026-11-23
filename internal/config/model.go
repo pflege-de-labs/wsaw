@@ -14,7 +14,11 @@ import (
 // API that reads a watched text against a target's prompt. Nothing calls it
 // unless a target has a text.check.
 type ModelAPI struct {
-	// BaseURL is the server, https://api.anthropic.com by default. A local
+	// API is how requests travel: anthropic (default), the Messages API and
+	// every server compatible with it, or mistral, Mistral AI's own API.
+	API string `yaml:"api,omitempty"`
+	// BaseURL is the server, https://api.anthropic.com by default, or
+	// https://api.mistral.ai for the mistral API. A local
 	// server such as Ollama keeps the page text inside the operator's
 	// network (AC10).
 	BaseURL string `yaml:"baseURL,omitempty"`
@@ -47,6 +51,7 @@ func (c *Config) TextCheckSettings(reg *secret.Registry) (textcheck.Settings, er
 	}
 
 	return textcheck.Settings{
+		API:             m.API,
 		BaseURL:         m.BaseURL,
 		Auth:            m.Auth,
 		Key:             key.Reveal(),
@@ -93,6 +98,16 @@ func (c *Config) validateModel(add addFunc) {
 
 	if m.Auth != "" && m.Auth != textcheck.AuthAPIKey && m.Auth != textcheck.AuthBearer {
 		add(0, "model.auth", "must be %s or %s", textcheck.AuthAPIKey, textcheck.AuthBearer)
+	}
+
+	switch m.API {
+	case "", textcheck.APIMessages:
+	case textcheck.APIMistral:
+		if m.Auth == textcheck.AuthAPIKey {
+			add(0, "model.auth", "the mistral API takes the key only as a bearer token; leave auth unset")
+		}
+	default:
+		add(0, "model.api", "must be %s or %s", textcheck.APIMessages, textcheck.APIMistral)
 	}
 
 	if m.APIKey != "" && !secret.IsReference(m.APIKey) {

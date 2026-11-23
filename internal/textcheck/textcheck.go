@@ -17,7 +17,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -68,7 +67,9 @@ func systemFor(a Adapter) string { return instruction + "\n" + a.Format() }
 // Settings configure the client. They come from the global model section of
 // the configuration and never from a page or a reply.
 type Settings struct {
-	// BaseURL is the server; "/v1/messages" is appended.
+	// API is APIMessages (default) or APIMistral: how a request travels.
+	API string
+	// BaseURL is the server; the API's path is appended.
 	BaseURL string
 	// Auth is AuthAPIKey or AuthBearer.
 	Auth string
@@ -107,6 +108,7 @@ type Request struct {
 type Client struct {
 	s       Settings
 	adapter Adapter
+	wire    wire
 	http    *http.Client
 	now     func() time.Time
 
@@ -119,6 +121,9 @@ type Client struct {
 func New(s Settings) *Client {
 	if s.BaseURL == "" {
 		s.BaseURL = DefaultBaseURL
+		if s.API == APIMistral {
+			s.BaseURL = DefaultMistralBaseURL
+		}
 	}
 
 	if s.Auth == "" {
@@ -145,7 +150,7 @@ func New(s Settings) *Client {
 		s.DailyRequests = DefaultDailyRequests
 	}
 
-	return &Client{s: s, adapter: AdapterFor(s.Model), http: &http.Client{}, now: time.Now}
+	return &Client{s: s, adapter: AdapterFor(s.Model), wire: wireFor(s.API), http: &http.Client{}, now: time.Now}
 }
 
 // Model is the model ID the client sends.
@@ -249,11 +254,8 @@ type message struct {
 
 // messagesResponse is the part of a reply wsaw reads.
 type messagesResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	StopReason string `json:"stop_reason"`
+	Content    []contentBlock `json:"content"`
+	StopReason string         `json:"stop_reason"`
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
@@ -262,17 +264,24 @@ type messagesResponse struct {
 	raw string
 }
 
+// contentBlock is one block of a reply's content.
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 // errPermanent marks a failure a retry cannot fix.
 var errPermanent = errors.New("permanent")
 
 // send posts the request, retrying what a retry can fix, within the daily
 // cap and the context's deadline.
 func (c *Client) send(ctx context.Context, user string) (*messagesResponse, error) {
-	body, err := json.Marshal(messagesRequest{
+	body, err := c.wire.encode(wireRequest{
 		Model:     c.s.Model,
 		MaxTokens: c.s.MaxOutputTokens,
 		System:    systemFor(c.adapter),
-		Messages:  []message{{Role: "user", Content: user}},
+		User:      user,
+		JSON:      c.adapter.Name() == (jsonAdapter{}).Name(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encoding the request: %w", err)
@@ -340,21 +349,13 @@ func (c *Client) clean(ctx context.Context, err error) error {
 
 func (c *Client) post(ctx context.Context, body []byte) (*messagesResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(c.s.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
+		strings.TrimRight(c.s.BaseURL, "/")+c.wire.path(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("%w: building the request: %w", errPermanent, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", anthropicVersion)
-
-	if c.s.Key != "" {
-		if c.s.Auth == AuthBearer {
-			req.Header.Set("Authorization", "Bearer "+c.s.Key)
-		} else {
-			req.Header.Set("x-api-key", c.s.Key)
-		}
-	}
+	c.wire.headers(req.Header, c.s.Key, c.s.Auth)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -375,8 +376,7 @@ func (c *Client) post(ctx context.Context, body []byte) (*messagesResponse, erro
 		return nil, fmt.Errorf("%w: the model API answered %d: %s", errPermanent, resp.StatusCode, short(string(raw), 300))
 	}
 
-	var reply messagesResponse
-	_ = json.Unmarshal(raw, &reply) // a shape that does not decode is judged by interpret, with the reply kept
+	reply := c.wire.decode(raw) // a shape that does not decode is judged by interpret, with the reply kept
 	reply.raw = string(raw)
 
 	return &reply, nil
@@ -401,7 +401,7 @@ func interpret(out model.TextCheck, reply *messagesResponse, a Adapter) model.Te
 
 	if text.Len() == 0 {
 		out.NotChecked = "the model API's answer has no text this client can read"
-		if reply.StopReason == "max_tokens" {
+		if reply.StopReason == stopMaxTokens {
 			// A reasoning model can spend the whole budget thinking.
 			out.NotChecked = fmt.Sprintf("the model used its whole output limit of %d tokens before it answered; "+
 				"raise model.maxOutputTokens", reply.Usage.OutputTokens)
@@ -414,7 +414,7 @@ func interpret(out model.TextCheck, reply *messagesResponse, a Adapter) model.Te
 	verdict, findings, err := a.Parse(text.String())
 	if err != nil {
 		out.NotChecked = fmt.Sprintf("the model's answer did not parse as %s: %v", a.Name(), err)
-		if reply.StopReason == "max_tokens" {
+		if reply.StopReason == stopMaxTokens {
 			out.NotChecked += " (it was cut at the output limit)"
 		}
 
