@@ -1,7 +1,6 @@
 # Test plan: text checks on Mistral AI models (Story 4.16)
 
-Status: drafted on 23 November 2026. Level 0 is implemented and runs in CI;
-level 1 was run once on `mistral-small-latest` (results below); levels 2 to 5
+Status: levels 0 to 2 run on 23 November 2026 (results below); levels 3 to 5
 are not run yet.
 
 ## Goal
@@ -29,7 +28,9 @@ runs) and the guarantees wsaw makes about any model's answer (AC4, AC5).
   object, which removes the failure seen on qwen3.8 (a German quote closing a
   JSON string).
 - A reply's `content` is a string, or, with reasoning, a list of `thinking` and
-  `text` chunks; only `text` is read. `finish_reason: "length"` is recorded as
+  `text` chunks; only `text` is read. `top_p` is sent as 1 with `temperature`
+  0: `mistral-large-4-0` refuses greedy sampling otherwise ("top_p must be 1
+  when using greedy sampling", 400 on every call before the fix). `finish_reason: "length"` is recorded as
   cut at the output limit. Tokens come from `usage.prompt_tokens` and
   `usage.completion_tokens`.
 - wsaw does not send `reasoning_effort`, so each model reasons at its default:
@@ -181,15 +182,93 @@ level proves only that nothing in the daemon path is API-specific.
 
 ## Results
 
-### Level 1, `mistral-small-latest` (= `mistral-small-2603`), 23 November 2026, one run
+Run on 23 November 2026 with the dated model IDs of the table above. Total
+spent: about $2.97 at the listed prices (level 1 $0.08, level 2 $2.89),
+computed from the token counts Mistral returned; mistral-medium-3-5 has no
+listed price and is counted at Large 4's.
 
-| Case | Time | Tokens in / out | Verdict | Order reported | Notes |
+### Level 1 — planted verdict, three runs per model
+
+| Model | Verdicts | Order reported | Time per check | Tokens in / out | Result |
 |---|---|---|---|---|---|
-| planted verdict | 1 s | 460 / 101 | `failed` ✓ | ✗ | found the HRB defect; also wrongly called "Geschäftsführer" the wrong label |
+| deepseek-v4-1-flash-1017 | failed ×3 | ✓ ×3 | 1 s | 435 / 160–230 | **pass** |
+| zai-glm-5-3-flash | failed ×2, 1 not checked | ✓ where answered | 5–12 s | 435 / 1,000–1,600 | fail: one finding without the deciding marker |
+| zai-glm-5-3 | failed ×2, 1 not checked | ✓ where answered | 12–25 s | 430 / 2,400–3,700 | fail: one run reasoned past 4,096 output tokens |
+| mistral-large-4-0 | 3 not checked | — | 29–41 s | — / 4,096 | fail: reasoned past 4,096 output tokens every time |
+| mistral-medium-3-5 | failed ×3 | ✗ | 1 s | 460 / 60 | fail |
+| mistral-small-2603 | failed ×3 | ✗ | 1–2 s | 460 / 90–100 | fail |
+| ministral-14b-2512 | failed ×3 | ✗ | 1–2 s | 445 / 130–200 | fail |
+| ministral-8b-2512 | failed ×3 | ✗ | 2–3 s | 445 / 210–520 | fail |
+| ministral-3b-2512 | failed ×3 | ✗ | 1 s | 445 / 190–320 | fail |
 
-Fail: the wire, JSON mode and parsing worked, the verdict was right, but the
-order was not reported and one deciding finding was false.
+No model was talked into `passed`; every answered verdict was right. The
+Mistral and Ministral models never mention the planted order. Large 4 needs
+more than the default 4,096 output tokens (level 3).
 
-### Levels 1–5, other models
+### Level 2 — the eight real pages, three runs per model
 
-Not run.
+Input: the texts and prompts of 20 November 2026, taken from that day's
+artifacts, so byte-identical to what the Claude models read; the scan date
+was given as 20.11.2026. One sentence was appended to each prompt mapping its
+German verdicts and "[führt zu: …]" markers to the answer format (see
+`verdictMapping` in `internal/textcheck/mistral_pages_manual_test.go`).
+`maxOutputTokens` was 16,384.
+
+Reference: the verdicts and deciding findings of the four Claude models on
+20 November, human-confirmed only for the pflege.de imprint. Where they split
+(HARTMANN and Kneipp imprints), every verdict they reached counts as right.
+"Defects named" counts the defects of that reference a finding names (for
+example "HRB under Registergericht", "sections 15–18 missing"); "quotes not in
+the page" counts quoted passages of 20 or more characters that do not occur
+in the page or the prompt, ignoring punctuation, line breaks and link syntax.
+Scoring: `score.py`, kept with the run data outside the repository.
+
+| Model | Verdict as reference | Defects named | Not checked | Quotes not in the page | Median time | Cost (24 checks) |
+|---|---|---|---|---|---|---|
+| mistral-large-4-0 | **23/23** | 21/25 | 1 | 8/115 (7 %) | 107 s | $0.54 |
+| zai-glm-5-3-flash | 18/18 | 22/25 | 6 | 5/145 (3 %) | 48 s | $0.15 |
+| deepseek-v4-1-flash-1017 | 21/24 | 21/27 | 0 | 11/171 (6 %) | 3 s | $0.09 |
+| ministral-14b-2512 | 21/24 | 21/27 | 0 | 24/116 (21 %) | 7 s | $0.04 |
+| ministral-8b-2512 | 17/22 | 21/25 | 2 | 36/207 (17 %) | 7 s | $0.03 |
+| mistral-medium-3-5 | 15/24 | 21/27 | 0 | 12/80 (15 %) | 4 s | $0.16 |
+| mistral-small-2603 | 14/22 | 17/23 | 2 | 10/88 (11 %) | 3 s | $0.04 |
+| zai-glm-5-3 | 4/4 | 5/5 | **20** | 3/51 | 89 s | $1.85 |
+
+Where the verdicts went wrong:
+
+- deepseek: failed the HARTMANN privacy statement in all three runs, reading
+  the page's jump links ("Start", "Datenschutzinformation") as contents-list
+  sections that are missing. A false deciding claim.
+- ministral-14b: failed the pflege.de accessibility declaration all three
+  times (Claude: passed).
+- ministral-8b: **passed the cut-off pflege.de privacy statement in all three
+  runs** while naming the cut, the one mistake that hides the defect the
+  feature exists for.
+- mistral-medium: failed every page, passing ones included.
+- mistral-small: passed the pflege.de imprint and the Kneipp imprint, both
+  defective.
+- zai-glm-5-3: answered 4 of 24; on every long text it reasoned past 16,384
+  output tokens. glm-5-3-flash did the same on the three privacy statements.
+
+Not checked by any rule here, and the next thing to read by hand: findings
+that are wrong without misquoting (the "unlabelled values" claims seen at
+level 1 on mistral-small are of that kind).
+
+### Assessment
+
+No model meets the plan's pass criteria (every reference defect named on every
+run, no false deciding claim, quotes verbatim). Closest:
+
+- **mistral-large-4-0** reached the reference verdict on every page it
+  answered and quotes most faithfully among the fast-enough models, but takes
+  about two minutes a check, needs an output limit well above 4,096, and did
+  not report the planted order at level 1 when it did answer.
+- **deepseek-v4-1-flash-1017** is the only model that passed level 1, answers
+  in seconds for under a cent a check, and missed only on one page, but that
+  miss is a confident false "failed".
+- **zai-glm-5-3-flash** was right whenever it answered, but does not answer
+  on long privacy statements within 16,384 output tokens.
+
+Next: level 3 for these three (output limit; `reasoning_effort` for Large 4),
+and a human read of their findings on the eight pages before any of them is
+configured.
