@@ -78,6 +78,11 @@ func TestTheMistralRequest(t *testing.T) {
 		t.Error("the request offers the model tools")
 	}
 
+	// Greedy sampling: mistral-large-4-0 refuses temperature 0 without it.
+	if body["temperature"] != 0.0 || body["top_p"] != 1.0 {
+		t.Errorf("temperature %v, top_p %v; want 0 and 1", body["temperature"], body["top_p"])
+	}
+
 	// A model on the line adapter gets no JSON mode: it would forbid the
 	// lines it is asked for.
 	srv2, last2 := fakeMistral(t, `{"choices":[{"message":{"content":"VERDICT: passed"},"finish_reason":"stop"}],`+mistralUsage+`}`)

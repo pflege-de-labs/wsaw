@@ -107,6 +107,7 @@ type mistralRequest struct {
 	Model          string          `json:"model"`
 	MaxTokens      int             `json:"max_tokens"`
 	Temperature    float64         `json:"temperature"`
+	TopP           float64         `json:"top_p"`
 	Messages       []message       `json:"messages"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
@@ -116,9 +117,13 @@ type responseFormat struct {
 }
 
 func (mistralWire) encode(r wireRequest) ([]byte, error) {
+	// Temperature 0 is greedy sampling, and mistral-large-4-0 refuses it
+	// unless top_p is 1 ("top_p must be 1 when using greedy sampling", seen
+	// on 23 November 2026); other models default top_p to 1 anyway.
 	req := mistralRequest{
 		Model:     r.Model,
 		MaxTokens: r.MaxTokens,
+		TopP:      1,
 		Messages:  []message{{Role: "system", Content: r.System}, {Role: "user", Content: r.User}},
 	}
 
