@@ -312,7 +312,12 @@ again: the scan carries the earlier findings, marked `reused` with when they
 were made. A new prompt, a new model or a changed text is sent.
 
 **What comes back.** The model must answer with a verdict — `passed`,
-`failed` or `uncertain` — and findings, each marked deciding or informative.
+`failed` or `uncertain` — and findings, each marked deciding or informative,
+in the shape its adapter asks for: one JSON object by default, one line per
+item for `qwen3.8` and `gemma4` models, which break JSON strings with German
+quotes or reason past their output limit when asked for JSON. The
+adapter follows the model ID; a new one is a small parser in
+`internal/textcheck`.
 Anything else is recorded under `text.check` as `notChecked` with the reply
 kept, never as `passed`. So is every other way a check can end without a
 verdict: no model configured, no text, a timeout, a refusal, the daily cap, or

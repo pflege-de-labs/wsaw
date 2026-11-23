@@ -601,7 +601,7 @@ func (s *Scanner) checkText(ctx context.Context, target config.Resolved, res *mo
 	}
 
 	modelID, prompt := s.deps.TextChecker.Model(), target.ModelCheck.Prompt
-	if prev := s.earlierCheck(res); textcheck.Reusable(prev, modelID, textcheck.PromptDigest(prompt), tc.SHA256) {
+	if prev := s.earlierCheck(res); textcheck.Reusable(prev, modelID, textcheck.PromptDigest(modelID, prompt), tc.SHA256) {
 		reused := *prev
 		reused.Reused = true
 		tc.Check = &reused

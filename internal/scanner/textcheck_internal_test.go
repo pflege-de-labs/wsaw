@@ -22,7 +22,7 @@ func (c *countingChecker) Check(_ context.Context, req textcheck.Request) model.
 	c.calls = append(c.calls, req)
 
 	return model.TextCheck{
-		Model: "test-model", PromptSHA256: textcheck.PromptDigest(req.Prompt), TextSHA256: req.TextSHA256,
+		Model: "test-model", PromptSHA256: textcheck.PromptDigest("test-model", req.Prompt), TextSHA256: req.TextSHA256,
 		Verdict: model.VerdictFailed, Findings: []model.TextFinding{{Text: "f", Deciding: true}},
 	}
 }

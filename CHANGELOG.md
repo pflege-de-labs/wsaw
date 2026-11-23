@@ -35,7 +35,8 @@ criteria, and any that are still open, are written down.
   The prompt, the text with its link targets and the scan date are sent,
   nothing else. The scan waits for the answer and records it under
   `text.check`: a verdict (`passed`, `failed`, `uncertain`) with findings
-  marked deciding or informative, or, when there is none, `notChecked` with
+  marked deciding or informative — asked for as JSON by default and as one
+  line per item for `qwen3.8` and `gemma4` models — or, when there is none, `notChecked` with
   the reason, which lowers the scan's confidence and is never read as a pass.
   `failed` reports `text-check-failed` (high) and `uncertain`
   `text-check-uncertain` (low), labelled as model output everywhere. An
