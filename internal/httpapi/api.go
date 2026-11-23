@@ -420,6 +420,10 @@ func (s *Server) lastScanSeverity(
 		baseRes, base = prev, BasePrevious
 	}
 
+	// The watched texts live in artifacts of their own (Story 4.15).
+	store.LoadText(s.deps.Store, res)
+	store.LoadText(s.deps.Store, baseRes)
+
 	rep := diff.Compare(baseRes, res, s.diffOptions(target))
 
 	var cmp *ComparisonView
@@ -649,6 +653,9 @@ type comparison struct {
 	// OwnBaseline says the scan compared is that baseline, and so was compared
 	// with the previous scan instead (store.Comparison).
 	OwnBaseline bool
+
+	// Base is the result the scan was compared with, or nil.
+	Base *model.Result
 }
 
 // diffOptions is how a scan of target is compared: with its own settings, as
@@ -687,6 +694,7 @@ func (s *Server) comparisonFor(res *model.Result) comparison {
 		Report:      c.Report(res, s.diffOptions(res.Target)),
 		Baseline:    c.Baseline,
 		OwnBaseline: c.OwnBaseline,
+		Base:        c.Base,
 	}
 }
 

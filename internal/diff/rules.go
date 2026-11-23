@@ -33,6 +33,10 @@ type Options struct {
 	// first scan after one is not a wall of assets removed and re-added under
 	// new keys. Nil keeps the stored keys.
 	Normalizer *normalize.Normalizer
+
+	// Text is what makes the target's watched text complete, or nil when it
+	// watches none (Story 4.15).
+	Text *TextChecks
 }
 
 // DefaultDegradedFailureRatio is the share of lost requests above which a
@@ -175,6 +179,14 @@ type SeverityRules struct {
 
 	DeniedHost   Severity `yaml:"deniedHost,omitempty"`
 	ScanDegraded Severity `yaml:"scanDegraded,omitempty"`
+
+	// A watched page text (Story 4.15).
+	TextChanged    Severity `yaml:"textChanged,omitempty"`
+	TextIncomplete Severity `yaml:"textIncomplete,omitempty"`
+
+	// A model's reading of a watched text (Story 4.16).
+	TextCheckFailed    Severity `yaml:"textCheckFailed,omitempty"`
+	TextCheckUncertain Severity `yaml:"textCheckUncertain,omitempty"`
 }
 
 // DefaultSeverityRules encodes the product's judgement about what matters.
@@ -220,6 +232,16 @@ func DefaultSeverityRules() SeverityRules {
 
 		DeniedHost:   SeverityCritical,
 		ScanDegraded: SeverityMedium,
+
+		// A changed privacy statement is expected a few times a year and is
+		// something to read; a cut one is a defect (Story 4.15, AC9).
+		TextChanged:    SeverityMedium,
+		TextIncomplete: SeverityHigh,
+
+		// A model's "failed" is worth a human's look the same day; its
+		// "uncertain" is worth one eventually (Story 4.16, AC6).
+		TextCheckFailed:    SeverityHigh,
+		TextCheckUncertain: SeverityLow,
 	}
 }
 
@@ -281,6 +303,10 @@ func (s *SeverityRules) named() []namedSeverity {
 		{"consentDegraded", &s.ConsentDegraded},
 		{"deniedHost", &s.DeniedHost},
 		{"scanDegraded", &s.ScanDegraded},
+		{"textChanged", &s.TextChanged},
+		{"textIncomplete", &s.TextIncomplete},
+		{"textCheckFailed", &s.TextCheckFailed},
+		{"textCheckUncertain", &s.TextCheckUncertain},
 	}
 }
 

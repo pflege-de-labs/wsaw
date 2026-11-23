@@ -645,6 +645,10 @@ type resultData struct {
 	// consent interaction (Story 5.17).
 	Screenshots []screenshotView
 
+	// TextDiff is the watched text against the compared scan's, when it
+	// changed (Story 4.15, AC7).
+	TextDiff []textDiffLine
+
 	// Filter values are echoed back so the form keeps its state.
 	FilterHost  string
 	FilterType  string
@@ -867,6 +871,7 @@ func (s *Server) handleUIResult(w http.ResponseWriter, r *http.Request) {
 	// (Story 5.29).
 	if data.Diff != nil {
 		data.Changes = newChangesView(data.Diff, r.URL.Query())
+		data.TextDiff = textDiffFor(data.Diff, cmp.Base, res)
 	}
 
 	if cmp.OwnBaseline && cmp.Report.BaselineScanID != "" {

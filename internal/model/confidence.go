@@ -52,6 +52,9 @@ const (
 	SignalFetches     ConfidenceSignal = "fetches"
 	SignalDuration    ConfidenceSignal = "duration"
 	SignalConsent     ConfidenceSignal = "consent"
+	// SignalText is listed only for a target that watches a page text
+	// (Story 4.15, AC10).
+	SignalText ConfidenceSignal = "text"
 )
 
 // ConfidenceReason is one signal's contribution to the score.

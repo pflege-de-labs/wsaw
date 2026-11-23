@@ -181,7 +181,7 @@ func TestTheSchemaEnumsMatchTheModel(t *testing.T) {
 
 	signals := root.Defs["confidenceReason"].Properties["signal"].Enum
 	for _, s := range []model.ConfidenceSignal{
-		model.SignalTermination, model.SignalFetches, model.SignalDuration, model.SignalConsent,
+		model.SignalTermination, model.SignalFetches, model.SignalDuration, model.SignalConsent, model.SignalText,
 	} {
 		if !slices.Contains(signals, string(s)) {
 			t.Errorf("signal %s is missing from the schema", s)

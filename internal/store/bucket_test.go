@@ -910,7 +910,7 @@ func TestValidKindAcceptsTheKindsThisStoreWrites(t *testing.T) {
 	t.Parallel()
 
 	for _, kind := range []string{
-		"body", "result", "probe", "screenshot",
+		"body", "result", "probe", "screenshot", "text",
 		"screenshot-before-consent", "screenshot-after-consent",
 	} {
 		if !validKind(kind) {
@@ -932,7 +932,7 @@ func TestValidKindRejectsKindsThisStoreDoesNotWrite(t *testing.T) {
 
 	for _, kind := range []string{
 		"", "backup", "vendor-export", "results", "bodies", "screenshots",
-		"screenshot-", "screenshot_before", "Body", "body/2",
+		"screenshot-", "screenshot_before", "Body", "body/2", "texts",
 	} {
 		if validKind(kind) {
 			t.Errorf("validKind(%q) = true; this store never writes that kind", kind)

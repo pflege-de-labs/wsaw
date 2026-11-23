@@ -29,6 +29,11 @@ const (
 	penaltyConsent      = 40
 	penaltyNecessary    = 20
 	penaltyHeuristic    = 10
+	// penaltyText takes a scan whose watched text could not be read out of
+	// band high, so a notifier that wants high confidence does not report
+	// "text unchanged" for a scan that never saw the text (Story 4.15,
+	// AC10).
+	penaltyText = 30
 )
 
 // Band thresholds.
@@ -83,6 +88,10 @@ func Score(res *model.Result, hist History, opts Options) model.Confidence {
 		fetches(res),
 		durationReason,
 		consent(res),
+	}
+
+	if res.Text != nil {
+		reasons = append(reasons, text(res.Text))
 	}
 
 	score := maxScore
@@ -292,4 +301,29 @@ func ConsentCaveat(res *model.Result) string {
 	default:
 		return ""
 	}
+}
+
+// text is the watched text's contribution: none when it was read, a penalty
+// when it was not, because then the scan says nothing about the text.
+func text(tc *model.TextCapture) model.ConfidenceReason {
+	r := model.ConfidenceReason{Signal: model.SignalText}
+
+	if tc.Unavailable != "" {
+		r.Points = penaltyText
+		r.Observed = "not read: " + tc.Unavailable
+
+		return r
+	}
+
+	r.Observed = fmt.Sprintf("read, %d characters", tc.Length)
+
+	// A check that did not run leaves the scan saying nothing about what the
+	// text says, which a notifier with a minimum confidence must not read as
+	// clean (Story 4.16, AC5).
+	if tc.Check != nil && tc.Check.NotChecked != "" {
+		r.Points = penaltyText
+		r.Observed += "; not checked: " + tc.Check.NotChecked
+	}
+
+	return r
 }

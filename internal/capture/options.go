@@ -147,6 +147,10 @@ type Options struct {
 	// with it at launch, not here.
 	Proxy string
 
+	// Text is the region whose rendered text is read once the page has
+	// settled and consent handling has finished, or nil (Story 4.15).
+	Text *TextRegion
+
 	// BrowserReused records that this scan is not the first on its browser.
 	BrowserReused bool
 
@@ -242,4 +246,12 @@ func (o *Options) consentReserve() time.Duration {
 	}
 
 	return reserve
+}
+
+// TextRegion names the region of the page whose text a scan reads.
+type TextRegion struct {
+	// Selector is a CSS selector; the first element it matches is read.
+	Selector string
+	// MaxBytes is where wsaw cuts the text, and records that it did.
+	MaxBytes int
 }

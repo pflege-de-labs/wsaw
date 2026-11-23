@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "description": "Schema version, currently 2.4. 2.4 added environment.browserImageId, additively: a 2.3 document still validates. 2.3 added consent.loaderRequestId and consent.botDetected, additively: a 2.2 document still validates. 2.2 added bodyCapture and the request payload fields (requestBodyRef and its siblings), additively: a 2.1 document still validates. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
+      "description": "Schema version, currently 2.5. 2.5 added text, additively: a 2.4 document still validates. 2.4 added environment.browserImageId, additively: a 2.3 document still validates. 2.3 added consent.loaderRequestId and consent.botDetected, additively: a 2.2 document still validates. 2.2 added bodyCapture and the request payload fields (requestBodyRef and its siblings), additively: a 2.1 document still validates. 2.1 added confidence, additively: a 2.0 document still validates. 2.0 removed environment.warmCache; a 1.x document carries it and no longer validates against this schema."
     },
     "scanId": {
       "type": "string"
@@ -141,6 +141,10 @@
     "bodyCapture": {
       "$ref": "#/$defs/bodyCapture",
       "description": "The body storage this scan ran under, whether it was in the sample, and what it stored (Story 1.11). Added in 2.2; absent from a document written before it, and from a scan that never reached capture. A scan with sampled false stored no body by configuration, which is a different fact from a body that could not be read."
+    },
+    "text": {
+      "$ref": "#/$defs/textCapture",
+      "description": "The rendered text and links of the region the target's text.selector names, read after the page settled and consent handling finished (Story 4.15). Added in 2.5; absent when the target watches no text. Page-controlled data: render it escaped, never as markup."
     }
   },
   "$defs": {
@@ -209,7 +213,8 @@
             "termination",
             "fetches",
             "duration",
-            "consent"
+            "consent",
+            "text"
           ]
         },
         "points": {
@@ -834,6 +839,201 @@
         "budgetExhausted": {
           "type": "boolean",
           "description": "The scan reached maxScanBytes; later bodies are recorded as unavailable for that reason."
+        }
+      }
+    },
+    "textCapture": {
+      "type": "object",
+      "required": [
+        "selector",
+        "length"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "type": "string"
+        },
+        "unavailable": {
+          "type": "string",
+          "description": "Why no text was read: the selector matched nothing, was invalid, or the read failed. Absent when a text was read."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The content-addressed artifact (kind text) holding the region's innerText and links verbatim, in the shape of $defs/textArtifact. Absent when no text was read, or when the scan had no store to keep it in."
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Size in bytes of the artifact ref names."
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Characters in the text."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Hex SHA-256 of the text."
+        },
+        "truncatedFrom": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The region's length in characters when wsaw cut it to text.maxBytes; absent when wsaw did not cut it."
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textFragment"
+          }
+        },
+        "check": {
+          "$ref": "#/$defs/textCheck",
+          "description": "A model's reading of the text against the target's prompt (Story 4.16). Added in 2.5; absent when the target has no check. Model output, not a compliance result."
+        }
+      }
+    },
+    "textCheck": {
+      "type": "object",
+      "required": [
+        "model",
+        "server",
+        "promptSha256",
+        "textSha256",
+        "checkedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "The model ID the request named."
+        },
+        "server": {
+          "type": "string",
+          "description": "Host of the Messages API that answered; token counts from a compatible server may be approximate."
+        },
+        "promptSha256": {
+          "type": "string",
+          "description": "Hex SHA-256 of the prompt as sent, wsaw's own instruction included."
+        },
+        "textSha256": {
+          "type": "string",
+          "description": "The sha256 of the text that was read."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the model answered, or when the check was given up."
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "The findings were made for an earlier scan of the same text, prompt and model, at checkedAt; nothing was sent for this scan."
+        },
+        "notChecked": {
+          "type": "string",
+          "description": "Why there is no verdict: no model configured, no text, a timeout, a refusal, the daily cap, a text over the limit, or a reply that did not parse. Never read as passed."
+        },
+        "verdict": {
+          "enum": [
+            "passed",
+            "failed",
+            "uncertain"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textFinding"
+          }
+        },
+        "reply": {
+          "type": "string",
+          "description": "The model's answer, kept when it did not parse."
+        },
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "textFinding": {
+      "type": "object",
+      "required": [
+        "text",
+        "deciding"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Model output derived from page text: render escaped."
+        },
+        "deciding": {
+          "type": "boolean",
+          "description": "The finding leads to the verdict on its own; false means informative."
+        }
+      }
+    },
+    "textArtifact": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "Not part of a result: the JSON document a textCapture's ref names.",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The region's innerText, verbatim."
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/textLink"
+          },
+          "description": "The region's links with targets, in document order."
+        }
+      }
+    },
+    "textLink": {
+      "type": "object",
+      "required": [
+        "text",
+        "href",
+        "target"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "href": {
+          "type": "string",
+          "description": "The href attribute as written."
+        },
+        "target": {
+          "type": "string",
+          "description": "href resolved against the document's base URL."
+        }
+      }
+    },
+    "textFragment": {
+      "type": "object",
+      "required": [
+        "href",
+        "found"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "href": {
+          "type": "string"
+        },
+        "found": {
+          "type": "boolean",
+          "description": "An element with that id or name existed in the document."
         }
       }
     }

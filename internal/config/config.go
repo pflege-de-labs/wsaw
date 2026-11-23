@@ -41,6 +41,9 @@ type Config struct {
 	Logging   Logging    `yaml:"logging"`
 	Metrics   Metrics    `yaml:"metrics"`
 
+	// Model is the optional model API for text checks (Story 4.16).
+	Model ModelAPI `yaml:"model,omitempty"`
+
 	// path records where the config came from, for reload and error messages.
 	path string
 
@@ -132,6 +135,9 @@ type Target struct {
 	// Bodies selects which bodies are stored, for what share of scans
 	// (Story 1.11).
 	Bodies *Bodies `yaml:"bodies,omitempty"`
+	// Text watches the rendered text of one region of the page (Story
+	// 4.15).
+	Text *Text `yaml:"text,omitempty"`
 
 	// Politeness.
 	Robots      RobotsPolicy `yaml:"robots,omitempty"`

@@ -112,6 +112,6 @@ wsaw records URLs and cookies, which can contain personal data. Bodies and scree
 
 - No distributed or multi-node operation.
 - No Windows support.
-- No JavaScript execution or DOM analysis beyond what consent handling requires — wsaw watches the network, it is not a scanner or a linter.
+- No JavaScript execution or DOM analysis beyond what consent handling requires, and beyond reading the rendered text and links of one region a target configures (Story 4.15) — wsaw watches the network and, where asked, what one region of a page says; it is not a scanner or a linter. (Amended on 21 November 2026 to admit Story 4.15.)
 - No legal judgment: wsaw reports facts about network activity and consent state. Whether that constitutes a violation is a human decision.
 - No automatic remediation of findings.

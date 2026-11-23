@@ -32,13 +32,19 @@ func TestEveryChangeTypeHasAFamily(t *testing.T) {
 		diff.StorageRemoved: kindOther,
 		diff.ConsentChanged: kindOther,
 		diff.ScanDegraded:   kindOther,
+		diff.TextChanged:    kindOther,
+		diff.TextIncomplete: kindOther,
+
+		diff.TextCheckFailed:    kindOther,
+		diff.TextCheckUncertain: kindOther,
 	}
 
 	all := []diff.ChangeType{
 		diff.HostAdded, diff.HostRemoved, diff.AssetAdded, diff.AssetRemoved,
 		diff.ScriptChanged, diff.CookieAdded, diff.CookieRemoved, diff.StorageAdded,
 		diff.StorageRemoved, diff.StatusChanged, diff.ConsentChanged, diff.DeniedHost,
-		diff.ScanDegraded,
+		diff.ScanDegraded, diff.TextChanged, diff.TextIncomplete,
+		diff.TextCheckFailed, diff.TextCheckUncertain,
 	}
 
 	if len(all) != len(cases) {

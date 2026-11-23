@@ -206,8 +206,38 @@
     </table>
     {{if .Diff.Suppressed}}<p class="muted">{{.Diff.Suppressed}} further change(s) suppressed by the allow list.</p>{{end}}
   {{end}}
+  {{if .TextDiff}}
+    {{/* The watched text against the compared scan's (Story 4.15, AC7).
+         Page text, escaped by the template like every other page string. */}}
+    <h3>Watched text</h3>
+    <pre class="text-diff" aria-label="Line diff of the watched text">
+      {{- range .TextDiff}}<span class="td-{{.Class}}">{{.Mark}} {{.Text}}</span>
+{{end -}}
+    </pre>
+  {{end}}
 </section>
 {{end}}
+
+{{with .Result.Text}}{{with .Check}}
+{{/* A model's reading of the watched text (Story 4.16, AC4-AC6). Labelled
+     as model output wherever it appears; findings are page-derived and
+     escaped by the template. No answer is never shown as passed. */}}
+<section id="text-check">
+  <h2>Text check <span class="badge">model output</span></h2>
+  {{if .NotChecked}}
+    <p><strong>Not checked.</strong> {{.NotChecked}}</p>
+    {{if .Reply}}<details><summary>The model's answer, which did not parse</summary><pre class="text-diff">{{.Reply}}</pre></details>{{end}}
+  {{else}}
+    <p>Verdict: <strong>{{.Verdict}}</strong>, {{.Deciding}} deciding finding(s), from {{.Model}} at {{.Server}},
+      {{if .Reused}}made for an earlier scan of the same text on{{else}}made on{{end}} {{time .CheckedAt}}.</p>
+    {{if .Findings}}<ol class="text-findings">
+      {{range .Findings}}<li>{{if .Deciding}}<strong>deciding</strong>{{else}}informative{{end}}: {{.Text}}</li>
+      {{end}}
+    </ol>{{end}}
+  {{end}}
+  <p class="muted">A model's reading of the text against the target's prompt, not a compliance result or legal advice. Two runs can disagree.</p>
+</section>
+{{end}}{{end}}
 
 {{/* Approving is a judgement about this scan, so it is offered beside the
      changes being judged, by the same rule the history row uses

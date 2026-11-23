@@ -34,6 +34,14 @@ const (
 	ConsentChanged ChangeType = "consent-changed"
 	DeniedHost     ChangeType = "denied-host"
 	ScanDegraded   ChangeType = "scan-degraded"
+	// TextChanged and TextIncomplete are about a watched page text (Story
+	// 4.15).
+	TextChanged    ChangeType = "text-changed"
+	TextIncomplete ChangeType = "text-incomplete"
+	// TextCheckFailed and TextCheckUncertain are a model's verdict on a
+	// watched text against the target's prompt (Story 4.16, AC6).
+	TextCheckFailed    ChangeType = "text-check-failed"
+	TextCheckUncertain ChangeType = "text-check-uncertain"
 )
 
 // Severity ranks a change for routing and for the CI exit-code contract.
@@ -266,7 +274,7 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 
 		// A degraded scan is itself worth reporting: silence here would let a
 		// broken watcher look like a clean site.
-		if !current.OK() {
+		if current != nil && !current.OK() {
 			rep.Changes = append(rep.Changes, Change{
 				Type:        ScanDegraded,
 				Severity:    rules.Severity.ScanDegraded,
@@ -275,6 +283,12 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 				Subject:     current.URL,
 				Detail:      reason,
 			})
+		}
+
+		// Completeness and the model's verdict need no baseline: a text cut
+		// before the first scan is still cut (Story 4.15, AC8; Story 4.16).
+		if current != nil {
+			rep.Changes = append(rep.Changes, textFindings(current, rules)...)
 		}
 
 		return rep
@@ -304,6 +318,9 @@ func Compare(baseline, current *model.Result, opts Options) *Report {
 	d.compareConsent()
 	d.flagDeniedHosts()
 	d.flagDegradation()
+	d.compareText()
+
+	rep.Changes = append(rep.Changes, textFindings(current, rules)...)
 
 	sortChanges(rep.Changes)
 

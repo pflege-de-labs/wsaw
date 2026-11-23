@@ -36,6 +36,7 @@ import (
 	"github.com/pflege-de-labs/wsaw/internal/scanner"
 	"github.com/pflege-de-labs/wsaw/internal/secret"
 	"github.com/pflege-de-labs/wsaw/internal/store"
+	"github.com/pflege-de-labs/wsaw/internal/textcheck"
 )
 
 // App holds everything a running wsaw needs.
@@ -851,14 +852,31 @@ func (a *App) buildScanner() error {
 
 	a.logBodyStorage()
 
+	// The model API is built only when a model is named, and assigned only
+	// then, for the same reason as the ledger above (Story 4.16).
+	var textChecker scanner.TextChecker
+
+	if a.Config.Model.Model != "" {
+		settings, err := a.Config.TextCheckSettings(a.Secrets)
+		if err != nil {
+			return fmt.Errorf("model: %w", err)
+		}
+
+		textChecker = textcheck.New(settings)
+
+		a.Logger.Info("text checks send watched page texts to a model API",
+			"server", cmp.Or(settings.BaseURL, textcheck.DefaultBaseURL), "model", settings.Model)
+	}
+
 	s, err := scanner.New(scanner.Deps{
-		Pool:    a.Pool,
-		Store:   a.Store,
-		Ledger:  ledger,
-		Robots:  checker,
-		Rules:   a.Rules,
-		Secrets: a.Secrets,
-		Logger:  a.Logger,
+		Pool:        a.Pool,
+		Store:       a.Store,
+		Ledger:      ledger,
+		Robots:      checker,
+		Rules:       a.Rules,
+		Secrets:     a.Secrets,
+		Logger:      a.Logger,
+		TextChecker: textChecker,
 		Metrics: scanner.Metrics{
 			ScanStarted:  a.Metrics.ScanStarted,
 			ScanFinished: a.Metrics.ScanFinished,

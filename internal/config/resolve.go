@@ -96,6 +96,16 @@ type Resolved struct {
 	Retry retry.Policy
 
 	Severity diff.SeverityRules
+
+	// Text is the region whose text a scan reads, or nil (Story 4.15).
+	Text *capture.TextRegion
+
+	// TextChecks is what makes that text complete, or nil (Story 4.15, AC8).
+	TextChecks *diff.TextChecks
+
+	// ModelCheck is the prompt a model reads the text against, or nil
+	// (Story 4.16).
+	ModelCheck *ModelCheck
 }
 
 // ResolveTargets applies defaults to every enabled target and resolves secret
@@ -141,6 +151,7 @@ func (c *Config) DiffOptions(name string) diff.Options {
 		Deny:                 r.Deny,
 		Severity:             r.Severity,
 		DegradedFailureRatio: c.Detection.DegradedFailureRatio,
+		Text:                 r.TextChecks,
 	}
 }
 
@@ -189,6 +200,15 @@ func (c *Config) resolveTarget(t *Target, reg *secret.Registry) (Resolved, error
 	r.FormLogin, err = resolveFormLogin(t.FormLogin, reg)
 	if err != nil {
 		return Resolved{}, err
+	}
+
+	if t.Text != nil && t.Text.Check != nil {
+		prompt, err := readPrompt(t.Text.Check.Prompt)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("text.check.prompt: %w", err)
+		}
+
+		r.ModelCheck = &ModelCheck{Prompt: prompt, MaxInputTokens: t.Text.Check.MaxInputTokens}
 	}
 
 	return r, nil
@@ -258,7 +278,9 @@ func (c *Config) resolveTargetFields(t *Target) Resolved {
 			MaxBackoff: firstDuration(t.RetryMaxBackoff, d.RetryMaxBackoff, DefaultRetryMaxBackoff),
 			Truncated:  firstBool(t.RetryTruncated, d.RetryTruncated, false),
 		},
-		Severity: mergeSeverity(c.Detection.Severity, d.Severity, t.Severity),
+		Severity:   mergeSeverity(c.Detection.Severity, d.Severity, t.Severity),
+		Text:       t.Text.textRegion(),
+		TextChecks: t.Text.textChecks(),
 	}
 
 	// An explicit target cron clears an inherited interval, and vice versa,

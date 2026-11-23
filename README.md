@@ -209,6 +209,143 @@ changed password shows up as a failed scan rather than a clean scan of the
 password page. The result records `environment.formLoginUrl`, never the field
 values. `formLogin` is per target only and is refused in `defaults`.
 
+### Watching a page's text
+
+Some pages matter for what they say rather than what they load: a privacy
+statement, an imprint, an accessibility declaration. A privacy statement can
+answer 200 and stop in the middle of a word, and every network-level scan of
+it stays clean. A target can therefore also watch the text of one region of
+its page:
+
+```yaml
+  - name: privacy-statement
+    url: https://www.example.com/datenschutz/
+    text:
+      selector: main                 # first element it matches is read
+      mustContain:                   # each must occur in the text
+        - "Ihre Rechte"
+        - "Automatisierte Entscheidungsfindung"
+      minLength: 20000               # characters
+      checkAnchors: true             # default: report in-page links to nothing
+      maxBytes: 1048576              # default: wsaw cuts here and says so
+```
+
+After the page has settled and consent handling has finished, wsaw reads the
+region's rendered text (`innerText`) and its links with their resolved
+targets, once per consent mode, in an isolated script world so the page's own
+scripts cannot change what is read. The text and links are stored verbatim
+as one content-addressed artifact (kind `text`, a small JSON document), kept
+and swept like screenshots and bodies. The result carries, under `text`
+(result schema 2.5), the selector, the artifact's `ref`, the text's length
+and SHA-256, and the in-page links with whether their target existed; fetch
+the text itself with the artifact endpoint or `get_artifact` in `wsaw mcp`. A region
+that could not be read is recorded with the reason (`unavailable`), never as
+an empty text, and lowers the scan's confidence. A text longer than
+`maxBytes` is cut by wsaw, and `truncatedFrom` says how long it was, so a
+text wsaw cut is never mistaken for one the site cut.
+
+Two change types come from it:
+
+- `text-changed` (default severity medium): the text differs from the one
+  the scan is compared with, after collapsing whitespace, or a link's target
+  changed. The scan page shows a line diff; notifications carry only the
+  lengths and the number of changed links, never the text.
+- `text-incomplete` (default severity high): the text fails a check — a
+  `mustContain` string is missing, it is shorter than `minLength`, an in-page
+  link points at nothing, or no text could be read. It needs no baseline, so
+  a page that was already cut on the first scan is reported, and it is
+  reported on every scan until the text passes: approving a baseline does
+  not silence it.
+
+Both can be re-ranked per target under `severity` as `textChanged` and
+`textIncomplete`. `text` is per target only and is refused in `defaults`.
+Matching is exact and case-sensitive, with no pattern language; choose a
+selector narrow enough that text which legitimately differs on every visit
+stays outside it. wsaw does not judge whether a page is legally sufficient:
+"the text ends before the sections its own contents list names" is a fact,
+and what it means is yours to decide. Load-time validation of `selector`
+checks its shape (brackets, quotes, combinators); a selector the browser still
+rejects is recorded on every scan as unreadable, with the browser's reason.
+
+#### Having a model check the text
+
+A string list cannot say whether an imprint names its register court under
+"Registergericht" or a register type, or whether a declaration's feedback
+link points where its text says. A target can have a model read its text
+against a prompt you wrote (Story 4.16):
+
+```yaml
+model:
+  model: claude-opus-5-5
+  apiKey: ${env:ANTHROPIC_API_KEY}     # a reference, never the key itself
+  # api: anthropic                      # or mistral, for Mistral AI's own API
+  # baseURL: https://api.anthropic.com  # or http://localhost:11434 for Ollama
+  # auth: x-api-key                     # bearer for Ollama's cloud
+  # timeout: 90s                        # one check, retries included
+  # retries: 2
+  # dailyRequests: 200                  # across all targets, per UTC day
+
+targets:
+  - name: imprint
+    url: https://www.example.com/impressum/
+    text:
+      selector: main
+      mustContain: ["HRB 12345"]
+      check:
+        prompt: /etc/wsaw/prompts/impressum.txt
+        # maxInputTokens: 50000
+```
+
+**What is sent where.** The prompt, the region's text with every link
+written as `[text](target)`, and the scan date go to the configured server,
+and nothing else from the scan: no cookies, headers or requests. The text sits
+between two marker lines carrying a random token, and wsaw's own instruction
+tells the model that anything inside them is data, never an order. With
+`baseURL` pointing at a local server that speaks the Messages API, such as
+Ollama, the page text never leaves your network; plain `http://` is refused
+for any host but this one, because the key and the text would cross the
+network unencrypted.
+
+**When.** Right after the scan that read the text, and the scan's result and
+notification wait for it; `model.timeout` is part of that scan's time. A text
+whose digest was already checked with the same prompt and model is not sent
+again: the scan carries the earlier findings, marked `reused` with when they
+were made. A new prompt, a new model or a changed text is sent.
+
+**What comes back.** The model must answer with a verdict — `passed`,
+`failed` or `uncertain` — and findings, each marked deciding or informative,
+in the shape its adapter asks for: one JSON object by default, one line per
+item for `qwen3.8` and `gemma4` models, which break JSON strings with German
+quotes or reason past their output limit when asked for JSON. The
+adapter follows the model ID; a new one is a small parser in
+`internal/textcheck`.
+
+**Mistral AI.** Mistral has no Messages-compatible endpoint, so `api:
+mistral` sends checks through its own chat completions API at
+`https://api.mistral.ai`, with the key as a bearer token and Mistral's JSON
+mode on, which keeps the answer parseable. Name a dated model ID such as
+`mistral-large-4-0` rather than a `-latest` alias, since an earlier check is
+reused only for the same ID. `docs/testplan-mistral.md` says which models
+have been tried and how.
+Anything else is recorded under `text.check` as `notChecked` with the reply
+kept, never as `passed`. So is every other way a check can end without a
+verdict: no model configured, no text, a timeout, a refusal, the daily cap, or
+a text over `maxInputTokens` by wsaw's own conservative estimate, refused
+before sending. A text that was not checked lowers the scan's confidence.
+`failed` reports `text-check-failed` (default high) and `uncertain`
+`text-check-uncertain` (default low), on every scan until the verdict changes;
+re-rank them as `textCheckFailed` and `textCheckUncertain`. Notifications
+carry the verdict and the number of deciding findings, not the findings; the
+scan page shows them, escaped.
+
+**What it is not.** The verdict is a model's reading of the text, labelled as
+model output wherever it appears. It is not a compliance result or legal
+advice, it never changes what wsaw measured, and two runs on the same text
+can disagree; that is why an unchanged text keeps its first findings rather
+than being asked again. **What it costs:** a 15,000-token privacy statement is
+roughly ten US cents per check on Claude Opus 5.5 and well under a cent on
+Haiku 5.5, at list prices, and a page that does not change is checked once.
+
 ## Consent handling
 
 wsaw prefers documented interfaces over guessing, and always records which mechanism it used so a reviewer can weigh the evidence:
