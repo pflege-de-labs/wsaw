@@ -9,6 +9,14 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Security
+
+- wsaw's dependencies are updated past two advisories published on
+  23 November 2026: GO-2026-6974 in OpenTelemetry (`otel/sdk` and
+  `otel/trace` 1.47.0), which the artifact store's reads reach, and
+  GO-2026-6940 in `gobwas/ws` (1.5.0), the WebSocket library the browser
+  connection is built on. `govulncheck` reported both.
+
 ## [0.9.1] - 2026-11-11
 
 A security and compatibility release. wsaw is built with Go 1.27.4, which
