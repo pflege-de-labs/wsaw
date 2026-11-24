@@ -9,6 +9,15 @@ criteria, and any that are still open, are written down.
 
 ## [Unreleased]
 
+### Changed
+
+- The Alpine container images ship Chromium 158.0.8127.36-r0. Alpine had
+  withdrawn the Chromium 156 package the images were pinned to, so they could
+  no longer be built. Scans from these images are rendered by a newer
+  browser, so the first scan after upgrading may differ from its baseline for
+  that reason alone; the result's `chromeVersion` says which browser took it.
+  The Debian image (`--base debian`) keeps Chromium 156.0.8078.79-1.
+
 ## [0.9.1] - 2026-11-11
 
 A security and compatibility release. wsaw is built with Go 1.27.4, which
